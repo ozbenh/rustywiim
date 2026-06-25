@@ -625,10 +625,11 @@ fn update_output_display(ds: &DeviceState, ow: &OutputWidgets) {
 // ── Device popover helpers ────────────────────────────────────────────────────
 
 fn show_manual_ip_dialog(
-    window:  &adw::ApplicationWindow,
-    ds:      &DeviceState,
-    dev_btn: &gtk::MenuButton,
-    saved_ip: &Rc<RefCell<String>>,
+    window:     &adw::ApplicationWindow,
+    ds:         &DeviceState,
+    dev_btn:    &gtk::MenuButton,
+    manual_btn: &Button,
+    saved_ip:   &Rc<RefCell<String>>,
 ) {
     let current = saved_ip.borrow().clone();
     let dialog = adw::AlertDialog::builder()
@@ -649,13 +650,15 @@ fn show_manual_ip_dialog(
     dialog.set_extra_child(Some(&entry));
 
     dialog.connect_response(None, clone!(
-        @strong ds, @strong entry, @strong saved_ip, @strong dev_btn
+        @strong ds, @strong entry, @strong saved_ip, @strong dev_btn, @strong manual_btn
         => move |_dlg, resp| {
             if resp == "connect" {
                 let ip = entry.text().to_string();
                 if !ip.is_empty() {
                     *saved_ip.borrow_mut() = ip.clone();
-                    dev_btn.set_label(&format!("Manual: {ip}"));
+                    let label = format!("Manual: {ip}");
+                    dev_btn.set_label(&label);
+                    manual_btn.set_label(&label);
                     ds.set_device(&ip, TlsMode::HttpsWiiM);
                 }
             }
@@ -710,10 +713,10 @@ fn build_device_popover(
     };
     let manual_btn = Button::builder().label(&manual_label).css_classes(["flat"]).build();
     manual_btn.connect_clicked(clone!(
-        @strong ds, @strong dev_btn, @strong window, @strong saved_ip
+        @strong ds, @strong dev_btn, @strong window, @strong saved_ip, @strong manual_btn
         => move |_| {
             dev_btn.popdown();
-            show_manual_ip_dialog(&window, &ds, &dev_btn, &saved_ip);
+            show_manual_ip_dialog(&window, &ds, &dev_btn, &manual_btn, &saved_ip);
         }
     ));
     vbox.append(&manual_btn);
