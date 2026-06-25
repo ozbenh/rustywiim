@@ -385,6 +385,19 @@ fn soundcard_display_name(canon: &'static str, card_name: &str, dev_name: &str) 
     crate::capabilities::output_display_name(canon).to_string()
 }
 
+// ── PlayerStatus fixups ───────────────────────────────────────────────────────
+
+/// Apply firmware workarounds to a freshly-parsed `PlayerStatus`.
+fn fixup_player_status(st: &mut PlayerStatus) {
+    // Some devices report mode "10" (HTTP network stream) while actually playing
+    // from a locally-attached USB storage device.  The "vendor" field is set to
+    // "UDiskLocal" in that case, which lets us detect and correct it to mode "11"
+    // (USB local playback).
+    if st.mode == "10" && st.vendor == "UDiskLocal" {
+        st.mode = "11".to_string();
+    }
+}
+
 // ── Client ────────────────────────────────────────────────────────────────────
 
 #[derive(Clone)]
@@ -420,12 +433,15 @@ impl WiimClient {
         let cached = self.status_cmd.lock().unwrap().clone();
         if let Some(cmd) = cached {
             let text = self.cmd(&cmd).await?;
-            return Ok(serde_json::from_str(&text).unwrap_or_default());
+            let mut st: PlayerStatus = serde_json::from_str(&text).unwrap_or_default();
+            fixup_player_status(&mut st);
+            return Ok(st);
         }
         for cmd in ["getPlayerStatusEx", "getPlayerStatus", "getStatusEx"] {
             if let Ok(text) = self.cmd(cmd).await {
-                if let Ok(st) = serde_json::from_str::<PlayerStatus>(&text) {
+                if let Ok(mut st) = serde_json::from_str::<PlayerStatus>(&text) {
                     if !st.status.is_empty() {
+                        fixup_player_status(&mut st);
                         *self.status_cmd.lock().unwrap() = Some(cmd.to_string());
                         return Ok(st);
                     }
