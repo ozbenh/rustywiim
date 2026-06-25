@@ -15,10 +15,10 @@ This was mostly an exercise for me in using AI to program in a language I am not
 ### Install dependencies ###
 
 #### Ubuntu / Debian ####
-`sudo apt-get install cargo rustc libgtk-4-dev libadwaita-1-dev`
+`sudo apt-get install cargo rustc libgtk-4-dev libadwaita-1-dev libssl-dev`
 
 #### Fedora ####
-`sudo dnf install cargo rust gtk4-devel libadwaita-devel`
+`sudo dnf install cargo rust gtk4-devel libadwaita-devel openssl-devel`
 
 ### Build ###
 `cargo build`
