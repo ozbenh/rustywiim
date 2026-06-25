@@ -10,4 +10,38 @@ This was almost entirely written with the help of an AI tool and using quite a l
 
 This was mostly an exercise for me in using AI to program in a language I am not (yet) familiar with (Rust). The AI is so good I barely learned any Rust at this point but since the end result might be useful to some, here it is.
 
+## Build instructions ##
+
+### Install dependencies ###
+
+#### Ubuntu / Debian ####
+`sudo apt-get install cargo rustc libgtk-4-dev libadwaita-1-dev`
+
+#### Fedora ####
+`sudo dnf install cargo rust gtk4-devel libadwaita-devel`
+
+### Build ###
+`cargo build`
+
+### Run ###
+`target/debug/rustywiim`
+
+There is no installer or package yet and you can of course build a release build rather than a debug build etc... but since it's all pretty wet behind the ears, those simple instructions will do.
+
+## Options ##
+For now just those two:
+
+| Option          | Description                                           |
+|:----------------|:------------------------------------------------------|
+| `--debug-api`   | Dump in the console a log of API calls and rsesponses |
+| `--debug-state` | Dump in the console detected device state changes     |
+
+## Events ##
+
+
+  * 2026-06-24: Initial release 0.1.0
+
+  * 2026-06-25: Sorry, had to rebase ! Initial commit had to be fixed up.
+
+
 ![Screenshot](screenshot.png)
