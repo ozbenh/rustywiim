@@ -203,7 +203,7 @@ static WIIM_PROFILES: [DeviceProfile; 8] = [
     /* 3 WiimAmp */ DeviceProfile {
         model_name:      Some("WiiM Amp"),
         ignore_plm_bits: &[],
-        extra_inputs:    &["bluetooth", "line-in", "optical", "udisk", "HDMI"],
+        extra_inputs:    &["bluetooth", "line-in", "optical", "udisk", "hdmi"],
         outputs:         &["line-out", "usb-out"],
     },
     /* 4 WiimAmpPro */ DeviceProfile {
@@ -215,7 +215,7 @@ static WIIM_PROFILES: [DeviceProfile; 8] = [
     /* 5 WiimUltra */ DeviceProfile {
         model_name:      Some("WiiM Ultra"),
         ignore_plm_bits: &[],
-        extra_inputs:    &["bluetooth", "line-in", "optical", "coaxial", "udisk", "HDMI", "phono"],
+        extra_inputs:    &["bluetooth", "line-in", "optical", "coaxial", "udisk", "hdmi", "phono"],
         outputs:         &["line-out", "optical-out", "coax-out", "headphone-out", "usb-out"],
     },
     /* 6 WiimSound */ DeviceProfile {
@@ -242,7 +242,7 @@ static ARYLIC_PROFILES: [DeviceProfile; 3] = [
     /* 101 ArylicH50 */ DeviceProfile {
         model_name:      Some("Arylic H50"),
         ignore_plm_bits: &[],
-        extra_inputs:    &["bluetooth", "line-in", "optical", "udisk", "phono", "HDMI"],
+        extra_inputs:    &["bluetooth", "line-in", "optical", "udisk", "phono", "hdmi"],
         outputs:         &["line-out", "optical-out"],
     },
     /* 102 ArylicGeneric */ DeviceProfile {
@@ -263,7 +263,7 @@ static AUDIO_PRO_PROFILES: [DeviceProfile; 6] = [
     /* 201 AudioProA28 */ DeviceProfile {
         model_name:      Some("Audio Pro A28"),
         ignore_plm_bits: &[],
-        extra_inputs:    &["bluetooth", "optical", "line-in", "HDMI"],
+        extra_inputs:    &["bluetooth", "optical", "line-in", "hdmi"],
         outputs:         &[],
     },
     /* 202 AudioProAddonC5 */ DeviceProfile {
@@ -544,7 +544,7 @@ pub fn input_display_name(id: &str) -> &str {
         "optical"   => "Optical",
         "coaxial"   => "Coaxial",
         "udisk"     => "USB",
-        "HDMI"      => "HDMI",
+        "hdmi"      => "HDMI",
         "phono"     => "Phono",
         _           => id,
     }
@@ -554,10 +554,11 @@ pub fn input_display_name(id: &str) -> &str {
 pub fn mode_to_input_source(mode: &str) -> &'static str {
     match mode {
         "40" | "44" | "60" => "line-in",
+        "47"               => "line-in-2",
         "41"               => "bluetooth",
         "42" | "11" | "51" => "udisk",
         "43"               => "optical",
-        "49"               => "HDMI",
+        "49"               => "hdmi",
         "54"               => "phono",
         _                  => "wifi",
     }

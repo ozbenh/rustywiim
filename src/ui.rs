@@ -210,6 +210,7 @@ fn mode_source(mode: &str) -> &'static str {
         "44"            => "RCA",
         "49"            => "HDMI",
         "54"            => "Phono",
+        "60"            => "Line-In",
         "99"            => "Follower",
         _               => "",
     }
