@@ -74,6 +74,7 @@ impl IconSet {
         // Keys in `outputs` use canonical names from `canon_routine_output_name()`.
         if let Some(p) = try_texture(RCA_INOUT_SVG) {
             sources.insert("line-in",    p.clone());
+            sources.insert("line-in-2",  p.clone());
             outputs.insert("line-out",   p);
         }
         if let Some(p) = try_texture(OPTICAL_INOUT_SVG) {

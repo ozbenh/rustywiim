@@ -111,6 +111,10 @@ pub struct DeviceInfo {
     pub apcli0: String,
     #[serde(default, rename = "Release")]
     pub release: String,
+    /// Raw `plm_support` bitmap from `getStatusEx`.  May be decimal or
+    /// `"0x…"` hex.  Use `plm_support_value()` to get the parsed integer.
+    #[serde(default)]
+    pub plm_support: String,
 }
 
 impl DeviceInfo {
@@ -119,6 +123,16 @@ impl DeviceInfo {
             &self.eth0
         } else {
             &self.apcli0
+        }
+    }
+
+    /// Parse `plm_support` as a u64, handling both `"0x…"` hex and decimal.
+    pub fn plm_support_value(&self) -> u64 {
+        let s = self.plm_support.trim();
+        if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+            u64::from_str_radix(hex, 16).unwrap_or(0)
+        } else {
+            s.parse::<u64>().unwrap_or(0)
         }
     }
 }

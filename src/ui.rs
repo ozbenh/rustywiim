@@ -385,8 +385,8 @@ fn populate_source(ds: &DeviceState, sw: &SourceWidgets, icons: &Rc<icons::IconS
     let (ids, enabled_flags): (Vec<String>, Vec<bool>) = if !in_enable.is_empty() {
         in_enable.iter().map(|e| (e.mode.clone(), e.is_enabled())).unzip()
     } else {
-        let ids = capabilities::detect_inputs(&info.project)
-            .iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let ids = capabilities::detect_inputs(&info.project, info.plm_support_value())
+            .into_iter().map(|s| s.to_string()).collect::<Vec<_>>();
         let flags = vec![true; ids.len()];
         (ids, flags)
     };

@@ -228,31 +228,160 @@ fn static_playback_caps(vendor: &Vendor, project: &str, fw_lc: &str) -> (bool, b
     }
 }
 
-// ── Legacy helpers used by ui.rs ──────────────────────────────────────────────
-// These operate directly on the raw `project` field and are retained for
-// compatibility.  New code should prefer DeviceCapabilities.
-//
-// XXX This needs to be dramatically improved (see pywiim)
+// ── Input detection ───────────────────────────────────────────────────────────
 
-/// Detect available inputs from the device's `project` field (from getStatusEx).
-pub fn detect_inputs(project: &str) -> &'static [&'static str] {
-    let p = project.to_lowercase();
-    if p.contains("ultra") {
-        return &["wifi", "bluetooth", "line-in", "optical", "coaxial", "udisk", "HDMI", "phono"];
+/// plm_support bit index → canonical input source ID.
+/// Bit meanings from pywiim's filter_plm_inputs / Arylic documentation.
+static PLM_BIT_TO_INPUT: &[(u8, &str)] = &[
+    (0, "line-in"),
+    (1, "bluetooth"),
+    (2, "udisk"),
+    (3, "optical"),
+    (5, "coaxial"),
+    (7, "line-in-2"),
+];
+
+struct DeviceProfile {
+    /// plm_support bit positions whose inputs should be suppressed (device
+    /// incorrectly asserts bits for hardware it does not have).
+    ignore_plm_bits: &'static [u8],
+    /// Inputs guaranteed to be present on this device; added to the result if
+    /// not already present after plm parsing.
+    extra_inputs: &'static [&'static str],
+}
+
+// ── Per-device profiles (mirrors pywiim's DEVICE_CAPABILITIES) ───────────────
+
+const WIIM_ULTRA_PROFILE: DeviceProfile = DeviceProfile {
+    ignore_plm_bits: &[],
+    extra_inputs:    &["bluetooth", "line-in", "optical", "coaxial", "udisk", "HDMI", "phono"],
+};
+const WIIM_AMP_PROFILE: DeviceProfile = DeviceProfile {
+    ignore_plm_bits: &[],
+    extra_inputs:    &["bluetooth", "line-in", "optical", "udisk", "HDMI"],
+};
+const WIIM_AMP_PRO_PROFILE: DeviceProfile = DeviceProfile {
+    ignore_plm_bits: &[],
+    extra_inputs:    &["bluetooth", "line-in", "optical", "udisk"],
+};
+const WIIM_PRO_PLUS_PROFILE: DeviceProfile = DeviceProfile {
+    ignore_plm_bits: &[2, 5], // USB-C is power only; Coaxial is output only
+    extra_inputs:    &["bluetooth", "line-in", "optical"],
+};
+const WIIM_PRO_PROFILE: DeviceProfile = DeviceProfile {
+    ignore_plm_bits: &[2, 5], // USB-C is power only; Coaxial is output only
+    extra_inputs:    &["bluetooth", "line-in", "optical"],
+};
+const WIIM_MINI_PROFILE: DeviceProfile = DeviceProfile {
+    ignore_plm_bits: &[5], // Coaxial not present
+    extra_inputs:    &["bluetooth", "line-in", "optical"],
+};
+const WIIM_SOUND_PROFILE: DeviceProfile = DeviceProfile {
+    ignore_plm_bits: &[2, 3, 5], // No USB, Optical, or Coaxial
+    extra_inputs:    &["bluetooth", "line-in"],
+};
+const WIIM_GENERIC_PROFILE: DeviceProfile = DeviceProfile {
+    ignore_plm_bits: &[],
+    extra_inputs:    &["bluetooth", "line-in", "optical"],
+};
+const UP2STREAM_AMP_PROFILE: DeviceProfile = DeviceProfile {
+    ignore_plm_bits: &[],
+    extra_inputs:    &["bluetooth", "line-in", "optical", "udisk"],
+};
+const ARYLIC_H50_PROFILE: DeviceProfile = DeviceProfile {
+    ignore_plm_bits: &[],
+    extra_inputs:    &["bluetooth", "line-in", "optical", "udisk", "phono", "HDMI"],
+};
+const ARYLIC_GENERIC_PROFILE: DeviceProfile = DeviceProfile {
+    ignore_plm_bits: &[],
+    extra_inputs:    &["bluetooth", "line-in", "optical"],
+};
+const AUDIO_PRO_LINK2_PROFILE: DeviceProfile = DeviceProfile {
+    ignore_plm_bits: &[],
+    extra_inputs:    &["bluetooth", "optical", "coaxial", "line-in"],
+};
+const AUDIO_PRO_A28_PROFILE: DeviceProfile = DeviceProfile {
+    ignore_plm_bits: &[],
+    extra_inputs:    &["bluetooth", "optical", "line-in", "HDMI"],
+};
+const AUDIO_PRO_C5_PROFILE: DeviceProfile = DeviceProfile {
+    ignore_plm_bits: &[],
+    extra_inputs:    &["bluetooth", "line-in"],
+};
+const LINKPLAY_GENERIC_PROFILE: DeviceProfile = DeviceProfile {
+    ignore_plm_bits: &[],
+    extra_inputs:    &["bluetooth", "line-in", "optical"],
+};
+
+/// Select the profile that best matches the normalised project string.
+/// More-specific WiiM names are checked before less-specific substrings.
+fn lookup_device_profile(project: &str) -> &'static DeviceProfile {
+    if project.contains("wiim_ultra")    { return &WIIM_ULTRA_PROFILE;    }
+    if project.contains("wiim_amp_pro")  { return &WIIM_AMP_PRO_PROFILE;  }
+    if project.contains("wiim_amp")      { return &WIIM_AMP_PROFILE;      }
+    if project.contains("wiim_pro_plus") { return &WIIM_PRO_PLUS_PROFILE; }
+    if project.contains("wiim_pro")      { return &WIIM_PRO_PROFILE;      }
+    if project.contains("wiim_mini") || project == "muzo_mini" {
+        return &WIIM_MINI_PROFILE;
     }
-    if p.contains("amp") {
-        return &["wifi", "bluetooth", "line-in", "optical", "udisk", "HDMI"];
+    if project.contains("wiim_sound")    { return &WIIM_SOUND_PROFILE;    }
+    if project.contains("wiim")          { return &WIIM_GENERIC_PROFILE;  }
+
+    if project.contains("up2stream_amp") { return &UP2STREAM_AMP_PROFILE; }
+    if project.contains("arylic") && project.contains("h50") {
+        return &ARYLIC_H50_PROFILE;
     }
-    if p.contains("pro") {
-        return &["wifi", "bluetooth", "line-in", "optical"];
+    if project.contains("arylic") || project.contains("up2stream") {
+        return &ARYLIC_GENERIC_PROFILE;
     }
-    if p.contains("mini") {
-        return &["wifi", "bluetooth", "line-in", "optical"];
+
+    if project.contains("link_2")   { return &AUDIO_PRO_LINK2_PROFILE; }
+    if project.contains("a28")      { return &AUDIO_PRO_A28_PROFILE;   }
+    if project.contains("addon_c5") { return &AUDIO_PRO_C5_PROFILE;    }
+
+    &LINKPLAY_GENERIC_PROFILE
+}
+
+/// Detect available inputs from the device project string and the `plm_support`
+/// bitmap reported by `getStatusEx`.
+///
+/// Algorithm:
+/// 1. Decode `plm_support` bits using `PLM_BIT_TO_INPUT`.
+/// 2. Remove inputs whose bit is in the device profile's `ignore_plm_bits`.
+/// 3. Append any `extra_inputs` from the profile not already in the list.
+/// 4. Prepend `"wifi"` (always available as a network streaming source).
+pub fn detect_inputs(project: &str, plm_support: u64) -> Vec<&'static str> {
+    let norm = normalize_project(project);
+    let profile = lookup_device_profile(&norm);
+
+    // Step 1 — decode bitmap.
+    let mut inputs: Vec<&'static str> = PLM_BIT_TO_INPUT.iter()
+        .filter(|(bit, _)| plm_support & (1u64 << bit) != 0)
+        .map(|(_, name)| *name)
+        .collect();
+
+    // Step 2 — drop bits the profile says are spurious.
+    if !profile.ignore_plm_bits.is_empty() {
+        inputs.retain(|&name| {
+            let bit = PLM_BIT_TO_INPUT.iter()
+                .find(|(_, n)| *n == name)
+                .map(|(b, _)| *b);
+            bit.map_or(true, |b| !profile.ignore_plm_bits.contains(&b))
+        });
     }
-    if p.contains("sound") {
-        return &["wifi", "bluetooth", "line-in"];
+
+    // Step 3 — add inputs guaranteed by the profile but absent from bitmap.
+    for &extra in profile.extra_inputs {
+        if !inputs.contains(&extra) {
+            inputs.push(extra);
+        }
     }
-    &["wifi", "bluetooth", "line-in", "optical"]
+
+    // Step 4 — wifi is always first.
+    inputs.retain(|&s| s != "wifi");
+    inputs.insert(0, "wifi");
+
+    inputs
 }
 
 /// Detect available outputs from the device's `project` field.
@@ -313,6 +442,7 @@ pub fn input_display_name(id: &str) -> &str {
         "wifi"      => "Network",
         "bluetooth" => "Bluetooth",
         "line-in"   => "Line-In",
+        "line-in-2" => "Line-In 2",
         "optical"   => "Optical",
         "coaxial"   => "Coaxial",
         "udisk"     => "USB",
