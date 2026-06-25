@@ -29,10 +29,10 @@ fn dbg(msg: &str) {
 }
 
 use crate::api::{
-    AudioInputEntry, AudioOutputStatus, DeviceInfo, MetaData, PlayerStatus, WiimClient,
+    AudioInputEntry, AudioOutputStatus, DeviceInfo, MetaData, PlayerStatus, TlsMode,
+    WiimClient, TLS_MODE,
 };
 use crate::capabilities::DeviceCapabilities;
-use crate::config::Config;
 
 // ── Poll payload ──────────────────────────────────────────────────────────────
 
@@ -137,16 +137,24 @@ impl DeviceState {
     /// emits `device-changed` immediately (with cleared state so the UI can
     /// show "Connecting…"), then fetches device info asynchronously and emits
     /// `device-changed` again when the data arrives.
-    pub fn set_device(&self, ip: &str) {
-        dbg(&format!("set_device: connecting to {ip}"));
+    pub fn set_device(&self, ip: &str, tls: TlsMode) {
+        // Apply --tls CLI override if set; otherwise use the caller-supplied mode.
+        let tls = {
+            let global = TlsMode::from_usize(TLS_MODE.load(Ordering::Relaxed));
+            if global != TlsMode::Auto { global } else { tls }
+        };
+        dbg(&format!("set_device: connecting to {ip} ({})", tls.description()));
         {
             let mut inner = self.imp().inner.borrow_mut();
             *inner = Inner::default();
-            inner.client = Some(WiimClient::new(ip));
+            inner.client = Some(WiimClient::new(ip, tls));
         }
-        let mut cfg = Config::load();
-        cfg.last_ip = ip.to_string();
-        cfg.save();
+        {
+            use crate::config::Config;
+            let mut cfg = Config::load();
+            cfg.last_ip = ip.to_string();
+            cfg.save();
+        }
         dbg("signal: device-changed (connecting)");
         self.emit_by_name::<()>("device-changed", &[]);
         self.fetch_device_info();
@@ -413,3 +421,4 @@ impl DeviceState {
         })
     }
 }
+

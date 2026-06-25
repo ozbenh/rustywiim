@@ -2,7 +2,7 @@
 
 use reqwest::Client;
 use serde::Deserialize;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -11,6 +11,127 @@ pub static DEBUG: AtomicBool = AtomicBool::new(false);
 fn debug(cmd: &str, resp: &str) {
     if DEBUG.load(Ordering::Relaxed) {
         println!("[API] {cmd} → {resp}");
+    }
+}
+
+fn debug_info(msg: &str) {
+    if DEBUG.load(Ordering::Relaxed) {
+        println!("[API] {msg}");
+    }
+}
+
+// ── TLS / protocol mode ───────────────────────────────────────────────────────
+
+/// Self-signed CA certificate used by WiiM/LinkPlay devices (issued by www.linkplay.com).
+/// Used to verify the server certificate in `HttpsWiiM` mode.
+static WIIM_CA_CERT: &[u8] = include_bytes!("certs/wiim_ca.pem");
+
+/// Private key for Audio Pro mTLS client authentication.
+static AUDIO_PRO_KEY: &[u8] = include_bytes!("certs/audio_pro_key.pem");
+
+/// Active connection protocol override.  `0` = `Auto` (default): use the per-device
+/// mode stored in config, falling back to `HttpsWiiM`.
+pub static TLS_MODE: AtomicUsize = AtomicUsize::new(0);
+
+/// Connection protocol and TLS certificate policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TlsMode {
+    /// Automatic: use the per-device stored mode (from discovery), else `HttpsWiiM`.
+    Auto          = 0,
+    /// Plain HTTP, no TLS.  Port 80.
+    Http          = 1,
+    /// HTTPS, no server cert verification, WiiM CA cert loaded.  Port 443.
+    /// Stored value 2 from old configs is treated identically to HttpsWiiM (3).
+    HttpsAny      = 2,
+    /// HTTPS, no server cert verification, WiiM CA cert loaded.  Port 443.
+    HttpsWiiM     = 3,
+    /// HTTPS with mutual TLS: AudioPro client cert+key + WiiM CA.  Port 4443.
+    HttpsAudioPro = 4,
+}
+
+impl TlsMode {
+    pub fn from_usize(n: usize) -> Self {
+        match n {
+            1 => Self::Http,
+            2 => Self::HttpsAny,
+            3 => Self::HttpsWiiM,
+            4 => Self::HttpsAudioPro,
+            _ => Self::Auto,
+        }
+    }
+
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::Auto          => "auto (per-device mode or https-wiim default)",
+            Self::Http          => "http (plain HTTP, port 80)",
+            Self::HttpsAny      => "https (no cert verification, WiiM CA loaded, port 443)",
+            Self::HttpsWiiM     => "https-wiim (no cert verification, WiiM CA loaded, port 443)",
+            Self::HttpsAudioPro => "https-audio-pro (mTLS AudioPro client cert, port 4443)",
+        }
+    }
+}
+
+/// Build a reqwest `Client` for the given TLS mode.
+///
+/// All HTTPS modes:
+///   - Disable server certificate verification (`danger_accept_invalid_certs`).
+///   - Load the static WiiM/LinkPlay CA certificate into the trust store.
+///   - Present the WiiM CA certificate + key as a client certificate for mutual TLS.
+///     Devices that do not request a client cert ignore it; devices that do (including
+///     some regular WiiM units and all AudioPro units) will accept it.
+///
+/// The only difference between `HttpsWiiM` and `HttpsAudioPro` is the port used in
+/// the URL (443 vs 4443); the TLS configuration is identical.
+///
+/// Uses OpenSSL (native-tls) which accepts CA-as-end-entity server certificates
+/// that rustls rejects with `CaUsedAsEndEntity`.
+pub fn build_reqwest_client(tls: TlsMode, timeout: Duration) -> Client {
+    match tls {
+        TlsMode::Auto => panic!("build_reqwest_client: Auto must be resolved by the caller"),
+
+        TlsMode::Http => Client::builder()
+            .timeout(timeout)
+            .build()
+            .expect("http client"),
+
+        TlsMode::HttpsAny | TlsMode::HttpsWiiM | TlsMode::HttpsAudioPro => {
+            let ca = reqwest::tls::Certificate::from_pem(WIIM_CA_CERT).expect("WiiM CA cert");
+            let identity = reqwest::Identity::from_pkcs8_pem(WIIM_CA_CERT, AUDIO_PRO_KEY)
+                .expect("WiiM mTLS identity");
+            Client::builder()
+                .danger_accept_invalid_certs(true)
+                .add_root_certificate(ca)
+                .identity(identity)
+                .timeout(timeout)
+                .build()
+                .expect("https client")
+        }
+    }
+}
+
+/// Log a reqwest error for `context` (e.g. an API command or a discovery probe).
+///
+/// Always prints to stderr.  Walks the full `source()` chain so that the root
+/// cause (e.g. the specific TLS or certificate failure) is visible.
+pub fn log_request_error(context: &str, err: &reqwest::Error) {
+    use std::error::Error as StdError;
+    eprintln!("[API] {context}: {err}");
+    let mut cause: Option<&dyn StdError> = err.source();
+    while let Some(c) = cause {
+        eprintln!("[API]   caused by: {c}");
+        cause = c.source();
+    }
+}
+
+/// Return the base `httpapi.asp` URL for the given IP and TLS mode.
+///
+/// Does not append any command query string — append `?command=…` yourself.
+pub fn api_base_url(ip: &str, tls: TlsMode) -> String {
+    match tls {
+        TlsMode::Http                           => format!("http://{ip}/httpapi.asp"),
+        TlsMode::HttpsAny | TlsMode::HttpsWiiM => format!("https://{ip}/httpapi.asp"),
+        TlsMode::HttpsAudioPro                  => format!("https://{ip}:4443/httpapi.asp"),
+        TlsMode::Auto => panic!("api_base_url: Auto must be resolved by the caller"),
     }
 }
 
@@ -239,22 +360,23 @@ pub struct WiimClient {
 }
 
 impl WiimClient {
-    pub fn new(ip: &str) -> Self {
-        let http = Client::builder()
-            .danger_accept_invalid_certs(true)
-            .timeout(Duration::from_secs(5))
-            .build()
-            .expect("http client");
-        Self {
-            http,
-            base: format!("https://{ip}/httpapi.asp"),
-            status_cmd: Arc::new(Mutex::new(None)),
-        }
+    /// Create a client for `ip` using the given resolved TLS mode.
+    ///
+    /// Panics if `tls` is `TlsMode::Auto` — the caller must resolve it first.
+    pub fn new(ip: &str, tls: TlsMode) -> Self {
+        debug_info(&format!("connecting to {ip}: {}", tls.description()));
+        let http = build_reqwest_client(tls, Duration::from_secs(5));
+        let base = api_base_url(ip, tls);
+        Self { http, base, status_cmd: Arc::new(Mutex::new(None)) }
     }
 
     async fn cmd(&self, command: &str) -> anyhow::Result<String> {
         let url = format!("{}?command={}", self.base, command);
-        let text = self.http.get(&url).send().await?.text().await?;
+        let resp = self.http.get(&url).send().await.map_err(|e| {
+            log_request_error(command, &e);
+            e
+        })?;
+        let text = resp.text().await?;
         debug(command, &text);
         Ok(text)
     }

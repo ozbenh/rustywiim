@@ -8,6 +8,7 @@ use glib::clone;
 use gtk::gio;
 use gtk::{Align, Box as GtkBox, Button, CssProvider, Label, Orientation, Scale, StringList};
 
+use crate::api::TlsMode;
 use crate::capabilities;
 use crate::config::Config;
 use crate::device_state::DeviceState;
@@ -210,7 +211,6 @@ fn mode_source(mode: &str) -> &'static str {
         "44"            => "RCA",
         "49"            => "HDMI",
         "54"            => "Phono",
-        "60"            => "Line-In",
         "99"            => "Follower",
         _               => "",
     }
@@ -656,7 +656,7 @@ fn show_manual_ip_dialog(
                 if !ip.is_empty() {
                     *saved_ip.borrow_mut() = ip.clone();
                     dev_btn.set_label(&format!("Manual: {ip}"));
-                    ds.set_device(&ip);
+                    ds.set_device(&ip, TlsMode::HttpsWiiM);
                 }
             }
         }
@@ -686,13 +686,14 @@ fn build_device_popover(
         for d in devs {
             let label = format!("{} ({})", d.name, d.ip);
             let ip = d.ip.clone();
+            let tls_mode = d.tls_mode;
             let btn = Button::builder().label(&label).css_classes(["flat"]).build();
             btn.connect_clicked(clone!(
                 @strong ds, @strong dev_btn, @strong label
                 => move |_| {
                     dev_btn.set_label(&label);
                     dev_btn.popdown();
-                    ds.set_device(&ip);
+                    ds.set_device(&ip, tls_mode);
                 }
             ));
             vbox.append(&btn);
@@ -888,7 +889,7 @@ pub fn build_ui(app: &adw::Application) {
     );
     let ds = DeviceState::new(rt);
     if !cfg.last_ip.is_empty() {
-        ds.set_device(&cfg.last_ip);
+        ds.set_device(&cfg.last_ip, TlsMode::HttpsWiiM);
     }
     ds.start_polling();
 
@@ -1445,7 +1446,7 @@ pub fn build_ui(app: &adw::Application) {
                         let d = &devs[0];
                         let label = format!("{} ({})", d.name, d.ip);
                         dev_btn.set_label(&label);
-                        ds.set_device(&d.ip);
+                        ds.set_device(&d.ip, d.tls_mode);
                     } else {
                         dev_btn.set_label("No device");
                     }

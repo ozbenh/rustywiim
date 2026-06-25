@@ -4,10 +4,14 @@ use std::time::Duration;
 use tokio::net::UdpSocket;
 use tokio::time::timeout;
 
+use crate::api::{TlsMode, api_base_url, build_reqwest_client};
+
 #[derive(Debug, Clone)]
 pub struct DiscoveredDevice {
-    pub ip: String,
-    pub name: String,
+    pub ip:       String,
+    pub name:     String,
+    /// The TLS mode to use for subsequent connections to this device.
+    pub tls_mode: TlsMode,
 }
 
 const SSDP_ADDR: &str = "239.255.255.250:1900";
@@ -27,6 +31,12 @@ const SEARCH_MSGS: &[&str] = &[
      \r\n",
 ];
 
+const PROBE_MODES: &[TlsMode] = &[
+    TlsMode::HttpsWiiM,
+    TlsMode::HttpsAudioPro,
+    TlsMode::Http,
+];
+
 pub async fn discover(duration: Duration) -> Vec<DiscoveredDevice> {
     let Ok(sock) = UdpSocket::bind("0.0.0.0:0").await else {
         return Vec::new();
@@ -44,9 +54,7 @@ pub async fn discover(duration: Duration) -> Vec<DiscoveredDevice> {
 
     loop {
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        if remaining.is_zero() {
-            break;
-        }
+        if remaining.is_zero() { break; }
         match timeout(remaining, sock.recv_from(&mut buf)).await {
             Ok(Ok((len, src))) => {
                 let ip = src.ip().to_string();
@@ -61,17 +69,10 @@ pub async fn discover(duration: Duration) -> Vec<DiscoveredDevice> {
         }
     }
 
-    let http = reqwest::Client::builder()
-        .danger_accept_invalid_certs(true)
-        .timeout(Duration::from_secs(3))
-        .build()
-        .unwrap();
-
     let mut handles = Vec::new();
     for (ip, loc) in locations {
-        let http = http.clone();
         handles.push(tokio::spawn(async move {
-            identify_device(&http, &ip, &loc).await
+            identify_device(&ip, &loc).await
         }));
     }
 
@@ -81,34 +82,34 @@ pub async fn discover(duration: Duration) -> Vec<DiscoveredDevice> {
             devices.push(dev);
         }
     }
+
     devices
 }
 
-async fn identify_device(
-    http: &reqwest::Client,
-    ip: &str,
-    location: &str,
-) -> Option<DiscoveredDevice> {
-    if let Ok(resp) = http.get(location).send().await {
+/// Try each TLS mode in `PROBE_MODES` order; return the first `DiscoveredDevice`
+/// whose API responds.  Falls back to the SSDP UPnP description if no API mode works.
+async fn identify_device(ip: &str, location: &str) -> Option<DiscoveredDevice> {
+    for &mode in PROBE_MODES {
+        if let Some(name) = probe_api(ip, mode).await {
+            return Some(DiscoveredDevice { ip: ip.to_string(), name, tls_mode: mode });
+        }
+    }
+
+    // API probes all failed.  Try the SSDP UPnP description URL as a last resort —
+    // it at least confirms this is a WiiM/LinkPlay device so we can surface it in the
+    // UI, even if we don't yet know the right protocol.
+    let fallback_client = build_reqwest_client(TlsMode::Http, Duration::from_secs(2));
+    if let Ok(resp) = fallback_client.get(location).send().await {
         if let Ok(xml) = resp.text().await {
             let lower = xml.to_lowercase();
             if lower.contains("wiim") || lower.contains("linkplay") || lower.contains("wiimu") {
                 let name = extract_xml_tag(&xml, "friendlyName")
                     .unwrap_or_else(|| format!("WiiM @ {ip}"));
-                return Some(DiscoveredDevice { ip: ip.to_string(), name });
-            }
-        }
-    }
-
-    let api_url = format!("https://{ip}/httpapi.asp?command=getStatusEx");
-    if let Ok(resp) = http.get(&api_url).send().await {
-        if let Ok(text) = resp.text().await {
-            if text.contains("uuid") && text.contains("DeviceName") {
-                let name = serde_json::from_str::<serde_json::Value>(&text)
-                    .ok()
-                    .and_then(|v| v["DeviceName"].as_str().map(String::from))
-                    .unwrap_or_else(|| format!("WiiM @ {ip}"));
-                return Some(DiscoveredDevice { ip: ip.to_string(), name });
+                return Some(DiscoveredDevice {
+                    ip: ip.to_string(),
+                    name,
+                    tls_mode: TlsMode::HttpsWiiM,
+                });
             }
         }
     }
@@ -116,12 +117,39 @@ async fn identify_device(
     None
 }
 
+/// Try the WiiM API (`getStatusEx`) with a single TLS mode.
+/// Returns the device name on success, or `None` on any error or non-WiiM response.
+async fn probe_api(ip: &str, mode: TlsMode) -> Option<String> {
+    let client = build_reqwest_client(mode, Duration::from_secs(2));
+    let url = format!("{}?command=getStatusEx", api_base_url(ip, mode));
+    let resp = match client.get(&url).send().await {
+        Ok(r) => r,
+        Err(e) => {
+            crate::api::log_request_error(
+                &format!("probe {ip} [{}]", mode.description()),
+                &e,
+            );
+            return None;
+        }
+    };
+    let text = resp.text().await.ok()?;
+    if text.contains("uuid") && text.contains("DeviceName") {
+        let name = serde_json::from_str::<serde_json::Value>(&text)
+            .ok()
+            .and_then(|v| v["DeviceName"].as_str().map(String::from))
+            .unwrap_or_else(|| format!("WiiM @ {ip}"));
+        Some(name)
+    } else {
+        None
+    }
+}
+
 fn extract_xml_tag(xml: &str, tag: &str) -> Option<String> {
-    let open = format!("<{tag}>");
+    let open  = format!("<{tag}>");
     let close = format!("</{tag}>");
     let start = xml.find(&open)? + open.len();
-    let end = xml[start..].find(&close)? + start;
-    let val = xml[start..end].trim().to_string();
+    let end   = xml[start..].find(&close)? + start;
+    let val   = xml[start..end].trim().to_string();
     if val.is_empty() { None } else { Some(val) }
 }
 
@@ -131,9 +159,7 @@ fn extract_header(response: &str, header: &str) -> Option<String> {
         if let Some((key, rest)) = line.split_once(':') {
             if key.trim().to_ascii_uppercase() == upper {
                 let val = rest.trim().to_string();
-                if !val.is_empty() {
-                    return Some(val);
-                }
+                if !val.is_empty() { return Some(val); }
             }
         }
     }

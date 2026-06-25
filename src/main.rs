@@ -30,6 +30,14 @@ fn main() -> glib::ExitCode {
         "Print device state changes and signals to stdout",
         None,
     );
+    app.add_main_option(
+        "tls",
+        glib::Char(0),
+        glib::OptionFlags::NONE,
+        glib::OptionArg::String,
+        "Override TLS mode: wiim (default), audio-pro, any, http",
+        Some("MODE"),
+    );
 
     app.connect_handle_local_options(|_, opts| {
         if opts.contains("debug-api") {
@@ -37,6 +45,15 @@ fn main() -> glib::ExitCode {
         }
         if opts.contains("debug-state") {
             device_state::DEBUG_STATE.store(true, Ordering::Relaxed);
+        }
+        if let Ok(Some(mode)) = opts.lookup::<String>("tls") {
+            let tls = match mode.as_str() {
+                "http"      => api::TlsMode::Http,
+                "any"       => api::TlsMode::HttpsAny,
+                "audio-pro" => api::TlsMode::HttpsAudioPro,
+                _           => api::TlsMode::HttpsWiiM,
+            };
+            api::TLS_MODE.store(tls as usize, Ordering::Relaxed);
         }
         -1 // continue normal startup
     });
