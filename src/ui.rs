@@ -122,8 +122,6 @@ window {
     border-radius: 5px;
     min-width: 40px;
     min-height: 40px;
-    max-width: 40px;
-    max-height: 40px;
 }
 .preset-name {
     font-size: 11px;
