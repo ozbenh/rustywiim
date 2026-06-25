@@ -39,9 +39,14 @@ For now just those two:
 ## Events ##
 
 
-  * 2026-06-24: Initial release 0.1.0
+  * 0.1.0 - 2026-06-24 - Initial release 0.1.0
 
-  * 2026-06-25: Sorry, had to rebase ! Initial commit had to be fixed up.
+  * 0.2.0 - 2026-06-25 - Internal implementation rework
+    * Sorry, had to rebase ! Initial commit had to be fixed up.
+    * Significant internal refactoring, code is a lot cleaner now, smaller
+	  functions, better abstractions, better detection of device capabilities,
+	  inputs and outputs etc... Should work better with other devices.
 
+## Screenshot ##
 
 ![Screenshot](screenshot.png)
