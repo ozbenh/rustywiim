@@ -380,16 +380,27 @@ fn reset_device_ui(
 fn populate_source(ds: &DeviceState, sw: &SourceWidgets, icons: &Rc<icons::IconSet>) {
     let in_enable = ds.audio_inputs();
     let info = match ds.device_info() { Some(i) => i, None => return };
+    let caps = match ds.capabilities() { Some(c) => c, None => return };
     let renames = ds.mode_renames();
 
     let (ids, enabled_flags): (Vec<String>, Vec<bool>) = if !in_enable.is_empty() {
         in_enable.iter().map(|e| (e.mode.clone(), e.is_enabled())).unzip()
     } else {
-        let ids = capabilities::detect_inputs(&info.project, info.plm_support_value())
+        let ids = capabilities::detect_inputs(caps.device_id, info.plm_support_value())
             .into_iter().map(|s| s.to_string()).collect::<Vec<_>>();
         let flags = vec![true; ids.len()];
         (ids, flags)
     };
+
+    if ids.is_empty() {
+        *sw.updating.borrow_mut() = true;
+        sw.dropdown.set_model(Some(&StringList::new(&["—"])));
+        sw.dropdown.set_sensitive(false);
+        *sw.updating.borrow_mut() = false;
+        *sw.ids.borrow_mut()     = Vec::new();
+        *sw.enabled.borrow_mut() = Vec::new();
+        return;
+    }
 
     let labels: Vec<String> = ids.iter().zip(enabled_flags.iter()).map(|(id, _)| {
         let std_name = capabilities::input_display_name(id).to_string();
@@ -415,9 +426,18 @@ fn populate_source(ds: &DeviceState, sw: &SourceWidgets, icons: &Rc<icons::IconS
 
 /// Populate the output dropdown from `DeviceState`'s cached device info.
 fn populate_output(ds: &DeviceState, ow: &OutputWidgets) {
-    let info = match ds.device_info() { Some(i) => i, None => return };
-    let output_names = capabilities::detect_outputs(&info.project);
-    if output_names.is_empty() { return; }
+    let caps = match ds.capabilities() { Some(c) => c, None => return };
+    let output_names = capabilities::detect_outputs(caps.device_id);
+    if output_names.is_empty() {
+        *ow.updating.borrow_mut() = true;
+        ow.dropdown.set_model(Some(&StringList::new(&["—"])));
+        ow.dropdown.set_sensitive(false);
+        ow.section.set_visible(false);
+        *ow.modes.borrow_mut()       = Vec::new();
+        *ow.canon_names.borrow_mut() = Vec::new();
+        *ow.updating.borrow_mut()    = false;
+        return;
+    }
 
     let out_labels: Vec<&str> = output_names.iter()
         .map(|&n| capabilities::output_display_name(n))
@@ -427,7 +447,7 @@ fn populate_output(ds: &DeviceState, ow: &OutputWidgets) {
         .collect();
 
     *ow.modes.borrow_mut()       = modes;
-    *ow.canon_names.borrow_mut() = output_names;
+    *ow.canon_names.borrow_mut() = output_names.to_vec();
     *ow.updating.borrow_mut()    = true;
     ow.dropdown.set_model(Some(&StringList::new(&out_labels)));
     ow.dropdown.set_sensitive(true);
