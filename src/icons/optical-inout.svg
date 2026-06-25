@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!-- Uploaded to: SVG Repo, www.svgrepo.com, Generator: SVG Repo Mixer Tools -->
+
+<svg
+   height="64"
+   width="64"
+   version="1.1"
+   id="Layer_1"
+   viewBox="0 0 40.96 40.96"
+   xml:space="preserve"
+   sodipodi:docname="optical-inout.svg"
+   inkscape:version="1.2.2 (b0a8486541, 2022-12-01)"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg"><defs
+   id="defs4217" /><sodipodi:namedview
+   id="namedview4215"
+   pagecolor="#ababab"
+   bordercolor="#000000"
+   borderopacity="0.25"
+   inkscape:showpageshadow="2"
+   inkscape:pageopacity="0"
+   inkscape:pagecheckerboard="0"
+   inkscape:deskcolor="#d1d1d1"
+   showgrid="false"
+   inkscape:zoom="7.2619866"
+   inkscape:cx="70.572975"
+   inkscape:cy="69.195942"
+   inkscape:window-width="2560"
+   inkscape:window-height="1371"
+   inkscape:window-x="0"
+   inkscape:window-y="0"
+   inkscape:window-maximized="1"
+   inkscape:current-layer="g4212" />
+<g
+   id="g4212"
+   transform="translate(0,-35.311)">
+	<path
+   style="fill:none;fill-opacity:1;stroke:#ffffff;stroke-width:1.28;stroke-dasharray:none;stroke-opacity:1"
+   d="m 31.373061,49.94808 v -8.10202 c 0,-0.596333 -0.483993,-1.080265 -1.080265,-1.080265 H 9.767574 c -0.5963333,0 -1.0802651,0.483993 -1.0802651,1.080265 v 8.102081 c 0,6.931097 0,7.665688 0,11.465496 0,0.26898 0.1004698,0.527742 0.2808505,0.726479 l 4.7991186,5.279318 c 0.204733,0.225231 0.494762,0.353235 0.799415,0.353235 h 10.926984 c 0.304653,0 0.594682,-0.128004 0.799415,-0.353235 l 4.799118,-5.279318 c 0.180381,-0.198798 0.280851,-0.457499 0.280851,-0.726479 v -2.823314 c 0,-6.375216 0.07308,-5.94962 0,-8.642243"
+   id="path4206"
+   sodipodi:nodetypes="cssssccccssccscc" />
+	<path
+   style="fill:#677777;stroke-width:0.0716755"
+   d="m 27.719151,52.989201 c 0,-4.140499 -3.442763,-7.497559 -7.688966,-7.497559 -4.246203,0 -7.688966,3.35706 -7.688966,7.497559 0,4.1405 3.442763,7.49756 7.688966,7.49756 4.246203,0 7.688966,-3.35706 7.688966,-7.49756"
+   id="path4208" />
+	<path
+   style="fill:#d4dbdf;stroke-width:0.0716755"
+   d="m 23.233926,52.989201 c 0,-1.725703 -1.434635,-3.123988 -3.203741,-3.123988 -1.769106,0 -3.203743,1.398285 -3.203743,3.123988 0,1.725704 1.434637,3.123989 3.203743,3.123989 1.769106,0 3.203741,-1.398285 3.203741,-3.123989"
+   id="path4210" />
+</g>
+</svg>

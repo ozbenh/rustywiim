@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!-- Uploaded to: SVG Repo, www.svgrepo.com, Generator: SVG Repo Mixer Tools -->
+
+<svg
+   height="64"
+   width="64"
+   version="1.1"
+   id="Layer_1"
+   viewBox="0 0 40.96 40.96"
+   xml:space="preserve"
+   sodipodi:docname="coax-inout.svg"
+   inkscape:version="1.2.2 (b0a8486541, 2022-12-01)"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg"><defs
+   id="defs4217" /><sodipodi:namedview
+   id="namedview4215"
+   pagecolor="#ababab"
+   bordercolor="#000000"
+   borderopacity="0.25"
+   inkscape:showpageshadow="2"
+   inkscape:pageopacity="0"
+   inkscape:pagecheckerboard="0"
+   inkscape:deskcolor="#d1d1d1"
+   showgrid="false"
+   inkscape:zoom="7.2619866"
+   inkscape:cx="72.156564"
+   inkscape:cy="69.195942"
+   inkscape:window-width="2560"
+   inkscape:window-height="1371"
+   inkscape:window-x="0"
+   inkscape:window-y="0"
+   inkscape:window-maximized="1"
+   inkscape:current-layer="g4212" />
+<g
+   id="g4212"
+   transform="translate(0,-35.311)">
+	
+	<path
+   style="fill:#677777;stroke-width:0.0611875"
+   d="m 26.961652,55.791 c 0,-3.579468 -2.902184,-6.481653 -6.481652,-6.481653 -3.579468,0 -6.481652,2.902184 -6.481652,6.481652 0,3.579469 2.902184,6.481653 6.481652,6.481653 3.579468,0 6.481652,-2.902184 6.481652,-6.481653"
+   id="path4208" />
+	<path
+   style="fill:#d4dbdf;stroke-width:0.0611875"
+   d="m 23.180693,55.791 c 0,-1.491873 -1.20937,-2.700693 -2.700693,-2.700693 -1.491323,0 -2.700694,1.20882 -2.700694,2.700693 0,1.491874 1.209372,2.700694 2.700694,2.700694 1.491323,0 2.700693,-1.208821 2.700693,-2.700694"
+   id="path4210" />
+<circle
+   style="fill:none;stroke:#ffffff;stroke-width:0.96;stroke-linecap:round;stroke-linejoin:round"
+   id="path342"
+   cx="20.48"
+   cy="55.791"
+   r="10.057854" /></g>
+</svg>
