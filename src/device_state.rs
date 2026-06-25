@@ -345,6 +345,38 @@ impl DeviceState {
         });
     }
 
+    // ── Input / output commands ───────────────────────────────────────────────
+
+    /// Request an audio output hardware mode change.
+    ///
+    /// The cached `output_status.hardware` is updated optimistically so the UI
+    /// reflects the requested state immediately.  The regular 1-second poll will
+    /// detect any mismatch (e.g. USB DAC not connected) and emit `output-changed`
+    /// to correct the dropdown.
+    pub fn set_audio_output(&self, mode: u32) {
+        let client = match self.imp().inner.borrow().client.clone() {
+            Some(c) => c,
+            None    => return,
+        };
+        if let Some(ref mut os) = self.imp().inner.borrow_mut().output_status {
+            os.hardware = mode.to_string();
+        }
+        self.rt().spawn(async move { let _ = client.set_audio_output(mode).await; });
+    }
+
+    /// Request an input source switch.
+    ///
+    /// The cached `current_mode` is updated optimistically.  The regular poll
+    /// detects any mismatch and emits `input-changed` to correct the dropdown.
+    pub fn switch_input(&self, src: String) {
+        let client = match self.imp().inner.borrow().client.clone() {
+            Some(c) => c,
+            None    => return,
+        };
+        self.imp().inner.borrow_mut().current_mode = src.clone();
+        self.rt().spawn(async move { let _ = client.switch_input(&src).await; });
+    }
+
     // ── Accessors ─────────────────────────────────────────────────────────────
 
     pub fn rt(&self) -> Arc<tokio::runtime::Runtime> {

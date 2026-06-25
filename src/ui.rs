@@ -859,7 +859,7 @@ async fn load_presets(
             } else if let Some(id) = input_source_id {
                 pic.set_paintable(Some(icons.source_paintable(id)));
             } else if let Some(oid) = output_mode_id {
-                let canon = capabilities::canon_routine_output_name(oid);
+                let canon = capabilities::canon_new_output_name(oid);
                 pic.set_paintable(Some(icons.output_paintable(canon)));
             } else {
                 pic.set_paintable(Some(icons.source_paintable(&source)));
@@ -1561,9 +1561,7 @@ pub fn build_ui(app: &adw::Application) {
         let idx = dd.selected() as usize;
         let ids = sw.ids.borrow();
         if let Some(src) = ids.get(idx).cloned() {
-            if let Some(c) = ds.client() {
-                ds.rt().spawn(async move { let _ = c.switch_input(&src).await; });
-            }
+            ds.switch_input(src);
         }
     }));
 
@@ -1572,9 +1570,7 @@ pub fn build_ui(app: &adw::Application) {
         let idx = dd.selected() as usize;
         let modes = ow.modes.borrow();
         if let Some(&mode) = modes.get(idx) {
-            if let Some(c) = ds.client() {
-                ds.rt().spawn(async move { let _ = c.set_audio_output(mode).await; });
-            }
+            ds.set_audio_output(mode);
         }
     }));
 

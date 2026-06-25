@@ -578,13 +578,16 @@ pub fn canon_mode_output_name(mode: u32) -> &'static str {
     }
 }
 
-/// Translate a raw `getAllRoutines` output payload string to a canonical output name.
+/// Translate the "new" output names as returned by `getAllRoutines` and
+/// `getSoundCardModeSupportList` to our canonical output names.
 /// XXX Incomplete — more payload strings to be mapped as they are discovered.
-pub fn canon_routine_output_name(mode: &str) -> &'static str {
+pub fn canon_new_output_name(mode: &str) -> &'static str {
     match mode {
-        "AUDIO_OUTPUT_COAX_MODE"  => "coax-out",
-        "AUDIO_OUTPUT_SPDIF_MODE" => "optical-out",
-        "AUDIO_OUTPUT_AUX_MODE"   => "line-out",
-        _                         => "unknown",
+        "AUDIO_OUTPUT_COAX_MODE"       => "coax-out",
+        "AUDIO_OUTPUT_SPDIF_MODE"      => "optical-out",
+        "AUDIO_OUTPUT_AUX_MODE"        => "line-out",
+        "AUDIO_OUTPUT_PHONE_JACK_MODE" => "headphone-out",
+        "AUDIO_OUTPUT_UAC_CARD_MODE"   => "usb-out",
+        _                              => "unknown",
     }
 }
