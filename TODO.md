@@ -5,7 +5,6 @@
   * Look at various status reply sanitization code, also check WiiMDashboard
   * Add UPnP support for devices that require it
   * Add more caps detection around sub, EQ, etc...
-  * Look at providing a cert (some devices might need it ?) and http(non-s) fallback for devices that need it
   * Find testers :-)
 
 * Move most of the device handling and API wrappers to a crate separate from
