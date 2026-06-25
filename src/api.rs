@@ -278,6 +278,16 @@ pub struct AudioOutputStatus {
     pub source: String,
 }
 
+/// One entry in the device's supported-outputs list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutputEntry {
+    /// Canonical internal name (e.g. `"line-out"`, `"usb-out"`).
+    pub canon: &'static str,
+    /// User-visible label derived from the `getSoundCardModeSupportList` response,
+    /// falling back to `output_display_name()` when the API fields give nothing useful.
+    pub name: String,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct Preset {
     pub number: u32,
@@ -348,6 +358,31 @@ impl Routine {
 struct RoutinesResponse {
     #[serde(default)]
     routines: Vec<Routine>,
+}
+
+// ── OutputEntry helpers ───────────────────────────────────────────────────────
+
+/// Derive a user-visible label for one `getSoundCardModeSupportList` entry.
+///
+/// Rules (in priority order):
+/// 1. USB outputs → `devName`, truncated at the first `" at usb"` (case-insensitive).
+/// 2. `cardName == "AMLAUGESOUND"` → use `devName` verbatim (built-in SoC codec).
+/// 3. Fallback → `output_display_name(canon)`.
+fn soundcard_display_name(canon: &'static str, card_name: &str, dev_name: &str) -> String {
+    if canon == "usb-out" && !dev_name.is_empty() {
+        let lower = dev_name.to_ascii_lowercase();
+        let label = match lower.find(" at usb") {
+            Some(pos) => dev_name[..pos].trim(),
+            None      => dev_name.trim(),
+        };
+        if !label.is_empty() {
+            return label.to_string();
+        }
+    }
+    if card_name == "AMLAUGESOUND" && !dev_name.is_empty() {
+        return dev_name.to_string();
+    }
+    crate::capabilities::output_display_name(canon).to_string()
 }
 
 // ── Client ────────────────────────────────────────────────────────────────────
@@ -507,6 +542,31 @@ impl WiimClient {
     pub async fn set_audio_output(&self, mode: u32) -> anyhow::Result<()> {
         self.cmd(&format!("setAudioOutputHardwareMode:{mode}")).await?;
         Ok(())
+    }
+
+    /// Query `getSoundCardModeSupportList`.
+    ///
+    /// Returns `Some(list)` with `OutputEntry` items for every output the device
+    /// currently supports. "unknown" canonical names and duplicates are discarded.
+    /// Returns `None` if the response is not a JSON array — the caller should
+    /// treat this as "API not supported" and stop calling.
+    pub async fn get_sound_card_mode_support_list(&self) -> Option<Vec<OutputEntry>> {
+        let text = self.cmd("getSoundCardModeSupportList").await.ok()?;
+        let arr: Vec<serde_json::Value> = serde_json::from_str(&text).ok()?;
+        let mut seen = std::collections::HashSet::new();
+        let outputs = arr.iter()
+            .filter_map(|v| {
+                let canon = crate::capabilities::canon_new_output_name(
+                    v["mode"].as_str()?
+                );
+                if canon == "unknown" || !seen.insert(canon) { return None; }
+                let card_name = v["soundCard"]["cardName"].as_str().unwrap_or("");
+                let dev_name  = v["soundCard"]["devName"].as_str().unwrap_or("");
+                let name = soundcard_display_name(canon, card_name, dev_name);
+                Some(OutputEntry { canon, name })
+            })
+            .collect();
+        Some(outputs)
     }
 
     // ── Fetch helpers ─────────────────────────────────────────────────

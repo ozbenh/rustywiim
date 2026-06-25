@@ -8,7 +8,7 @@ use glib::clone;
 use gtk::gio;
 use gtk::{Align, Box as GtkBox, Button, CssProvider, Label, Orientation, Scale, StringList};
 
-use crate::api::TlsMode;
+use crate::api::{OutputEntry, TlsMode};
 use crate::capabilities;
 use crate::config::Config;
 use crate::device_state::DeviceState;
@@ -425,8 +425,8 @@ fn populate_source(ds: &DeviceState, sw: &SourceWidgets, icons: &Rc<icons::IconS
 
 /// Populate the output dropdown from `DeviceState`'s cached device info.
 fn populate_output(ds: &DeviceState, ow: &OutputWidgets) {
-    let caps = match ds.capabilities() { Some(c) => c, None => return };
-    let output_names = capabilities::detect_outputs(caps.device_id);
+    if ds.capabilities().is_none() { return; }
+    let output_names = ds.outputs();
     if output_names.is_empty() {
         *ow.updating.borrow_mut() = true;
         ow.dropdown.set_model(Some(&StringList::new(&["—"])));
@@ -439,14 +439,14 @@ fn populate_output(ds: &DeviceState, ow: &OutputWidgets) {
     }
 
     let out_labels: Vec<&str> = output_names.iter()
-        .map(|&n| capabilities::output_display_name(n))
+        .map(|e: &OutputEntry| e.name.as_str())
         .collect();
     let modes: Vec<u32> = output_names.iter()
-        .map(|&n| capabilities::output_canon_to_mode(n).unwrap_or(0))
+        .map(|e| capabilities::output_canon_to_mode(e.canon).unwrap_or(0))
         .collect();
 
     *ow.modes.borrow_mut()       = modes;
-    *ow.canon_names.borrow_mut() = output_names.to_vec();
+    *ow.canon_names.borrow_mut() = output_names.iter().map(|e| e.canon).collect();
     *ow.updating.borrow_mut()    = true;
     ow.dropdown.set_model(Some(&StringList::new(&out_labels)));
     ow.dropdown.set_sensitive(true);
@@ -1306,6 +1306,14 @@ pub fn build_ui(app: &adw::Application) {
     ds.connect_output_changed({
         let ow = ow.clone();
         move |ds| {
+            update_output_display(ds, &ow);
+        }
+    });
+
+    ds.connect_outputs_changed({
+        let ow = ow.clone();
+        move |ds| {
+            populate_output(ds, &ow);
             update_output_display(ds, &ow);
         }
     });

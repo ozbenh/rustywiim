@@ -29,10 +29,10 @@ fn dbg(msg: &str) {
 }
 
 use crate::api::{
-    AudioInputEntry, AudioOutputStatus, DeviceInfo, MetaData, PlayerStatus, TlsMode,
-    WiimClient, TLS_MODE,
+    AudioInputEntry, AudioOutputStatus, DeviceInfo, MetaData, OutputEntry, PlayerStatus,
+    TlsMode, WiimClient, TLS_MODE,
 };
-use crate::capabilities::DeviceCapabilities;
+use crate::capabilities::{DeviceCapabilities, detect_outputs, output_display_name};
 
 // ── Poll payload ──────────────────────────────────────────────────────────────
 
@@ -56,6 +56,13 @@ struct Inner {
     current_mode:    String,
     current_art_url: String,
     art_bytes:       Option<Vec<u8>>,
+    /// Outputs currently supported by the device (canonical name + display label).
+    /// Initialised from the static capability profile; replaced by
+    /// `getSoundCardModeSupportList` results when the device supports that API.
+    outputs:         Vec<OutputEntry>,
+    /// `true` while `getSoundCardModeSupportList` should be polled.
+    /// Set to `false` on the first call that returns a non-array response.
+    probe_outputs:   bool,
 }
 
 impl Default for Inner {
@@ -72,6 +79,8 @@ impl Default for Inner {
             current_mode:    String::new(),
             current_art_url: String::new(),
             art_bytes:       None,
+            outputs:         Vec::new(),
+            probe_outputs:   true,
         }
     }
 }
@@ -112,6 +121,7 @@ mod imp {
                     Signal::builder("playback-changed").build(),
                     Signal::builder("input-changed").build(),
                     Signal::builder("output-changed").build(),
+                    Signal::builder("outputs-changed").build(),
                 ]
             })
         }
@@ -166,27 +176,48 @@ impl DeviceState {
             None    => return,
         };
         let rt = self.rt();
-        let (tx, rx) = async_channel::bounded::<(
+        type FetchPayload = (
             DeviceInfo,
             Option<AudioOutputStatus>,
             Vec<AudioInputEntry>,
             HashMap<String, String>,
-        )>(1);
+            Option<Vec<OutputEntry>>,  // getSoundCardModeSupportList result
+        );
+        let (tx, rx) = async_channel::bounded::<FetchPayload>(1);
 
         rt.spawn(async move {
             if let Ok(info) = client.get_device_info().await {
                 let output    = client.get_audio_output().await.ok();
                 let in_enable = client.get_audio_input_enable().await;
                 let renames   = client.get_mode_rename().await;
-                let _ = tx.send((info, output, in_enable, renames)).await;
+                let sc_list   = client.get_sound_card_mode_support_list().await;
+                let _ = tx.send((info, output, in_enable, renames, sc_list)).await;
             }
         });
 
         let ds = self.downgrade();
         glib::spawn_future_local(async move {
-            let Ok((info, output, in_enable, renames)) = rx.recv().await else { return };
+            let Ok((info, output, in_enable, renames, sc_list)) = rx.recv().await else { return };
             let Some(ds) = ds.upgrade() else { return };
             let caps = DeviceCapabilities::from_device_info(&info);
+            // Initialise outputs: prefer the live API list; fall back to the static profile.
+            let (probe_outputs, outputs) = match sc_list {
+                Some(list) => {
+                    dbg(&format!("outputs from API: {:?}", list));
+                    (true, list)
+                }
+                None => {
+                    dbg("getSoundCardModeSupportList not supported; using static profile");
+                    let fallback = detect_outputs(caps.device_id)
+                        .iter()
+                        .map(|&canon| OutputEntry {
+                            canon,
+                            name: output_display_name(canon).to_string(),
+                        })
+                        .collect();
+                    (false, fallback)
+                }
+            };
             dbg(&format!(
                 "device info: model=\"{}\" vendor={} fw={} project={} inputs={} outputs={}",
                 caps.model,
@@ -203,6 +234,8 @@ impl DeviceState {
                 inner.output_status = output;
                 inner.audio_inputs  = in_enable;
                 inner.mode_renames  = renames;
+                inner.outputs       = outputs;
+                inner.probe_outputs = probe_outputs;
             }
             dbg("signal: device-changed (ready)");
             ds.emit_by_name::<()>("device-changed", &[]);
@@ -220,6 +253,7 @@ impl DeviceState {
         self.start_poll_timer(poll_tx);
         self.start_poll_processor(poll_rx, art_tx);
         self.start_art_loader(art_rx);
+        self.start_output_list_poller();
     }
 
     fn start_poll_timer(&self, poll_tx: async_channel::Sender<PollData>) {
@@ -266,6 +300,54 @@ impl DeviceState {
                 ds.imp().inner.borrow_mut().art_bytes = Some(bytes);
                 dbg("signal: playback-changed (artwork)");
                 ds.emit_by_name::<()>("playback-changed", &[]);
+            }
+        });
+    }
+
+    fn start_output_list_poller(&self) {
+        let (tx, rx) = async_channel::bounded::<Option<Vec<OutputEntry>>>(1);
+
+        // Fire every 5 seconds; skip silently when probe_outputs is false or
+        // no client is connected.  The timer itself never stops so that if the
+        // user switches devices (probe_outputs resets to true) we resume automatically.
+        let ds_weak = self.downgrade();
+        let rt = self.rt();
+        glib::timeout_add_local(Duration::from_secs(5), move || {
+            let Some(ds) = ds_weak.upgrade() else { return glib::ControlFlow::Break };
+            let inner = ds.imp().inner.borrow();
+            if !inner.probe_outputs { return glib::ControlFlow::Continue; }
+            let client = match inner.client.clone() {
+                Some(c) => c,
+                None    => return glib::ControlFlow::Continue,
+            };
+            drop(inner);
+            let tx = tx.clone();
+            rt.spawn(async move {
+                let result = client.get_sound_card_mode_support_list().await;
+                let _ = tx.send(result).await;
+            });
+            glib::ControlFlow::Continue
+        });
+
+        let ds_weak = self.downgrade();
+        glib::spawn_future_local(async move {
+            while let Ok(result) = rx.recv().await {
+                let Some(ds) = ds_weak.upgrade() else { break };
+                match result {
+                    None => {
+                        // Device doesn't support this API — disable future polls.
+                        dbg("getSoundCardModeSupportList returned non-array; disabling");
+                        ds.imp().inner.borrow_mut().probe_outputs = false;
+                    }
+                    Some(list) => {
+                        let prev = ds.imp().inner.borrow().outputs.clone();
+                        if list != prev {
+                            dbg(&format!("outputs updated by poll: {:?}", list));
+                            ds.imp().inner.borrow_mut().outputs = list;
+                            ds.emit_by_name::<()>("outputs-changed", &[]);
+                        }
+                    }
+                }
             }
         });
     }
@@ -451,6 +533,17 @@ impl DeviceState {
             f(&args[0].get::<Self>().unwrap());
             None
         })
+    }
+
+    pub fn connect_outputs_changed<F: Fn(&Self) + 'static>(&self, f: F) -> glib::SignalHandlerId {
+        self.connect_local("outputs-changed", false, move |args| {
+            f(&args[0].get::<Self>().unwrap());
+            None
+        })
+    }
+
+    pub fn outputs(&self) -> Vec<OutputEntry> {
+        self.imp().inner.borrow().outputs.clone()
     }
 }
 
