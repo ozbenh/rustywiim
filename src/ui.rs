@@ -485,15 +485,6 @@ struct PlaybackUiState {
     updating_vol: Rc<RefCell<bool>>,
 }
 
-// ── Mini-mode scroll state ────────────────────────────────────────────────────
-
-#[derive(Default)]
-struct ScrollerState {
-    pos:    f64,
-    pause:  i32,
-    at_end: bool,
-}
-
 struct MiniWidgets {
     root:          gtk::WindowHandle,
     art_stack:     gtk::Stack,
@@ -501,9 +492,7 @@ struct MiniWidgets {
     input_icon:    gtk::Image,
     device_label:  Label,
     restore_btn:   Button,
-    title_scroll:  gtk::ScrolledWindow,
     title_label:   Label,
-    artist_scroll: gtk::ScrolledWindow,
     artist_label:  Label,
     btn_prev:      Button,
     btn_play:      Button,
@@ -549,7 +538,6 @@ struct DeviceWindowInner {
     mini:              MiniWidgets,
     mini_mode:         RefCell<bool>,
     mini_toggling:     RefCell<bool>,
-    mini_scroll_timer: RefCell<Option<glib::SourceId>>,
     pre_mini_size:     RefCell<(i32, i32)>,
     mini_btn:          gtk::ToggleButton,
     mini_win:          gtk::Window,
@@ -1001,29 +989,6 @@ impl DeviceWindowInner {
         self.mini.art_stack.set_visible_child_name("icon");
     }
 
-    fn start_mini_scroll(&self) {
-        self.stop_mini_scroll();
-        let title_adj  = self.mini.title_scroll.hadjustment();
-        let artist_adj = self.mini.artist_scroll.hadjustment();
-        let weak_win   = self.window.downgrade();
-        let mut title_st  = ScrollerState { pause: 30, ..Default::default() };
-        let mut artist_st = ScrollerState { pause: 30, ..Default::default() };
-        let id = glib::timeout_add_local(
-            std::time::Duration::from_millis(50),
-            move || {
-                if weak_win.upgrade().is_none() { return glib::ControlFlow::Break; }
-                tick_scroller(&mut title_st,  &title_adj);
-                tick_scroller(&mut artist_st, &artist_adj);
-                glib::ControlFlow::Continue
-            },
-        );
-        *self.mini_scroll_timer.borrow_mut() = Some(id);
-    }
-
-    fn stop_mini_scroll(&self) {
-        if let Some(id) = self.mini_scroll_timer.borrow_mut().take() { id.remove(); }
-    }
-
     fn enter_mini_mode(&self) {
         if *self.mini_mode.borrow() { return; }
         *self.pre_mini_size.borrow_mut() = (self.window.width(), self.window.height());
@@ -1034,12 +999,10 @@ impl DeviceWindowInner {
         *self.mini_toggling.borrow_mut() = false;
         self.window.set_visible(false);
         self.mini_win.present();
-        self.start_mini_scroll();
     }
 
     fn exit_mini_mode(&self) {
         if !*self.mini_mode.borrow() { return; }
-        self.stop_mini_scroll();
         *self.mini_mode.borrow_mut() = false;
         *self.mini_toggling.borrow_mut() = true;
         self.mini_btn.set_active(false);
@@ -1066,29 +1029,6 @@ fn schedule_config_save(i: &Rc<DeviceWindowInner>) {
     *i.config_save_timer.borrow_mut() = Some(id);
 }
 
-fn tick_scroller(state: &mut ScrollerState, adj: &gtk::Adjustment) {
-    let max = (adj.upper() - adj.page_size()).max(0.0);
-    if max < 1.0 {
-        if adj.value() != 0.0 { adj.set_value(0.0); }
-        *state = ScrollerState::default();
-        return;
-    }
-    if state.pause > 0 { state.pause -= 1; return; }
-    if state.at_end {
-        state.pos    = 0.0;
-        state.at_end = false;
-        state.pause  = 25;
-        adj.set_value(0.0);
-        return;
-    }
-    state.pos += 1.5;
-    if state.pos >= max {
-        state.pos    = max;
-        state.at_end = true;
-        state.pause  = 25;
-    }
-    adj.set_value(state.pos);
-}
 
 fn wifi_icon_for_rssi(rssi: i32) -> &'static str {
     match rssi {
@@ -1593,23 +1533,13 @@ fn build_mini_window() -> (MiniWidgets, gtk::Window) {
     let mini_title_label = Label::builder()
         .label("—").css_classes(["mini-title"])
         .halign(Align::Start).hexpand(true)
+        .ellipsize(gtk::pango::EllipsizeMode::End)
         .build();
     let mini_artist_label = Label::builder()
         .label("").css_classes(["mini-artist"])
         .halign(Align::Start).hexpand(true)
+        .ellipsize(gtk::pango::EllipsizeMode::End)
         .build();
-    let mini_title_scroll = gtk::ScrolledWindow::builder()
-        .hscrollbar_policy(gtk::PolicyType::Never)
-        .vscrollbar_policy(gtk::PolicyType::Never)
-        .hexpand(true)
-        .build();
-    mini_title_scroll.set_child(Some(&mini_title_label));
-    let mini_artist_scroll = gtk::ScrolledWindow::builder()
-        .hscrollbar_policy(gtk::PolicyType::Never)
-        .vscrollbar_policy(gtk::PolicyType::Never)
-        .hexpand(true)
-        .build();
-    mini_artist_scroll.set_child(Some(&mini_artist_label));
 
     let mini_btn_prev = Button::builder()
         .icon_name("media-skip-backward-symbolic")
@@ -1667,8 +1597,8 @@ fn build_mini_window() -> (MiniWidgets, gtk::Window) {
         .orientation(Orientation::Vertical).spacing(2)
         .valign(Align::Center).hexpand(true)
         .build();
-    mini_info_box.append(&mini_title_scroll);
-    mini_info_box.append(&mini_artist_scroll);
+    mini_info_box.append(&mini_title_label);
+    mini_info_box.append(&mini_artist_label);
     mini_info_box.append(&mini_transport);
 
     let mini_main_row = GtkBox::builder()
@@ -1690,7 +1620,7 @@ fn build_mini_window() -> (MiniWidgets, gtk::Window) {
     let mini_win = gtk::Window::builder()
         .decorated(false)
         .resizable(false)
-        .default_width(200)
+        .default_width(300)
         .title("RustyWiiM")
         .child(&mini_root)
         .build();
@@ -1703,9 +1633,7 @@ fn build_mini_window() -> (MiniWidgets, gtk::Window) {
         input_icon:    mini_input_icon,
         device_label:  mini_device_label,
         restore_btn:   mini_restore_btn,
-        title_scroll:  mini_title_scroll,
         title_label:   mini_title_label,
-        artist_scroll: mini_artist_scroll,
         artist_label:  mini_artist_label,
         btn_prev:      mini_btn_prev,
         btn_play:      mini_btn_play,
@@ -1863,7 +1791,6 @@ impl DeviceWindow {
             mini,
             mini_mode:         RefCell::new(false),
             mini_toggling:     RefCell::new(false),
-            mini_scroll_timer: RefCell::new(None),
             pre_mini_size:     RefCell::new((0, 0)),
             mini_btn:          mini_btn.clone(),
             mini_win:          mini_win.clone(),
@@ -2319,7 +2246,6 @@ impl DeviceWindow {
             move |_win| {
                 if let Some(id) = i.settle_timer.borrow_mut().take() { id.remove(); }
                 if let Some(id) = i.config_save_timer.borrow_mut().take() { id.remove(); }
-                if let Some(id) = i.mini_scroll_timer.borrow_mut().take() { id.remove(); }
                 i.save_config_now();
                 i.mini_win.destroy();
                 glib::Propagation::Proceed
