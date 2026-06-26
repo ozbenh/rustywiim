@@ -1,4 +1,5 @@
 use adw::prelude::*;
+use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 mod api;
@@ -58,9 +59,19 @@ fn main() -> glib::ExitCode {
         -1 // continue normal startup
     });
 
+    // One tokio runtime shared across all device windows.
+    let rt = Arc::new(
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime"),
+    );
+
     app.connect_startup(|_| {
         adw::StyleManager::default().set_color_scheme(adw::ColorScheme::ForceDark);
     });
-    app.connect_activate(ui::build_ui);
+    app.connect_activate(move |app| {
+        ui::DeviceWindow::new(app, rt.clone()).present();
+    });
     app.run()
 }

@@ -11,6 +11,7 @@
 /// * `output-changed`   — audio output selection changed
 /// * `outputs-changed`  — supported output list updated (rebuild menu)
 /// * `network-changed`  — netstat or RSSI changed
+/// * `presets-changed`  — preset list (re)loaded; UI should re-read `presets()`
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -32,7 +33,7 @@ fn dbg(msg: &str) {
 
 use crate::api::{
     AudioInputEntry, AudioOutputStatus, DeviceInfo, MetaData, OutputEntry, PlayerStatus,
-    TlsMode, WiimClient, TLS_MODE,
+    PresetEntry, TlsMode, WiimClient, TLS_MODE,
 };
 use crate::capabilities::{DeviceCapabilities, detect_outputs, output_display_name};
 
@@ -75,13 +76,20 @@ struct Inner {
     outputs:         Vec<OutputEntry>,
     /// `true` while `getSoundCardModeSupportList` should be polled.
     /// Set to `false` on the first call that returns a non-array response.
-    probe_outputs:      bool,
-    connection_state:   ConnectionState,
+    probe_outputs:    bool,
+    /// `true` while preset polling is active.
+    /// Set to `false` when capabilities indicate no preset support.
+    probe_presets:    bool,
+    connection_state: ConnectionState,
     /// Last known network connection type (0=ethernet, 2=wifi).
     /// `None` until first `getStatusEx` result arrives.
-    netstat:         Option<u32>,
+    netstat:          Option<u32>,
     /// Last known wifi RSSI in dBm.  `None` until first `getStatusEx` result.
-    rssi:            Option<i32>,
+    rssi:             Option<i32>,
+    /// Resolved preset slots (1–12), cached from the last successful fetch.
+    presets:          Vec<PresetEntry>,
+    /// Fingerprint of the last fetched preset list (used to skip re-fetches).
+    preset_fp:        String,
 }
 
 impl Default for Inner {
@@ -100,9 +108,12 @@ impl Default for Inner {
             art_bytes:       None,
             outputs:          Vec::new(),
             probe_outputs:    true,
+            probe_presets:    true,
             netstat:          None,
             rssi:             None,
             connection_state: ConnectionState::Disconnected,
+            presets:          Vec::new(),
+            preset_fp:        String::new(),
         }
     }
 }
@@ -145,6 +156,7 @@ mod imp {
                     Signal::builder("output-changed").build(),
                     Signal::builder("outputs-changed").build(),
                     Signal::builder("network-changed").build(),
+                    Signal::builder("presets-changed").build(),
                 ]
             })
         }
@@ -269,6 +281,7 @@ impl DeviceState {
                 let mut inner = ds.imp().inner.borrow_mut();
                 inner.netstat           = info.netstat.parse().ok();
                 inner.rssi              = info.rssi.parse().ok();
+                let probe_presets = caps.supports_presets;
                 inner.capabilities      = Some(caps);
                 inner.device_info       = Some(info);
                 inner.output_status     = output;
@@ -276,6 +289,13 @@ impl DeviceState {
                 inner.mode_renames      = renames;
                 inner.outputs           = outputs;
                 inner.probe_outputs     = probe_outputs;
+                // Disable preset polling if capabilities explicitly report no support.
+                if !probe_presets {
+                    inner.probe_presets = false;
+                }
+                // Reset preset data so the first slow-poll cycle re-fetches from scratch.
+                inner.preset_fp         = String::new();
+                inner.presets           = Vec::new();
                 inner.connection_state  = ConnectionState::Connected;
             }
             dbg("signal: device-changed (ready)");
@@ -354,6 +374,9 @@ impl DeviceState {
             /// `Some(result)` when probe was attempted; `None` when skipped (probe_outputs=false).
             outputs:     Option<Option<Vec<OutputEntry>>>,
             device_info: Option<DeviceInfo>,
+            /// `Some((fp, entries))` when the fingerprint changed; `None` when
+            /// unchanged or when preset probing is disabled.
+            presets:     Option<(String, Vec<PresetEntry>)>,
         }
 
         let (tx, rx) = async_channel::bounded::<SlowPollResult>(1);
@@ -367,9 +390,11 @@ impl DeviceState {
         glib::timeout_add_local(Duration::from_secs(5), move || {
             let Some(ds) = ds_weak.upgrade() else { return glib::ControlFlow::Break };
             let inner = ds.imp().inner.borrow();
-            let state  = inner.connection_state;
-            let probe  = inner.probe_outputs;
-            let client = inner.client.clone();
+            let state         = inner.connection_state;
+            let probe_outputs = inner.probe_outputs;
+            let probe_presets = inner.probe_presets;
+            let preset_fp     = inner.preset_fp.clone();
+            let client        = inner.client.clone();
             drop(inner);
 
             match state {
@@ -385,13 +410,18 @@ impl DeviceState {
                     let Some(client) = client else { return glib::ControlFlow::Continue };
                     let tx = tx.clone();
                     rt.spawn(async move {
-                        let outputs = if probe {
+                        let outputs = if probe_outputs {
                             Some(client.get_sound_card_mode_support_list().await)
                         } else {
                             None
                         };
                         let device_info = client.get_device_info().await.ok();
-                        let _ = tx.send(SlowPollResult { outputs, device_info }).await;
+                        let presets = if probe_presets {
+                            client.fetch_presets(&preset_fp).await
+                        } else {
+                            None
+                        };
+                        let _ = tx.send(SlowPollResult { outputs, device_info, presets }).await;
                     });
                 }
                 _ => {} // Connecting or Disconnected — skip
@@ -479,11 +509,22 @@ impl DeviceState {
                 }
                 if network_changed {
                     dbg(&format!(
-                        "network changed: netstat={} rssi={}",
+                        "signal: network changed: netstat={} rssi={}",
                         ds.imp().inner.borrow().netstat.unwrap_or(0),
                         ds.imp().inner.borrow().rssi.unwrap_or(0),
                     ));
                     ds.emit_by_name::<()>("network-changed", &[]);
+                }
+
+                // ── presets ───────────────────────────────────────────────────
+                if let Some((new_fp, entries)) = result.presets {
+                    dbg(&format!("signal: presets updated: {} slots", entries.len()));
+                    {
+                        let mut inner = ds.imp().inner.borrow_mut();
+                        inner.preset_fp = new_fp;
+                        inner.presets   = entries;
+                    }
+                    ds.emit_by_name::<()>("presets-changed", &[]);
                 }
             }
         });
@@ -700,6 +741,17 @@ impl DeviceState {
 
     pub fn rssi(&self) -> Option<i32> {
         self.imp().inner.borrow().rssi
+    }
+
+    pub fn presets(&self) -> Vec<PresetEntry> {
+        self.imp().inner.borrow().presets.clone()
+    }
+
+    pub fn connect_presets_changed<F: Fn(&Self) + 'static>(&self, f: F) -> glib::SignalHandlerId {
+        self.connect_local("presets-changed", false, move |args| {
+            f(&args[0].get::<Self>().unwrap());
+            None
+        })
     }
 }
 

@@ -366,6 +366,57 @@ struct RoutinesResponse {
     routines: Vec<Routine>,
 }
 
+// ── Preset display entries ────────────────────────────────────────────────────
+
+/// What kind of action a preset slot performs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PresetKind {
+    /// Regular media preset (internet radio, playlist, service favourite).
+    Media,
+    /// Routine that switches audio input; `input_id` is used for the icon.
+    InputSwitch { input_id: String },
+    /// Routine that switches audio output mode; `output_id` is used for the icon.
+    OutputSwitch { output_id: String },
+    /// Routine with an action type we don't recognise.
+    OtherRoutine,
+    /// Slot with neither a media preset nor a routine.
+    Empty,
+}
+
+/// A single resolved preset slot (1–12), ready for display.
+#[derive(Debug, Clone)]
+pub struct PresetEntry {
+    pub slot:      usize,
+    pub name:      String,
+    pub kind:      PresetKind,
+    /// Artwork bytes for `Media` presets; empty for all other kinds.
+    pub art_bytes: Vec<u8>,
+}
+
+impl PresetEntry {
+    pub fn label(&self) -> &str {
+        match &self.kind {
+            PresetKind::InputSwitch { .. }  => "Input",
+            PresetKind::OutputSwitch { .. } => "Output",
+            PresetKind::Empty               => "",
+            _                               => &self.name,
+        }
+    }
+
+    pub fn tooltip(&self) -> String {
+        match &self.kind {
+            PresetKind::Empty | PresetKind::OtherRoutine =>
+                format!("Preset {}", self.slot),
+            PresetKind::InputSwitch { .. } =>
+                format!("Preset {} — Input selection", self.slot),
+            PresetKind::OutputSwitch { .. } =>
+                format!("Preset {} — Output selection", self.slot),
+            PresetKind::Media =>
+                format!("{} (preset {})", self.name, self.slot),
+        }
+    }
+}
+
 // ── OutputEntry helpers ───────────────────────────────────────────────────────
 
 /// Derive a user-visible label for one `getSoundCardModeSupportList` entry.
@@ -596,5 +647,90 @@ impl WiimClient {
     pub async fn fetch_bytes(&self, url: &str) -> anyhow::Result<Vec<u8>> {
         let bytes = self.http.get(url).send().await?.bytes().await?;
         Ok(bytes.to_vec())
+    }
+
+    /// Fetch and resolve the full preset list (metadata + artwork).
+    ///
+    /// Pass the fingerprint from the previous call as `old_fp`.  If the
+    /// fingerprint is unchanged this returns `None` (expensive artwork
+    /// downloads are skipped).  On a fresh connection pass an empty string.
+    pub async fn fetch_presets(&self, old_fp: &str) -> Option<(String, Vec<PresetEntry>)> {
+        use std::collections::{BTreeSet, HashMap, HashSet};
+
+        let (presets_result, routines) =
+            tokio::join!(self.get_presets(), self.get_all_routines());
+        let presets      = presets_result.unwrap_or_default();
+        let preset_total = presets.preset_num as usize;
+
+        let mut routine_map: HashMap<usize, Routine> = HashMap::new();
+        for r in routines {
+            let slot = r.index as usize + 1;
+            if (1..=12).contains(&slot) { routine_map.insert(slot, r); }
+        }
+
+        let mut seen: HashSet<usize> = HashSet::new();
+        for p in &presets.preset_list {
+            let s = p.number as usize;
+            if (1..=12).contains(&s) { seen.insert(s); }
+        }
+
+        let mut all_slots: BTreeSet<usize> = seen.iter().copied().collect();
+        for n in 1..=preset_total.min(12) { all_slots.insert(n); }
+        for &s in routine_map.keys()       { all_slots.insert(s); }
+
+        // Build fingerprint from list metadata (no artwork needed for this).
+        let fp = {
+            let mut parts: Vec<String> = presets.preset_list.iter()
+                .map(|p| format!("{}:{}:{}", p.number, p.name, p.picurl))
+                .collect();
+            for &n in &all_slots {
+                if !seen.contains(&n) {
+                    if let Some(r) = routine_map.get(&n) {
+                        parts.push(format!("r{}:{}", n, r.name));
+                    } else {
+                        parts.push(format!("{n}:empty"));
+                    }
+                }
+            }
+            parts.sort();
+            parts.join("|")
+        };
+
+        // Skip artwork fetch if nothing changed.
+        if fp == old_fp { return None; }
+
+        // Build entries, fetching artwork only for media presets.
+        let mut entries: Vec<PresetEntry> = Vec::new();
+
+        for p in &presets.preset_list {
+            let slot = p.number as usize;
+            if !(1..=12).contains(&slot) { continue; }
+            let art_bytes = if !p.picurl.is_empty() {
+                self.fetch_bytes(&p.picurl).await.unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            entries.push(PresetEntry { slot, name: p.name.clone(), kind: PresetKind::Media, art_bytes });
+        }
+
+        for &n in &all_slots {
+            if seen.contains(&n) { continue; }
+            let kind = if let Some(r) = routine_map.get(&n) {
+                if let Some(id) = r.audio_input() {
+                    PresetKind::InputSwitch { input_id: id.to_string() }
+                } else if let Some(oid) = r.audio_output() {
+                    PresetKind::OutputSwitch { output_id: oid.to_string() }
+                } else {
+                    PresetKind::OtherRoutine
+                }
+            } else {
+                PresetKind::Empty
+            };
+            let name = routine_map.get(&n).map(|r| r.name.clone()).unwrap_or_default();
+            entries.push(PresetEntry { slot: n, name, kind, art_bytes: Vec::new() });
+        }
+
+        entries.sort_by_key(|e| e.slot);
+        Some((fp, entries))
     }
 }

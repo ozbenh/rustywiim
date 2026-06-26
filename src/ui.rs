@@ -2,6 +2,8 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use adw::prelude::*;
 use glib::clone;
@@ -310,10 +312,9 @@ struct OutputWidgets {
 
 #[derive(Clone)]
 struct PresetWidgets {
-    btns:    Rc<Vec<Button>>,
-    pics:    Rc<Vec<gtk::Image>>,
-    labels:  Rc<Vec<Label>>,
-    last_fp: Rc<RefCell<String>>,
+    btns:   Rc<Vec<Button>>,
+    pics:   Rc<Vec<gtk::Image>>,
+    labels: Rc<Vec<Label>>,
 }
 
 #[derive(Clone)]
@@ -335,189 +336,7 @@ struct PlaybackWidgets {
     input_icon: gtk::Image,
 }
 
-// ── Device UI updates ─────────────────────────────────────────────────────────
-
-/// Reset the UI to the "Connecting…" state.  Called when `device-changed`
-/// fires with no device info loaded yet.
-fn reset_device_ui(
-    pw: &PlaybackWidgets,
-    sw: &SourceWidgets,
-    ow: &OutputWidgets,
-    pp: &PresetWidgets,
-    dev_info: &Label,
-    title: &str,
-) {
-    pw.title.set_label(title);
-    pw.artist.set_label("");
-    pw.album.set_label("");
-    pw.status.set_label("");
-    pw.quality.set_visible(false);
-    pw.artwork.set_paintable(None::<&gtk::gdk::Paintable>);
-    pw.art_stack.set_visible_child_name("artwork");
-    dev_info.set_label("");
-
-    for btn in pp.btns.iter() { btn.set_visible(false); }
-    for lbl in pp.labels.iter() { lbl.set_label(""); }
-    for pic in pp.pics.iter() {
-        pic.set_paintable(None::<&gtk::gdk::Paintable>);
-        pic.set_icon_name(Some("audio-x-generic-symbolic"));
-    }
-
-    *sw.updating.borrow_mut() = true;
-    sw.dropdown.set_model(Some(&StringList::new(&["—"])));
-    sw.dropdown.set_sensitive(false);
-    *sw.updating.borrow_mut() = false;
-    *sw.ids.borrow_mut()      = Vec::new();
-    *sw.enabled.borrow_mut()  = Vec::new();
-
-    *ow.updating.borrow_mut() = true;
-    ow.dropdown.set_model(Some(&StringList::new(&["—"])));
-    ow.dropdown.set_sensitive(false);
-    ow.section.set_visible(false);
-    *ow.modes.borrow_mut()       = Vec::new();
-    *ow.canon_names.borrow_mut() = Vec::new();
-    *ow.updating.borrow_mut()    = false;
-}
-
-/// Populate the source dropdown from `DeviceState`'s cached input list.
-fn populate_source(ds: &DeviceState, sw: &SourceWidgets, icons: &Rc<icons::IconSet>) {
-    let in_enable = ds.audio_inputs();
-    let info = match ds.device_info() { Some(i) => i, None => return };
-    let caps = match ds.capabilities() { Some(c) => c, None => return };
-    let renames = ds.mode_renames();
-
-    let (ids, enabled_flags): (Vec<String>, Vec<bool>) = if !in_enable.is_empty() {
-        in_enable.iter().map(|e| (e.mode.clone(), e.is_enabled())).unzip()
-    } else {
-        let ids = capabilities::detect_inputs(caps.device_id, info.plm_support_value())
-            .into_iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        let flags = vec![true; ids.len()];
-        (ids, flags)
-    };
-
-    if ids.is_empty() {
-        *sw.updating.borrow_mut() = true;
-        sw.dropdown.set_model(Some(&StringList::new(&["—"])));
-        sw.dropdown.set_sensitive(false);
-        *sw.updating.borrow_mut() = false;
-        *sw.ids.borrow_mut()     = Vec::new();
-        *sw.enabled.borrow_mut() = Vec::new();
-        return;
-    }
-
-    let labels: Vec<String> = ids.iter().zip(enabled_flags.iter()).map(|(id, _)| {
-        let std_name = capabilities::input_display_name(id).to_string();
-        if let Some(user) = renames.get(id.as_str()) {
-            if !user.is_empty() && user != &std_name {
-                return format!("{} ({})", user, std_name);
-            }
-        }
-        std_name
-    }).collect();
-
-    let label_refs: Vec<&str> = labels.iter().map(String::as_str).collect();
-    *sw.ids.borrow_mut()     = ids;
-    *sw.enabled.borrow_mut() = enabled_flags;
-    *sw.updating.borrow_mut() = true;
-    sw.dropdown.set_model(Some(&StringList::new(&label_refs)));
-    sw.dropdown.set_selected(0);
-    sw.dropdown.set_sensitive(true);
-    *sw.updating.borrow_mut() = false;
-
-    let _ = icons; // captured for factory, used via Rc in setup closure
-}
-
-/// Populate the output dropdown from `DeviceState`'s cached device info.
-fn populate_output(ds: &DeviceState, ow: &OutputWidgets) {
-    if ds.capabilities().is_none() { return; }
-    let output_names = ds.outputs();
-    if output_names.is_empty() {
-        *ow.updating.borrow_mut() = true;
-        ow.dropdown.set_model(Some(&StringList::new(&["—"])));
-        ow.dropdown.set_sensitive(false);
-        ow.section.set_visible(false);
-        *ow.modes.borrow_mut()       = Vec::new();
-        *ow.canon_names.borrow_mut() = Vec::new();
-        *ow.updating.borrow_mut()    = false;
-        return;
-    }
-
-    let out_labels: Vec<&str> = output_names.iter()
-        .map(|e: &OutputEntry| e.name.as_str())
-        .collect();
-    let modes: Vec<u32> = output_names.iter()
-        .map(|e| capabilities::output_canon_to_mode(e.canon).unwrap_or(0))
-        .collect();
-
-    *ow.modes.borrow_mut()       = modes;
-    *ow.canon_names.borrow_mut() = output_names.iter().map(|e| e.canon).collect();
-    *ow.updating.borrow_mut()    = true;
-    ow.dropdown.set_model(Some(&StringList::new(&out_labels)));
-    ow.dropdown.set_sensitive(true);
-    ow.section.set_visible(true);
-
-    if let Some(os) = ds.output_status() {
-        if let Ok(hw) = os.hardware.parse::<u32>() {
-            let hw_canon = capabilities::canon_mode_output_name(hw);
-            let names = ow.canon_names.borrow();
-            if let Some(pos) = names.iter().position(|&n| n == hw_canon) {
-                ow.dropdown.set_selected(pos as u32);
-            }
-        }
-    }
-    *ow.updating.borrow_mut() = false;
-}
-
-fn wifi_icon_for_rssi(rssi: i32) -> &'static str {
-    match rssi {
-        i32::MIN..=-85 | 0 => "network-wireless-offline-symbolic",
-        -84..=-75           => "network-wireless-signal-weak-symbolic",
-        -74..=-65           => "network-wireless-signal-ok-symbolic",
-        -64..=-55           => "network-wireless-signal-good-symbolic",
-        _                   => "network-wireless-signal-excellent-symbolic",
-    }
-}
-
-fn update_network_icon(ds: &DeviceState, icon: &gtk::Image) {
-    match ds.netstat() {
-        Some(0) => {
-            icon.set_icon_name(Some("network-wired-symbolic"));
-            icon.set_visible(true);
-        }
-        Some(2) => {
-            let rssi = ds.rssi().unwrap_or(0);
-            icon.set_icon_name(Some(wifi_icon_for_rssi(rssi)));
-            icon.set_visible(true);
-        }
-        _ => { icon.set_visible(false); }
-    }
-}
-
-/// Apply fully-loaded device info to the UI (labels + dropdowns).
-fn apply_device_info(
-    ds:      &DeviceState,
-    sw:      &SourceWidgets,
-    ow:      &OutputWidgets,
-    pp:      &PresetWidgets,
-    dev_info: &Label,
-    icons:   &Rc<icons::IconSet>,
-) {
-    let info = match ds.device_info() { Some(i) => i, None => return };
-    let caps = match ds.capabilities() { Some(c) => c, None => return };
-
-    dev_info.set_label(&format!(
-        "{} · {} · FW {}",
-        caps.vendor.display_name(), caps.model, info.firmware,
-    ));
-
-    populate_source(ds, sw, icons);
-    populate_output(ds, ow);
-
-    // Reset preset fingerprint so the preset refresh picks up fresh data.
-    *pp.last_fp.borrow_mut() = String::new();
-}
-
-// ── Playback UI update ────────────────────────────────────────────────────────
+// ── Playback UI state ─────────────────────────────────────────────────────────
 
 #[derive(Clone)]
 struct PlaybackUiState {
@@ -528,124 +347,347 @@ struct PlaybackUiState {
     updating_vol: Rc<RefCell<bool>>,
 }
 
-fn update_playback_ui(ds: &DeviceState, pw: &PlaybackWidgets, ui: &PlaybackUiState) {
-    if let Some(st) = ds.player_status() {
-        let playing = st.status == "play";
-        *ui.is_playing.borrow_mut() = playing;
-        pw.btn_play.set_icon_name(if playing {
-            "media-playback-pause-symbolic"
+// ── DeviceWindowInner ─────────────────────────────────────────────────────────
+// All "content" widget state for one device window, kept together so that every
+// GTK signal closure only needs one `Rc::clone(&inner)` capture instead of
+// capturing half a dozen independent `Rc<RefCell<...>>` values.
+
+struct DeviceWindowInner {
+    ds:             DeviceState,
+    sw:             SourceWidgets,
+    ow:             OutputWidgets,
+    pw:             PlaybackWidgets,
+    pp:             PresetWidgets,
+    dev_info_label: Label,
+    net_icon:       gtk::Image,
+    icons:          Rc<icons::IconSet>,
+    vol_scale:      Scale,
+    ui_state:       PlaybackUiState,
+}
+
+impl DeviceWindowInner {
+    // ── Reset ─────────────────────────────────────────────────────────────────
+
+    fn reset_device_ui(&self, title: &str) {
+        self.pw.title.set_label(title);
+        self.pw.artist.set_label("");
+        self.pw.album.set_label("");
+        self.pw.status.set_label("");
+        self.pw.quality.set_visible(false);
+        self.pw.artwork.set_paintable(None::<&gtk::gdk::Paintable>);
+        self.pw.art_stack.set_visible_child_name("artwork");
+        self.dev_info_label.set_label("");
+
+        for btn in self.pp.btns.iter() { btn.set_visible(false); }
+        for lbl in self.pp.labels.iter() { lbl.set_label(""); }
+        for pic in self.pp.pics.iter() {
+            pic.set_paintable(None::<&gtk::gdk::Paintable>);
+            pic.set_icon_name(Some("audio-x-generic-symbolic"));
+        }
+
+        *self.sw.updating.borrow_mut() = true;
+        self.sw.dropdown.set_model(Some(&StringList::new(&["—"])));
+        self.sw.dropdown.set_sensitive(false);
+        *self.sw.updating.borrow_mut() = false;
+        *self.sw.ids.borrow_mut()      = Vec::new();
+        *self.sw.enabled.borrow_mut()  = Vec::new();
+
+        *self.ow.updating.borrow_mut() = true;
+        self.ow.dropdown.set_model(Some(&StringList::new(&["—"])));
+        self.ow.dropdown.set_sensitive(false);
+        self.ow.section.set_visible(false);
+        *self.ow.modes.borrow_mut()       = Vec::new();
+        *self.ow.canon_names.borrow_mut() = Vec::new();
+        *self.ow.updating.borrow_mut()    = false;
+    }
+
+    // ── Source / Output / Network ─────────────────────────────────────────────
+
+    fn populate_source(&self) {
+        let in_enable = self.ds.audio_inputs();
+        let info = match self.ds.device_info() { Some(i) => i, None => return };
+        let caps = match self.ds.capabilities() { Some(c) => c, None => return };
+        let renames = self.ds.mode_renames();
+
+        let (ids, enabled_flags): (Vec<String>, Vec<bool>) = if !in_enable.is_empty() {
+            in_enable.iter().map(|e| (e.mode.clone(), e.is_enabled())).unzip()
         } else {
-            "media-playback-start-symbolic"
-        });
+            let ids = capabilities::detect_inputs(caps.device_id, info.plm_support_value())
+                .into_iter().map(|s| s.to_string()).collect::<Vec<_>>();
+            let flags = vec![true; ids.len()];
+            (ids, flags)
+        };
 
-        pw.status.set_label(&format_status(&st.status, &st.mode, &st.vendor));
-
-        if let Ok(v) = st.vol.parse::<f64>() {
-            *ui.updating_vol.borrow_mut() = true;
-            pw.seek.set_value(0.0); // keep seek in sync via separate scale
-            let _ = v; // vol handled below via vol_scale capture
-            *ui.updating_vol.borrow_mut() = false;
+        if ids.is_empty() {
+            *self.sw.updating.borrow_mut() = true;
+            self.sw.dropdown.set_model(Some(&StringList::new(&["—"])));
+            self.sw.dropdown.set_sensitive(false);
+            *self.sw.updating.borrow_mut() = false;
+            *self.sw.ids.borrow_mut()      = Vec::new();
+            *self.sw.enabled.borrow_mut()  = Vec::new();
+            return;
         }
 
-        let muted = st.mute == "1";
-        if *ui.mute_on.borrow() != muted {
-            *ui.mute_on.borrow_mut() = muted;
-            pw.mute_btn.set_icon_name(if muted {
-                "audio-volume-muted-symbolic"
+        let labels: Vec<String> = ids.iter().zip(enabled_flags.iter()).map(|(id, _)| {
+            let std_name = capabilities::input_display_name(id).to_string();
+            if let Some(user) = renames.get(id.as_str()) {
+                if !user.is_empty() && user != &std_name {
+                    return format!("{} ({})", user, std_name);
+                }
+            }
+            std_name
+        }).collect();
+
+        let label_refs: Vec<&str> = labels.iter().map(String::as_str).collect();
+        *self.sw.ids.borrow_mut()      = ids;
+        *self.sw.enabled.borrow_mut()  = enabled_flags;
+        *self.sw.updating.borrow_mut() = true;
+        self.sw.dropdown.set_model(Some(&StringList::new(&label_refs)));
+        self.sw.dropdown.set_selected(0);
+        self.sw.dropdown.set_sensitive(true);
+        *self.sw.updating.borrow_mut() = false;
+    }
+
+    fn populate_output(&self) {
+        if self.ds.capabilities().is_none() { return; }
+        let output_names = self.ds.outputs();
+        if output_names.is_empty() {
+            *self.ow.updating.borrow_mut() = true;
+            self.ow.dropdown.set_model(Some(&StringList::new(&["—"])));
+            self.ow.dropdown.set_sensitive(false);
+            self.ow.section.set_visible(false);
+            *self.ow.modes.borrow_mut()       = Vec::new();
+            *self.ow.canon_names.borrow_mut() = Vec::new();
+            *self.ow.updating.borrow_mut()    = false;
+            return;
+        }
+
+        let out_labels: Vec<&str> = output_names.iter()
+            .map(|e: &OutputEntry| e.name.as_str())
+            .collect();
+        let modes: Vec<u32> = output_names.iter()
+            .map(|e| capabilities::output_canon_to_mode(e.canon).unwrap_or(0))
+            .collect();
+
+        *self.ow.modes.borrow_mut()       = modes;
+        *self.ow.canon_names.borrow_mut() = output_names.iter().map(|e| e.canon).collect();
+        *self.ow.updating.borrow_mut()    = true;
+        self.ow.dropdown.set_model(Some(&StringList::new(&out_labels)));
+        self.ow.dropdown.set_sensitive(true);
+        self.ow.section.set_visible(true);
+
+        if let Some(os) = self.ds.output_status() {
+            if let Ok(hw) = os.hardware.parse::<u32>() {
+                let hw_canon = capabilities::canon_mode_output_name(hw);
+                let names = self.ow.canon_names.borrow();
+                if let Some(pos) = names.iter().position(|&n| n == hw_canon) {
+                    self.ow.dropdown.set_selected(pos as u32);
+                }
+            }
+        }
+        *self.ow.updating.borrow_mut() = false;
+    }
+
+    fn update_network_icon(&self) {
+        match self.ds.netstat() {
+            Some(0) => {
+                self.net_icon.set_icon_name(Some("network-wired-symbolic"));
+                self.net_icon.set_visible(true);
+            }
+            Some(2) => {
+                let rssi = self.ds.rssi().unwrap_or(0);
+                self.net_icon.set_icon_name(Some(wifi_icon_for_rssi(rssi)));
+                self.net_icon.set_visible(true);
+            }
+            _ => { self.net_icon.set_visible(false); }
+        }
+    }
+
+    fn apply_device_info(&self) {
+        let info = match self.ds.device_info() { Some(i) => i, None => return };
+        let caps = match self.ds.capabilities() { Some(c) => c, None => return };
+
+        self.dev_info_label.set_label(&format!(
+            "{} · {} · FW {}",
+            caps.vendor.display_name(), caps.model, info.firmware,
+        ));
+
+        self.populate_source();
+        self.populate_output();
+    }
+
+    // ── Playback ──────────────────────────────────────────────────────────────
+
+    fn update_playback_ui(&self) {
+        if let Some(st) = self.ds.player_status() {
+            if let Ok(v) = st.vol.parse::<f64>() {
+                *self.ui_state.updating_vol.borrow_mut() = true;
+                self.vol_scale.set_value(v);
+                *self.ui_state.updating_vol.borrow_mut() = false;
+            }
+
+            let cur_s = st.curpos.parse::<u64>().unwrap_or(0) / 1000;
+            let tot_s = st.totlen.parse::<u64>().unwrap_or(0) / 1000;
+            if tot_s > 0 {
+                self.pw.seek.set_range(0.0, tot_s as f64);
+                self.pw.seek.set_value(cur_s as f64);
+            }
+
+            let playing = st.status == "play";
+            *self.ui_state.is_playing.borrow_mut() = playing;
+            self.pw.btn_play.set_icon_name(if playing {
+                "media-playback-pause-symbolic"
             } else {
-                "audio-volume-high-symbolic"
+                "media-playback-start-symbolic"
             });
+
+            self.pw.status.set_label(&format_status(&st.status, &st.mode, &st.vendor));
+
+            let muted = st.mute == "1";
+            if *self.ui_state.mute_on.borrow() != muted {
+                *self.ui_state.mute_on.borrow_mut() = muted;
+                self.pw.mute_btn.set_icon_name(if muted {
+                    "audio-volume-muted-symbolic"
+                } else {
+                    "audio-volume-high-symbolic"
+                });
+            }
+
+            let (dev_shuf, dev_rep) = decode_loop_mode(&st.loop_mode);
+            if *self.ui_state.shuffle_on.borrow() != dev_shuf {
+                *self.ui_state.shuffle_on.borrow_mut() = dev_shuf;
+                if dev_shuf { self.pw.shuffle.add_css_class("loop-active"); }
+                else         { self.pw.shuffle.remove_css_class("loop-active"); }
+                self.pw.shuffle.set_tooltip_text(Some(
+                    if dev_shuf { "Shuffle: On" } else { "Shuffle: Off" }
+                ));
+            }
+            if *self.ui_state.repeat_state.borrow() != dev_rep {
+                *self.ui_state.repeat_state.borrow_mut() = dev_rep;
+                let icons = ["media-playlist-repeat-symbolic",
+                             "media-playlist-repeat-symbolic",
+                             "media-playlist-repeat-song-symbolic"];
+                let tips  = ["Repeat: Off", "Repeat: All", "Repeat: One"];
+                self.pw.repeat.set_icon_name(icons[dev_rep as usize]);
+                self.pw.repeat.set_tooltip_text(Some(tips[dev_rep as usize]));
+                if dev_rep == 0 { self.pw.repeat.remove_css_class("loop-active"); }
+                else             { self.pw.repeat.add_css_class("loop-active"); }
+            }
+
+            self.pw.pos.set_label(&format!("{}:{:02}", cur_s / 60, cur_s % 60));
+            self.pw.dur.set_label(&format!("{}:{:02}", tot_s / 60, tot_s % 60));
         }
 
-        let (dev_shuf, dev_rep) = decode_loop_mode(&st.loop_mode);
-        if *ui.shuffle_on.borrow() != dev_shuf {
-            *ui.shuffle_on.borrow_mut() = dev_shuf;
-            if dev_shuf { pw.shuffle.add_css_class("loop-active"); }
-            else         { pw.shuffle.remove_css_class("loop-active"); }
-            pw.shuffle.set_tooltip_text(Some(
-                if dev_shuf { "Shuffle: On" } else { "Shuffle: Off" }
-            ));
-        }
-        if *ui.repeat_state.borrow() != dev_rep {
-            *ui.repeat_state.borrow_mut() = dev_rep;
-            let icons = ["media-playlist-repeat-symbolic",
-                         "media-playlist-repeat-symbolic",
-                         "media-playlist-repeat-song-symbolic"];
-            let tips  = ["Repeat: Off", "Repeat: All", "Repeat: One"];
-            pw.repeat.set_icon_name(icons[dev_rep as usize]);
-            pw.repeat.set_tooltip_text(Some(tips[dev_rep as usize]));
-            if dev_rep == 0 { pw.repeat.remove_css_class("loop-active"); }
-            else             { pw.repeat.add_css_class("loop-active"); }
+        if let Some(m) = self.ds.metadata() {
+            let title = if is_unknown(&m.title) { String::new() } else { m.title.clone() };
+            self.pw.title.set_label(if title.is_empty() { "—" } else { &title });
+            self.pw.artist.set_label(if is_unknown(&m.artist) { "" } else { &m.artist });
+            self.pw.album.set_label(if is_unknown(&m.album)  { "" } else { &m.album });
+
+            match format_quality(&m.bit_rate, &m.sample_rate, &m.bit_depth) {
+                Some(q) => { self.pw.quality.set_label(&q); self.pw.quality.set_visible(true); }
+                None    => self.pw.quality.set_visible(false),
+            }
         }
 
-        let cur_s = st.curpos.parse::<u64>().unwrap_or(0) / 1000;
-        let tot_s = st.totlen.parse::<u64>().unwrap_or(0) / 1000;
-        pw.pos.set_label(&format!("{}:{:02}", cur_s / 60, cur_s % 60));
-        pw.dur.set_label(&format!("{}:{:02}", tot_s / 60, tot_s % 60));
-    }
-
-    if let Some(m) = ds.metadata() {
-        let title = if is_unknown(&m.title) { String::new() } else { m.title.clone() };
-        pw.title.set_label(if title.is_empty() { "—" } else { &title });
-        pw.artist.set_label(if is_unknown(&m.artist) { "" } else { &m.artist });
-        pw.album.set_label(if is_unknown(&m.album)  { "" } else { &m.album });
-
-        match format_quality(&m.bit_rate, &m.sample_rate, &m.bit_depth) {
-            Some(q) => { pw.quality.set_label(&q); pw.quality.set_visible(true); }
-            None    => pw.quality.set_visible(false),
+        if let Some(bytes) = self.ds.art_bytes() {
+            let gbytes = glib::Bytes::from(&bytes);
+            if let Ok(tex) = gtk::gdk::Texture::from_bytes(&gbytes) {
+                self.pw.artwork.set_paintable(Some(&tex));
+                self.pw.art_stack.set_visible_child_name("artwork");
+            }
         }
     }
 
-    // Artwork: show if loaded, else keep icon.
-    if let Some(bytes) = ds.art_bytes() {
-        let gbytes = glib::Bytes::from(&bytes);
-        if let Ok(tex) = gtk::gdk::Texture::from_bytes(&gbytes) {
-            pw.artwork.set_paintable(Some(&tex));
-            pw.art_stack.set_visible_child_name("artwork");
+    // ── Input / Output display ────────────────────────────────────────────────
+
+    fn update_input_display(&self) {
+        let mode = self.ds.current_mode();
+        let source_id = capabilities::mode_to_input_source(&mode);
+        self.pw.input_icon.set_paintable(Some(self.icons.source_paintable(source_id)));
+
+        let sv = self.sw.ids.borrow();
+        if let Some(idx) = sv.iter().position(|s| s == source_id) {
+            *self.sw.updating.borrow_mut() = true;
+            self.sw.dropdown.set_selected(idx as u32);
+            *self.sw.updating.borrow_mut() = false;
+        }
+
+        if self.ds.art_bytes().is_some() {
+            self.pw.art_stack.set_visible_child_name("artwork");
+        } else {
+            self.pw.artwork.set_paintable(None::<&gtk::gdk::Paintable>);
+            self.pw.art_stack.set_visible_child_name("icon");
         }
     }
-}
 
-// ── Input display update ──────────────────────────────────────────────────────
-
-fn update_input_display(
-    ds:    &DeviceState,
-    pw:    &PlaybackWidgets,
-    sw:    &SourceWidgets,
-    icons: &Rc<icons::IconSet>,
-) {
-    let mode = ds.current_mode();
-    let source_id = capabilities::mode_to_input_source(&mode);
-    pw.input_icon.set_paintable(Some(icons.source_paintable(source_id)));
-
-    // Sync the source dropdown.
-    let sv = sw.ids.borrow();
-    if let Some(idx) = sv.iter().position(|s| s == source_id) {
-        *sw.updating.borrow_mut() = true;
-        sw.dropdown.set_selected(idx as u32);
-        *sw.updating.borrow_mut() = false;
+    fn update_output_display(&self) {
+        let Some(os) = self.ds.output_status() else { return };
+        let Ok(hw) = os.hardware.parse::<u32>() else { return };
+        let hw_canon = capabilities::canon_mode_output_name(hw);
+        let names = self.ow.canon_names.borrow();
+        if let Some(idx) = names.iter().position(|&n| n == hw_canon) {
+            *self.ow.updating.borrow_mut() = true;
+            self.ow.dropdown.set_selected(idx as u32);
+            *self.ow.updating.borrow_mut() = false;
+        }
     }
 
-    // Show artwork if present, otherwise source icon.
-    if ds.art_bytes().is_some() {
-        pw.art_stack.set_visible_child_name("artwork");
-    } else {
-        pw.artwork.set_paintable(None::<&gtk::gdk::Paintable>);
-        pw.art_stack.set_visible_child_name("icon");
+    // ── Presets ───────────────────────────────────────────────────────────────
+
+    fn on_presets_changed(&self) {
+        use crate::api::PresetKind;
+        let presets = self.ds.presets();
+
+        // Clear all slots first.
+        for btn in self.pp.btns.iter() { btn.set_visible(false); }
+        for lbl in self.pp.labels.iter() { lbl.set_label(""); }
+        for pic in self.pp.pics.iter() {
+            pic.set_paintable(None::<&gtk::gdk::Paintable>);
+            pic.set_icon_name(Some("audio-x-generic-symbolic"));
+        }
+
+        for entry in &presets {
+            let idx = entry.slot.saturating_sub(1);
+            if let Some(btn) = self.pp.btns.get(idx) {
+                btn.set_visible(true);
+                btn.set_tooltip_text(Some(&entry.tooltip()));
+            }
+            if let Some(lbl) = self.pp.labels.get(idx) {
+                lbl.set_label(entry.label());
+            }
+            if let Some(pic) = self.pp.pics.get(idx) {
+                match &entry.kind {
+                    PresetKind::Media => {
+                        if !entry.art_bytes.is_empty() {
+                            let gbytes = glib::Bytes::from(&entry.art_bytes);
+                            if let Ok(tex) = gtk::gdk::Texture::from_bytes(&gbytes) {
+                                pic.set_paintable(Some(&tex));
+                            }
+                        }
+                    }
+                    PresetKind::InputSwitch { input_id } => {
+                        pic.set_paintable(Some(self.icons.source_paintable(input_id)));
+                    }
+                    PresetKind::OutputSwitch { output_id } => {
+                        let canon = capabilities::canon_new_output_name(output_id);
+                        pic.set_paintable(Some(self.icons.output_paintable(canon)));
+                    }
+                    // Empty / OtherRoutine: keep the default "audio-x-generic-symbolic" icon.
+                    _ => {}
+                }
+            }
+        }
     }
-}
+} // impl DeviceWindowInner
 
-// ── Output display update ─────────────────────────────────────────────────────
-
-fn update_output_display(ds: &DeviceState, ow: &OutputWidgets) {
-    let Some(os) = ds.output_status() else { return };
-    let Ok(hw) = os.hardware.parse::<u32>() else { return };
-    let hw_canon = capabilities::canon_mode_output_name(hw);
-    let names = ow.canon_names.borrow();
-    if let Some(idx) = names.iter().position(|&n| n == hw_canon) {
-        *ow.updating.borrow_mut() = true;
-        ow.dropdown.set_selected(idx as u32);
-        *ow.updating.borrow_mut() = false;
+fn wifi_icon_for_rssi(rssi: i32) -> &'static str {
+    match rssi {
+        i32::MIN..=-85 | 0 => "network-wireless-offline-symbolic",
+        -84..=-75           => "network-wireless-signal-weak-symbolic",
+        -74..=-65           => "network-wireless-signal-ok-symbolic",
+        -64..=-55           => "network-wireless-signal-good-symbolic",
+        _                   => "network-wireless-signal-excellent-symbolic",
     }
 }
 
@@ -753,153 +795,16 @@ fn build_device_popover(
     popover
 }
 
-// ── Preset loader ─────────────────────────────────────────────────────────────
-
-async fn load_presets(
-    ds:      &DeviceState,
-    pp:      &PresetWidgets,
-    icons:   &Rc<icons::IconSet>,
-) {
-    let client = match ds.client() { Some(c) => c, None => return };
-    let rt     = ds.rt();
-    let (preset_tx, preset_rx) =
-        async_channel::unbounded::<(usize, String, String, Vec<u8>)>();
-    let (fp_tx, fp_rx) = async_channel::bounded::<String>(1);
-
-    rt.spawn(async move {
-        let (presets_result, routines) =
-            tokio::join!(client.get_presets(), client.get_all_routines());
-        let Ok(presets) = presets_result else { return };
-        let preset_total = presets.preset_num as usize;
-
-        let mut routine_map: std::collections::HashMap<usize, crate::api::Routine> =
-            std::collections::HashMap::new();
-        for r in routines {
-            let slot = r.index as usize + 1;
-            if slot >= 1 && slot <= 12 { routine_map.insert(slot, r); }
-        }
-
-        let mut seen = std::collections::HashSet::new();
-        for p in &presets.preset_list {
-            let slot = p.number as usize;
-            if slot >= 1 && slot <= 12 { seen.insert(slot); }
-        }
-
-        let mut all_slots: std::collections::BTreeSet<usize> =
-            std::collections::BTreeSet::new();
-        for &slot in &seen { all_slots.insert(slot); }
-        for n in 1..=preset_total.min(12) { all_slots.insert(n); }
-        for &slot in routine_map.keys() { all_slots.insert(slot); }
-
-        let fp: String = {
-            let mut parts: Vec<String> = presets.preset_list.iter()
-                .map(|p| format!("{}:{}:{}", p.number, p.name, p.picurl))
-                .collect();
-            for &n in &all_slots {
-                if !seen.contains(&n) {
-                    if let Some(r) = routine_map.get(&n) {
-                        parts.push(format!("r{}:{}", n, r.name));
-                    } else {
-                        parts.push(format!("{n}:input-switch"));
-                    }
-                }
-            }
-            parts.sort();
-            parts.join("|")
-        };
-        let _ = fp_tx.send(fp).await;
-
-        for p in &presets.preset_list {
-            let slot = p.number as usize;
-            if slot >= 1 && slot <= 12 {
-                let bytes = if !p.picurl.is_empty() {
-                    client.fetch_bytes(&p.picurl).await.unwrap_or_default()
-                } else {
-                    Vec::new()
-                };
-                let _ = preset_tx
-                    .send((slot - 1, p.name.clone(), p.source.clone(), bytes))
-                    .await;
-            }
-        }
-
-        for &n in &all_slots {
-            if !seen.contains(&n) {
-                if let Some(r) = routine_map.get(&n) {
-                    let tag = if let Some(id) = r.audio_input() {
-                        format!("input:{id}")
-                    } else if let Some(oid) = r.audio_output() {
-                        format!("output:{oid}")
-                    } else {
-                        "other".to_string()
-                    };
-                    let _ = preset_tx
-                        .send((n - 1, r.name.clone(), tag, Vec::new()))
-                        .await;
-                } else {
-                    let _ = preset_tx
-                        .send((n - 1, String::new(), "input-switch".to_string(), Vec::new()))
-                        .await;
-                }
-            }
-        }
-    });
-
-    let new_fp = fp_rx.recv().await.unwrap_or_default();
-    if new_fp == *pp.last_fp.borrow() {
-        while preset_rx.try_recv().is_ok() {}
-        return;
-    }
-    *pp.last_fp.borrow_mut() = new_fp;
-
-    for btn in pp.btns.iter() { btn.set_visible(false); }
-    for lbl in pp.labels.iter() { lbl.set_label(""); }
-    for pic in pp.pics.iter() {
-        pic.set_paintable(None::<&gtk::gdk::Paintable>);
-    }
-
-    while let Ok((idx, name, source, bytes)) = preset_rx.recv().await {
-        let is_input_switch = source == "input-switch";
-        let input_source_id = source.strip_prefix("input:");
-        let output_mode_id  = source.strip_prefix("output:");
-        let is_other_rtn    = source == "other";
-        let is_routine = input_source_id.is_some() || output_mode_id.is_some() || is_other_rtn;
-
-        if let Some(btn) = pp.btns.get(idx) {
-            btn.set_visible(true);
-            let tip = if is_input_switch {
-                format!("Preset {} — Input selection", idx + 1)
-            } else if is_routine {
-                format!("Preset {} — {name}", idx + 1)
-            } else {
-                format!("{name} ({source})")
-            };
-            btn.set_tooltip_text(Some(&tip));
-        }
-        if let Some(lbl) = pp.labels.get(idx) {
-            lbl.set_label(if is_input_switch { "Input" } else { &name });
-        }
-        if let Some(pic) = pp.pics.get(idx) {
-            if !bytes.is_empty() {
-                let gbytes = glib::Bytes::from(&bytes);
-                if let Ok(tex) = gtk::gdk::Texture::from_bytes(&gbytes) {
-                    pic.set_paintable(Some(&tex));
-                }
-            } else if let Some(id) = input_source_id {
-                pic.set_paintable(Some(icons.source_paintable(id)));
-            } else if let Some(oid) = output_mode_id {
-                let canon = capabilities::canon_new_output_name(oid);
-                pic.set_paintable(Some(icons.output_paintable(canon)));
-            } else {
-                pic.set_paintable(Some(icons.source_paintable(&source)));
-            }
-        }
-    }
-}
-
 // ── Main UI ───────────────────────────────────────────────────────────────────
 
-pub fn build_ui(app: &adw::Application) {
+// ── CSS ───────────────────────────────────────────────────────────────────────
+
+static CSS_LOADED: AtomicBool = AtomicBool::new(false);
+
+/// Load the application CSS into the default display.  Safe to call multiple
+/// times; the provider is only registered once per process.
+fn load_css() {
+    if CSS_LOADED.swap(true, Ordering::Relaxed) { return; }
     let provider = CssProvider::new();
     provider.load_from_string(CSS);
     gtk::style_context_add_provider_for_display(
@@ -907,21 +812,33 @@ pub fn build_ui(app: &adw::Application) {
         &provider,
         gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
     );
+}
 
-    let icons = Rc::new(icons::IconSet::load());
-    let cfg   = Config::load();
+// ── DeviceWindow ──────────────────────────────────────────────────────────────
 
-    let rt = std::sync::Arc::new(
-        tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .expect("tokio runtime"),
-    );
-    let ds = DeviceState::new(rt);
-    if !cfg.last_ip.is_empty() {
-        ds.set_device(&cfg.last_ip, TlsMode::HttpsWiiM);
-    }
-    ds.start_polling();
+/// One device window.  Owns the GTK window and all content widgets.
+/// Future work: keep a list of these in a top-level app struct for multi-device support.
+pub struct DeviceWindow {
+    pub window: adw::ApplicationWindow,
+    inner:      Rc<DeviceWindowInner>,
+}
+
+impl DeviceWindow {
+    pub fn ds(&self) -> &DeviceState { &self.inner.ds }
+
+    /// Build and wire a complete device window.  The tokio `rt` is shared across
+    /// all windows so there is only one thread-pool for the whole process.
+    pub fn new(app: &adw::Application, rt: Arc<tokio::runtime::Runtime>) -> Self {
+        load_css();
+
+        let icons = Rc::new(icons::IconSet::load());
+        let cfg   = Config::load();
+
+        let ds = DeviceState::new(rt);
+        if !cfg.last_ip.is_empty() {
+            ds.set_device(&cfg.last_ip, TlsMode::HttpsWiiM);
+        }
+        ds.start_polling();
 
     // ── Header ───────────────────────────────────────────────────────────────
     let header = adw::HeaderBar::new();
@@ -996,7 +913,6 @@ pub fn build_ui(app: &adw::Application) {
     let preset_btns   = Rc::new(preset_btns);
     let preset_pics   = Rc::new(preset_pics);
     let preset_labels = Rc::new(preset_labels);
-    let last_preset_fp: Rc<RefCell<String>> = Rc::new(RefCell::new(String::new()));
 
     let presets_scroll = gtk::ScrolledWindow::builder()
         .child(&presets_box)
@@ -1271,105 +1187,73 @@ pub fn build_ui(app: &adw::Application) {
     };
 
     let pp = PresetWidgets {
-        btns:    preset_btns,
-        pics:    preset_pics,
-        labels:  preset_labels,
-        last_fp: last_preset_fp,
+        btns:   preset_btns,
+        pics:   preset_pics,
+        labels: preset_labels,
     };
+
+    // Bundle all content-widget state into a single Rc so each signal closure
+    // only needs one clone instead of capturing 6–8 separate variables.
+    let inner = Rc::new(DeviceWindowInner {
+        ds: ds.clone(),
+        sw,
+        ow,
+        pw,
+        pp,
+        dev_info_label,
+        net_icon,
+        icons,
+        vol_scale,
+        ui_state,
+    });
 
     // ── DeviceState signal connections ────────────────────────────────────────
     ds.connect_device_changed({
-        let sw = sw.clone();
-        let ow = ow.clone();
-        let pp = pp.clone();
-        let pw = pw.clone();
-        let dev_info_label = dev_info_label.clone();
-        let net_icon = net_icon.clone();
-        let icons = icons.clone();
-        let ds2 = ds.clone();
-        move |ds| {
-            update_network_icon(ds, &net_icon);
-            if ds.device_info().is_none() {
-                let title = match ds.connection_state() {
-                    ConnectionState::Connecting    => "Connecting…",
-                    ConnectionState::Failed        => "Disconnected",
-                    ConnectionState::Disconnected  => "",
-                    ConnectionState::Connected     => "",
+        let i = Rc::clone(&inner);
+        move |_| {
+            i.update_network_icon();
+            if i.ds.device_info().is_none() {
+                let title = match i.ds.connection_state() {
+                    ConnectionState::Connecting   => "Connecting…",
+                    ConnectionState::Failed       => "Disconnected",
+                    _                             => "",
                 };
-                reset_device_ui(&pw, &sw, &ow, &pp, &dev_info_label, title);
+                i.reset_device_ui(title);
             } else {
-                apply_device_info(ds, &sw, &ow, &pp, &dev_info_label, &icons);
-                // Trigger preset load via DeviceState's capabilities.
-                let has_presets = ds.capabilities()
-                    .map_or(true, |c| c.supports_presets);
-                if has_presets {
-                    let ds3  = ds2.clone();
-                    let pp2  = pp.clone();
-                    let icn2 = icons.clone();
-                    glib::spawn_future_local(async move {
-                        load_presets(&ds3, &pp2, &icn2).await;
-                    });
-                }
+                i.apply_device_info();
+                i.on_presets_changed();
             }
         }
     });
 
     ds.connect_network_changed({
-        let net_icon = net_icon.clone();
-        move |ds| { update_network_icon(ds, &net_icon); }
+        let i = Rc::clone(&inner);
+        move |_| { i.update_network_icon(); }
     });
 
     ds.connect_playback_changed({
-        let pw       = pw.clone();
-        let ui_state = PlaybackUiState {
-            is_playing:   ui_state.is_playing.clone(),
-            mute_on:      ui_state.mute_on.clone(),
-            shuffle_on:   ui_state.shuffle_on.clone(),
-            repeat_state: ui_state.repeat_state.clone(),
-            updating_vol: ui_state.updating_vol.clone(),
-        };
-        let vol_scale = vol_scale.clone();
-        move |ds| {
-            // Volume needs direct access to vol_scale, handle separately.
-            if let Some(st) = ds.player_status() {
-                if let Ok(v) = st.vol.parse::<f64>() {
-                    *ui_state.updating_vol.borrow_mut() = true;
-                    vol_scale.set_value(v);
-                    *ui_state.updating_vol.borrow_mut() = false;
-                }
-                let cur_s = st.curpos.parse::<u64>().unwrap_or(0) / 1000;
-                let tot_s = st.totlen.parse::<u64>().unwrap_or(0) / 1000;
-                if tot_s > 0 {
-                    pw.seek.set_range(0.0, tot_s as f64);
-                    pw.seek.set_value(cur_s as f64);
-                }
-            }
-            update_playback_ui(ds, &pw, &ui_state);
-        }
+        let i = Rc::clone(&inner);
+        move |_| { i.update_playback_ui(); }
     });
 
     ds.connect_input_changed({
-        let pw    = pw.clone();
-        let sw    = sw.clone();
-        let icons = icons.clone();
-        move |ds| {
-            update_input_display(ds, &pw, &sw, &icons);
-        }
+        let i = Rc::clone(&inner);
+        move |_| { i.update_input_display(); }
     });
 
     ds.connect_output_changed({
-        let ow = ow.clone();
-        move |ds| {
-            update_output_display(ds, &ow);
-        }
+        let i = Rc::clone(&inner);
+        move |_| { i.update_output_display(); }
     });
 
     ds.connect_outputs_changed({
-        let ow = ow.clone();
-        move |ds| {
-            populate_output(ds, &ow);
-            update_output_display(ds, &ow);
-        }
+        let i = Rc::clone(&inner);
+        move |_| { i.populate_output(); i.update_output_display(); }
+    });
+
+    ds.connect_presets_changed({
+        let i = Rc::clone(&inner);
+        move |_| { i.on_presets_changed(); }
     });
 
     // ── Sidebar toggle ────────────────────────────────────────────────────────
@@ -1518,131 +1402,137 @@ pub fn build_ui(app: &adw::Application) {
         ));
     }
 
-    // ── Periodic preset refresh ───────────────────────────────────────────────
-    glib::spawn_future_local(clone!(
-        @strong ds, @strong pp, @strong icons
-        => async move {
-            loop {
-                glib::timeout_future_seconds(10).await;
-                if ds.client().is_none() { continue; }
-                if !ds.capabilities().map_or(true, |c| c.supports_presets) { continue; }
-                load_presets(&ds, &pp, &icons).await;
-            }
-        }
-    ));
-
     // ── Transport / control signal handlers ───────────────────────────────────
-    pw.btn_play.connect_clicked(clone!(
-        @strong ds, @strong ui_state
-        => move |_| {
-            let playing = *ui_state.is_playing.borrow();
-            if let Some(c) = ds.client() {
-                ds.rt().spawn(async move {
+    inner.pw.btn_play.connect_clicked({
+        let i = Rc::clone(&inner);
+        move |_| {
+            let playing = *i.ui_state.is_playing.borrow();
+            if let Some(c) = i.ds.client() {
+                i.ds.rt().spawn(async move {
                     if playing { let _ = c.pause().await; } else { let _ = c.play().await; }
                 });
             }
         }
-    ));
+    });
 
-    btn_prev.connect_clicked(clone!(@strong ds => move |_| {
-        if let Some(c) = ds.client() { ds.rt().spawn(async move { let _ = c.prev().await; }); }
-    }));
+    btn_prev.connect_clicked({
+        let i = Rc::clone(&inner);
+        move |_| {
+            if let Some(c) = i.ds.client() { i.ds.rt().spawn(async move { let _ = c.prev().await; }); }
+        }
+    });
 
-    btn_next.connect_clicked(clone!(@strong ds => move |_| {
-        if let Some(c) = ds.client() { ds.rt().spawn(async move { let _ = c.next().await; }); }
-    }));
+    btn_next.connect_clicked({
+        let i = Rc::clone(&inner);
+        move |_| {
+            if let Some(c) = i.ds.client() { i.ds.rt().spawn(async move { let _ = c.next().await; }); }
+        }
+    });
 
-    pw.shuffle.connect_clicked(clone!(
-        @strong ds, @strong ui_state, @strong pw
-        => move |_| {
-            let new_val = !*ui_state.shuffle_on.borrow();
-            *ui_state.shuffle_on.borrow_mut() = new_val;
-            if new_val { pw.shuffle.add_css_class("loop-active"); }
-            else        { pw.shuffle.remove_css_class("loop-active"); }
-            pw.shuffle.set_tooltip_text(Some(if new_val { "Shuffle: On" } else { "Shuffle: Off" }));
-            let mode = loop_api_mode(new_val, *ui_state.repeat_state.borrow());
-            if let Some(c) = ds.client() {
-                ds.rt().spawn(async move { let _ = c.set_loop_mode(mode).await; });
+    inner.pw.shuffle.connect_clicked({
+        let i = Rc::clone(&inner);
+        move |_| {
+            let new_val = !*i.ui_state.shuffle_on.borrow();
+            *i.ui_state.shuffle_on.borrow_mut() = new_val;
+            if new_val { i.pw.shuffle.add_css_class("loop-active"); }
+            else        { i.pw.shuffle.remove_css_class("loop-active"); }
+            i.pw.shuffle.set_tooltip_text(Some(if new_val { "Shuffle: On" } else { "Shuffle: Off" }));
+            let mode = loop_api_mode(new_val, *i.ui_state.repeat_state.borrow());
+            if let Some(c) = i.ds.client() {
+                i.ds.rt().spawn(async move { let _ = c.set_loop_mode(mode).await; });
             }
         }
-    ));
+    });
 
-    pw.repeat.connect_clicked(clone!(
-        @strong ds, @strong ui_state, @strong pw
-        => move |_| {
-            let next = (*ui_state.repeat_state.borrow() + 1) % 3;
-            *ui_state.repeat_state.borrow_mut() = next;
+    inner.pw.repeat.connect_clicked({
+        let i = Rc::clone(&inner);
+        move |_| {
+            let next = (*i.ui_state.repeat_state.borrow() + 1) % 3;
+            *i.ui_state.repeat_state.borrow_mut() = next;
             let ico = ["media-playlist-repeat-symbolic",
                        "media-playlist-repeat-symbolic",
                        "media-playlist-repeat-song-symbolic"];
             let tip = ["Repeat: Off", "Repeat: All", "Repeat: One"];
-            pw.repeat.set_icon_name(ico[next as usize]);
-            pw.repeat.set_tooltip_text(Some(tip[next as usize]));
-            if next == 0 { pw.repeat.remove_css_class("loop-active"); }
-            else          { pw.repeat.add_css_class("loop-active"); }
-            let mode = loop_api_mode(*ui_state.shuffle_on.borrow(), next);
-            if let Some(c) = ds.client() {
-                ds.rt().spawn(async move { let _ = c.set_loop_mode(mode).await; });
+            i.pw.repeat.set_icon_name(ico[next as usize]);
+            i.pw.repeat.set_tooltip_text(Some(tip[next as usize]));
+            if next == 0 { i.pw.repeat.remove_css_class("loop-active"); }
+            else          { i.pw.repeat.add_css_class("loop-active"); }
+            let mode = loop_api_mode(*i.ui_state.shuffle_on.borrow(), next);
+            if let Some(c) = i.ds.client() {
+                i.ds.rt().spawn(async move { let _ = c.set_loop_mode(mode).await; });
             }
         }
-    ));
+    });
 
-    pw.mute_btn.connect_clicked(clone!(
-        @strong ds, @strong ui_state, @strong pw
-        => move |_| {
-            let new_muted = !*ui_state.mute_on.borrow();
-            *ui_state.mute_on.borrow_mut() = new_muted;
-            pw.mute_btn.set_icon_name(if new_muted {
+    inner.pw.mute_btn.connect_clicked({
+        let i = Rc::clone(&inner);
+        move |_| {
+            let new_muted = !*i.ui_state.mute_on.borrow();
+            *i.ui_state.mute_on.borrow_mut() = new_muted;
+            i.pw.mute_btn.set_icon_name(if new_muted {
                 "audio-volume-muted-symbolic"
             } else {
                 "audio-volume-high-symbolic"
             });
-            if let Some(c) = ds.client() {
-                ds.rt().spawn(async move { let _ = c.set_mute(new_muted).await; });
+            if let Some(c) = i.ds.client() {
+                i.ds.rt().spawn(async move { let _ = c.set_mute(new_muted).await; });
             }
         }
-    ));
+    });
 
-    vol_scale.connect_value_changed(clone!(@strong ds, @strong ui_state => move |scale| {
-        if *ui_state.updating_vol.borrow() { return; }
-        let vol = scale.value() as u32;
-        if let Some(c) = ds.client() {
-            ds.rt().spawn(async move { let _ = c.set_volume(vol).await; });
-        }
-    }));
-
-    pw.seek.connect_change_value(clone!(@strong ds => move |_, _, value| {
-        if let Some(c) = ds.client() {
-            ds.rt().spawn(async move { let _ = c.seek(value as u32).await; });
-        }
-        glib::Propagation::Proceed
-    }));
-
-    sw.dropdown.connect_selected_notify(clone!(@strong ds, @strong sw => move |dd| {
-        if *sw.updating.borrow() { return; }
-        let idx = dd.selected() as usize;
-        let ids = sw.ids.borrow();
-        if let Some(src) = ids.get(idx).cloned() {
-            ds.switch_input(src);
-        }
-    }));
-
-    ow.dropdown.connect_selected_notify(clone!(@strong ds, @strong ow => move |dd| {
-        if *ow.updating.borrow() { return; }
-        let idx = dd.selected() as usize;
-        let modes = ow.modes.borrow();
-        if let Some(&mode) = modes.get(idx) {
-            ds.set_audio_output(mode);
-        }
-    }));
-
-    for (i, btn) in pp.btns.iter().enumerate() {
-        let num = (i + 1) as u32;
-        btn.connect_clicked(clone!(@strong ds => move |_| {
-            if let Some(c) = ds.client() {
-                ds.rt().spawn(async move { let _ = c.play_preset(num).await; });
+    inner.vol_scale.connect_value_changed({
+        let i = Rc::clone(&inner);
+        move |scale| {
+            if *i.ui_state.updating_vol.borrow() { return; }
+            let vol = scale.value() as u32;
+            if let Some(c) = i.ds.client() {
+                i.ds.rt().spawn(async move { let _ = c.set_volume(vol).await; });
             }
-        }));
+        }
+    });
+
+    inner.pw.seek.connect_change_value({
+        let i = Rc::clone(&inner);
+        move |_, _, value| {
+            if let Some(c) = i.ds.client() {
+                i.ds.rt().spawn(async move { let _ = c.seek(value as u32).await; });
+            }
+            glib::Propagation::Proceed
+        }
+    });
+
+    inner.sw.dropdown.connect_selected_notify({
+        let i = Rc::clone(&inner);
+        move |dd| {
+            if *i.sw.updating.borrow() { return; }
+            let idx = dd.selected() as usize;
+            let ids = i.sw.ids.borrow();
+            if let Some(src) = ids.get(idx).cloned() {
+                i.ds.switch_input(src);
+            }
+        }
+    });
+
+    inner.ow.dropdown.connect_selected_notify({
+        let i = Rc::clone(&inner);
+        move |dd| {
+            if *i.ow.updating.borrow() { return; }
+            let idx = dd.selected() as usize;
+            let modes = i.ow.modes.borrow();
+            if let Some(&mode) = modes.get(idx) {
+                i.ds.set_audio_output(mode);
+            }
+        }
+    });
+
+    for (idx, btn) in inner.pp.btns.iter().enumerate() {
+        let num = (idx + 1) as u32;
+        let i = Rc::clone(&inner);
+        btn.connect_clicked(move |_| {
+            if let Some(c) = i.ds.client() {
+                i.ds.rt().spawn(async move { let _ = c.play_preset(num).await; });
+            }
+        });
     }
 
     // ── Window actions ────────────────────────────────────────────────────────
@@ -1684,5 +1574,10 @@ pub fn build_ui(app: &adw::Application) {
         }
     ));
 
-    window.present();
+        Self { window, inner }
+    }
+
+    pub fn present(&self) {
+        self.window.present();
+    }
 }
