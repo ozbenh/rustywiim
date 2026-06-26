@@ -12,7 +12,7 @@ use gtk::{Align, Box as GtkBox, Button, CssProvider, Label, Orientation, Scale, 
 
 use crate::api::{OutputEntry, TlsMode};
 use crate::capabilities;
-use crate::config::Config;
+use crate::config::{Config, DeviceConfig};
 use crate::device_state::{ConnectionState, DeviceState};
 use crate::discovery;
 use crate::icons;
@@ -368,6 +368,21 @@ struct DeviceWindowInner {
     icons:          Rc<icons::IconSet>,
     vol_scale:      Scale,
     ui_state:       PlaybackUiState,
+    // Window / panel state — kept here so device-change and close handlers
+    // only need one Rc<Inner> capture.
+    window:              adw::ApplicationWindow,
+    paned:               gtk::Paned,
+    left_pane:           gtk::Box,
+    sidebar_btn:         gtk::ToggleButton,
+    saved_panel_width:   Rc<RefCell<i32>>,
+    panel_collapsing:    Rc<RefCell<bool>>,
+    settle_timer:        Rc<RefCell<Option<glib::SourceId>>>,
+    /// Deferred config-save timer: cancelled and rescheduled on every
+    /// state change so only one disk write happens after a burst of events.
+    config_save_timer:   Rc<RefCell<Option<glib::SourceId>>>,
+    /// SSID for which window state was last applied; guards against
+    /// re-applying on every device-changed fire for the same device.
+    applied_window_key: RefCell<String>,
 }
 
 impl DeviceWindowInner {
@@ -519,6 +534,7 @@ impl DeviceWindowInner {
 
         self.populate_source();
         self.populate_output();
+        self.apply_device_window_state(&info.ssid);
     }
 
     // ── Playback ──────────────────────────────────────────────────────────────
@@ -693,7 +709,99 @@ impl DeviceWindowInner {
             }
         }
     }
+
+    /// Apply per-device window/panel state for the device identified by
+    /// `ssid`.  Guarded by `applied_window_key` so repeated device-changed
+    /// fires for the same device don't override the user's manual resizes.
+    fn apply_device_window_state(&self, ssid: &str) {
+        if ssid.is_empty() { return; }
+        let prev_ssid = self.applied_window_key.borrow().clone();
+        if prev_ssid == ssid { return; }
+
+        // Save the previous device's window state before overwriting the layout.
+        // We use prev_ssid directly rather than ds.device_info() because by the
+        // time this is called from apply_device_info, device_info() already points
+        // to the new device.
+        if !prev_ssid.is_empty() {
+            let dev_cfg = DeviceConfig {
+                window_maximized: self.window.is_maximized(),
+                window_width:     if self.window.is_maximized() { 0 } else { self.window.width() },
+                window_height:    if self.window.is_maximized() { 0 } else { self.window.height() },
+                panel_visible:    self.sidebar_btn.is_active(),
+                paned_position:   *self.saved_panel_width.borrow(),
+            };
+            let mut cfg = Config::load();
+            cfg.save_device(&prev_ssid, dev_cfg);
+            cfg.save();
+        }
+
+        *self.applied_window_key.borrow_mut() = ssid.to_string();
+
+        let dev_cfg = Config::load().device(ssid);
+
+        let panel_width = if dev_cfg.paned_position > 0 { dev_cfg.paned_position } else { 200 };
+        *self.saved_panel_width.borrow_mut() = panel_width;
+
+        // Guard with panel_collapsing to avoid triggering the sidebar toggle handler.
+        *self.panel_collapsing.borrow_mut() = true;
+        if dev_cfg.panel_visible {
+            self.left_pane.set_visible(true);
+            self.paned.set_position(panel_width);
+            self.sidebar_btn.set_active(true);
+        } else {
+            self.left_pane.set_visible(false);
+            self.sidebar_btn.set_active(false);
+        }
+        *self.panel_collapsing.borrow_mut() = false;
+
+        if dev_cfg.window_maximized {
+            self.window.maximize();
+        } else {
+            // set_default_size must come before unmaximize so the compositor
+            // uses the stored size when restoring from maximized state.
+            if dev_cfg.window_width > 0 && dev_cfg.window_height > 0 {
+                self.window.set_default_size(dev_cfg.window_width, dev_cfg.window_height);
+            }
+            self.window.unmaximize();
+        }
+    }
+
+    /// Immediately persist the current device's window/panel state.
+    /// Loads the full config, updates only the current device's entry, and
+    /// saves so no other device's entry is overwritten.
+    fn save_config_now(&self) {
+        let ssid = match self.ds.device_info() {
+            Some(di) if !di.ssid.is_empty() => di.ssid,
+            _ => return,
+        };
+        let dev_cfg = DeviceConfig {
+            window_maximized: self.window.is_maximized(),
+            window_width:     if self.window.is_maximized() { 0 } else { self.window.width() },
+            window_height:    if self.window.is_maximized() { 0 } else { self.window.height() },
+            panel_visible:    self.sidebar_btn.is_active(),
+            paned_position:   *self.saved_panel_width.borrow(),
+        };
+        let mut cfg = Config::load();
+        cfg.last_ssid = ssid.clone();
+        cfg.save_device(ssid, dev_cfg);
+        cfg.save();
+    }
 } // impl DeviceWindowInner
+
+/// Schedule a deferred config save for `inner`, debounced at 500 ms.
+/// Cancels any previously scheduled save so only one write happens per burst.
+fn schedule_config_save(i: &Rc<DeviceWindowInner>) {
+    if let Some(id) = i.config_save_timer.borrow_mut().take() { id.remove(); }
+    let i2 = Rc::clone(i);
+    let id = glib::timeout_add_local_once(
+        std::time::Duration::from_millis(500),
+        move || {
+            *i2.config_save_timer.borrow_mut() = None;
+            i2.save_config_now();
+        },
+    );
+    *i.config_save_timer.borrow_mut() = Some(id);
+}
 
 fn wifi_icon_for_rssi(rssi: i32) -> &'static str {
     match rssi {
@@ -742,7 +850,7 @@ fn show_manual_ip_dialog(
                     let label = format!("Manual: {ip}");
                     dev_btn.set_label(&label);
                     manual_btn.set_label(&label);
-                    ds.set_device(&ip, TlsMode::HttpsWiiM);
+                    ds.set_device(&ip, TlsMode::HttpsWiiM, None);
                 }
             }
         }
@@ -751,11 +859,12 @@ fn show_manual_ip_dialog(
 }
 
 fn build_device_popover(
-    devs:     &[discovery::DiscoveredDevice],
-    ds:       &DeviceState,
-    dev_btn:  &gtk::MenuButton,
-    window:   &adw::ApplicationWindow,
-    saved_ip: &Rc<RefCell<String>>,
+    devs:      &[discovery::DiscoveredDevice],
+    ds:        &DeviceState,
+    dev_btn:   &gtk::MenuButton,
+    window:    &adw::ApplicationWindow,
+    saved_ip:  &Rc<RefCell<String>>,
+    on_select: impl Fn(&str) + Clone + 'static,
 ) -> gtk::Popover {
     let vbox = GtkBox::new(Orientation::Vertical, 0);
     vbox.set_margin_top(4);
@@ -770,16 +879,19 @@ fn build_device_popover(
         vbox.append(&lbl);
     } else {
         for d in devs {
-            let label = format!("{} ({})", d.name, d.ip);
-            let ip = d.ip.clone();
+            let label    = format!("{} ({})", d.name, d.ip);
+            let ip       = d.ip.clone();
+            let ssid     = d.ssid.clone();
             let tls_mode = d.tls_mode;
+            let on_sel   = on_select.clone();
             let btn = Button::builder().label(&label).css_classes(["flat"]).build();
             btn.connect_clicked(clone!(
                 @strong ds, @strong dev_btn, @strong label
                 => move |_| {
+                    on_sel(&ssid);
                     dev_btn.set_label(&label);
                     dev_btn.popdown();
-                    ds.set_device(&ip, tls_mode);
+                    ds.set_device(&ip, tls_mode, None);
                 }
             ));
             vbox.append(&btn);
@@ -846,11 +958,17 @@ impl DeviceWindow {
         load_css();
 
         let icons = Rc::new(icons::IconSet::load());
-        let cfg   = Config::load();
+        let cfg         = Config::load();
+        let init_dev_cfg = cfg.device(&cfg.last_ssid);
 
         let ds = DeviceState::new(rt);
         if !cfg.last_ip.is_empty() {
-            ds.set_device(&cfg.last_ip, TlsMode::HttpsWiiM);
+            // Pass the last known SSID so fetch_device_info can abort if the IP
+            // was reassigned to a different device.  Discovery will then reconnect
+            // to the right device by SSID.  Pass None if no SSID is on record
+            // (first run or old config) so we connect unconditionally.
+            let expected = if cfg.last_ssid.is_empty() { None } else { Some(cfg.last_ssid.as_str()) };
+            ds.set_device(&cfg.last_ip, TlsMode::HttpsWiiM, expected);
         }
         ds.start_polling();
 
@@ -859,7 +977,7 @@ impl DeviceWindow {
 
     let sidebar_btn = gtk::ToggleButton::builder()
         .icon_name("sidebar-show-symbolic")
-        .active(cfg.panel_visible)
+        .active(init_dev_cfg.panel_visible)
         .tooltip_text("Toggle presets panel")
         .build();
     sidebar_btn.add_css_class("sidebar-toggle");
@@ -1154,9 +1272,15 @@ impl DeviceWindow {
     paned.set_margin_top(4);
     paned.set_margin_bottom(8);
 
-    let panel_width = if cfg.paned_position > 0 { cfg.paned_position } else { 200 };
+    let panel_width = if init_dev_cfg.paned_position > 0 { init_dev_cfg.paned_position } else { 200 };
     paned.set_position(panel_width);
-    left_pane.set_visible(cfg.panel_visible);
+    left_pane.set_visible(init_dev_cfg.panel_visible);
+
+    // Create the panel-state Rc values here so they can be moved into inner.
+    let saved_panel_width  = Rc::new(RefCell::new(panel_width));
+    let panel_collapsing   = Rc::new(RefCell::new(false));
+    let settle_timer:      Rc<RefCell<Option<glib::SourceId>>> = Rc::new(RefCell::new(None));
+    let config_save_timer: Rc<RefCell<Option<glib::SourceId>>> = Rc::new(RefCell::new(None));
 
     let dev_info_label = Label::builder()
         .css_classes(["device-info"]).halign(Align::Center)
@@ -1183,13 +1307,13 @@ impl DeviceWindow {
     toolbar.add_top_bar(&header);
     toolbar.set_content(Some(&outer));
 
-    let win_w = if cfg.window_width  > 0 { cfg.window_width  } else { 680 };
-    let win_h = if cfg.window_height > 0 { cfg.window_height } else { 640 };
+    let win_w = if init_dev_cfg.window_width  > 0 { init_dev_cfg.window_width  } else { 680 };
+    let win_h = if init_dev_cfg.window_height > 0 { init_dev_cfg.window_height } else { 640 };
     let window = adw::ApplicationWindow::builder()
         .application(app).title("RustyWiiM").content(&toolbar)
         .default_width(win_w).default_height(win_h)
         .build();
-    if cfg.window_maximized { window.maximize(); }
+    if init_dev_cfg.window_maximized { window.maximize(); }
 
     // ── Shared UI state ───────────────────────────────────────────────────────
     let ui_state = PlaybackUiState {
@@ -1206,8 +1330,8 @@ impl DeviceWindow {
         labels: preset_labels,
     };
 
-    // Bundle all content-widget state into a single Rc so each signal closure
-    // only needs one clone instead of capturing 6–8 separate variables.
+    // Bundle all content-widget and window state into a single Rc so every
+    // signal closure only needs one clone instead of capturing 6–8 variables.
     let inner = Rc::new(DeviceWindowInner {
         ds: ds.clone(),
         sw,
@@ -1219,6 +1343,15 @@ impl DeviceWindow {
         icons,
         vol_scale,
         ui_state,
+        window: window.clone(),
+        paned:  paned.clone(),
+        left_pane: left_pane.clone(),
+        sidebar_btn: sidebar_btn.clone(),
+        saved_panel_width,
+        panel_collapsing,
+        settle_timer,
+        config_save_timer,
+        applied_window_key: RefCell::new(cfg.last_ssid.clone()),
     });
 
     // ── DeviceState signal connections ────────────────────────────────────────
@@ -1271,112 +1404,104 @@ impl DeviceWindow {
     });
 
     // ── Sidebar toggle ────────────────────────────────────────────────────────
-    let saved_panel_width  = Rc::new(RefCell::new(panel_width));
-    let panel_collapsing   = Rc::new(RefCell::new(false));
-    let settle_timer: Rc<RefCell<Option<glib::SourceId>>> = Rc::new(RefCell::new(None));
-    let paned_btn_held     = Rc::new(RefCell::new(false));
+    let paned_btn_held = Rc::new(RefCell::new(false));
     const SNAP_PX: i32 = 30;
 
-    paned.connect_position_notify(clone!(
-        @strong left_pane, @strong panel_collapsing,
-        @strong sidebar_btn, @strong paned,
-        @strong saved_panel_width, @strong settle_timer, @strong paned_btn_held
-        => move |p| {
-            if *panel_collapsing.borrow() { return; }
+    inner.paned.connect_position_notify({
+        let i    = Rc::clone(&inner);
+        let held = Rc::clone(&paned_btn_held);
+        move |p| {
+            if *i.panel_collapsing.borrow() { return; }
             let pos = p.position();
             if pos >= SNAP_PX {
-                if !left_pane.is_visible() {
-                    *panel_collapsing.borrow_mut() = true;
-                    left_pane.set_visible(true);
-                    *panel_collapsing.borrow_mut() = false;
+                if !i.left_pane.is_visible() {
+                    *i.panel_collapsing.borrow_mut() = true;
+                    i.left_pane.set_visible(true);
+                    *i.panel_collapsing.borrow_mut() = false;
                 }
-            } else if left_pane.is_visible() {
-                *panel_collapsing.borrow_mut() = true;
-                left_pane.set_visible(false);
-                *panel_collapsing.borrow_mut() = false;
+            } else if i.left_pane.is_visible() {
+                *i.panel_collapsing.borrow_mut() = true;
+                i.left_pane.set_visible(false);
+                *i.panel_collapsing.borrow_mut() = false;
             }
-            if let Some(id) = settle_timer.borrow_mut().take() { id.remove(); }
-            let btn2   = sidebar_btn.clone();
-            let pane2  = left_pane.clone();
-            let paned2 = paned.clone();
-            let width2 = saved_panel_width.clone();
-            let coll2  = panel_collapsing.clone();
-            let timer2 = settle_timer.clone();
-            let held2  = paned_btn_held.clone();
+            if let Some(id) = i.settle_timer.borrow_mut().take() { id.remove(); }
+            let i2    = Rc::clone(&i);
+            let held2 = Rc::clone(&held);
             let id = glib::timeout_add_local_once(
                 std::time::Duration::from_millis(50),
                 move || {
-                    *timer2.borrow_mut() = None;
+                    *i2.settle_timer.borrow_mut() = None;
                     let btn_held = *held2.borrow();
                     *held2.borrow_mut() = false;
-                    let shown = pane2.is_visible();
-                    if btn2.is_active() != shown {
-                        *coll2.borrow_mut() = true;
-                        btn2.set_active(shown);
-                        *coll2.borrow_mut() = false;
+                    let shown = i2.left_pane.is_visible();
+                    if i2.sidebar_btn.is_active() != shown {
+                        *i2.panel_collapsing.borrow_mut() = true;
+                        i2.sidebar_btn.set_active(shown);
+                        *i2.panel_collapsing.borrow_mut() = false;
                     }
                     if shown && !btn_held {
-                        let pos = paned2.position();
-                        if pos >= SNAP_PX { *width2.borrow_mut() = pos; }
+                        let pos = i2.paned.position();
+                        if pos >= SNAP_PX { *i2.saved_panel_width.borrow_mut() = pos; }
                     }
+                    schedule_config_save(&i2);
                 },
             );
-            *settle_timer.borrow_mut() = Some(id);
+            *i.settle_timer.borrow_mut() = Some(id);
         }
-    ));
+    });
 
     {
         let drag_ctrl = gtk::EventControllerLegacy::new();
-        drag_ctrl.connect_event(clone!(
-            @strong sidebar_btn, @strong left_pane, @strong paned,
-            @strong saved_panel_width, @strong panel_collapsing,
-            @strong settle_timer, @strong paned_btn_held
-            => move |_, event| {
+        drag_ctrl.connect_event({
+            let i    = Rc::clone(&inner);
+            let held = Rc::clone(&paned_btn_held);
+            move |_, event| {
                 match event.event_type() {
                     gtk::gdk::EventType::ButtonPress => {
-                        *paned_btn_held.borrow_mut() = true;
+                        *held.borrow_mut() = true;
                     }
                     gtk::gdk::EventType::ButtonRelease => {
-                        *paned_btn_held.borrow_mut() = false;
-                        if let Some(id) = settle_timer.borrow_mut().take() { id.remove(); }
-                        let shown = left_pane.is_visible();
-                        if sidebar_btn.is_active() != shown {
-                            *panel_collapsing.borrow_mut() = true;
-                            sidebar_btn.set_active(shown);
-                            *panel_collapsing.borrow_mut() = false;
+                        *held.borrow_mut() = false;
+                        if let Some(id) = i.settle_timer.borrow_mut().take() { id.remove(); }
+                        let shown = i.left_pane.is_visible();
+                        if i.sidebar_btn.is_active() != shown {
+                            *i.panel_collapsing.borrow_mut() = true;
+                            i.sidebar_btn.set_active(shown);
+                            *i.panel_collapsing.borrow_mut() = false;
                         }
                         if shown {
-                            let pos = paned.position();
-                            if pos >= SNAP_PX { *saved_panel_width.borrow_mut() = pos; }
+                            let pos = i.paned.position();
+                            if pos >= SNAP_PX { *i.saved_panel_width.borrow_mut() = pos; }
                         }
+                        schedule_config_save(&i);
                     }
                     _ => {}
                 }
                 glib::Propagation::Proceed
             }
-        ));
-        paned.add_controller(drag_ctrl);
+        });
+        inner.paned.add_controller(drag_ctrl);
     }
 
-    sidebar_btn.connect_toggled(clone!(
-        @strong paned, @strong left_pane,
-        @strong saved_panel_width, @strong panel_collapsing, @strong settle_timer
-        => move |btn| {
-            if *panel_collapsing.borrow() { return; }
-            if let Some(id) = settle_timer.borrow_mut().take() { id.remove(); }
+    inner.sidebar_btn.connect_toggled({
+        let i = Rc::clone(&inner);
+        move |btn| {
+            if *i.panel_collapsing.borrow() { return; }
+            if let Some(id) = i.settle_timer.borrow_mut().take() { id.remove(); }
             if btn.is_active() {
-                *panel_collapsing.borrow_mut() = true;
-                left_pane.set_visible(true);
-                let w = *saved_panel_width.borrow();
-                paned.set_position(w);
-                *panel_collapsing.borrow_mut() = false;
+                *i.panel_collapsing.borrow_mut() = true;
+                i.left_pane.set_visible(true);
+                let w = *i.saved_panel_width.borrow();
+                i.paned.set_position(w);
+                *i.panel_collapsing.borrow_mut() = false;
             } else {
-                *panel_collapsing.borrow_mut() = true;
-                left_pane.set_visible(false);
-                *panel_collapsing.borrow_mut() = false;
+                *i.panel_collapsing.borrow_mut() = true;
+                i.left_pane.set_visible(false);
+                *i.panel_collapsing.borrow_mut() = false;
             }
+            schedule_config_save(&i);
         }
-    ));
+    });
 
     // ── SSDP discovery ────────────────────────────────────────────────────────
     {
@@ -1386,30 +1511,54 @@ impl DeviceWindow {
             let _ = tx.send(devs).await;
         });
 
-        let saved_ip = Rc::new(RefCell::new(cfg.last_ip.clone()));
+        let last_ssid_for_disc = cfg.last_ssid.clone();
+        let saved_ip           = Rc::new(RefCell::new(cfg.last_ip.clone()));
+        let inner_for_popover  = Rc::clone(&inner);
         glib::spawn_future_local(clone!(
             @strong ds, @strong dev_btn, @strong window, @strong saved_ip
             => async move {
                 if let Ok(devs) = rx.recv().await {
                     let popover = build_device_popover(
                         &devs, &ds, &dev_btn, &window, &saved_ip,
+                        {
+                            let i = inner_for_popover;
+                            move |ssid| { i.apply_device_window_state(ssid); }
+                        },
                     );
                     dev_btn.set_popover(Some(&popover));
 
                     let saved = saved_ip.borrow().clone();
-                    if !saved.is_empty() {
-                        if let Some(d) = devs.iter().find(|d| d.ip == saved) {
+
+                    // Prefer SSID match (survives IP changes); fall back to IP match.
+                    let by_ssid = devs.iter().find(|d| {
+                        !last_ssid_for_disc.is_empty()
+                            && !d.ssid.is_empty()
+                            && d.ssid == last_ssid_for_disc
+                    });
+                    let by_ip = devs.iter().find(|d| !saved.is_empty() && d.ip == saved);
+                    let best = by_ssid.or(by_ip);
+
+                    // Update the button label to reflect the discovered device
+                    // (may now be at a different IP from last_ip).
+                    match best {
+                        Some(d) => dev_btn.set_label(&format!("{} ({})", d.name, d.ip)),
+                        None if !saved.is_empty() => dev_btn.set_label(&format!("Manual: {saved}")),
+                        None if devs.is_empty()   => dev_btn.set_label("No device"),
+                        None => {}
+                    }
+
+                    // Auto-connect only if not already connecting/connected.
+                    // Disconnected means either no last_ip or the SSID check failed.
+                    if ds.connection_state() == ConnectionState::Disconnected {
+                        let target = best.or_else(|| {
+                            // No SSID/IP match and no prior device — pick the only one.
+                            if saved.is_empty() { devs.first() } else { None }
+                        });
+                        if let Some(d) = target {
                             dev_btn.set_label(&format!("{} ({})", d.name, d.ip));
-                        } else {
-                            dev_btn.set_label(&format!("Manual: {saved}"));
+                            *saved_ip.borrow_mut() = d.ip.clone();
+                            ds.set_device(&d.ip, d.tls_mode, None);
                         }
-                    } else if !devs.is_empty() {
-                        let d = &devs[0];
-                        let label = format!("{} ({})", d.name, d.ip);
-                        dev_btn.set_label(&label);
-                        ds.set_device(&d.ip, d.tls_mode);
-                    } else {
-                        dev_btn.set_label("No device");
                     }
                 }
             }
@@ -1571,22 +1720,17 @@ impl DeviceWindow {
     window.add_action(&about_action);
 
     // ── Save window state ─────────────────────────────────────────────────────
-    window.connect_close_request(clone!(
-        @strong paned, @strong saved_panel_width, @strong sidebar_btn, @strong settle_timer
-        => move |win| {
-            if let Some(id) = settle_timer.borrow_mut().take() { id.remove(); }
-            let mut cfg = Config::load();
-            cfg.window_maximized = win.is_maximized();
-            if !win.is_maximized() {
-                cfg.window_width  = win.width();
-                cfg.window_height = win.height();
-            }
-            cfg.panel_visible    = sidebar_btn.is_active();
-            cfg.paned_position   = *saved_panel_width.borrow();
-            cfg.save();
+    window.connect_close_request({
+        let i = Rc::clone(&inner);
+        move |_win| {
+            // Cancel any deferred saves and write immediately so the final
+            // window state (size, panel) is not lost on exit or device switch.
+            if let Some(id) = i.settle_timer.borrow_mut().take() { id.remove(); }
+            if let Some(id) = i.config_save_timer.borrow_mut().take() { id.remove(); }
+            i.save_config_now();
             glib::Propagation::Proceed
         }
-    ));
+    });
 
         Self { window, inner }
     }
