@@ -56,6 +56,37 @@ struct PollData {
     output: Option<AudioOutputStatus>,
 }
 
+// ── Slow poll ─────────────────────────────────────────────────────────────────
+
+struct SlowPollResult {
+    /// `Some(result)` when probe was attempted; `None` when skipped (probe_outputs=false).
+    outputs:     Option<Option<Vec<OutputEntry>>>,
+    device_info: Option<DeviceInfo>,
+    /// `Some((fp, entries))` when the fingerprint changed; `None` when
+    /// unchanged or when preset probing is disabled.
+    presets:     Option<(String, Vec<PresetEntry>)>,
+}
+
+async fn run_slow_poll(
+    client:        WiimClient,
+    probe_outputs: bool,
+    probe_presets: bool,
+    preset_fp:     String,
+) -> SlowPollResult {
+    let outputs = if probe_outputs {
+        Some(client.get_sound_card_mode_support_list().await)
+    } else {
+        None
+    };
+    let device_info = client.get_device_info().await.ok();
+    let presets = if probe_presets {
+        client.fetch_presets(&preset_fp).await
+    } else {
+        None
+    };
+    SlowPollResult { outputs, device_info, presets }
+}
+
 // ── Cached device state ───────────────────────────────────────────────────────
 
 struct Inner {
@@ -126,15 +157,17 @@ mod imp {
     use std::sync::OnceLock;
 
     pub struct DeviceState {
-        pub(super) inner: RefCell<Inner>,
-        pub(super) rt:    std::cell::OnceCell<Arc<tokio::runtime::Runtime>>,
+        pub(super) inner:         RefCell<Inner>,
+        pub(super) rt:            std::cell::OnceCell<Arc<tokio::runtime::Runtime>>,
+        pub(super) slow_poll_tx:  RefCell<Option<async_channel::Sender<SlowPollResult>>>,
     }
 
     impl Default for DeviceState {
         fn default() -> Self {
             Self {
-                inner: RefCell::new(Inner::default()),
-                rt:    std::cell::OnceCell::new(),
+                inner:         RefCell::new(Inner::default()),
+                rt:            std::cell::OnceCell::new(),
+                slow_poll_tx:  RefCell::new(None),
             }
         }
     }
@@ -300,6 +333,26 @@ impl DeviceState {
             }
             dbg("signal: device-changed (ready)");
             ds.emit_by_name::<()>("device-changed", &[]);
+            // Immediately run one slow poll so presets and network status appear
+            // right after connection rather than waiting for the 5-second timer.
+            ds.fire_slow_poll();
+        });
+    }
+
+    /// Enqueue one slow-poll cycle (outputs + device_info + presets) for
+    /// immediate execution.  Safe to call from the GTK thread at any time;
+    /// does nothing when the slow-poll channel isn't set up yet.
+    fn fire_slow_poll(&self) {
+        let inner = self.imp().inner.borrow();
+        let Some(client)  = inner.client.clone()   else { return };
+        let probe_outputs = inner.probe_outputs;
+        let probe_presets = inner.probe_presets;
+        let preset_fp     = inner.preset_fp.clone();
+        drop(inner);
+        let Some(tx) = self.imp().slow_poll_tx.borrow().clone() else { return };
+        self.rt().spawn(async move {
+            let result = run_slow_poll(client, probe_outputs, probe_presets, preset_fp).await;
+            let _ = tx.send(result).await;
         });
     }
 
@@ -370,19 +423,13 @@ impl DeviceState {
     }
 
     fn start_slow_pollers(&self) {
-        struct SlowPollResult {
-            /// `Some(result)` when probe was attempted; `None` when skipped (probe_outputs=false).
-            outputs:     Option<Option<Vec<OutputEntry>>>,
-            device_info: Option<DeviceInfo>,
-            /// `Some((fp, entries))` when the fingerprint changed; `None` when
-            /// unchanged or when preset probing is disabled.
-            presets:     Option<(String, Vec<PresetEntry>)>,
-        }
+        let (tx, rx) = async_channel::unbounded::<SlowPollResult>();
 
-        let (tx, rx) = async_channel::bounded::<SlowPollResult>(1);
+        // Store the sender so fire_slow_poll() can enqueue an immediate cycle.
+        *self.imp().slow_poll_tx.borrow_mut() = Some(tx.clone());
 
         // Timer: fires every 5 seconds.
-        //  - Connected → run normal slow polls (output list + getStatusEx).
+        //  - Connected → run normal slow polls (output list + getStatusEx + presets).
         //  - Failed    → attempt to reconnect via fetch_device_info().
         //  - Connecting / Disconnected → skip.
         let ds_weak = self.downgrade();
@@ -410,18 +457,8 @@ impl DeviceState {
                     let Some(client) = client else { return glib::ControlFlow::Continue };
                     let tx = tx.clone();
                     rt.spawn(async move {
-                        let outputs = if probe_outputs {
-                            Some(client.get_sound_card_mode_support_list().await)
-                        } else {
-                            None
-                        };
-                        let device_info = client.get_device_info().await.ok();
-                        let presets = if probe_presets {
-                            client.fetch_presets(&preset_fp).await
-                        } else {
-                            None
-                        };
-                        let _ = tx.send(SlowPollResult { outputs, device_info, presets }).await;
+                        let result = run_slow_poll(client, probe_outputs, probe_presets, preset_fp).await;
+                        let _ = tx.send(result).await;
                     });
                 }
                 _ => {} // Connecting or Disconnected — skip

@@ -125,6 +125,11 @@ window {
     min-width: 40px;
     min-height: 40px;
 }
+.preset-art-small {
+    min-width: 26px;
+    min-height: 26px;
+    padding: 7px;
+}
 .preset-name {
     font-size: 11px;
     color: #a0a0a0;
@@ -645,6 +650,8 @@ impl DeviceWindowInner {
         for pic in self.pp.pics.iter() {
             pic.set_paintable(None::<&gtk::gdk::Paintable>);
             pic.set_icon_name(Some("audio-x-generic-symbolic"));
+            pic.set_pixel_size(40);
+            pic.remove_css_class("preset-art-small");
         }
 
         for entry in &presets {
@@ -667,14 +674,21 @@ impl DeviceWindowInner {
                         }
                     }
                     PresetKind::InputSwitch { input_id } => {
+                        pic.set_pixel_size(26);
+                        pic.add_css_class("preset-art-small");
                         pic.set_paintable(Some(self.icons.source_paintable(input_id)));
                     }
                     PresetKind::OutputSwitch { output_id } => {
+                        pic.set_pixel_size(26);
+                        pic.add_css_class("preset-art-small");
                         let canon = capabilities::canon_new_output_name(output_id);
                         pic.set_paintable(Some(self.icons.output_paintable(canon)));
                     }
-                    // Empty / OtherRoutine: keep the default "audio-x-generic-symbolic" icon.
-                    _ => {}
+                    PresetKind::OtherRoutine => {
+                        pic.set_pixel_size(26);
+                        pic.add_css_class("preset-art-small");
+                    }
+                    PresetKind::Empty => {}
                 }
             }
         }

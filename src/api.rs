@@ -396,23 +396,18 @@ pub struct PresetEntry {
 impl PresetEntry {
     pub fn label(&self) -> &str {
         match &self.kind {
-            PresetKind::InputSwitch { .. }  => "Input",
-            PresetKind::OutputSwitch { .. } => "Output",
-            PresetKind::Empty               => "",
-            _                               => &self.name,
+            PresetKind::Empty => "",
+            _                 => &self.name,
         }
     }
 
     pub fn tooltip(&self) -> String {
         match &self.kind {
-            PresetKind::Empty | PresetKind::OtherRoutine =>
-                format!("Preset {}", self.slot),
-            PresetKind::InputSwitch { .. } =>
-                format!("Preset {} — Input selection", self.slot),
-            PresetKind::OutputSwitch { .. } =>
-                format!("Preset {} — Output selection", self.slot),
-            PresetKind::Media =>
-                format!("{} (preset {})", self.name, self.slot),
+            PresetKind::Empty               => format!("Preset {}", self.slot),
+            PresetKind::OtherRoutine        => format!("{} (preset {})", self.name, self.slot),
+            PresetKind::InputSwitch  { .. } => format!("{} (preset {} — input)", self.name, self.slot),
+            PresetKind::OutputSwitch { .. } => format!("{} (preset {} — output)", self.name, self.slot),
+            PresetKind::Media               => format!("{} (preset {})", self.name, self.slot),
         }
     }
 }
