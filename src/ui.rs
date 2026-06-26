@@ -11,7 +11,7 @@ use gtk::{Align, Box as GtkBox, Button, CssProvider, Label, Orientation, Scale, 
 use crate::api::{OutputEntry, TlsMode};
 use crate::capabilities;
 use crate::config::Config;
-use crate::device_state::DeviceState;
+use crate::device_state::{ConnectionState, DeviceState};
 use crate::discovery;
 use crate::icons;
 
@@ -345,8 +345,9 @@ fn reset_device_ui(
     ow: &OutputWidgets,
     pp: &PresetWidgets,
     dev_info: &Label,
+    title: &str,
 ) {
-    pw.title.set_label("Connecting…");
+    pw.title.set_label(title);
     pw.artist.set_label("");
     pw.album.set_label("");
     pw.status.set_label("");
@@ -1289,7 +1290,13 @@ pub fn build_ui(app: &adw::Application) {
         move |ds| {
             update_network_icon(ds, &net_icon);
             if ds.device_info().is_none() {
-                reset_device_ui(&pw, &sw, &ow, &pp, &dev_info_label);
+                let title = match ds.connection_state() {
+                    ConnectionState::Connecting    => "Connecting…",
+                    ConnectionState::Failed        => "Disconnected",
+                    ConnectionState::Disconnected  => "",
+                    ConnectionState::Connected     => "",
+                };
+                reset_device_ui(&pw, &sw, &ow, &pp, &dev_info_label, title);
             } else {
                 apply_device_info(ds, &sw, &ow, &pp, &dev_info_label, &icons);
                 // Trigger preset load via DeviceState's capabilities.

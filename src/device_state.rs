@@ -36,6 +36,17 @@ use crate::api::{
 };
 use crate::capabilities::{DeviceCapabilities, detect_outputs, output_display_name};
 
+// ── Connection state ──────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ConnectionState {
+    #[default]
+    Disconnected,
+    Connecting,
+    Connected,
+    Failed,
+}
+
 // ── Poll payload ──────────────────────────────────────────────────────────────
 
 struct PollData {
@@ -64,7 +75,8 @@ struct Inner {
     outputs:         Vec<OutputEntry>,
     /// `true` while `getSoundCardModeSupportList` should be polled.
     /// Set to `false` on the first call that returns a non-array response.
-    probe_outputs:   bool,
+    probe_outputs:      bool,
+    connection_state:   ConnectionState,
     /// Last known network connection type (0=ethernet, 2=wifi).
     /// `None` until first `getStatusEx` result arrives.
     netstat:         Option<u32>,
@@ -86,8 +98,8 @@ impl Default for Inner {
             current_mode:    String::new(),
             current_art_url: String::new(),
             art_bytes:       None,
-            outputs:         Vec::new(),
-            probe_outputs:   true,
+            outputs:          Vec::new(),
+            probe_outputs:    true,
             netstat:          None,
             rssi:             None,
             connection_state: ConnectionState::Disconnected,
@@ -168,7 +180,8 @@ impl DeviceState {
         {
             let mut inner = self.imp().inner.borrow_mut();
             *inner = Inner::default();
-            inner.client = Some(WiimClient::new(ip, tls));
+            inner.client           = Some(WiimClient::new(ip, tls));
+            inner.connection_state = ConnectionState::Connecting;
         }
         {
             use crate::config::Config;
@@ -187,29 +200,43 @@ impl DeviceState {
             None    => return,
         };
         let rt = self.rt();
-        type FetchPayload = (
-            DeviceInfo,
-            Option<AudioOutputStatus>,
-            Vec<AudioInputEntry>,
-            HashMap<String, String>,
-            Option<Vec<OutputEntry>>,  // getSoundCardModeSupportList result
-        );
-        let (tx, rx) = async_channel::bounded::<FetchPayload>(1);
+        struct FetchOk {
+            info:      DeviceInfo,
+            output:    Option<AudioOutputStatus>,
+            in_enable: Vec<AudioInputEntry>,
+            renames:   HashMap<String, String>,
+            sc_list:   Option<Vec<OutputEntry>>,
+        }
+        let (tx, rx) = async_channel::bounded::<Option<FetchOk>>(1);
 
         rt.spawn(async move {
-            if let Ok(info) = client.get_device_info().await {
-                let output    = client.get_audio_output().await.ok();
-                let in_enable = client.get_audio_input_enable().await;
-                let renames   = client.get_mode_rename().await;
-                let sc_list   = client.get_sound_card_mode_support_list().await;
-                let _ = tx.send((info, output, in_enable, renames, sc_list)).await;
-            }
+            let payload = match client.get_device_info().await {
+                Ok(info) => {
+                    let output    = client.get_audio_output().await.ok();
+                    let in_enable = client.get_audio_input_enable().await;
+                    let renames   = client.get_mode_rename().await;
+                    let sc_list   = client.get_sound_card_mode_support_list().await;
+                    Some(FetchOk { info, output, in_enable, renames, sc_list })
+                }
+                Err(e) => {
+                    eprintln!("[state] fetch_device_info failed: {e}");
+                    None
+                }
+            };
+            let _ = tx.send(payload).await;
         });
 
         let ds = self.downgrade();
         glib::spawn_future_local(async move {
-            let Ok((info, output, in_enable, renames, sc_list)) = rx.recv().await else { return };
+            let payload = rx.recv().await.ok().flatten();
             let Some(ds) = ds.upgrade() else { return };
+
+            let Some(FetchOk { info, output, in_enable, renames, sc_list }) = payload else {
+                ds.imp().inner.borrow_mut().connection_state = ConnectionState::Failed;
+                dbg("signal: device-changed (failed)");
+                ds.emit_by_name::<()>("device-changed", &[]);
+                return;
+            };
             let caps = DeviceCapabilities::from_device_info(&info);
             // Initialise outputs: prefer the live API list; fall back to the static profile.
             let (probe_outputs, outputs) = match sc_list {
@@ -243,13 +270,13 @@ impl DeviceState {
                 inner.netstat           = info.netstat.parse().ok();
                 inner.rssi              = info.rssi.parse().ok();
                 inner.capabilities      = Some(caps);
-                inner.capabilities  = Some(caps);
-                inner.device_info   = Some(info);
-                inner.output_status = output;
-                inner.audio_inputs  = in_enable;
-                inner.mode_renames  = renames;
-                inner.outputs       = outputs;
-                inner.probe_outputs = probe_outputs;
+                inner.device_info       = Some(info);
+                inner.output_status     = output;
+                inner.audio_inputs      = in_enable;
+                inner.mode_renames      = renames;
+                inner.outputs           = outputs;
+                inner.probe_outputs     = probe_outputs;
+                inner.connection_state  = ConnectionState::Connected;
             }
             dbg("signal: device-changed (ready)");
             ds.emit_by_name::<()>("device-changed", &[]);
@@ -267,7 +294,7 @@ impl DeviceState {
         self.start_poll_timer(poll_tx);
         self.start_poll_processor(poll_rx, art_tx);
         self.start_art_loader(art_rx);
-        self.start_output_list_poller();
+        self.start_slow_pollers();
     }
 
     fn start_poll_timer(&self, poll_tx: async_channel::Sender<PollData>) {
@@ -318,18 +345,21 @@ impl DeviceState {
         });
     }
 
-    fn start_output_list_poller(&self) {
-        let (tx, rx) = async_channel::bounded::<Option<Vec<OutputEntry>>>(1);
+    fn start_slow_pollers(&self) {
+        struct SlowPollResult {
+            /// `Some(result)` when probe was attempted; `None` when skipped (probe_outputs=false).
+            outputs:     Option<Option<Vec<OutputEntry>>>,
+            device_info: Option<DeviceInfo>,
+        }
 
-        // Fire every 5 seconds; skip silently when probe_outputs is false or
-        // no client is connected.  The timer itself never stops so that if the
-        // user switches devices (probe_outputs resets to true) we resume automatically.
+        let (tx, rx) = async_channel::bounded::<SlowPollResult>(1);
+
         let ds_weak = self.downgrade();
         let rt = self.rt();
         glib::timeout_add_local(Duration::from_secs(5), move || {
             let Some(ds) = ds_weak.upgrade() else { return glib::ControlFlow::Break };
             let inner = ds.imp().inner.borrow();
-            if !inner.probe_outputs { return glib::ControlFlow::Continue; }
+            let probe  = inner.probe_outputs;
             let client = match inner.client.clone() {
                 Some(c) => c,
                 None    => return glib::ControlFlow::Continue,
@@ -337,8 +367,13 @@ impl DeviceState {
             drop(inner);
             let tx = tx.clone();
             rt.spawn(async move {
-                let result = client.get_sound_card_mode_support_list().await;
-                let _ = tx.send(result).await;
+                let outputs = if probe {
+                    Some(client.get_sound_card_mode_support_list().await)
+                } else {
+                    None
+                };
+                let device_info = client.get_device_info().await.ok();
+                let _ = tx.send(SlowPollResult { outputs, device_info }).await;
             });
             glib::ControlFlow::Continue
         });
@@ -347,13 +382,14 @@ impl DeviceState {
         glib::spawn_future_local(async move {
             while let Ok(result) = rx.recv().await {
                 let Some(ds) = ds_weak.upgrade() else { break };
-                match result {
-                    None => {
-                        // Device doesn't support this API — disable future polls.
+
+                // ── output list ───────────────────────────────────────────────
+                match result.outputs {
+                    Some(None) => {
                         dbg("getSoundCardModeSupportList returned non-array; disabling");
                         ds.imp().inner.borrow_mut().probe_outputs = false;
                     }
-                    Some(list) => {
+                    Some(Some(list)) => {
                         let prev = ds.imp().inner.borrow().outputs.clone();
                         if list != prev {
                             dbg(&format!("outputs updated by poll: {:?}", list));
@@ -361,6 +397,59 @@ impl DeviceState {
                             ds.emit_by_name::<()>("outputs-changed", &[]);
                         }
                     }
+                    None => {} // probe skipped
+                }
+
+                // ── device info (getStatusEx) ─────────────────────────────────
+                let Some(new_info) = result.device_info else { continue };
+
+                let (prev_fw, prev_ssid, prev_name, prev_netstat, prev_rssi) = {
+                    let inner = ds.imp().inner.borrow();
+                    let di = inner.device_info.as_ref();
+                    (
+                        di.map(|i| i.firmware.clone()).unwrap_or_default(),
+                        di.map(|i| i.ssid.clone()).unwrap_or_default(),
+                        di.map(|i| i.device_name.clone()).unwrap_or_default(),
+                        inner.netstat,
+                        inner.rssi,
+                    )
+                };
+
+                let identity_changed =
+                    new_info.firmware    != prev_fw   ||
+                    new_info.ssid        != prev_ssid ||
+                    new_info.device_name != prev_name;
+
+                let new_netstat: Option<u32> = new_info.netstat.parse().ok();
+                let new_rssi:    Option<i32> = new_info.rssi.parse().ok();
+
+                let network_changed =
+                    new_netstat != prev_netstat ||
+                    new_rssi    != prev_rssi;
+
+                {
+                    let mut inner = ds.imp().inner.borrow_mut();
+                    inner.netstat = new_netstat;
+                    inner.rssi    = new_rssi;
+                    if identity_changed {
+                        dbg(&format!(
+                            "device identity changed: fw={} ssid={} name={}",
+                            new_info.firmware, new_info.ssid, new_info.device_name,
+                        ));
+                        inner.device_info = Some(new_info);
+                    }
+                }
+
+                if identity_changed {
+                    ds.emit_by_name::<()>("device-changed", &[]);
+                }
+                if network_changed {
+                    dbg(&format!(
+                        "network changed: netstat={} rssi={}",
+                        ds.imp().inner.borrow().netstat.unwrap_or(0),
+                        ds.imp().inner.borrow().rssi.unwrap_or(0),
+                    ));
+                    ds.emit_by_name::<()>("network-changed", &[]);
                 }
             }
         });
@@ -556,8 +645,27 @@ impl DeviceState {
         })
     }
 
+    pub fn connect_network_changed<F: Fn(&Self) + 'static>(&self, f: F) -> glib::SignalHandlerId {
+        self.connect_local("network-changed", false, move |args| {
+            f(&args[0].get::<Self>().unwrap());
+            None
+        })
+    }
+
     pub fn outputs(&self) -> Vec<OutputEntry> {
         self.imp().inner.borrow().outputs.clone()
+    }
+
+    pub fn connection_state(&self) -> ConnectionState {
+        self.imp().inner.borrow().connection_state
+    }
+
+    pub fn netstat(&self) -> Option<u32> {
+        self.imp().inner.borrow().netstat
+    }
+
+    pub fn rssi(&self) -> Option<i32> {
+        self.imp().inner.borrow().rssi
     }
 }
 
