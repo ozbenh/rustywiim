@@ -9,6 +9,8 @@
 /// * `playback-changed` — player status / metadata / artwork updated
 /// * `input-changed`    — current input mode changed
 /// * `output-changed`   — audio output selection changed
+/// * `outputs-changed`  — supported output list updated (rebuild menu)
+/// * `network-changed`  — netstat or RSSI changed
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -63,6 +65,11 @@ struct Inner {
     /// `true` while `getSoundCardModeSupportList` should be polled.
     /// Set to `false` on the first call that returns a non-array response.
     probe_outputs:   bool,
+    /// Last known network connection type (0=ethernet, 2=wifi).
+    /// `None` until first `getStatusEx` result arrives.
+    netstat:         Option<u32>,
+    /// Last known wifi RSSI in dBm.  `None` until first `getStatusEx` result.
+    rssi:            Option<i32>,
 }
 
 impl Default for Inner {
@@ -81,6 +88,9 @@ impl Default for Inner {
             art_bytes:       None,
             outputs:         Vec::new(),
             probe_outputs:   true,
+            netstat:          None,
+            rssi:             None,
+            connection_state: ConnectionState::Disconnected,
         }
     }
 }
@@ -122,6 +132,7 @@ mod imp {
                     Signal::builder("input-changed").build(),
                     Signal::builder("output-changed").build(),
                     Signal::builder("outputs-changed").build(),
+                    Signal::builder("network-changed").build(),
                 ]
             })
         }
@@ -229,6 +240,9 @@ impl DeviceState {
             ));
             {
                 let mut inner = ds.imp().inner.borrow_mut();
+                inner.netstat           = info.netstat.parse().ok();
+                inner.rssi              = info.rssi.parse().ok();
+                inner.capabilities      = Some(caps);
                 inner.capabilities  = Some(caps);
                 inner.device_info   = Some(info);
                 inner.output_status = output;

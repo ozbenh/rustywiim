@@ -236,6 +236,12 @@ pub struct DeviceInfo {
     /// `"0x…"` hex.  Use `plm_support_value()` to get the parsed integer.
     #[serde(default)]
     pub plm_support: String,
+    /// Network connection type as a string: "0" = ethernet, "2" = wifi.
+    #[serde(default)]
+    pub netstat: String,
+    /// Wifi RSSI in dBm as a string (e.g. "-61").  Empty on ethernet.
+    #[serde(default, rename = "RSSI")]
+    pub rssi: String,
 }
 
 impl DeviceInfo {

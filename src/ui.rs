@@ -143,7 +143,10 @@ window {
 }
 .device-info {
     font-size: 10px;
-    color: #484848;
+    color: #686868;
+}
+.net-icon {
+    color: #4a9fd4;
 }
 .sidebar-toggle:checked {
     color: #4ecdc4;
@@ -462,6 +465,31 @@ fn populate_output(ds: &DeviceState, ow: &OutputWidgets) {
         }
     }
     *ow.updating.borrow_mut() = false;
+}
+
+fn wifi_icon_for_rssi(rssi: i32) -> &'static str {
+    match rssi {
+        i32::MIN..=-85 | 0 => "network-wireless-offline-symbolic",
+        -84..=-75           => "network-wireless-signal-weak-symbolic",
+        -74..=-65           => "network-wireless-signal-ok-symbolic",
+        -64..=-55           => "network-wireless-signal-good-symbolic",
+        _                   => "network-wireless-signal-excellent-symbolic",
+    }
+}
+
+fn update_network_icon(ds: &DeviceState, icon: &gtk::Image) {
+    match ds.netstat() {
+        Some(0) => {
+            icon.set_icon_name(Some("network-wired-symbolic"));
+            icon.set_visible(true);
+        }
+        Some(2) => {
+            let rssi = ds.rssi().unwrap_or(0);
+            icon.set_icon_name(Some(wifi_icon_for_rssi(rssi)));
+            icon.set_visible(true);
+        }
+        _ => { icon.set_visible(false); }
+    }
 }
 
 /// Apply fully-loaded device info to the UI (labels + dropdowns).
@@ -1201,12 +1229,24 @@ pub fn build_ui(app: &adw::Application) {
 
     let dev_info_label = Label::builder()
         .css_classes(["device-info"]).halign(Align::Center)
+        .hexpand(true)
         .margin_top(4).margin_bottom(4).build();
+
+    let net_icon = gtk::Image::builder()
+        .icon_size(gtk::IconSize::Normal)
+        .css_classes(["net-icon"])
+        .margin_end(8).margin_top(4).margin_bottom(4)
+        .visible(false)
+        .build();
+
+    let bottom_bar = gtk::CenterBox::new();
+    bottom_bar.set_center_widget(Some(&dev_info_label));
+    bottom_bar.set_end_widget(Some(&net_icon));
 
     let outer = GtkBox::new(Orientation::Vertical, 0);
     outer.append(&paned);
     outer.append(&gtk::Separator::new(Orientation::Horizontal));
-    outer.append(&dev_info_label);
+    outer.append(&bottom_bar);
 
     let toolbar = adw::ToolbarView::new();
     toolbar.add_top_bar(&header);
@@ -1243,9 +1283,11 @@ pub fn build_ui(app: &adw::Application) {
         let pp = pp.clone();
         let pw = pw.clone();
         let dev_info_label = dev_info_label.clone();
+        let net_icon = net_icon.clone();
         let icons = icons.clone();
         let ds2 = ds.clone();
         move |ds| {
+            update_network_icon(ds, &net_icon);
             if ds.device_info().is_none() {
                 reset_device_ui(&pw, &sw, &ow, &pp, &dev_info_label);
             } else {
@@ -1263,6 +1305,11 @@ pub fn build_ui(app: &adw::Application) {
                 }
             }
         }
+    });
+
+    ds.connect_network_changed({
+        let net_icon = net_icon.clone();
+        move |ds| { update_network_icon(ds, &net_icon); }
     });
 
     ds.connect_playback_changed({
