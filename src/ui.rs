@@ -1656,7 +1656,7 @@ pub fn build_ui(app: &adw::Application) {
         adw::AboutDialog::builder()
             .application_name("RustyWiiM")
             .application_icon("audio-x-generic")
-            .version(env!("CARGO_PKG_VERSION"))
+            .version(concat!(env!("CARGO_PKG_VERSION"), " (", env!("GIT_HASH"), ")"))
             .developer_name("Benjamin Herrenschmidt")
             .copyright("© 2026 Benjamin Herrenschmidt")
             .license_type(gtk::License::MitX11)
