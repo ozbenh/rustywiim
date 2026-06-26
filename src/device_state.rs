@@ -164,6 +164,7 @@ mod imp {
         pub(super) inner:         RefCell<Inner>,
         pub(super) rt:            std::cell::OnceCell<Arc<tokio::runtime::Runtime>>,
         pub(super) slow_poll_tx:  RefCell<Option<async_channel::Sender<SlowPollResult>>>,
+        pub(super) poll_tx:       RefCell<Option<async_channel::Sender<PollData>>>,
     }
 
     impl Default for DeviceState {
@@ -172,6 +173,7 @@ mod imp {
                 inner:         RefCell::new(Inner::default()),
                 rt:            std::cell::OnceCell::new(),
                 slow_poll_tx:  RefCell::new(None),
+                poll_tx:       RefCell::new(None),
             }
         }
     }
@@ -397,6 +399,7 @@ impl DeviceState {
     }
 
     fn start_poll_timer(&self, poll_tx: async_channel::Sender<PollData>) {
+        *self.imp().poll_tx.borrow_mut() = Some(poll_tx.clone());
         let ds = self.downgrade();
         let rt = self.rt();
         glib::timeout_add_local(Duration::from_secs(1), move || {
@@ -718,6 +721,70 @@ impl DeviceState {
         self.rt().spawn(async move { let _ = client.switch_input(&src).await; });
     }
 
+    // ── Volume / mute commands ────────────────────────────────────────────────
+
+    pub fn do_set_mute(&self, muted: bool) {
+        let Some(client) = self.imp().inner.borrow().client.clone() else { return };
+        if let Some(ref mut st) = self.imp().inner.borrow_mut().player_status {
+            st.mute = if muted { "1" } else { "0" }.to_string();
+        }
+        self.emit_by_name::<()>("playback-changed", &[]);
+        self.rt().spawn(async move { let _ = client.set_mute(muted).await; });
+    }
+
+    pub fn do_set_volume(&self, vol: u32) {
+        let Some(client) = self.imp().inner.borrow().client.clone() else { return };
+        if let Some(ref mut st) = self.imp().inner.borrow_mut().player_status {
+            st.vol = vol.to_string();
+        }
+        self.rt().spawn(async move { let _ = client.set_volume(vol).await; });
+    }
+
+    // ── Transport commands ────────────────────────────────────────────────────
+
+    // Optimistic "play or pause based on current cached state" — use this
+    // instead of calling client().play()/pause() directly so the decision
+    // is made from the same source of truth as the poll.
+    pub fn do_play_pause(&self) {
+        let inner = self.imp().inner.borrow();
+        let Some(client) = inner.client.clone() else { return };
+        let playing = inner.player_status.as_ref().map(|s| s.status == "play").unwrap_or(false);
+        drop(inner);
+        self.rt().spawn(async move {
+            if playing { let _ = client.pause().await; } else { let _ = client.play().await; }
+        });
+        self.trigger_poll_after(400);
+    }
+
+    pub fn do_prev(&self) {
+        let Some(client) = self.imp().inner.borrow().client.clone() else { return };
+        self.rt().spawn(async move { let _ = client.prev().await; });
+        self.trigger_poll_after(400);
+    }
+
+    pub fn do_next(&self) {
+        let Some(client) = self.imp().inner.borrow().client.clone() else { return };
+        self.rt().spawn(async move { let _ = client.next().await; });
+        self.trigger_poll_after(400);
+    }
+
+    fn trigger_poll_after(&self, delay_ms: u64) {
+        let Some(tx) = self.imp().poll_tx.borrow().clone() else { return };
+        let ds = self.downgrade();
+        let rt = self.rt();
+        glib::timeout_add_local_once(Duration::from_millis(delay_ms), move || {
+            let Some(ds) = ds.upgrade() else { return };
+            let client = ds.imp().inner.borrow().client.clone();
+            if let Some(c) = client {
+                rt.spawn(async move {
+                    let status = c.get_status().await.ok();
+                    let meta   = c.get_meta_info().await.ok();
+                    let _ = tx.send(PollData { status, meta, output: None }).await;
+                });
+            }
+        });
+    }
+
     // ── Accessors ─────────────────────────────────────────────────────────────
 
     pub fn rt(&self) -> Arc<tokio::runtime::Runtime> {
@@ -738,6 +805,10 @@ impl DeviceState {
 
     pub fn player_status(&self) -> Option<PlayerStatus> {
         self.imp().inner.borrow().player_status.clone()
+    }
+
+    pub fn muted(&self) -> bool {
+        self.imp().inner.borrow().player_status.as_ref().map(|s| s.mute == "1").unwrap_or(false)
     }
 
     pub fn metadata(&self) -> Option<MetaData> {

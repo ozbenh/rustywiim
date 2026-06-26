@@ -56,6 +56,7 @@ window {
     background-color: #2a2a2a;
     color: #ffffff;
     border: none;
+    border-radius: 50%;
     box-shadow: none;
 }
 .transport-btn:hover {
@@ -90,6 +91,44 @@ window {
     border-radius: 50%;
     border: none;
     box-shadow: none;
+}
+.vol-pop trough {
+    min-width: 3px;
+    border-radius: 2px;
+    background-color: #2a2a2a;
+}
+.vol-pop trough highlight {
+    background-color: #4ecdc4;
+}
+.vol-pop slider {
+    min-width: 8px;
+    min-height: 8px;
+    margin: -3px;
+    background-color: #808080;
+    border-radius: 50%;
+    border: none;
+    box-shadow: none;
+}
+.mini-vol-pop trough {
+    min-width: 3px;
+    border-radius: 2px;
+    background-color: #2a2a2a;
+}
+.mini-vol-pop trough highlight {
+    background-color: #4a4a4a;
+}
+.mini-vol-pop slider {
+    min-width: 6px;
+    min-height: 6px;
+    margin: -2px;
+    background-color: #808080;
+    border-radius: 50%;
+    border: none;
+    box-shadow: none;
+}
+.mini-vol-popover > contents {
+    min-width: 0;
+    padding: 0;
 }
 .seek-scale trough {
     min-height: 4px;
@@ -352,6 +391,13 @@ fn format_quality(bit_rate: &str, sample_rate: &str, bit_depth: &str) -> Option<
     Some(parts.join(" / "))
 }
 
+fn vol_icon(muted: bool, vol: f64) -> &'static str {
+    if muted || vol == 0.0 { return "audio-volume-muted-symbolic"; }
+    if vol <= 33.0 { "audio-volume-low-symbolic" }
+    else if vol <= 66.0 { "audio-volume-medium-symbolic" }
+    else { "audio-volume-high-symbolic" }
+}
+
 // ── Loop helpers ──────────────────────────────────────────────────────────────
 
 fn loop_api_mode(shuffle: bool, repeat: u32) -> i32 {
@@ -416,15 +462,17 @@ struct PlaybackWidgets {
     pos:        Label,
     dur:        Label,
     seek:       Scale,
-    btn_prev:   Button,
-    btn_play:   Button,
-    btn_next:   Button,
-    mute_btn:   Button,
-    shuffle:    Button,
-    repeat:     Button,
-    artwork:    gtk::Picture,
-    art_stack:  gtk::Stack,
-    input_icon: gtk::Image,
+    btn_prev:    Button,
+    btn_play:    Button,
+    btn_next:    Button,
+    shuffle:     Button,
+    repeat:      Button,
+    vol_btn:     Button,
+    vol_popover: gtk::Popover,
+    mute_btn:    Button,
+    artwork:     gtk::Picture,
+    art_stack:   gtk::Stack,
+    input_icon:  gtk::Image,
 }
 
 // ── Playback UI state ─────────────────────────────────────────────────────────
@@ -432,7 +480,6 @@ struct PlaybackWidgets {
 #[derive(Clone)]
 struct PlaybackUiState {
     is_playing:   Rc<RefCell<bool>>,
-    mute_on:      Rc<RefCell<bool>>,
     shuffle_on:   Rc<RefCell<bool>>,
     repeat_state: Rc<RefCell<u32>>,
     updating_vol: Rc<RefCell<bool>>,
@@ -461,6 +508,8 @@ struct MiniWidgets {
     btn_prev:      Button,
     btn_play:      Button,
     btn_next:      Button,
+    vol_btn:       Button,
+    vol_popover:   gtk::Popover,
     mute_btn:      Button,
     vol_scale:     Scale,
 }
@@ -662,11 +711,14 @@ impl DeviceWindowInner {
 
     fn update_playback_ui(&self) {
         if let Some(st) = self.ds.player_status() {
+            let muted = st.mute == "1";
             if let Ok(v) = st.vol.parse::<f64>() {
                 *self.ui_state.updating_vol.borrow_mut() = true;
                 self.vol_scale.set_value(v);
                 *self.ui_state.updating_vol.borrow_mut() = false;
             }
+            self.pw.vol_btn.set_icon_name(vol_icon(muted, self.vol_scale.value()));
+            self.pw.mute_btn.set_icon_name(if muted { "audio-volume-muted-symbolic" } else { "audio-volume-high-symbolic" });
 
             let cur_s = st.curpos.parse::<u64>().unwrap_or(0) / 1000;
             let tot_s = st.totlen.parse::<u64>().unwrap_or(0) / 1000;
@@ -677,25 +729,13 @@ impl DeviceWindowInner {
 
             let playing = st.status == "play";
             *self.ui_state.is_playing.borrow_mut() = playing;
-            let play_icon = if playing {
+            self.pw.btn_play.set_icon_name(if playing {
                 "media-playback-pause-symbolic"
             } else {
                 "media-playback-start-symbolic"
-            };
-            self.pw.btn_play.set_icon_name(play_icon);
+            });
 
             self.pw.status.set_label(&format_status(&st.status, &st.mode, &st.vendor));
-
-            let muted = st.mute == "1";
-            if *self.ui_state.mute_on.borrow() != muted {
-                *self.ui_state.mute_on.borrow_mut() = muted;
-                let mute_icon = if muted {
-                    "audio-volume-muted-symbolic"
-                } else {
-                    "audio-volume-high-symbolic"
-                };
-                self.pw.mute_btn.set_icon_name(mute_icon);
-            }
 
             let (dev_shuf, dev_rep) = decode_loop_mode(&st.loop_mode);
             if *self.ui_state.shuffle_on.borrow() != dev_shuf {
@@ -926,22 +966,18 @@ impl DeviceWindowInner {
             self.mini.device_label.set_label(&di.device_name);
         }
         if let Some(st) = self.ds.player_status() {
+            let muted = st.mute == "1";
             if let Ok(v) = st.vol.parse::<f64>() {
                 *self.ui_state.updating_vol.borrow_mut() = true;
                 self.mini.vol_scale.set_value(v);
                 *self.ui_state.updating_vol.borrow_mut() = false;
             }
-            let playing = st.status == "play";
-            self.mini.btn_play.set_icon_name(if playing {
+            self.mini.vol_btn.set_icon_name(vol_icon(muted, self.mini.vol_scale.value()));
+            self.mini.mute_btn.set_icon_name(if muted { "audio-volume-muted-symbolic" } else { "audio-volume-high-symbolic" });
+            self.mini.btn_play.set_icon_name(if st.status == "play" {
                 "media-playback-pause-symbolic"
             } else {
                 "media-playback-start-symbolic"
-            });
-            let muted = st.mute == "1";
-            self.mini.mute_btn.set_icon_name(if muted {
-                "audio-volume-muted-symbolic"
-            } else {
-                "audio-volume-high-symbolic"
             });
         }
         if let Some(m) = self.ds.metadata() {
@@ -1393,6 +1429,41 @@ fn build_left_pane(sw: &SourceWidgets, ow: &OutputWidgets, presets_scroll: &gtk:
 }
 
 fn build_playback_widgets() -> (PlaybackWidgets, Scale) {
+    // vol_btn must exist before we can set it as the popover's parent.
+    let vol_btn = Button::builder()
+        .icon_name("audio-volume-high-symbolic")
+        .css_classes(["transport-btn", "circular"])
+        .tooltip_text("Volume")
+        .build();
+
+    let vol_scale = Scale::with_range(Orientation::Vertical, 0.0, 100.0, 1.0);
+    vol_scale.set_inverted(true);
+    vol_scale.set_vexpand(true);
+    vol_scale.set_height_request(100);
+    vol_scale.set_draw_value(false);
+    vol_scale.set_width_request(24);
+    vol_scale.set_round_digits(0);
+    vol_scale.add_css_class("vol-pop");
+    vol_scale.set_increments(5.0, 20.0);
+
+    let mute_btn = Button::builder()
+        .icon_name("audio-volume-muted-symbolic")
+        .css_classes(["transport-btn", "circular"])
+        .tooltip_text("Mute")
+        .halign(Align::Center)
+        .build();
+
+    let vol_pop_box = GtkBox::builder()
+        .orientation(Orientation::Vertical)
+        .margin_top(6).margin_bottom(6).margin_start(6).margin_end(6)
+        .spacing(4)
+        .build();
+    vol_pop_box.append(&vol_scale);
+    vol_pop_box.append(&mute_btn);
+    let vol_popover = gtk::Popover::new();
+    vol_popover.set_child(Some(&vol_pop_box));
+    vol_popover.set_parent(&vol_btn);
+
     let pw = PlaybackWidgets {
         artwork:    gtk::Picture::builder()
             .content_fit(gtk::ContentFit::Contain).can_shrink(true)
@@ -1428,15 +1499,15 @@ fn build_playback_widgets() -> (PlaybackWidgets, Scale) {
         btn_next: Button::builder()
             .icon_name("media-skip-forward-symbolic")
             .css_classes(["transport-btn", "circular"]).build(),
-        mute_btn: Button::builder()
-            .icon_name("audio-volume-high-symbolic")
-            .css_classes(["transport-btn", "circular"]).tooltip_text("Mute").build(),
         shuffle:  Button::builder()
             .icon_name("media-playlist-shuffle-symbolic")
             .css_classes(["loop-btn", "circular"]).tooltip_text("Shuffle: Off").build(),
         repeat:   Button::builder()
             .icon_name("media-playlist-repeat-symbolic")
             .css_classes(["loop-btn", "circular"]).tooltip_text("Repeat: Off").build(),
+        vol_btn,
+        vol_popover,
+        mute_btn,
     };
 
     pw.art_stack.add_named(&pw.artwork, Some("artwork"));
@@ -1446,16 +1517,10 @@ fn build_playback_widgets() -> (PlaybackWidgets, Scale) {
     pw.seek.add_css_class("seek-scale");
     pw.seek.set_round_digits(0);
 
-    let vol_scale = Scale::with_range(Orientation::Horizontal, 0.0, 100.0, 1.0);
-    vol_scale.set_hexpand(true);
-    vol_scale.set_draw_value(false);
-    vol_scale.add_css_class("vol-scale");
-    vol_scale.set_increments(5.0, 20.0);
-
     (pw, vol_scale)
 }
 
-fn build_right_pane(pw: &PlaybackWidgets, vol_scale: &Scale) -> gtk::Box {
+fn build_right_pane(pw: &PlaybackWidgets) -> gtk::Box {
     let transport = GtkBox::builder()
         .orientation(Orientation::Horizontal).spacing(12).halign(Align::Center).build();
     transport.prepend(&pw.shuffle);
@@ -1463,10 +1528,7 @@ fn build_right_pane(pw: &PlaybackWidgets, vol_scale: &Scale) -> gtk::Box {
     transport.append(&pw.btn_play);
     transport.append(&pw.btn_next);
     transport.append(&pw.repeat);
-
-    let vol_row = GtkBox::builder().orientation(Orientation::Horizontal).spacing(6).build();
-    vol_row.append(&pw.mute_btn);
-    vol_row.append(vol_scale);
+    transport.append(&pw.vol_btn);
 
     let seek_row = GtkBox::builder().orientation(Orientation::Horizontal).spacing(8).build();
     seek_row.append(&pw.pos);
@@ -1485,7 +1547,6 @@ fn build_right_pane(pw: &PlaybackWidgets, vol_scale: &Scale) -> gtk::Box {
     right_pane.append(&pw.quality);
     right_pane.append(&seek_row);
     right_pane.append(&transport);
-    right_pane.append(&vol_row);
 
     right_pane
 }
@@ -1559,6 +1620,40 @@ fn build_mini_window() -> (MiniWidgets, gtk::Window) {
     let mini_btn_next = Button::builder()
         .icon_name("media-skip-forward-symbolic")
         .css_classes(["mini-transport-btn"]).build();
+
+    // Volume button with popover — must be created before mini_transport append.
+    let mini_vol_btn = Button::builder()
+        .icon_name("audio-volume-high-symbolic")
+        .css_classes(["mini-transport-btn"])
+        .tooltip_text("Volume")
+        .build();
+    let mini_vol_scale = Scale::with_range(Orientation::Vertical, 0.0, 100.0, 1.0);
+    mini_vol_scale.set_inverted(true);
+    mini_vol_scale.set_vexpand(true);
+    mini_vol_scale.set_height_request(80);
+    mini_vol_scale.set_draw_value(false);
+    mini_vol_scale.set_width_request(20);
+    mini_vol_scale.set_round_digits(0);
+    mini_vol_scale.add_css_class("mini-vol-pop");
+    mini_vol_scale.set_increments(5.0, 20.0);
+    let mini_mute_btn = Button::builder()
+        .icon_name("audio-volume-muted-symbolic")
+        .css_classes(["mini-transport-btn"])
+        .tooltip_text("Mute")
+        .halign(Align::Center)
+        .build();
+    let mini_vol_pop_box = GtkBox::builder()
+        .orientation(Orientation::Vertical)
+        .margin_top(4).margin_bottom(4).margin_start(4).margin_end(4)
+        .spacing(4)
+        .build();
+    mini_vol_pop_box.append(&mini_vol_scale);
+    mini_vol_pop_box.append(&mini_mute_btn);
+    let mini_vol_popover = gtk::Popover::new();
+    mini_vol_popover.add_css_class("mini-vol-popover");
+    mini_vol_popover.set_child(Some(&mini_vol_pop_box));
+    mini_vol_popover.set_parent(&mini_vol_btn);
+
     let mini_transport = GtkBox::builder()
         .orientation(Orientation::Horizontal).spacing(6)
         .halign(Align::Start)
@@ -1566,6 +1661,7 @@ fn build_mini_window() -> (MiniWidgets, gtk::Window) {
     mini_transport.append(&mini_btn_prev);
     mini_transport.append(&mini_btn_play);
     mini_transport.append(&mini_btn_next);
+    mini_transport.append(&mini_vol_btn);
 
     let mini_info_box = GtkBox::builder()
         .orientation(Orientation::Vertical).spacing(2)
@@ -1582,29 +1678,11 @@ fn build_mini_window() -> (MiniWidgets, gtk::Window) {
     mini_main_row.append(&mini_art_stack);
     mini_main_row.append(&mini_info_box);
 
-    let mini_mute_btn = Button::builder()
-        .icon_name("audio-volume-high-symbolic")
-        .css_classes(["mini-transport-btn"])
-        .tooltip_text("Mute").build();
-    let mini_vol_scale = Scale::with_range(Orientation::Horizontal, 0.0, 100.0, 1.0);
-    mini_vol_scale.set_hexpand(true);
-    mini_vol_scale.set_width_request(40);
-    mini_vol_scale.set_draw_value(false);
-    mini_vol_scale.add_css_class("mini-vol");
-    let mini_vol_row = GtkBox::builder()
-        .orientation(Orientation::Horizontal).spacing(4)
-        .margin_start(8).margin_end(8).margin_bottom(4)
-        .vexpand(false)
-        .build();
-    mini_vol_row.append(&mini_mute_btn);
-    mini_vol_row.append(&mini_vol_scale);
-
     let mini_outer = GtkBox::builder()
         .orientation(Orientation::Vertical).spacing(0)
         .build();
     mini_outer.append(&mini_top_bar);
     mini_outer.append(&mini_main_row);
-    mini_outer.append(&mini_vol_row);
 
     let mini_root = gtk::WindowHandle::new();
     mini_root.set_child(Some(&mini_outer));
@@ -1632,6 +1710,8 @@ fn build_mini_window() -> (MiniWidgets, gtk::Window) {
         btn_prev:      mini_btn_prev,
         btn_play:      mini_btn_play,
         btn_next:      mini_btn_next,
+        vol_btn:       mini_vol_btn,
+        vol_popover:   mini_vol_popover,
         mute_btn:      mini_mute_btn,
         vol_scale:     mini_vol_scale,
     };
@@ -1696,7 +1776,7 @@ impl DeviceWindow {
         let ow = build_output_widgets(&icons);
         let left_pane = build_left_pane(&sw, &ow, &presets_scroll);
         let (pw, vol_scale) = build_playback_widgets();
-        let right_pane = build_right_pane(&pw, &vol_scale);
+        let right_pane = build_right_pane(&pw);
         let (mini, mini_win) = build_mini_window();
 
         // ── Paned split + sidebar logic ───────────────────────────────────────────
@@ -1755,7 +1835,6 @@ impl DeviceWindow {
         // ── Shared UI state ───────────────────────────────────────────────────────
         let ui_state = PlaybackUiState {
             is_playing:   Rc::new(RefCell::new(false)),
-            mute_on:      Rc::new(RefCell::new(false)),
             shuffle_on:   Rc::new(RefCell::new(false)),
             repeat_state: Rc::new(RefCell::new(0u32)),
             updating_vol: Rc::new(RefCell::new(false)),
@@ -2008,28 +2087,17 @@ impl DeviceWindow {
         // ── Transport / control signal handlers ───────────────────────────────────
         inner.pw.btn_play.connect_clicked({
             let i = Rc::clone(&inner);
-            move |_| {
-                let playing = *i.ui_state.is_playing.borrow();
-                if let Some(c) = i.ds.client() {
-                    i.ds.rt().spawn(async move {
-                        if playing { let _ = c.pause().await; } else { let _ = c.play().await; }
-                    });
-                }
-            }
+            move |_| { i.ds.do_play_pause(); }
         });
 
         inner.pw.btn_prev.connect_clicked({
             let i = Rc::clone(&inner);
-            move |_| {
-                if let Some(c) = i.ds.client() { i.ds.rt().spawn(async move { let _ = c.prev().await; }); }
-            }
+            move |_| { i.ds.do_prev(); }
         });
 
         inner.pw.btn_next.connect_clicked({
             let i = Rc::clone(&inner);
-            move |_| {
-                if let Some(c) = i.ds.client() { i.ds.rt().spawn(async move { let _ = c.next().await; }); }
-            }
+            move |_| { i.ds.do_next(); }
         });
 
         inner.pw.shuffle.connect_clicked({
@@ -2067,30 +2135,26 @@ impl DeviceWindow {
             }
         });
 
-        inner.pw.mute_btn.connect_clicked({
+        inner.pw.vol_btn.connect_clicked({
             let i = Rc::clone(&inner);
             move |_| {
-                let new_muted = !*i.ui_state.mute_on.borrow();
-                *i.ui_state.mute_on.borrow_mut() = new_muted;
-                i.pw.mute_btn.set_icon_name(if new_muted {
-                    "audio-volume-muted-symbolic"
-                } else {
-                    "audio-volume-high-symbolic"
-                });
-                if let Some(c) = i.ds.client() {
-                    i.ds.rt().spawn(async move { let _ = c.set_mute(new_muted).await; });
-                }
+                if i.pw.vol_popover.is_visible() { i.pw.vol_popover.popdown(); }
+                else { i.pw.vol_popover.popup(); }
             }
+        });
+
+        inner.pw.mute_btn.connect_clicked({
+            let i = Rc::clone(&inner);
+            move |_| { i.ds.do_set_mute(!i.ds.muted()); }
         });
 
         inner.vol_scale.connect_value_changed({
             let i = Rc::clone(&inner);
             move |scale| {
                 if *i.ui_state.updating_vol.borrow() { return; }
-                let vol = scale.value() as u32;
-                if let Some(c) = i.ds.client() {
-                    i.ds.rt().spawn(async move { let _ = c.set_volume(vol).await; });
-                }
+                let vol = scale.value();
+                i.pw.vol_btn.set_icon_name(vol_icon(i.ds.muted(), vol));
+                i.ds.do_set_volume(vol as u32);
             }
         });
 
@@ -2165,56 +2229,41 @@ impl DeviceWindow {
 
         inner.mini.btn_play.connect_clicked({
             let i = Rc::clone(&inner);
-            move |_| {
-                let playing = *i.ui_state.is_playing.borrow();
-                if let Some(c) = i.ds.client() {
-                    i.ds.rt().spawn(async move {
-                        if playing { let _ = c.pause().await; } else { let _ = c.play().await; }
-                    });
-                }
-            }
+            move |_| { i.ds.do_play_pause(); }
         });
 
         inner.mini.btn_prev.connect_clicked({
             let i = Rc::clone(&inner);
-            move |_| {
-                if let Some(c) = i.ds.client() { i.ds.rt().spawn(async move { let _ = c.prev().await; }); }
-            }
+            move |_| { i.ds.do_prev(); }
         });
 
         inner.mini.btn_next.connect_clicked({
             let i = Rc::clone(&inner);
+            move |_| { i.ds.do_next(); }
+        });
+
+        inner.mini.vol_btn.connect_clicked({
+            let i = Rc::clone(&inner);
             move |_| {
-                if let Some(c) = i.ds.client() { i.ds.rt().spawn(async move { let _ = c.next().await; }); }
+                if i.mini.vol_popover.is_visible() { i.mini.vol_popover.popdown(); }
+                else { i.mini.vol_popover.popup(); }
             }
         });
 
         inner.mini.mute_btn.connect_clicked({
             let i = Rc::clone(&inner);
-            move |_| {
-                let new_muted = !*i.ui_state.mute_on.borrow();
-                *i.ui_state.mute_on.borrow_mut() = new_muted;
-                let mute_icon = if new_muted {
-                    "audio-volume-muted-symbolic"
-                } else {
-                    "audio-volume-high-symbolic"
-                };
-                i.pw.mute_btn.set_icon_name(mute_icon);
-                i.mini.mute_btn.set_icon_name(mute_icon);
-                if let Some(c) = i.ds.client() {
-                    i.ds.rt().spawn(async move { let _ = c.set_mute(new_muted).await; });
-                }
-            }
+            move |_| { i.ds.do_set_mute(!i.ds.muted()); }
         });
 
         inner.mini.vol_scale.connect_value_changed({
             let i = Rc::clone(&inner);
             move |scale| {
                 if *i.ui_state.updating_vol.borrow() { return; }
-                let vol = scale.value() as u32;
-                if let Some(c) = i.ds.client() {
-                    i.ds.rt().spawn(async move { let _ = c.set_volume(vol).await; });
-                }
+                let vol = scale.value();
+                let icon = vol_icon(i.ds.muted(), vol);
+                i.pw.vol_btn.set_icon_name(icon);
+                i.mini.vol_btn.set_icon_name(icon);
+                i.ds.do_set_volume(vol as u32);
             }
         });
 
