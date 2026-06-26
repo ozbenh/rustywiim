@@ -172,6 +172,90 @@ window {
 .loop-active {
     color: #ffffff;
 }
+.mini-window {
+    background-color: #0a0a0a;
+}
+.mini-title {
+    font-size: 13px;
+    font-weight: 700;
+    color: #ffffff;
+}
+.mini-artist {
+    font-size: 11px;
+    color: #b0b0b0;
+}
+.mini-vol trough {
+    min-height: 3px;
+    border-radius: 2px;
+    background-color: #2a2a2a;
+}
+.mini-vol trough highlight {
+    background-color: #4a4a4a;
+}
+.mini-vol slider {
+    min-width: 6px;
+    min-height: 6px;
+    margin: -2px;
+    background-color: #808080;
+    border-radius: 50%;
+    border: none;
+    box-shadow: none;
+}
+.mini-art {
+    min-width: 48px;
+    min-height: 48px;
+    max-width: 48px;
+    max-height: 48px;
+    overflow: hidden;
+}
+.mini-device-label {
+    font-size: 12px;
+    font-weight: 600;
+    color: #686868;
+}
+.mini-restore-btn {
+    min-width: 16px;
+    min-height: 16px;
+    padding: 1px;
+    -gtk-icon-size: 10px;
+    background-color: transparent;
+    color: #606060;
+    border: none;
+    box-shadow: none;
+    border-radius: 50%;
+}
+.mini-restore-btn:hover {
+    color: #ffffff;
+    background-color: #2a2a2a;
+}
+.mini-transport-btn {
+    min-width: 18px;
+    min-height: 18px;
+    padding: 0;
+    -gtk-icon-size: 9px;
+    background-color: #2a2a2a;
+    color: #ffffff;
+    border: none;
+    box-shadow: none;
+    border-radius: 50%;
+}
+.mini-transport-btn:hover {
+    background-color: #3a3a3a;
+}
+.mini-play-btn {
+    min-width: 22px;
+    min-height: 22px;
+    padding: 0;
+    -gtk-icon-size: 10px;
+    background-color: #4ecdc4;
+    color: #0a0a0a;
+    border: none;
+    box-shadow: none;
+    border-radius: 50%;
+}
+.mini-play-btn:hover {
+    background-color: #5fd9d0;
+}
 "#;
 
 // ── String helpers ────────────────────────────────────────────────────────────
@@ -352,6 +436,33 @@ struct PlaybackUiState {
     updating_vol: Rc<RefCell<bool>>,
 }
 
+// ── Mini-mode scroll state ────────────────────────────────────────────────────
+
+#[derive(Default)]
+struct ScrollerState {
+    pos:    f64,
+    pause:  i32,
+    at_end: bool,
+}
+
+struct MiniWidgets {
+    root:          gtk::WindowHandle,
+    art_stack:     gtk::Stack,
+    artwork:       gtk::Picture,
+    input_icon:    gtk::Image,
+    device_label:  Label,
+    restore_btn:   Button,
+    title_scroll:  gtk::ScrolledWindow,
+    title_label:   Label,
+    artist_scroll: gtk::ScrolledWindow,
+    artist_label:  Label,
+    btn_prev:      Button,
+    btn_play:      Button,
+    btn_next:      Button,
+    mute_btn:      Button,
+    vol_scale:     Scale,
+}
+
 // ── DeviceWindowInner ─────────────────────────────────────────────────────────
 // All "content" widget state for one device window, kept together so that every
 // GTK signal closure only needs one `Rc::clone(&inner)` capture instead of
@@ -383,6 +494,14 @@ struct DeviceWindowInner {
     /// SSID for which window state was last applied; guards against
     /// re-applying on every device-changed fire for the same device.
     applied_window_key: RefCell<String>,
+    // ── Mini player ───────────────────────────────────────────────────────────
+    mini:              MiniWidgets,
+    mini_mode:         RefCell<bool>,
+    mini_toggling:     RefCell<bool>,
+    mini_scroll_timer: RefCell<Option<glib::SourceId>>,
+    pre_mini_size:     RefCell<(i32, i32)>,
+    mini_btn:          gtk::ToggleButton,
+    mini_win:          gtk::Window,
 }
 
 impl DeviceWindowInner {
@@ -544,6 +663,7 @@ impl DeviceWindowInner {
             if let Ok(v) = st.vol.parse::<f64>() {
                 *self.ui_state.updating_vol.borrow_mut() = true;
                 self.vol_scale.set_value(v);
+                self.mini.vol_scale.set_value(v);
                 *self.ui_state.updating_vol.borrow_mut() = false;
             }
 
@@ -556,22 +676,26 @@ impl DeviceWindowInner {
 
             let playing = st.status == "play";
             *self.ui_state.is_playing.borrow_mut() = playing;
-            self.pw.btn_play.set_icon_name(if playing {
+            let play_icon = if playing {
                 "media-playback-pause-symbolic"
             } else {
                 "media-playback-start-symbolic"
-            });
+            };
+            self.pw.btn_play.set_icon_name(play_icon);
+            self.mini.btn_play.set_icon_name(play_icon);
 
             self.pw.status.set_label(&format_status(&st.status, &st.mode, &st.vendor));
 
             let muted = st.mute == "1";
             if *self.ui_state.mute_on.borrow() != muted {
                 *self.ui_state.mute_on.borrow_mut() = muted;
-                self.pw.mute_btn.set_icon_name(if muted {
+                let mute_icon = if muted {
                     "audio-volume-muted-symbolic"
                 } else {
                     "audio-volume-high-symbolic"
-                });
+                };
+                self.pw.mute_btn.set_icon_name(mute_icon);
+                self.mini.mute_btn.set_icon_name(mute_icon);
             }
 
             let (dev_shuf, dev_rep) = decode_loop_mode(&st.loop_mode);
@@ -618,6 +742,8 @@ impl DeviceWindowInner {
                 self.pw.art_stack.set_visible_child_name("artwork");
             }
         }
+
+        if *self.mini_mode.borrow() { self.update_mini_playback(); }
     }
 
     // ── Input / Output display ────────────────────────────────────────────────
@@ -640,6 +766,8 @@ impl DeviceWindowInner {
             self.pw.artwork.set_paintable(None::<&gtk::gdk::Paintable>);
             self.pw.art_stack.set_visible_child_name("icon");
         }
+
+        if *self.mini_mode.borrow() { self.update_mini_playback(); }
     }
 
     fn update_output_display(&self) {
@@ -774,10 +902,18 @@ impl DeviceWindowInner {
             Some(di) if !di.ssid.is_empty() => di.ssid,
             _ => return,
         };
+        // In mini mode, use the saved pre-mini size rather than the mini window size.
+        let in_mini = *self.mini_mode.borrow();
+        let maximized = !in_mini && self.window.is_maximized();
+        let (w, h) = if in_mini {
+            *self.pre_mini_size.borrow()
+        } else {
+            (self.window.width(), self.window.height())
+        };
         let dev_cfg = DeviceConfig {
-            window_maximized: self.window.is_maximized(),
-            window_width:     if self.window.is_maximized() { 0 } else { self.window.width() },
-            window_height:    if self.window.is_maximized() { 0 } else { self.window.height() },
+            window_maximized: maximized,
+            window_width:     if maximized { 0 } else { w },
+            window_height:    if maximized { 0 } else { h },
             panel_visible:    self.sidebar_btn.is_active(),
             paned_position:   *self.saved_panel_width.borrow(),
         };
@@ -785,6 +921,93 @@ impl DeviceWindowInner {
         cfg.last_ssid = ssid.clone();
         cfg.save_device(ssid, dev_cfg);
         cfg.save();
+    }
+    // ── Mini player ───────────────────────────────────────────────────────────
+
+    fn update_mini_playback(&self) {
+        if let Some(di) = self.ds.device_info() {
+            self.mini.device_label.set_label(&di.device_name);
+        }
+        if let Some(st) = self.ds.player_status() {
+            let playing = st.status == "play";
+            self.mini.btn_play.set_icon_name(if playing {
+                "media-playback-pause-symbolic"
+            } else {
+                "media-playback-start-symbolic"
+            });
+            let muted = st.mute == "1";
+            self.mini.mute_btn.set_icon_name(if muted {
+                "audio-volume-muted-symbolic"
+            } else {
+                "audio-volume-high-symbolic"
+            });
+        }
+        if let Some(m) = self.ds.metadata() {
+            let title = if is_unknown(&m.title) { "—".to_string() } else { m.title.clone() };
+            self.mini.title_label.set_label(&title);
+            let artist = if is_unknown(&m.artist) { String::new() } else { m.artist.clone() };
+            self.mini.artist_label.set_label(&artist);
+        }
+        if let Some(bytes) = self.ds.art_bytes() {
+            let gbytes = glib::Bytes::from(&bytes);
+            if let Ok(tex) = gtk::gdk::Texture::from_bytes(&gbytes) {
+                self.mini.artwork.set_paintable(Some(&tex));
+                self.mini.art_stack.set_visible_child_name("artwork");
+                return;
+            }
+        }
+        let mode = self.ds.current_mode();
+        let source_id = capabilities::mode_to_input_source(&mode);
+        self.mini.input_icon.set_paintable(Some(self.icons.source_paintable(source_id)));
+        self.mini.artwork.set_paintable(None::<&gtk::gdk::Paintable>);
+        self.mini.art_stack.set_visible_child_name("icon");
+    }
+
+    fn start_mini_scroll(&self) {
+        self.stop_mini_scroll();
+        let title_adj  = self.mini.title_scroll.hadjustment();
+        let artist_adj = self.mini.artist_scroll.hadjustment();
+        let weak_win   = self.window.downgrade();
+        let mut title_st  = ScrollerState { pause: 30, ..Default::default() };
+        let mut artist_st = ScrollerState { pause: 30, ..Default::default() };
+        let id = glib::timeout_add_local(
+            std::time::Duration::from_millis(50),
+            move || {
+                if weak_win.upgrade().is_none() { return glib::ControlFlow::Break; }
+                tick_scroller(&mut title_st,  &title_adj);
+                tick_scroller(&mut artist_st, &artist_adj);
+                glib::ControlFlow::Continue
+            },
+        );
+        *self.mini_scroll_timer.borrow_mut() = Some(id);
+    }
+
+    fn stop_mini_scroll(&self) {
+        if let Some(id) = self.mini_scroll_timer.borrow_mut().take() { id.remove(); }
+    }
+
+    fn enter_mini_mode(&self) {
+        if *self.mini_mode.borrow() { return; }
+        *self.pre_mini_size.borrow_mut() = (self.window.width(), self.window.height());
+        self.update_mini_playback();
+        *self.mini_mode.borrow_mut() = true;
+        *self.mini_toggling.borrow_mut() = true;
+        self.mini_btn.set_active(true);
+        *self.mini_toggling.borrow_mut() = false;
+        self.window.set_visible(false);
+        self.mini_win.present();
+        self.start_mini_scroll();
+    }
+
+    fn exit_mini_mode(&self) {
+        if !*self.mini_mode.borrow() { return; }
+        self.stop_mini_scroll();
+        *self.mini_mode.borrow_mut() = false;
+        *self.mini_toggling.borrow_mut() = true;
+        self.mini_btn.set_active(false);
+        *self.mini_toggling.borrow_mut() = false;
+        self.mini_win.set_visible(false);
+        self.window.present();
     }
 } // impl DeviceWindowInner
 
@@ -801,6 +1024,30 @@ fn schedule_config_save(i: &Rc<DeviceWindowInner>) {
         },
     );
     *i.config_save_timer.borrow_mut() = Some(id);
+}
+
+fn tick_scroller(state: &mut ScrollerState, adj: &gtk::Adjustment) {
+    let max = (adj.upper() - adj.page_size()).max(0.0);
+    if max < 1.0 {
+        if adj.value() != 0.0 { adj.set_value(0.0); }
+        *state = ScrollerState::default();
+        return;
+    }
+    if state.pause > 0 { state.pause -= 1; return; }
+    if state.at_end {
+        state.pos    = 0.0;
+        state.at_end = false;
+        state.pause  = 25;
+        adj.set_value(0.0);
+        return;
+    }
+    state.pos += 1.5;
+    if state.pos >= max {
+        state.pos    = max;
+        state.at_end = true;
+        state.pause  = 25;
+    }
+    adj.set_value(state.pos);
 }
 
 fn wifi_icon_for_rssi(rssi: i32) -> &'static str {
@@ -842,18 +1089,18 @@ fn show_manual_ip_dialog(
 
     dialog.connect_response(None, clone!(
         @strong ds, @strong entry, @strong saved_ip, @strong dev_btn, @strong manual_btn
-        => move |_dlg, resp| {
-            if resp == "connect" {
-                let ip = entry.text().to_string();
-                if !ip.is_empty() {
-                    *saved_ip.borrow_mut() = ip.clone();
-                    let label = format!("Manual: {ip}");
-                    dev_btn.set_label(&label);
-                    manual_btn.set_label(&label);
-                    ds.set_device(&ip, TlsMode::HttpsWiiM, None);
+            => move |_dlg, resp| {
+                if resp == "connect" {
+                    let ip = entry.text().to_string();
+                    if !ip.is_empty() {
+                        *saved_ip.borrow_mut() = ip.clone();
+                        let label = format!("Manual: {ip}");
+                        dev_btn.set_label(&label);
+                        manual_btn.set_label(&label);
+                        ds.set_device(&ip, TlsMode::HttpsWiiM, None);
+                    }
                 }
             }
-        }
     ));
     dialog.present(Some(window));
 }
@@ -887,12 +1134,12 @@ fn build_device_popover(
             let btn = Button::builder().label(&label).css_classes(["flat"]).build();
             btn.connect_clicked(clone!(
                 @strong ds, @strong dev_btn, @strong label
-                => move |_| {
-                    on_sel(&ssid);
-                    dev_btn.set_label(&label);
-                    dev_btn.popdown();
-                    ds.set_device(&ip, tls_mode, None);
-                }
+                    => move |_| {
+                        on_sel(&ssid);
+                        dev_btn.set_label(&label);
+                        dev_btn.popdown();
+                        ds.set_device(&ip, tls_mode, None);
+                    }
             ));
             vbox.append(&btn);
         }
@@ -909,10 +1156,10 @@ fn build_device_popover(
     let manual_btn = Button::builder().label(&manual_label).css_classes(["flat"]).build();
     manual_btn.connect_clicked(clone!(
         @strong ds, @strong dev_btn, @strong window, @strong saved_ip, @strong manual_btn
-        => move |_| {
-            dev_btn.popdown();
-            show_manual_ip_dialog(&window, &ds, &dev_btn, &manual_btn, &saved_ip);
-        }
+            => move |_| {
+                dev_btn.popdown();
+                show_manual_ip_dialog(&window, &ds, &dev_btn, &manual_btn, &saved_ip);
+            }
     ));
     vbox.append(&manual_btn);
 
@@ -972,765 +1219,1037 @@ impl DeviceWindow {
         }
         ds.start_polling();
 
-    // ── Header ───────────────────────────────────────────────────────────────
-    let header = adw::HeaderBar::new();
+        // ── Header ───────────────────────────────────────────────────────────────
+        let header = adw::HeaderBar::new();
 
-    let sidebar_btn = gtk::ToggleButton::builder()
-        .icon_name("sidebar-show-symbolic")
-        .active(init_dev_cfg.panel_visible)
-        .tooltip_text("Toggle presets panel")
-        .build();
-    sidebar_btn.add_css_class("sidebar-toggle");
-    header.pack_start(&sidebar_btn);
-
-    let dev_btn = gtk::MenuButton::builder().label("Scanning…").build();
-    header.pack_start(&dev_btn);
-
-    let app_menu = gio::Menu::new();
-    app_menu.append(Some("About RustyWiiM"), Some("win.about"));
-    let app_menu_btn = gtk::MenuButton::builder()
-        .icon_name("open-menu-symbolic")
-        .menu_model(&app_menu)
-        .tooltip_text("Menu")
-        .build();
-    header.pack_end(&app_menu_btn);
-
-    // ── Left panel: presets ───────────────────────────────────────────────────
-    let presets_box = GtkBox::builder()
-        .orientation(Orientation::Vertical).spacing(2)
-        .margin_top(8).margin_bottom(4).margin_start(8).margin_end(8)
-        .build();
-    presets_box.append(
-        &Label::builder()
-            .label("PRESETS").css_classes(["section-label"])
-            .halign(Align::Start).margin_bottom(4)
-            .build(),
-    );
-
-    let mut preset_btns: Vec<Button>       = Vec::new();
-    let mut preset_pics: Vec<gtk::Image>   = Vec::new();
-    let mut preset_labels: Vec<Label>      = Vec::new();
-
-    for i in 1..=12u32 {
-        let badge = Label::builder()
-            .label(&i.to_string()).css_classes(["preset-badge"])
-            .halign(Align::Center).valign(Align::Center)
+        let sidebar_btn = gtk::ToggleButton::builder()
+            .icon_name("sidebar-show-symbolic")
+            .active(init_dev_cfg.panel_visible)
+            .tooltip_text("Toggle presets panel")
             .build();
-        let pic = gtk::Image::builder()
-            .pixel_size(40).icon_name("audio-x-generic-symbolic")
+        sidebar_btn.add_css_class("sidebar-toggle");
+        header.pack_start(&sidebar_btn);
+
+        let dev_btn = gtk::MenuButton::builder().label("Scanning…").build();
+        header.pack_start(&dev_btn);
+
+        let app_menu = gio::Menu::new();
+        app_menu.append(Some("About RustyWiiM"), Some("win.about"));
+        let app_menu_btn = gtk::MenuButton::builder()
+            .icon_name("open-menu-symbolic")
+            .menu_model(&app_menu)
+            .tooltip_text("Menu")
             .build();
-        pic.add_css_class("preset-art");
-        pic.set_overflow(gtk::Overflow::Hidden);
-        let lbl = Label::builder()
-            .label("").css_classes(["preset-name"])
-            .ellipsize(gtk::pango::EllipsizeMode::End)
-            .halign(Align::Start).hexpand(true).width_chars(0)
+        header.pack_end(&app_menu_btn);
+
+        let mini_btn = gtk::ToggleButton::builder()
+            .icon_name("view-restore-symbolic")
+            .tooltip_text("Mini player")
             .build();
-        let tile = GtkBox::builder()
-            .orientation(Orientation::Horizontal).spacing(6)
-            .css_classes(["preset-tile"]).overflow(gtk::Overflow::Hidden)
+        header.pack_end(&mini_btn);
+
+        // ── Left panel: presets ───────────────────────────────────────────────────
+        let presets_box = GtkBox::builder()
+            .orientation(Orientation::Vertical).spacing(2)
+            .margin_top(8).margin_bottom(4).margin_start(8).margin_end(8)
             .build();
-        tile.append(&badge);
-        tile.append(&pic);
-        tile.append(&lbl);
-        let btn = Button::builder().child(&tile).css_classes(["flat"]).build();
-        btn.set_tooltip_text(Some(&format!("Preset {i}")));
-        btn.set_visible(false);
-        presets_box.append(&btn);
-        preset_btns.push(btn);
-        preset_pics.push(pic);
-        preset_labels.push(lbl);
-    }
+        presets_box.append(
+            &Label::builder()
+                .label("PRESETS").css_classes(["section-label"])
+                .halign(Align::Start).margin_bottom(4)
+                .build(),
+        );
 
-    let preset_btns   = Rc::new(preset_btns);
-    let preset_pics   = Rc::new(preset_pics);
-    let preset_labels = Rc::new(preset_labels);
+        let mut preset_btns: Vec<Button>       = Vec::new();
+        let mut preset_pics: Vec<gtk::Image>   = Vec::new();
+        let mut preset_labels: Vec<Label>      = Vec::new();
 
-    let presets_scroll = gtk::ScrolledWindow::builder()
-        .child(&presets_box)
-        .hscrollbar_policy(gtk::PolicyType::Never)
-        .vexpand(true)
-        .build();
+        for i in 1..=12u32 {
+            let badge = Label::builder()
+                .label(&i.to_string()).css_classes(["preset-badge"])
+                .halign(Align::Center).valign(Align::Center)
+                .build();
+            let pic = gtk::Image::builder()
+                .pixel_size(40).icon_name("audio-x-generic-symbolic")
+                .build();
+            pic.add_css_class("preset-art");
+            pic.set_overflow(gtk::Overflow::Hidden);
+            let lbl = Label::builder()
+                .label("").css_classes(["preset-name"])
+                .ellipsize(gtk::pango::EllipsizeMode::End)
+                .halign(Align::Start).hexpand(true).width_chars(0)
+                .build();
+            let tile = GtkBox::builder()
+                .orientation(Orientation::Horizontal).spacing(6)
+                .css_classes(["preset-tile"]).overflow(gtk::Overflow::Hidden)
+                .build();
+            tile.append(&badge);
+            tile.append(&pic);
+            tile.append(&lbl);
+            let btn = Button::builder().child(&tile).css_classes(["flat"]).build();
+            btn.set_tooltip_text(Some(&format!("Preset {i}")));
+            btn.set_visible(false);
+            presets_box.append(&btn);
+            preset_btns.push(btn);
+            preset_pics.push(pic);
+            preset_labels.push(lbl);
+        }
 
-    // ── Left panel: input / output selectors ──────────────────────────────────
-    let sw = SourceWidgets {
-        dropdown: gtk::DropDown::from_strings(&["—"]),
-        ids:      Rc::new(RefCell::new(Vec::new())),
-        enabled:  Rc::new(RefCell::new(Vec::new())),
-        updating: Rc::new(RefCell::new(false)),
-    };
-    sw.dropdown.add_css_class("panel-dropdown");
-    sw.dropdown.set_sensitive(false);
+        let preset_btns   = Rc::new(preset_btns);
+        let preset_pics   = Rc::new(preset_pics);
+        let preset_labels = Rc::new(preset_labels);
 
-    {
-        let factory = gtk::SignalListItemFactory::new();
-        factory.connect_setup(|_, obj| {
-            let item = obj.downcast_ref::<gtk::ListItem>().unwrap();
-            let hbox = GtkBox::builder()
-                .orientation(Orientation::Horizontal).spacing(6).build();
-            hbox.append(&gtk::Image::builder().pixel_size(16).build());
-            hbox.append(&Label::builder().halign(Align::Start).build());
-            item.set_child(Some(&hbox));
-        });
-        factory.connect_bind(clone!(
-            @strong sw, @strong icons
-            => move |_, obj| {
+        let presets_scroll = gtk::ScrolledWindow::builder()
+            .child(&presets_box)
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vexpand(true)
+            .build();
+
+        // ── Left panel: input / output selectors ──────────────────────────────────
+        let sw = SourceWidgets {
+            dropdown: gtk::DropDown::from_strings(&["—"]),
+            ids:      Rc::new(RefCell::new(Vec::new())),
+            enabled:  Rc::new(RefCell::new(Vec::new())),
+            updating: Rc::new(RefCell::new(false)),
+        };
+        sw.dropdown.add_css_class("panel-dropdown");
+        sw.dropdown.set_sensitive(false);
+
+        {
+            let factory = gtk::SignalListItemFactory::new();
+            factory.connect_setup(|_, obj| {
+                let item = obj.downcast_ref::<gtk::ListItem>().unwrap();
+                let hbox = GtkBox::builder()
+                    .orientation(Orientation::Horizontal).spacing(6).build();
+                hbox.append(&gtk::Image::builder().pixel_size(16).build());
+                hbox.append(&Label::builder().halign(Align::Start).build());
+                item.set_child(Some(&hbox));
+            });
+            factory.connect_bind(clone!(
+                @strong sw, @strong icons
+                    => move |_, obj| {
+                        let item = obj.downcast_ref::<gtk::ListItem>().unwrap();
+                        let pos  = item.position() as usize;
+                        if let Some(hbox) = item.child().and_downcast::<GtkBox>() {
+                            let enabled = sw.enabled.borrow().get(pos).copied().unwrap_or(true);
+                            let ids     = sw.ids.borrow();
+                            let id      = ids.get(pos).map(String::as_str).unwrap_or("");
+                            if let Some(img) = hbox.first_child().and_downcast::<gtk::Image>() {
+                                img.set_paintable(Some(icons.source_paintable(id)));
+                            }
+                            if let Some(lbl) = hbox.last_child().and_downcast::<Label>() {
+                                if let Some(so) = item.item().and_downcast::<gtk::StringObject>() {
+                                    lbl.set_label(&so.string());
+                                }
+                                lbl.set_sensitive(enabled);
+                            }
+                            item.set_activatable(enabled);
+                        }
+                    }
+            ));
+            factory.connect_unbind(|_, obj| {
+                let item = obj.downcast_ref::<gtk::ListItem>().unwrap();
+                item.set_activatable(true);
+                if let Some(hbox) = item.child().and_downcast::<GtkBox>() {
+                    if let Some(lbl) = hbox.last_child().and_downcast::<Label>() {
+                        lbl.set_sensitive(true);
+                    }
+                }
+            });
+            sw.dropdown.set_factory(Some(&factory));
+        }
+
+        let ow = OutputWidgets {
+            dropdown:    gtk::DropDown::from_strings(&["—"]),
+            section:     GtkBox::builder()
+                .orientation(Orientation::Vertical).spacing(4).visible(false).build(),
+            modes:       Rc::new(RefCell::new(Vec::new())),
+            canon_names: Rc::new(RefCell::new(Vec::new())),
+            updating:    Rc::new(RefCell::new(false)),
+        };
+        ow.dropdown.add_css_class("panel-dropdown");
+        ow.dropdown.set_sensitive(false);
+
+        {
+            let factory = gtk::SignalListItemFactory::new();
+            factory.connect_setup(|_, obj| {
+                let item = obj.downcast_ref::<gtk::ListItem>().unwrap();
+                let hbox = GtkBox::builder()
+                    .orientation(Orientation::Horizontal).spacing(6).build();
+                hbox.append(&gtk::Image::builder().pixel_size(16).build());
+                hbox.append(&Label::builder().halign(Align::Start).build());
+                item.set_child(Some(&hbox));
+            });
+            factory.connect_bind(clone!(@strong ow, @strong icons => move |_, obj| {
                 let item = obj.downcast_ref::<gtk::ListItem>().unwrap();
                 let pos  = item.position() as usize;
                 if let Some(hbox) = item.child().and_downcast::<GtkBox>() {
-                    let enabled = sw.enabled.borrow().get(pos).copied().unwrap_or(true);
-                    let ids     = sw.ids.borrow();
-                    let id      = ids.get(pos).map(String::as_str).unwrap_or("");
+                    let names = ow.canon_names.borrow();
+                    let canon = names.get(pos).copied().unwrap_or("");
                     if let Some(img) = hbox.first_child().and_downcast::<gtk::Image>() {
-                        img.set_paintable(Some(icons.source_paintable(id)));
+                        img.set_paintable(Some(icons.output_paintable(canon)));
                     }
                     if let Some(lbl) = hbox.last_child().and_downcast::<Label>() {
                         if let Some(so) = item.item().and_downcast::<gtk::StringObject>() {
                             lbl.set_label(&so.string());
                         }
-                        lbl.set_sensitive(enabled);
-                    }
-                    item.set_activatable(enabled);
-                }
-            }
-        ));
-        factory.connect_unbind(|_, obj| {
-            let item = obj.downcast_ref::<gtk::ListItem>().unwrap();
-            item.set_activatable(true);
-            if let Some(hbox) = item.child().and_downcast::<GtkBox>() {
-                if let Some(lbl) = hbox.last_child().and_downcast::<Label>() {
-                    lbl.set_sensitive(true);
-                }
-            }
-        });
-        sw.dropdown.set_factory(Some(&factory));
-    }
-
-    let ow = OutputWidgets {
-        dropdown:    gtk::DropDown::from_strings(&["—"]),
-        section:     GtkBox::builder()
-            .orientation(Orientation::Vertical).spacing(4).visible(false).build(),
-        modes:       Rc::new(RefCell::new(Vec::new())),
-        canon_names: Rc::new(RefCell::new(Vec::new())),
-        updating:    Rc::new(RefCell::new(false)),
-    };
-    ow.dropdown.add_css_class("panel-dropdown");
-    ow.dropdown.set_sensitive(false);
-
-    {
-        let factory = gtk::SignalListItemFactory::new();
-        factory.connect_setup(|_, obj| {
-            let item = obj.downcast_ref::<gtk::ListItem>().unwrap();
-            let hbox = GtkBox::builder()
-                .orientation(Orientation::Horizontal).spacing(6).build();
-            hbox.append(&gtk::Image::builder().pixel_size(16).build());
-            hbox.append(&Label::builder().halign(Align::Start).build());
-            item.set_child(Some(&hbox));
-        });
-        factory.connect_bind(clone!(@strong ow, @strong icons => move |_, obj| {
-            let item = obj.downcast_ref::<gtk::ListItem>().unwrap();
-            let pos  = item.position() as usize;
-            if let Some(hbox) = item.child().and_downcast::<GtkBox>() {
-                let names = ow.canon_names.borrow();
-                let canon = names.get(pos).copied().unwrap_or("");
-                if let Some(img) = hbox.first_child().and_downcast::<gtk::Image>() {
-                    img.set_paintable(Some(icons.output_paintable(canon)));
-                }
-                if let Some(lbl) = hbox.last_child().and_downcast::<Label>() {
-                    if let Some(so) = item.item().and_downcast::<gtk::StringObject>() {
-                        lbl.set_label(&so.string());
                     }
                 }
-            }
-        }));
-        ow.dropdown.set_factory(Some(&factory));
-    }
+            }));
+            ow.dropdown.set_factory(Some(&factory));
+        }
 
-    ow.section.append(
-        &Label::builder()
-            .label("OUTPUT").css_classes(["section-label"]).halign(Align::Start).build(),
-    );
-    ow.section.append(&ow.dropdown);
+        ow.section.append(
+            &Label::builder()
+                .label("OUTPUT").css_classes(["section-label"]).halign(Align::Start).build(),
+        );
+        ow.section.append(&ow.dropdown);
 
-    let io_box = GtkBox::builder()
-        .orientation(Orientation::Vertical).spacing(4)
-        .margin_top(4).margin_bottom(8).margin_start(8).margin_end(8)
-        .build();
-    io_box.append(&gtk::Separator::new(Orientation::Horizontal));
-    io_box.append(
-        &Label::builder()
-            .label("INPUT").css_classes(["section-label"])
-            .halign(Align::Start).margin_top(6).build(),
-    );
-    io_box.append(&sw.dropdown);
-    io_box.append(&ow.section);
+        let io_box = GtkBox::builder()
+            .orientation(Orientation::Vertical).spacing(4)
+            .margin_top(4).margin_bottom(8).margin_start(8).margin_end(8)
+            .build();
+        io_box.append(&gtk::Separator::new(Orientation::Horizontal));
+        io_box.append(
+            &Label::builder()
+                .label("INPUT").css_classes(["section-label"])
+                .halign(Align::Start).margin_top(6).build(),
+        );
+        io_box.append(&sw.dropdown);
+        io_box.append(&ow.section);
 
-    let left_pane = GtkBox::builder().orientation(Orientation::Vertical).build();
-    left_pane.append(&presets_scroll);
-    left_pane.append(&io_box);
+        let left_pane = GtkBox::builder().orientation(Orientation::Vertical).build();
+        left_pane.append(&presets_scroll);
+        left_pane.append(&io_box);
 
-    // ── Right pane: now playing ───────────────────────────────────────────────
-    let pw = PlaybackWidgets {
-        artwork:    gtk::Picture::builder()
-            .content_fit(gtk::ContentFit::Contain).can_shrink(true)
-            .halign(Align::Center).vexpand(true).build(),
-        input_icon: gtk::Image::builder()
-            .pixel_size(128).halign(Align::Center).valign(Align::Center).build(),
-        art_stack: {
+        // ── Right pane: now playing ───────────────────────────────────────────────
+        let pw = PlaybackWidgets {
+            artwork:    gtk::Picture::builder()
+                .content_fit(gtk::ContentFit::Contain).can_shrink(true)
+                .halign(Align::Center).vexpand(true).build(),
+            input_icon: gtk::Image::builder()
+                .pixel_size(128).halign(Align::Center).valign(Align::Center).build(),
+            art_stack: {
+                let s = gtk::Stack::new();
+                s.set_vexpand(true);
+                s.set_transition_type(gtk::StackTransitionType::Crossfade);
+                s.set_transition_duration(200);
+                s
+            },
+            title:    Label::builder().label("Not connected").css_classes(["track-title"])
+                .ellipsize(gtk::pango::EllipsizeMode::End)
+                .halign(Align::Center).justify(gtk::Justification::Center).build(),
+            artist:   Label::builder().css_classes(["track-artist"])
+                .ellipsize(gtk::pango::EllipsizeMode::End).halign(Align::Center).build(),
+            album:    Label::builder().css_classes(["track-album"])
+                .ellipsize(gtk::pango::EllipsizeMode::End).halign(Align::Center).build(),
+            status:   Label::builder().css_classes(["status-badge"]).halign(Align::Center).build(),
+            quality:  Label::builder().css_classes(["quality-label"]).halign(Align::Center)
+                .visible(false).build(),
+            pos:      Label::builder().label("0:00").css_classes(["dim-label"]).build(),
+            dur:      Label::builder().label("0:00").css_classes(["dim-label"]).build(),
+            seek:     Scale::with_range(Orientation::Horizontal, 0.0, 100.0, 1.0),
+            btn_play: Button::builder()
+                .icon_name("media-playback-start-symbolic")
+                .css_classes(["play-btn", "circular"]).build(),
+            mute_btn: Button::builder()
+                .icon_name("audio-volume-high-symbolic")
+                .css_classes(["transport-btn", "circular"]).tooltip_text("Mute").build(),
+            shuffle:  Button::builder()
+                .icon_name("media-playlist-shuffle-symbolic")
+                .css_classes(["loop-btn", "circular"]).tooltip_text("Shuffle: Off").build(),
+            repeat:   Button::builder()
+                .icon_name("media-playlist-repeat-symbolic")
+                .css_classes(["loop-btn", "circular"]).tooltip_text("Repeat: Off").build(),
+        };
+
+        pw.art_stack.add_named(&pw.artwork, Some("artwork"));
+        pw.art_stack.add_named(&pw.input_icon, Some("icon"));
+        pw.seek.set_hexpand(true);
+        pw.seek.set_draw_value(false);
+        pw.seek.add_css_class("seek-scale");
+        pw.seek.set_round_digits(0);
+
+        let btn_prev = Button::builder()
+            .icon_name("media-skip-backward-symbolic")
+            .css_classes(["transport-btn", "circular"]).build();
+        let btn_next = Button::builder()
+            .icon_name("media-skip-forward-symbolic")
+            .css_classes(["transport-btn", "circular"]).build();
+
+        let transport = GtkBox::builder()
+            .orientation(Orientation::Horizontal).spacing(12).halign(Align::Center).build();
+        transport.prepend(&pw.shuffle);
+        transport.append(&btn_prev);
+        transport.append(&pw.btn_play);
+        transport.append(&btn_next);
+        transport.append(&pw.repeat);
+
+        let vol_scale = Scale::with_range(Orientation::Horizontal, 0.0, 100.0, 1.0);
+        vol_scale.set_hexpand(true);
+        vol_scale.set_draw_value(false);
+        vol_scale.add_css_class("vol-scale");
+        vol_scale.set_increments(5.0, 20.0);
+
+        let vol_row = GtkBox::builder().orientation(Orientation::Horizontal).spacing(6).build();
+        vol_row.append(&pw.mute_btn);
+        vol_row.append(&vol_scale);
+
+        let seek_row = GtkBox::builder().orientation(Orientation::Horizontal).spacing(8).build();
+        seek_row.append(&pw.pos);
+        seek_row.append(&pw.seek);
+        seek_row.append(&pw.dur);
+
+        let right_pane = GtkBox::builder()
+            .orientation(Orientation::Vertical).spacing(8).hexpand(true)
+            .margin_top(8).margin_bottom(8).margin_start(12).margin_end(16)
+            .build();
+        right_pane.append(&pw.art_stack);
+        right_pane.append(&pw.title);
+        right_pane.append(&pw.artist);
+        right_pane.append(&pw.album);
+        right_pane.append(&pw.status);
+        right_pane.append(&pw.quality);
+        right_pane.append(&seek_row);
+        right_pane.append(&transport);
+        right_pane.append(&vol_row);
+
+        // ── Paned split + sidebar logic ───────────────────────────────────────────
+        let paned = gtk::Paned::new(Orientation::Horizontal);
+        paned.set_start_child(Some(&left_pane));
+        paned.set_end_child(Some(&right_pane));
+        paned.set_shrink_start_child(true);
+        paned.set_shrink_end_child(false);
+        paned.set_resize_start_child(false);
+        paned.set_resize_end_child(true);
+        paned.set_margin_top(4);
+        paned.set_margin_bottom(8);
+
+        let panel_width = if init_dev_cfg.paned_position > 0 { init_dev_cfg.paned_position } else { 200 };
+        paned.set_position(panel_width);
+        left_pane.set_visible(init_dev_cfg.panel_visible);
+
+        // Create the panel-state Rc values here so they can be moved into inner.
+        let saved_panel_width  = Rc::new(RefCell::new(panel_width));
+        let panel_collapsing   = Rc::new(RefCell::new(false));
+        let settle_timer:      Rc<RefCell<Option<glib::SourceId>>> = Rc::new(RefCell::new(None));
+        let config_save_timer: Rc<RefCell<Option<glib::SourceId>>> = Rc::new(RefCell::new(None));
+
+        let dev_info_label = Label::builder()
+            .css_classes(["device-info"]).halign(Align::Center)
+            .hexpand(true)
+            .margin_top(4).margin_bottom(4).build();
+
+        let net_icon = gtk::Image::builder()
+            .icon_size(gtk::IconSize::Normal)
+            .css_classes(["net-icon"])
+            .margin_end(8).margin_top(4).margin_bottom(4)
+            .visible(false)
+            .build();
+
+        let bottom_bar = gtk::CenterBox::new();
+        bottom_bar.set_center_widget(Some(&dev_info_label));
+        bottom_bar.set_end_widget(Some(&net_icon));
+
+        let outer = GtkBox::new(Orientation::Vertical, 0);
+        outer.append(&paned);
+        outer.append(&gtk::Separator::new(Orientation::Horizontal));
+        outer.append(&bottom_bar);
+
+        let full_toolbar = adw::ToolbarView::new();
+        full_toolbar.add_top_bar(&header);
+        full_toolbar.set_content(Some(&outer));
+
+        // ── Mini player widgets ───────────────────────────────────────────────────
+        let mini_artwork = gtk::Picture::builder()
+            .content_fit(gtk::ContentFit::Cover).can_shrink(true)
+            .halign(Align::Fill).valign(Align::Fill)
+            .hexpand(true).vexpand(true)
+            .build();
+        let mini_input_icon = gtk::Image::builder()
+            .pixel_size(36).halign(Align::Center).valign(Align::Center)
+            .build();
+        let mini_art_stack = {
             let s = gtk::Stack::new();
-            s.set_vexpand(true);
+            s.set_hexpand(false);
+            s.set_vexpand(false);
+            s.set_valign(Align::Center);
+            s.add_css_class("mini-art");
             s.set_transition_type(gtk::StackTransitionType::Crossfade);
             s.set_transition_duration(200);
             s
-        },
-        title:    Label::builder().label("Not connected").css_classes(["track-title"])
+        };
+        mini_art_stack.add_named(&mini_artwork, Some("artwork"));
+        mini_art_stack.add_named(&mini_input_icon, Some("icon"));
+
+        // Top bar: device name + restore button
+        let mini_device_label = Label::builder()
+            .label("").css_classes(["mini-device-label"])
+            .halign(Align::Start).hexpand(true)
             .ellipsize(gtk::pango::EllipsizeMode::End)
-            .halign(Align::Center).justify(gtk::Justification::Center).build(),
-        artist:   Label::builder().css_classes(["track-artist"])
-            .ellipsize(gtk::pango::EllipsizeMode::End).halign(Align::Center).build(),
-        album:    Label::builder().css_classes(["track-album"])
-            .ellipsize(gtk::pango::EllipsizeMode::End).halign(Align::Center).build(),
-        status:   Label::builder().css_classes(["status-badge"]).halign(Align::Center).build(),
-        quality:  Label::builder().css_classes(["quality-label"]).halign(Align::Center)
-            .visible(false).build(),
-        pos:      Label::builder().label("0:00").css_classes(["dim-label"]).build(),
-        dur:      Label::builder().label("0:00").css_classes(["dim-label"]).build(),
-        seek:     Scale::with_range(Orientation::Horizontal, 0.0, 100.0, 1.0),
-        btn_play: Button::builder()
+            .build();
+        let mini_restore_btn = Button::builder()
+            .icon_name("view-fullscreen-symbolic")
+            .css_classes(["mini-restore-btn"])
+            .tooltip_text("Restore")
+            .build();
+        let mini_top_bar = GtkBox::builder()
+            .orientation(Orientation::Horizontal).spacing(4)
+            .margin_start(8).margin_end(6).margin_top(6).margin_bottom(2)
+            .build();
+        mini_top_bar.append(&mini_device_label);
+        mini_top_bar.append(&mini_restore_btn);
+
+        // Scrolling title + artist
+        let mini_title_label = Label::builder()
+            .label("—").css_classes(["mini-title"])
+            .halign(Align::Start).hexpand(true)
+            .build();
+        let mini_artist_label = Label::builder()
+            .label("").css_classes(["mini-artist"])
+            .halign(Align::Start).hexpand(true)
+            .build();
+        let mini_title_scroll = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vscrollbar_policy(gtk::PolicyType::Never)
+            .hexpand(true)
+            .build();
+        mini_title_scroll.set_child(Some(&mini_title_label));
+        let mini_artist_scroll = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vscrollbar_policy(gtk::PolicyType::Never)
+            .hexpand(true)
+            .build();
+        mini_artist_scroll.set_child(Some(&mini_artist_label));
+
+        // Transport row: [⏮] [⏵] [⏭]
+        let mini_btn_prev = Button::builder()
+            .icon_name("media-skip-backward-symbolic")
+            .css_classes(["mini-transport-btn"]).build();
+        let mini_btn_play = Button::builder()
             .icon_name("media-playback-start-symbolic")
-            .css_classes(["play-btn", "circular"]).build(),
-        mute_btn: Button::builder()
+            .css_classes(["mini-play-btn"]).build();
+        let mini_btn_next = Button::builder()
+            .icon_name("media-skip-forward-symbolic")
+            .css_classes(["mini-transport-btn"]).build();
+        let mini_transport = GtkBox::builder()
+            .orientation(Orientation::Horizontal).spacing(6)
+            .halign(Align::Start)
+            .build();
+        mini_transport.append(&mini_btn_prev);
+        mini_transport.append(&mini_btn_play);
+        mini_transport.append(&mini_btn_next);
+
+        // Right-side info column: title + artist + transport
+        let mini_info_box = GtkBox::builder()
+            .orientation(Orientation::Vertical).spacing(2)
+            .valign(Align::Center).hexpand(true)
+            .build();
+        mini_info_box.append(&mini_title_scroll);
+        mini_info_box.append(&mini_artist_scroll);
+        mini_info_box.append(&mini_transport);
+
+        // Main row: art + info
+        let mini_main_row = GtkBox::builder()
+            .orientation(Orientation::Horizontal).spacing(8)
+            .margin_start(8).margin_end(8).margin_bottom(4)
+            .build();
+        mini_main_row.append(&mini_art_stack);
+        mini_main_row.append(&mini_info_box);
+
+        // Volume row (full width below): [🔇] [===vol===]
+        let mini_mute_btn = Button::builder()
             .icon_name("audio-volume-high-symbolic")
-            .css_classes(["transport-btn", "circular"]).tooltip_text("Mute").build(),
-        shuffle:  Button::builder()
-            .icon_name("media-playlist-shuffle-symbolic")
-            .css_classes(["loop-btn", "circular"]).tooltip_text("Shuffle: Off").build(),
-        repeat:   Button::builder()
-            .icon_name("media-playlist-repeat-symbolic")
-            .css_classes(["loop-btn", "circular"]).tooltip_text("Repeat: Off").build(),
-    };
+            .css_classes(["mini-transport-btn"])
+            .tooltip_text("Mute").build();
+        let mini_vol_scale = Scale::with_range(Orientation::Horizontal, 0.0, 100.0, 1.0);
+        mini_vol_scale.set_hexpand(true);
+        mini_vol_scale.set_width_request(40);
+        mini_vol_scale.set_draw_value(false);
+        mini_vol_scale.add_css_class("mini-vol");
+        let mini_vol_row = GtkBox::builder()
+            .orientation(Orientation::Horizontal).spacing(4)
+            .margin_start(8).margin_end(8).margin_bottom(4)
+            .vexpand(false)
+            .build();
+        mini_vol_row.append(&mini_mute_btn);
+        mini_vol_row.append(&mini_vol_scale);
 
-    pw.art_stack.add_named(&pw.artwork, Some("artwork"));
-    pw.art_stack.add_named(&pw.input_icon, Some("icon"));
-    pw.seek.set_hexpand(true);
-    pw.seek.set_draw_value(false);
-    pw.seek.add_css_class("seek-scale");
-    pw.seek.set_round_digits(0);
+        // Outer vertical: top bar + main row + vol row
+        let mini_outer = GtkBox::builder()
+            .orientation(Orientation::Vertical).spacing(0)
+            .build();
+        mini_outer.append(&mini_top_bar);
+        mini_outer.append(&mini_main_row);
+        mini_outer.append(&mini_vol_row);
 
-    let btn_prev = Button::builder()
-        .icon_name("media-skip-backward-symbolic")
-        .css_classes(["transport-btn", "circular"]).build();
-    let btn_next = Button::builder()
-        .icon_name("media-skip-forward-symbolic")
-        .css_classes(["transport-btn", "circular"]).build();
+        let mini_root = gtk::WindowHandle::new();
+        mini_root.set_child(Some(&mini_outer));
 
-    let transport = GtkBox::builder()
-        .orientation(Orientation::Horizontal).spacing(12).halign(Align::Center).build();
-    transport.prepend(&pw.shuffle);
-    transport.append(&btn_prev);
-    transport.append(&pw.btn_play);
-    transport.append(&btn_next);
-    transport.append(&pw.repeat);
+        // Separate mini-player window — avoids GTK4's inability to shrink an
+        // already-shown window.  We hide the main window and present this one.
+        let mini_win = gtk::Window::builder()
+            .decorated(false)
+            .resizable(false)
+            .default_width(200)
+            .title("RustyWiiM")
+            .child(&mini_root)
+            .build();
+        mini_win.add_css_class("mini-window");
+        let mini = MiniWidgets {
+            root:          mini_root,
+            art_stack:     mini_art_stack,
+            artwork:       mini_artwork,
+            input_icon:    mini_input_icon,
+            device_label:  mini_device_label,
+            restore_btn:   mini_restore_btn,
+            title_scroll:  mini_title_scroll,
+            title_label:   mini_title_label,
+            artist_scroll: mini_artist_scroll,
+            artist_label:  mini_artist_label,
+            btn_prev:      mini_btn_prev,
+            btn_play:      mini_btn_play,
+            btn_next:      mini_btn_next,
+            mute_btn:      mini_mute_btn,
+            vol_scale:     mini_vol_scale,
+        };
 
-    let vol_scale = Scale::with_range(Orientation::Horizontal, 0.0, 100.0, 1.0);
-    vol_scale.set_hexpand(true);
-    vol_scale.set_draw_value(false);
-    vol_scale.add_css_class("vol-scale");
-    vol_scale.set_increments(5.0, 20.0);
+        let win_w = if init_dev_cfg.window_width  > 0 { init_dev_cfg.window_width  } else { 680 };
+        let win_h = if init_dev_cfg.window_height > 0 { init_dev_cfg.window_height } else { 640 };
+        let window = adw::ApplicationWindow::builder()
+            .application(app).title("RustyWiiM").content(&full_toolbar)
+            .default_width(win_w).default_height(win_h)
+            .build();
+        if init_dev_cfg.window_maximized { window.maximize(); }
 
-    let vol_row = GtkBox::builder().orientation(Orientation::Horizontal).spacing(6).build();
-    vol_row.append(&pw.mute_btn);
-    vol_row.append(&vol_scale);
+        // ── Shared UI state ───────────────────────────────────────────────────────
+        let ui_state = PlaybackUiState {
+            is_playing:   Rc::new(RefCell::new(false)),
+            mute_on:      Rc::new(RefCell::new(false)),
+            shuffle_on:   Rc::new(RefCell::new(false)),
+            repeat_state: Rc::new(RefCell::new(0u32)),
+            updating_vol: Rc::new(RefCell::new(false)),
+        };
 
-    let seek_row = GtkBox::builder().orientation(Orientation::Horizontal).spacing(8).build();
-    seek_row.append(&pw.pos);
-    seek_row.append(&pw.seek);
-    seek_row.append(&pw.dur);
+        let pp = PresetWidgets {
+            btns:   preset_btns,
+            pics:   preset_pics,
+            labels: preset_labels,
+        };
 
-    let right_pane = GtkBox::builder()
-        .orientation(Orientation::Vertical).spacing(8).hexpand(true)
-        .margin_top(8).margin_bottom(8).margin_start(12).margin_end(16)
-        .build();
-    right_pane.append(&pw.art_stack);
-    right_pane.append(&pw.title);
-    right_pane.append(&pw.artist);
-    right_pane.append(&pw.album);
-    right_pane.append(&pw.status);
-    right_pane.append(&pw.quality);
-    right_pane.append(&seek_row);
-    right_pane.append(&transport);
-    right_pane.append(&vol_row);
+        // Bundle all content-widget and window state into a single Rc so every
+        // signal closure only needs one clone instead of capturing 6–8 variables.
+        let inner = Rc::new(DeviceWindowInner {
+            ds: ds.clone(),
+            sw,
+            ow,
+            pw,
+            pp,
+            dev_info_label,
+            net_icon,
+            icons,
+            vol_scale,
+            ui_state,
+            window: window.clone(),
+            paned:  paned.clone(),
+            left_pane: left_pane.clone(),
+            sidebar_btn: sidebar_btn.clone(),
+            saved_panel_width,
+            panel_collapsing,
+            settle_timer,
+            config_save_timer,
+            applied_window_key: RefCell::new(cfg.last_ssid.clone()),
+            mini,
+            mini_mode:         RefCell::new(false),
+            mini_toggling:     RefCell::new(false),
+            mini_scroll_timer: RefCell::new(None),
+            pre_mini_size:     RefCell::new((0, 0)),
+            mini_btn:          mini_btn.clone(),
+            mini_win:          mini_win.clone(),
+        });
 
-    // ── Paned split + sidebar logic ───────────────────────────────────────────
-    let paned = gtk::Paned::new(Orientation::Horizontal);
-    paned.set_start_child(Some(&left_pane));
-    paned.set_end_child(Some(&right_pane));
-    paned.set_shrink_start_child(true);
-    paned.set_shrink_end_child(false);
-    paned.set_resize_start_child(false);
-    paned.set_resize_end_child(true);
-    paned.set_margin_top(4);
-    paned.set_margin_bottom(8);
-
-    let panel_width = if init_dev_cfg.paned_position > 0 { init_dev_cfg.paned_position } else { 200 };
-    paned.set_position(panel_width);
-    left_pane.set_visible(init_dev_cfg.panel_visible);
-
-    // Create the panel-state Rc values here so they can be moved into inner.
-    let saved_panel_width  = Rc::new(RefCell::new(panel_width));
-    let panel_collapsing   = Rc::new(RefCell::new(false));
-    let settle_timer:      Rc<RefCell<Option<glib::SourceId>>> = Rc::new(RefCell::new(None));
-    let config_save_timer: Rc<RefCell<Option<glib::SourceId>>> = Rc::new(RefCell::new(None));
-
-    let dev_info_label = Label::builder()
-        .css_classes(["device-info"]).halign(Align::Center)
-        .hexpand(true)
-        .margin_top(4).margin_bottom(4).build();
-
-    let net_icon = gtk::Image::builder()
-        .icon_size(gtk::IconSize::Normal)
-        .css_classes(["net-icon"])
-        .margin_end(8).margin_top(4).margin_bottom(4)
-        .visible(false)
-        .build();
-
-    let bottom_bar = gtk::CenterBox::new();
-    bottom_bar.set_center_widget(Some(&dev_info_label));
-    bottom_bar.set_end_widget(Some(&net_icon));
-
-    let outer = GtkBox::new(Orientation::Vertical, 0);
-    outer.append(&paned);
-    outer.append(&gtk::Separator::new(Orientation::Horizontal));
-    outer.append(&bottom_bar);
-
-    let toolbar = adw::ToolbarView::new();
-    toolbar.add_top_bar(&header);
-    toolbar.set_content(Some(&outer));
-
-    let win_w = if init_dev_cfg.window_width  > 0 { init_dev_cfg.window_width  } else { 680 };
-    let win_h = if init_dev_cfg.window_height > 0 { init_dev_cfg.window_height } else { 640 };
-    let window = adw::ApplicationWindow::builder()
-        .application(app).title("RustyWiiM").content(&toolbar)
-        .default_width(win_w).default_height(win_h)
-        .build();
-    if init_dev_cfg.window_maximized { window.maximize(); }
-
-    // ── Shared UI state ───────────────────────────────────────────────────────
-    let ui_state = PlaybackUiState {
-        is_playing:   Rc::new(RefCell::new(false)),
-        mute_on:      Rc::new(RefCell::new(false)),
-        shuffle_on:   Rc::new(RefCell::new(false)),
-        repeat_state: Rc::new(RefCell::new(0u32)),
-        updating_vol: Rc::new(RefCell::new(false)),
-    };
-
-    let pp = PresetWidgets {
-        btns:   preset_btns,
-        pics:   preset_pics,
-        labels: preset_labels,
-    };
-
-    // Bundle all content-widget and window state into a single Rc so every
-    // signal closure only needs one clone instead of capturing 6–8 variables.
-    let inner = Rc::new(DeviceWindowInner {
-        ds: ds.clone(),
-        sw,
-        ow,
-        pw,
-        pp,
-        dev_info_label,
-        net_icon,
-        icons,
-        vol_scale,
-        ui_state,
-        window: window.clone(),
-        paned:  paned.clone(),
-        left_pane: left_pane.clone(),
-        sidebar_btn: sidebar_btn.clone(),
-        saved_panel_width,
-        panel_collapsing,
-        settle_timer,
-        config_save_timer,
-        applied_window_key: RefCell::new(cfg.last_ssid.clone()),
-    });
-
-    // ── DeviceState signal connections ────────────────────────────────────────
-    ds.connect_device_changed({
-        let i = Rc::clone(&inner);
-        move |_| {
-            i.update_network_icon();
-            if i.ds.device_info().is_none() {
-                let title = match i.ds.connection_state() {
-                    ConnectionState::Connecting   => "Connecting…",
-                    ConnectionState::Failed       => "Disconnected",
-                    _                             => "",
-                };
-                i.reset_device_ui(title);
-            } else {
-                i.apply_device_info();
-                i.on_presets_changed();
-            }
-        }
-    });
-
-    ds.connect_network_changed({
-        let i = Rc::clone(&inner);
-        move |_| { i.update_network_icon(); }
-    });
-
-    ds.connect_playback_changed({
-        let i = Rc::clone(&inner);
-        move |_| { i.update_playback_ui(); }
-    });
-
-    ds.connect_input_changed({
-        let i = Rc::clone(&inner);
-        move |_| { i.update_input_display(); }
-    });
-
-    ds.connect_output_changed({
-        let i = Rc::clone(&inner);
-        move |_| { i.update_output_display(); }
-    });
-
-    ds.connect_outputs_changed({
-        let i = Rc::clone(&inner);
-        move |_| { i.populate_output(); i.update_output_display(); }
-    });
-
-    ds.connect_presets_changed({
-        let i = Rc::clone(&inner);
-        move |_| { i.on_presets_changed(); }
-    });
-
-    // ── Sidebar toggle ────────────────────────────────────────────────────────
-    let paned_btn_held = Rc::new(RefCell::new(false));
-    const SNAP_PX: i32 = 30;
-
-    inner.paned.connect_position_notify({
-        let i    = Rc::clone(&inner);
-        let held = Rc::clone(&paned_btn_held);
-        move |p| {
-            if *i.panel_collapsing.borrow() { return; }
-            let pos = p.position();
-            if pos >= SNAP_PX {
-                if !i.left_pane.is_visible() {
-                    *i.panel_collapsing.borrow_mut() = true;
-                    i.left_pane.set_visible(true);
-                    *i.panel_collapsing.borrow_mut() = false;
+        // ── DeviceState signal connections ────────────────────────────────────────
+        ds.connect_device_changed({
+            let i = Rc::clone(&inner);
+            move |_| {
+                i.update_network_icon();
+                if i.ds.device_info().is_none() {
+                    let title = match i.ds.connection_state() {
+                        ConnectionState::Connecting   => "Connecting…",
+                        ConnectionState::Failed       => "Disconnected",
+                        _                             => "",
+                    };
+                    i.reset_device_ui(title);
+                } else {
+                    i.apply_device_info();
+                    i.on_presets_changed();
                 }
-            } else if i.left_pane.is_visible() {
-                *i.panel_collapsing.borrow_mut() = true;
-                i.left_pane.set_visible(false);
-                *i.panel_collapsing.borrow_mut() = false;
             }
-            if let Some(id) = i.settle_timer.borrow_mut().take() { id.remove(); }
-            let i2    = Rc::clone(&i);
-            let held2 = Rc::clone(&held);
-            let id = glib::timeout_add_local_once(
-                std::time::Duration::from_millis(50),
-                move || {
-                    *i2.settle_timer.borrow_mut() = None;
-                    let btn_held = *held2.borrow();
-                    *held2.borrow_mut() = false;
-                    let shown = i2.left_pane.is_visible();
-                    if i2.sidebar_btn.is_active() != shown {
-                        *i2.panel_collapsing.borrow_mut() = true;
-                        i2.sidebar_btn.set_active(shown);
-                        *i2.panel_collapsing.borrow_mut() = false;
-                    }
-                    if shown && !btn_held {
-                        let pos = i2.paned.position();
-                        if pos >= SNAP_PX { *i2.saved_panel_width.borrow_mut() = pos; }
-                    }
-                    schedule_config_save(&i2);
-                },
-            );
-            *i.settle_timer.borrow_mut() = Some(id);
-        }
-    });
+        });
 
-    {
-        let drag_ctrl = gtk::EventControllerLegacy::new();
-        drag_ctrl.connect_event({
+        ds.connect_network_changed({
+            let i = Rc::clone(&inner);
+            move |_| { i.update_network_icon(); }
+        });
+
+        ds.connect_playback_changed({
+            let i = Rc::clone(&inner);
+            move |_| { i.update_playback_ui(); }
+        });
+
+        ds.connect_input_changed({
+            let i = Rc::clone(&inner);
+            move |_| { i.update_input_display(); }
+        });
+
+        ds.connect_output_changed({
+            let i = Rc::clone(&inner);
+            move |_| { i.update_output_display(); }
+        });
+
+        ds.connect_outputs_changed({
+            let i = Rc::clone(&inner);
+            move |_| { i.populate_output(); i.update_output_display(); }
+        });
+
+        ds.connect_presets_changed({
+            let i = Rc::clone(&inner);
+            move |_| { i.on_presets_changed(); }
+        });
+
+        // ── Sidebar toggle ────────────────────────────────────────────────────────
+        let paned_btn_held = Rc::new(RefCell::new(false));
+        const SNAP_PX: i32 = 30;
+
+        inner.paned.connect_position_notify({
             let i    = Rc::clone(&inner);
             let held = Rc::clone(&paned_btn_held);
-            move |_, event| {
-                match event.event_type() {
-                    gtk::gdk::EventType::ButtonPress => {
-                        *held.borrow_mut() = true;
+            move |p| {
+                if *i.panel_collapsing.borrow() { return; }
+                let pos = p.position();
+                if pos >= SNAP_PX {
+                    if !i.left_pane.is_visible() {
+                        *i.panel_collapsing.borrow_mut() = true;
+                        i.left_pane.set_visible(true);
+                        *i.panel_collapsing.borrow_mut() = false;
                     }
-                    gtk::gdk::EventType::ButtonRelease => {
-                        *held.borrow_mut() = false;
-                        if let Some(id) = i.settle_timer.borrow_mut().take() { id.remove(); }
-                        let shown = i.left_pane.is_visible();
-                        if i.sidebar_btn.is_active() != shown {
-                            *i.panel_collapsing.borrow_mut() = true;
-                            i.sidebar_btn.set_active(shown);
-                            *i.panel_collapsing.borrow_mut() = false;
+                } else if i.left_pane.is_visible() {
+                    *i.panel_collapsing.borrow_mut() = true;
+                    i.left_pane.set_visible(false);
+                    *i.panel_collapsing.borrow_mut() = false;
+                }
+                if let Some(id) = i.settle_timer.borrow_mut().take() { id.remove(); }
+                let i2    = Rc::clone(&i);
+                let held2 = Rc::clone(&held);
+                let id = glib::timeout_add_local_once(
+                    std::time::Duration::from_millis(50),
+                    move || {
+                        *i2.settle_timer.borrow_mut() = None;
+                        let btn_held = *held2.borrow();
+                        *held2.borrow_mut() = false;
+                        let shown = i2.left_pane.is_visible();
+                        if i2.sidebar_btn.is_active() != shown {
+                            *i2.panel_collapsing.borrow_mut() = true;
+                            i2.sidebar_btn.set_active(shown);
+                            *i2.panel_collapsing.borrow_mut() = false;
                         }
-                        if shown {
-                            let pos = i.paned.position();
-                            if pos >= SNAP_PX { *i.saved_panel_width.borrow_mut() = pos; }
+                        if shown && !btn_held {
+                            let pos = i2.paned.position();
+                            if pos >= SNAP_PX { *i2.saved_panel_width.borrow_mut() = pos; }
                         }
-                        schedule_config_save(&i);
+                        schedule_config_save(&i2);
+                    },
+                );
+                *i.settle_timer.borrow_mut() = Some(id);
+            }
+        });
+
+        {
+            let drag_ctrl = gtk::EventControllerLegacy::new();
+            drag_ctrl.connect_event({
+                let i    = Rc::clone(&inner);
+                let held = Rc::clone(&paned_btn_held);
+                move |_, event| {
+                    match event.event_type() {
+                        gtk::gdk::EventType::ButtonPress => {
+                            *held.borrow_mut() = true;
+                        }
+                        gtk::gdk::EventType::ButtonRelease => {
+                            *held.borrow_mut() = false;
+                            if let Some(id) = i.settle_timer.borrow_mut().take() { id.remove(); }
+                            let shown = i.left_pane.is_visible();
+                            if i.sidebar_btn.is_active() != shown {
+                                *i.panel_collapsing.borrow_mut() = true;
+                                i.sidebar_btn.set_active(shown);
+                                *i.panel_collapsing.borrow_mut() = false;
+                            }
+                            if shown {
+                                let pos = i.paned.position();
+                                if pos >= SNAP_PX { *i.saved_panel_width.borrow_mut() = pos; }
+                            }
+                            schedule_config_save(&i);
+                        }
+                        _ => {}
                     }
-                    _ => {}
+                    glib::Propagation::Proceed
+                }
+            });
+            inner.paned.add_controller(drag_ctrl);
+        }
+
+        inner.sidebar_btn.connect_toggled({
+            let i = Rc::clone(&inner);
+            move |btn| {
+                if *i.panel_collapsing.borrow() { return; }
+                if let Some(id) = i.settle_timer.borrow_mut().take() { id.remove(); }
+                if btn.is_active() {
+                    *i.panel_collapsing.borrow_mut() = true;
+                    i.left_pane.set_visible(true);
+                    let w = *i.saved_panel_width.borrow();
+                    i.paned.set_position(w);
+                    *i.panel_collapsing.borrow_mut() = false;
+                } else {
+                    *i.panel_collapsing.borrow_mut() = true;
+                    i.left_pane.set_visible(false);
+                    *i.panel_collapsing.borrow_mut() = false;
+                }
+                schedule_config_save(&i);
+            }
+        });
+
+        // ── SSDP discovery ────────────────────────────────────────────────────────
+        {
+            let (tx, rx) = async_channel::bounded::<Vec<discovery::DiscoveredDevice>>(1);
+            ds.rt().spawn(async move {
+                let devs = discovery::discover(std::time::Duration::from_secs(4)).await;
+                let _ = tx.send(devs).await;
+            });
+
+            let last_ssid_for_disc = cfg.last_ssid.clone();
+            let saved_ip           = Rc::new(RefCell::new(cfg.last_ip.clone()));
+            let inner_for_popover  = Rc::clone(&inner);
+            glib::spawn_future_local(clone!(
+                @strong ds, @strong dev_btn, @strong window, @strong saved_ip
+                    => async move {
+                        if let Ok(devs) = rx.recv().await {
+                            let popover = build_device_popover(
+                                &devs, &ds, &dev_btn, &window, &saved_ip,
+                                {
+                                    let i = inner_for_popover;
+                                    move |ssid| { i.apply_device_window_state(ssid); }
+                                },
+                            );
+                            dev_btn.set_popover(Some(&popover));
+
+                            let saved = saved_ip.borrow().clone();
+
+                            // Prefer SSID match (survives IP changes); fall back to IP match.
+                            let by_ssid = devs.iter().find(|d| {
+                                !last_ssid_for_disc.is_empty()
+                                    && !d.ssid.is_empty()
+                                    && d.ssid == last_ssid_for_disc
+                            });
+                            let by_ip = devs.iter().find(|d| !saved.is_empty() && d.ip == saved);
+                            let best = by_ssid.or(by_ip);
+
+                            // Update the button label to reflect the discovered device
+                            // (may now be at a different IP from last_ip).
+                            match best {
+                                Some(d) => dev_btn.set_label(&format!("{} ({})", d.name, d.ip)),
+                                None if !saved.is_empty() => dev_btn.set_label(&format!("Manual: {saved}")),
+                                None if devs.is_empty()   => dev_btn.set_label("No device"),
+                                None => {}
+                            }
+
+                            // Auto-connect only if not already connecting/connected.
+                            // Disconnected means either no last_ip or the SSID check failed.
+                            if ds.connection_state() == ConnectionState::Disconnected {
+                                let target = best.or_else(|| {
+                                    // No SSID/IP match and no prior device — pick the only one.
+                                    if saved.is_empty() { devs.first() } else { None }
+                                });
+                                if let Some(d) = target {
+                                    dev_btn.set_label(&format!("{} ({})", d.name, d.ip));
+                                    *saved_ip.borrow_mut() = d.ip.clone();
+                                    ds.set_device(&d.ip, d.tls_mode, None);
+                                }
+                            }
+                        }
+                    }
+            ));
+        }
+
+        // ── Transport / control signal handlers ───────────────────────────────────
+        inner.pw.btn_play.connect_clicked({
+            let i = Rc::clone(&inner);
+            move |_| {
+                let playing = *i.ui_state.is_playing.borrow();
+                if let Some(c) = i.ds.client() {
+                    i.ds.rt().spawn(async move {
+                        if playing { let _ = c.pause().await; } else { let _ = c.play().await; }
+                    });
+                }
+            }
+        });
+
+        btn_prev.connect_clicked({
+            let i = Rc::clone(&inner);
+            move |_| {
+                if let Some(c) = i.ds.client() { i.ds.rt().spawn(async move { let _ = c.prev().await; }); }
+            }
+        });
+
+        btn_next.connect_clicked({
+            let i = Rc::clone(&inner);
+            move |_| {
+                if let Some(c) = i.ds.client() { i.ds.rt().spawn(async move { let _ = c.next().await; }); }
+            }
+        });
+
+        inner.pw.shuffle.connect_clicked({
+            let i = Rc::clone(&inner);
+            move |_| {
+                let new_val = !*i.ui_state.shuffle_on.borrow();
+                *i.ui_state.shuffle_on.borrow_mut() = new_val;
+                if new_val { i.pw.shuffle.add_css_class("loop-active"); }
+                else        { i.pw.shuffle.remove_css_class("loop-active"); }
+                i.pw.shuffle.set_tooltip_text(Some(if new_val { "Shuffle: On" } else { "Shuffle: Off" }));
+                let mode = loop_api_mode(new_val, *i.ui_state.repeat_state.borrow());
+                if let Some(c) = i.ds.client() {
+                    i.ds.rt().spawn(async move { let _ = c.set_loop_mode(mode).await; });
+                }
+            }
+        });
+
+        inner.pw.repeat.connect_clicked({
+            let i = Rc::clone(&inner);
+            move |_| {
+                let next = (*i.ui_state.repeat_state.borrow() + 1) % 3;
+                *i.ui_state.repeat_state.borrow_mut() = next;
+                let ico = ["media-playlist-repeat-symbolic",
+                           "media-playlist-repeat-symbolic",
+                           "media-playlist-repeat-song-symbolic"];
+                let tip = ["Repeat: Off", "Repeat: All", "Repeat: One"];
+                i.pw.repeat.set_icon_name(ico[next as usize]);
+                i.pw.repeat.set_tooltip_text(Some(tip[next as usize]));
+                if next == 0 { i.pw.repeat.remove_css_class("loop-active"); }
+                else          { i.pw.repeat.add_css_class("loop-active"); }
+                let mode = loop_api_mode(*i.ui_state.shuffle_on.borrow(), next);
+                if let Some(c) = i.ds.client() {
+                    i.ds.rt().spawn(async move { let _ = c.set_loop_mode(mode).await; });
+                }
+            }
+        });
+
+        inner.pw.mute_btn.connect_clicked({
+            let i = Rc::clone(&inner);
+            move |_| {
+                let new_muted = !*i.ui_state.mute_on.borrow();
+                *i.ui_state.mute_on.borrow_mut() = new_muted;
+                i.pw.mute_btn.set_icon_name(if new_muted {
+                    "audio-volume-muted-symbolic"
+                } else {
+                    "audio-volume-high-symbolic"
+                });
+                if let Some(c) = i.ds.client() {
+                    i.ds.rt().spawn(async move { let _ = c.set_mute(new_muted).await; });
+                }
+            }
+        });
+
+        inner.vol_scale.connect_value_changed({
+            let i = Rc::clone(&inner);
+            move |scale| {
+                if *i.ui_state.updating_vol.borrow() { return; }
+                let vol = scale.value() as u32;
+                if let Some(c) = i.ds.client() {
+                    i.ds.rt().spawn(async move { let _ = c.set_volume(vol).await; });
+                }
+            }
+        });
+
+        inner.pw.seek.connect_change_value({
+            let i = Rc::clone(&inner);
+            move |_, _, value| {
+                if let Some(c) = i.ds.client() {
+                    i.ds.rt().spawn(async move { let _ = c.seek(value as u32).await; });
                 }
                 glib::Propagation::Proceed
             }
         });
-        inner.paned.add_controller(drag_ctrl);
-    }
 
-    inner.sidebar_btn.connect_toggled({
-        let i = Rc::clone(&inner);
-        move |btn| {
-            if *i.panel_collapsing.borrow() { return; }
-            if let Some(id) = i.settle_timer.borrow_mut().take() { id.remove(); }
-            if btn.is_active() {
-                *i.panel_collapsing.borrow_mut() = true;
-                i.left_pane.set_visible(true);
-                let w = *i.saved_panel_width.borrow();
-                i.paned.set_position(w);
-                *i.panel_collapsing.borrow_mut() = false;
-            } else {
-                *i.panel_collapsing.borrow_mut() = true;
-                i.left_pane.set_visible(false);
-                *i.panel_collapsing.borrow_mut() = false;
-            }
-            schedule_config_save(&i);
-        }
-    });
-
-    // ── SSDP discovery ────────────────────────────────────────────────────────
-    {
-        let (tx, rx) = async_channel::bounded::<Vec<discovery::DiscoveredDevice>>(1);
-        ds.rt().spawn(async move {
-            let devs = discovery::discover(std::time::Duration::from_secs(4)).await;
-            let _ = tx.send(devs).await;
-        });
-
-        let last_ssid_for_disc = cfg.last_ssid.clone();
-        let saved_ip           = Rc::new(RefCell::new(cfg.last_ip.clone()));
-        let inner_for_popover  = Rc::clone(&inner);
-        glib::spawn_future_local(clone!(
-            @strong ds, @strong dev_btn, @strong window, @strong saved_ip
-            => async move {
-                if let Ok(devs) = rx.recv().await {
-                    let popover = build_device_popover(
-                        &devs, &ds, &dev_btn, &window, &saved_ip,
-                        {
-                            let i = inner_for_popover;
-                            move |ssid| { i.apply_device_window_state(ssid); }
-                        },
-                    );
-                    dev_btn.set_popover(Some(&popover));
-
-                    let saved = saved_ip.borrow().clone();
-
-                    // Prefer SSID match (survives IP changes); fall back to IP match.
-                    let by_ssid = devs.iter().find(|d| {
-                        !last_ssid_for_disc.is_empty()
-                            && !d.ssid.is_empty()
-                            && d.ssid == last_ssid_for_disc
-                    });
-                    let by_ip = devs.iter().find(|d| !saved.is_empty() && d.ip == saved);
-                    let best = by_ssid.or(by_ip);
-
-                    // Update the button label to reflect the discovered device
-                    // (may now be at a different IP from last_ip).
-                    match best {
-                        Some(d) => dev_btn.set_label(&format!("{} ({})", d.name, d.ip)),
-                        None if !saved.is_empty() => dev_btn.set_label(&format!("Manual: {saved}")),
-                        None if devs.is_empty()   => dev_btn.set_label("No device"),
-                        None => {}
-                    }
-
-                    // Auto-connect only if not already connecting/connected.
-                    // Disconnected means either no last_ip or the SSID check failed.
-                    if ds.connection_state() == ConnectionState::Disconnected {
-                        let target = best.or_else(|| {
-                            // No SSID/IP match and no prior device — pick the only one.
-                            if saved.is_empty() { devs.first() } else { None }
-                        });
-                        if let Some(d) = target {
-                            dev_btn.set_label(&format!("{} ({})", d.name, d.ip));
-                            *saved_ip.borrow_mut() = d.ip.clone();
-                            ds.set_device(&d.ip, d.tls_mode, None);
-                        }
-                    }
+        inner.sw.dropdown.connect_selected_notify({
+            let i = Rc::clone(&inner);
+            move |dd| {
+                if *i.sw.updating.borrow() { return; }
+                let idx = dd.selected() as usize;
+                let ids = i.sw.ids.borrow();
+                if let Some(src) = ids.get(idx).cloned() {
+                    i.ds.switch_input(src);
                 }
             }
-        ));
-    }
+        });
 
-    // ── Transport / control signal handlers ───────────────────────────────────
-    inner.pw.btn_play.connect_clicked({
-        let i = Rc::clone(&inner);
-        move |_| {
-            let playing = *i.ui_state.is_playing.borrow();
-            if let Some(c) = i.ds.client() {
-                i.ds.rt().spawn(async move {
-                    if playing { let _ = c.pause().await; } else { let _ = c.play().await; }
-                });
-            }
-        }
-    });
-
-    btn_prev.connect_clicked({
-        let i = Rc::clone(&inner);
-        move |_| {
-            if let Some(c) = i.ds.client() { i.ds.rt().spawn(async move { let _ = c.prev().await; }); }
-        }
-    });
-
-    btn_next.connect_clicked({
-        let i = Rc::clone(&inner);
-        move |_| {
-            if let Some(c) = i.ds.client() { i.ds.rt().spawn(async move { let _ = c.next().await; }); }
-        }
-    });
-
-    inner.pw.shuffle.connect_clicked({
-        let i = Rc::clone(&inner);
-        move |_| {
-            let new_val = !*i.ui_state.shuffle_on.borrow();
-            *i.ui_state.shuffle_on.borrow_mut() = new_val;
-            if new_val { i.pw.shuffle.add_css_class("loop-active"); }
-            else        { i.pw.shuffle.remove_css_class("loop-active"); }
-            i.pw.shuffle.set_tooltip_text(Some(if new_val { "Shuffle: On" } else { "Shuffle: Off" }));
-            let mode = loop_api_mode(new_val, *i.ui_state.repeat_state.borrow());
-            if let Some(c) = i.ds.client() {
-                i.ds.rt().spawn(async move { let _ = c.set_loop_mode(mode).await; });
-            }
-        }
-    });
-
-    inner.pw.repeat.connect_clicked({
-        let i = Rc::clone(&inner);
-        move |_| {
-            let next = (*i.ui_state.repeat_state.borrow() + 1) % 3;
-            *i.ui_state.repeat_state.borrow_mut() = next;
-            let ico = ["media-playlist-repeat-symbolic",
-                       "media-playlist-repeat-symbolic",
-                       "media-playlist-repeat-song-symbolic"];
-            let tip = ["Repeat: Off", "Repeat: All", "Repeat: One"];
-            i.pw.repeat.set_icon_name(ico[next as usize]);
-            i.pw.repeat.set_tooltip_text(Some(tip[next as usize]));
-            if next == 0 { i.pw.repeat.remove_css_class("loop-active"); }
-            else          { i.pw.repeat.add_css_class("loop-active"); }
-            let mode = loop_api_mode(*i.ui_state.shuffle_on.borrow(), next);
-            if let Some(c) = i.ds.client() {
-                i.ds.rt().spawn(async move { let _ = c.set_loop_mode(mode).await; });
-            }
-        }
-    });
-
-    inner.pw.mute_btn.connect_clicked({
-        let i = Rc::clone(&inner);
-        move |_| {
-            let new_muted = !*i.ui_state.mute_on.borrow();
-            *i.ui_state.mute_on.borrow_mut() = new_muted;
-            i.pw.mute_btn.set_icon_name(if new_muted {
-                "audio-volume-muted-symbolic"
-            } else {
-                "audio-volume-high-symbolic"
-            });
-            if let Some(c) = i.ds.client() {
-                i.ds.rt().spawn(async move { let _ = c.set_mute(new_muted).await; });
-            }
-        }
-    });
-
-    inner.vol_scale.connect_value_changed({
-        let i = Rc::clone(&inner);
-        move |scale| {
-            if *i.ui_state.updating_vol.borrow() { return; }
-            let vol = scale.value() as u32;
-            if let Some(c) = i.ds.client() {
-                i.ds.rt().spawn(async move { let _ = c.set_volume(vol).await; });
-            }
-        }
-    });
-
-    inner.pw.seek.connect_change_value({
-        let i = Rc::clone(&inner);
-        move |_, _, value| {
-            if let Some(c) = i.ds.client() {
-                i.ds.rt().spawn(async move { let _ = c.seek(value as u32).await; });
-            }
-            glib::Propagation::Proceed
-        }
-    });
-
-    inner.sw.dropdown.connect_selected_notify({
-        let i = Rc::clone(&inner);
-        move |dd| {
-            if *i.sw.updating.borrow() { return; }
-            let idx = dd.selected() as usize;
-            let ids = i.sw.ids.borrow();
-            if let Some(src) = ids.get(idx).cloned() {
-                i.ds.switch_input(src);
-            }
-        }
-    });
-
-    inner.ow.dropdown.connect_selected_notify({
-        let i = Rc::clone(&inner);
-        move |dd| {
-            if *i.ow.updating.borrow() { return; }
-            let idx = dd.selected() as usize;
-            let modes = i.ow.modes.borrow();
-            if let Some(&mode) = modes.get(idx) {
-                i.ds.set_audio_output(mode);
-            }
-        }
-    });
-
-    for (idx, btn) in inner.pp.btns.iter().enumerate() {
-        let num = (idx + 1) as u32;
-        let i = Rc::clone(&inner);
-        btn.connect_clicked(move |_| {
-            if let Some(c) = i.ds.client() {
-                i.ds.rt().spawn(async move { let _ = c.play_preset(num).await; });
+        inner.ow.dropdown.connect_selected_notify({
+            let i = Rc::clone(&inner);
+            move |dd| {
+                if *i.ow.updating.borrow() { return; }
+                let idx = dd.selected() as usize;
+                let modes = i.ow.modes.borrow();
+                if let Some(&mode) = modes.get(idx) {
+                    i.ds.set_audio_output(mode);
+                }
             }
         });
-    }
 
-    // ── Window actions ────────────────────────────────────────────────────────
-    let quit_action = gio::SimpleAction::new("quit", None);
-    quit_action.connect_activate(clone!(@strong window => move |_, _| { window.close(); }));
-    window.add_action(&quit_action);
-    app.set_accels_for_action("win.quit", &["<Ctrl>Q"]);
-
-    let about_action = gio::SimpleAction::new("about", None);
-    about_action.connect_activate(clone!(@strong window => move |_, _| {
-        adw::AboutDialog::builder()
-            .application_name("RustyWiiM")
-            .application_icon("audio-x-generic")
-            .version(concat!(env!("CARGO_PKG_VERSION"), " (", env!("GIT_HASH"), ")"))
-            .developer_name("Benjamin Herrenschmidt")
-            .copyright("© 2026 Benjamin Herrenschmidt")
-            .license_type(gtk::License::MitX11)
-            .website("https://github.com/ozbenh/rustywiim")
-            .build()
-            .present(Some(&window));
-    }));
-    window.add_action(&about_action);
-
-    // ── Save window state ─────────────────────────────────────────────────────
-    window.connect_close_request({
-        let i = Rc::clone(&inner);
-        move |_win| {
-            // Cancel any deferred saves and write immediately so the final
-            // window state (size, panel) is not lost on exit or device switch.
-            if let Some(id) = i.settle_timer.borrow_mut().take() { id.remove(); }
-            if let Some(id) = i.config_save_timer.borrow_mut().take() { id.remove(); }
-            i.save_config_now();
-            glib::Propagation::Proceed
+        for (idx, btn) in inner.pp.btns.iter().enumerate() {
+            let num = (idx + 1) as u32;
+            let i = Rc::clone(&inner);
+            btn.connect_clicked(move |_| {
+                if let Some(c) = i.ds.client() {
+                    i.ds.rt().spawn(async move { let _ = c.play_preset(num).await; });
+                }
+            });
         }
-    });
+
+        // ── Mini player signals ───────────────────────────────────────────────────
+        inner.mini_btn.connect_toggled({
+            let i = Rc::clone(&inner);
+            move |btn| {
+                if *i.mini_toggling.borrow() { return; }
+                if btn.is_active() { i.enter_mini_mode(); } else { i.exit_mini_mode(); }
+            }
+        });
+
+        inner.mini.restore_btn.connect_clicked({
+            let i = Rc::clone(&inner);
+            move |_| { i.exit_mini_mode(); }
+        });
+
+        {
+            let gesture = gtk::GestureClick::builder().button(1).build();
+            gesture.connect_pressed({
+                let i = Rc::clone(&inner);
+                move |_, n_press, _, _| {
+                    if n_press >= 2 { i.exit_mini_mode(); }
+                }
+            });
+            inner.mini.root.add_controller(gesture);
+        }
+
+        inner.mini.btn_play.connect_clicked({
+            let i = Rc::clone(&inner);
+            move |_| {
+                let playing = *i.ui_state.is_playing.borrow();
+                if let Some(c) = i.ds.client() {
+                    i.ds.rt().spawn(async move {
+                        if playing { let _ = c.pause().await; } else { let _ = c.play().await; }
+                    });
+                }
+            }
+        });
+
+        inner.mini.btn_prev.connect_clicked({
+            let i = Rc::clone(&inner);
+            move |_| {
+                if let Some(c) = i.ds.client() { i.ds.rt().spawn(async move { let _ = c.prev().await; }); }
+            }
+        });
+
+        inner.mini.btn_next.connect_clicked({
+            let i = Rc::clone(&inner);
+            move |_| {
+                if let Some(c) = i.ds.client() { i.ds.rt().spawn(async move { let _ = c.next().await; }); }
+            }
+        });
+
+        inner.mini.mute_btn.connect_clicked({
+            let i = Rc::clone(&inner);
+            move |_| {
+                let new_muted = !*i.ui_state.mute_on.borrow();
+                *i.ui_state.mute_on.borrow_mut() = new_muted;
+                let mute_icon = if new_muted {
+                    "audio-volume-muted-symbolic"
+                } else {
+                    "audio-volume-high-symbolic"
+                };
+                i.pw.mute_btn.set_icon_name(mute_icon);
+                i.mini.mute_btn.set_icon_name(mute_icon);
+                if let Some(c) = i.ds.client() {
+                    i.ds.rt().spawn(async move { let _ = c.set_mute(new_muted).await; });
+                }
+            }
+        });
+
+        inner.mini.vol_scale.connect_value_changed({
+            let i = Rc::clone(&inner);
+            move |scale| {
+                if *i.ui_state.updating_vol.borrow() { return; }
+                let vol = scale.value() as u32;
+                if let Some(c) = i.ds.client() {
+                    i.ds.rt().spawn(async move { let _ = c.set_volume(vol).await; });
+                }
+            }
+        });
+
+        // ── Mini window signals ───────────────────────────────────────────────────
+        // X / Alt+F4 on the mini window → exit mini mode (don't destroy the window).
+        inner.mini_win.connect_close_request({
+            let i = Rc::clone(&inner);
+            move |_win| {
+                i.exit_mini_mode();
+                glib::Propagation::Stop
+            }
+        });
+
+        // Ctrl+Q while the mini window is focused → quit the app.
+        {
+            let key_ctrl = gtk::EventControllerKey::new();
+            key_ctrl.connect_key_pressed(clone!(@strong window => move |_, key, _, mods| {
+                if key == gtk::gdk::Key::q
+                    && mods.contains(gtk::gdk::ModifierType::CONTROL_MASK)
+                {
+                    window.close();
+                    return glib::Propagation::Stop;
+                }
+                glib::Propagation::Proceed
+            }));
+            inner.mini_win.add_controller(key_ctrl);
+        }
+
+        // ── Window actions ────────────────────────────────────────────────────────
+        let quit_action = gio::SimpleAction::new("quit", None);
+        quit_action.connect_activate(clone!(@strong window => move |_, _| { window.close(); }));
+        window.add_action(&quit_action);
+        app.set_accels_for_action("win.quit", &["<Ctrl>Q"]);
+
+        let about_action = gio::SimpleAction::new("about", None);
+        about_action.connect_activate(clone!(@strong window => move |_, _| {
+            adw::AboutDialog::builder()
+                .application_name("RustyWiiM")
+                .application_icon("audio-x-generic")
+                .version(concat!(env!("CARGO_PKG_VERSION"), " (", env!("GIT_HASH"), ")"))
+                .developer_name("Benjamin Herrenschmidt")
+                .copyright("© 2026 Benjamin Herrenschmidt")
+                .license_type(gtk::License::MitX11)
+                .website("https://github.com/ozbenh/rustywiim")
+                .build()
+                .present(Some(&window));
+        }));
+        window.add_action(&about_action);
+
+        // ── Save window state ─────────────────────────────────────────────────────
+        window.connect_close_request({
+            let i = Rc::clone(&inner);
+            move |_win| {
+                if let Some(id) = i.settle_timer.borrow_mut().take() { id.remove(); }
+                if let Some(id) = i.config_save_timer.borrow_mut().take() { id.remove(); }
+                if let Some(id) = i.mini_scroll_timer.borrow_mut().take() { id.remove(); }
+                i.save_config_now();
+                i.mini_win.destroy();
+                glib::Propagation::Proceed
+            }
+        });
 
         Self { window, inner }
     }
