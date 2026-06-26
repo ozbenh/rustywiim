@@ -1010,6 +1010,8 @@ impl DeviceWindowInner {
         *self.mini_toggling.borrow_mut() = false;
         self.mini_win.set_visible(false);
         self.window.present();
+        self.update_playback_ui();
+        self.update_input_display();
     }
 } // impl DeviceWindowInner
 
@@ -1814,12 +1816,16 @@ impl DeviceWindow {
 
         ds.connect_playback_changed({
             let i = Rc::clone(&inner);
-            move |_| { i.update_playback_ui(); i.update_mini_playback(); }
+            move |_| {
+                if *i.mini_mode.borrow() { i.update_mini_playback(); } else { i.update_playback_ui(); }
+            }
         });
 
         ds.connect_input_changed({
             let i = Rc::clone(&inner);
-            move |_| { i.update_input_display(); i.update_mini_playback(); }
+            move |_| {
+                if *i.mini_mode.borrow() { i.update_mini_playback(); } else { i.update_input_display(); }
+            }
         });
 
         ds.connect_output_changed({
