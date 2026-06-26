@@ -7,11 +7,13 @@
   * Add more caps detection around sub, EQ, etc...
   * Find testers :-)
 
+* Implement a "miniaturized" UI
+
+* Support monitoring multiple devices (maybe a device selector ?)
+
 * Move most of the device handling and API wrappers to a crate separate from
   the UI for other use cases ? That or do a daemon so we can also have a
   gnome-shell UI or similar...
-
-* Check/fix handling of HTML in strings in metadata
 
 * Add EQ (PEQ and GEQ) editor (I have code, just not quite publishable)
 
