@@ -301,10 +301,14 @@ impl DeviceState {
         let ds = self.downgrade();
         let rt = self.rt();
         glib::timeout_add_local(Duration::from_secs(1), move || {
-            let Some(ds) = ds.upgrade() else {
-                return glib::ControlFlow::Break;
-            };
-            let client = ds.imp().inner.borrow().client.clone();
+            let Some(ds) = ds.upgrade() else { return glib::ControlFlow::Break };
+            let inner = ds.imp().inner.borrow();
+            // Only poll when fully connected; skip during connecting / failed / disconnected.
+            if inner.connection_state != ConnectionState::Connected {
+                return glib::ControlFlow::Continue;
+            }
+            let client = inner.client.clone();
+            drop(inner);
             if let Some(c) = client {
                 let tx = poll_tx.clone();
                 rt.spawn(async move {
@@ -354,30 +358,48 @@ impl DeviceState {
 
         let (tx, rx) = async_channel::bounded::<SlowPollResult>(1);
 
+        // Timer: fires every 5 seconds.
+        //  - Connected → run normal slow polls (output list + getStatusEx).
+        //  - Failed    → attempt to reconnect via fetch_device_info().
+        //  - Connecting / Disconnected → skip.
         let ds_weak = self.downgrade();
         let rt = self.rt();
         glib::timeout_add_local(Duration::from_secs(5), move || {
             let Some(ds) = ds_weak.upgrade() else { return glib::ControlFlow::Break };
             let inner = ds.imp().inner.borrow();
+            let state  = inner.connection_state;
             let probe  = inner.probe_outputs;
-            let client = match inner.client.clone() {
-                Some(c) => c,
-                None    => return glib::ControlFlow::Continue,
-            };
+            let client = inner.client.clone();
             drop(inner);
-            let tx = tx.clone();
-            rt.spawn(async move {
-                let outputs = if probe {
-                    Some(client.get_sound_card_mode_support_list().await)
-                } else {
-                    None
-                };
-                let device_info = client.get_device_info().await.ok();
-                let _ = tx.send(SlowPollResult { outputs, device_info }).await;
-            });
+
+            match state {
+                ConnectionState::Failed => {
+                    if client.is_some() {
+                        dbg("reconnect attempt: transitioning Connecting");
+                        ds.imp().inner.borrow_mut().connection_state = ConnectionState::Connecting;
+                        ds.emit_by_name::<()>("device-changed", &[]);
+                        ds.fetch_device_info();
+                    }
+                }
+                ConnectionState::Connected => {
+                    let Some(client) = client else { return glib::ControlFlow::Continue };
+                    let tx = tx.clone();
+                    rt.spawn(async move {
+                        let outputs = if probe {
+                            Some(client.get_sound_card_mode_support_list().await)
+                        } else {
+                            None
+                        };
+                        let device_info = client.get_device_info().await.ok();
+                        let _ = tx.send(SlowPollResult { outputs, device_info }).await;
+                    });
+                }
+                _ => {} // Connecting or Disconnected — skip
+            }
             glib::ControlFlow::Continue
         });
 
+        // Processor: handles results from the Connected slow polls.
         let ds_weak = self.downgrade();
         glib::spawn_future_local(async move {
             while let Ok(result) = rx.recv().await {
@@ -401,7 +423,19 @@ impl DeviceState {
                 }
 
                 // ── device info (getStatusEx) ─────────────────────────────────
-                let Some(new_info) = result.device_info else { continue };
+                let Some(new_info) = result.device_info else {
+                    // getStatusEx failed while we were Connected → declare failure.
+                    if ds.imp().inner.borrow().connection_state == ConnectionState::Connected {
+                        dbg("slow poll: getStatusEx failed; transitioning to Failed");
+                        {
+                            let mut inner = ds.imp().inner.borrow_mut();
+                            inner.connection_state = ConnectionState::Failed;
+                            inner.device_info      = None;
+                        }
+                        ds.emit_by_name::<()>("device-changed", &[]);
+                    }
+                    continue;
+                };
 
                 let (prev_fw, prev_ssid, prev_name, prev_netstat, prev_rssi) = {
                     let inner = ds.imp().inner.borrow();
