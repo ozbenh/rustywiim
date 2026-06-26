@@ -408,20 +408,22 @@ struct PresetWidgets {
 
 #[derive(Clone)]
 struct PlaybackWidgets {
-    title:     Label,
-    artist:    Label,
-    album:     Label,
-    status:    Label,
-    quality:   Label,
-    pos:       Label,
-    dur:       Label,
-    seek:      Scale,
-    btn_play:  Button,
-    mute_btn:  Button,
-    shuffle:   Button,
-    repeat:    Button,
-    artwork:   gtk::Picture,
-    art_stack: gtk::Stack,
+    title:      Label,
+    artist:     Label,
+    album:      Label,
+    status:     Label,
+    quality:    Label,
+    pos:        Label,
+    dur:        Label,
+    seek:       Scale,
+    btn_prev:   Button,
+    btn_play:   Button,
+    btn_next:   Button,
+    mute_btn:   Button,
+    shuffle:    Button,
+    repeat:     Button,
+    artwork:    gtk::Picture,
+    art_stack:  gtk::Stack,
     input_icon: gtk::Image,
 }
 
@@ -663,7 +665,6 @@ impl DeviceWindowInner {
             if let Ok(v) = st.vol.parse::<f64>() {
                 *self.ui_state.updating_vol.borrow_mut() = true;
                 self.vol_scale.set_value(v);
-                self.mini.vol_scale.set_value(v);
                 *self.ui_state.updating_vol.borrow_mut() = false;
             }
 
@@ -682,7 +683,6 @@ impl DeviceWindowInner {
                 "media-playback-start-symbolic"
             };
             self.pw.btn_play.set_icon_name(play_icon);
-            self.mini.btn_play.set_icon_name(play_icon);
 
             self.pw.status.set_label(&format_status(&st.status, &st.mode, &st.vendor));
 
@@ -695,7 +695,6 @@ impl DeviceWindowInner {
                     "audio-volume-high-symbolic"
                 };
                 self.pw.mute_btn.set_icon_name(mute_icon);
-                self.mini.mute_btn.set_icon_name(mute_icon);
             }
 
             let (dev_shuf, dev_rep) = decode_loop_mode(&st.loop_mode);
@@ -743,7 +742,6 @@ impl DeviceWindowInner {
             }
         }
 
-        if *self.mini_mode.borrow() { self.update_mini_playback(); }
     }
 
     // ── Input / Output display ────────────────────────────────────────────────
@@ -767,7 +765,6 @@ impl DeviceWindowInner {
             self.pw.art_stack.set_visible_child_name("icon");
         }
 
-        if *self.mini_mode.borrow() { self.update_mini_playback(); }
     }
 
     fn update_output_display(&self) {
@@ -929,6 +926,11 @@ impl DeviceWindowInner {
             self.mini.device_label.set_label(&di.device_name);
         }
         if let Some(st) = self.ds.player_status() {
+            if let Ok(v) = st.vol.parse::<f64>() {
+                *self.ui_state.updating_vol.borrow_mut() = true;
+                self.mini.vol_scale.set_value(v);
+                *self.ui_state.updating_vol.borrow_mut() = false;
+            }
             let playing = st.status == "play";
             self.mini.btn_play.set_icon_name(if playing {
                 "media-playback-pause-symbolic"
@@ -1168,6 +1170,473 @@ fn build_device_popover(
     popover
 }
 
+// ── Widget builder functions ──────────────────────────────────────────────────
+
+fn build_header(init_panel_visible: bool) -> (adw::HeaderBar, gtk::ToggleButton, gtk::MenuButton, gtk::ToggleButton) {
+    let header = adw::HeaderBar::new();
+
+    let sidebar_btn = gtk::ToggleButton::builder()
+        .icon_name("sidebar-show-symbolic")
+        .active(init_panel_visible)
+        .tooltip_text("Toggle presets panel")
+        .build();
+    sidebar_btn.add_css_class("sidebar-toggle");
+    header.pack_start(&sidebar_btn);
+
+    let dev_btn = gtk::MenuButton::builder().label("Scanning…").build();
+    header.pack_start(&dev_btn);
+
+    let app_menu = gio::Menu::new();
+    app_menu.append(Some("About RustyWiiM"), Some("win.about"));
+    let app_menu_btn = gtk::MenuButton::builder()
+        .icon_name("open-menu-symbolic")
+        .menu_model(&app_menu)
+        .tooltip_text("Menu")
+        .build();
+    header.pack_end(&app_menu_btn);
+
+    let mini_btn = gtk::ToggleButton::builder()
+        .icon_name("view-restore-symbolic")
+        .tooltip_text("Mini player")
+        .build();
+    header.pack_end(&mini_btn);
+
+    (header, sidebar_btn, dev_btn, mini_btn)
+}
+
+fn build_presets_panel() -> (PresetWidgets, gtk::ScrolledWindow) {
+    let presets_box = GtkBox::builder()
+        .orientation(Orientation::Vertical).spacing(2)
+        .margin_top(8).margin_bottom(4).margin_start(8).margin_end(8)
+        .build();
+    presets_box.append(
+        &Label::builder()
+            .label("PRESETS").css_classes(["section-label"])
+            .halign(Align::Start).margin_bottom(4)
+            .build(),
+    );
+
+    let mut preset_btns:   Vec<Button>     = Vec::new();
+    let mut preset_pics:   Vec<gtk::Image> = Vec::new();
+    let mut preset_labels: Vec<Label>      = Vec::new();
+
+    for i in 1..=12u32 {
+        let badge = Label::builder()
+            .label(&i.to_string()).css_classes(["preset-badge"])
+            .halign(Align::Center).valign(Align::Center)
+            .build();
+        let pic = gtk::Image::builder()
+            .pixel_size(40).icon_name("audio-x-generic-symbolic")
+            .build();
+        pic.add_css_class("preset-art");
+        pic.set_overflow(gtk::Overflow::Hidden);
+        let lbl = Label::builder()
+            .label("").css_classes(["preset-name"])
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .halign(Align::Start).hexpand(true).width_chars(0)
+            .build();
+        let tile = GtkBox::builder()
+            .orientation(Orientation::Horizontal).spacing(6)
+            .css_classes(["preset-tile"]).overflow(gtk::Overflow::Hidden)
+            .build();
+        tile.append(&badge);
+        tile.append(&pic);
+        tile.append(&lbl);
+        let btn = Button::builder().child(&tile).css_classes(["flat"]).build();
+        btn.set_tooltip_text(Some(&format!("Preset {i}")));
+        btn.set_visible(false);
+        presets_box.append(&btn);
+        preset_btns.push(btn);
+        preset_pics.push(pic);
+        preset_labels.push(lbl);
+    }
+
+    let pp = PresetWidgets {
+        btns:   Rc::new(preset_btns),
+        pics:   Rc::new(preset_pics),
+        labels: Rc::new(preset_labels),
+    };
+
+    let presets_scroll = gtk::ScrolledWindow::builder()
+        .child(&presets_box)
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .vexpand(true)
+        .build();
+
+    (pp, presets_scroll)
+}
+
+fn build_source_widgets(icons: &Rc<icons::IconSet>) -> SourceWidgets {
+    let icons = Rc::clone(icons);
+    let sw = SourceWidgets {
+        dropdown: gtk::DropDown::from_strings(&["—"]),
+        ids:      Rc::new(RefCell::new(Vec::new())),
+        enabled:  Rc::new(RefCell::new(Vec::new())),
+        updating: Rc::new(RefCell::new(false)),
+    };
+    sw.dropdown.add_css_class("panel-dropdown");
+    sw.dropdown.set_sensitive(false);
+
+    let factory = gtk::SignalListItemFactory::new();
+    factory.connect_setup(|_, obj| {
+        let item = obj.downcast_ref::<gtk::ListItem>().unwrap();
+        let hbox = GtkBox::builder()
+            .orientation(Orientation::Horizontal).spacing(6).build();
+        hbox.append(&gtk::Image::builder().pixel_size(16).build());
+        hbox.append(&Label::builder().halign(Align::Start).build());
+        item.set_child(Some(&hbox));
+    });
+    factory.connect_bind(clone!(
+        @strong sw, @strong icons
+            => move |_, obj| {
+                let item = obj.downcast_ref::<gtk::ListItem>().unwrap();
+                let pos  = item.position() as usize;
+                if let Some(hbox) = item.child().and_downcast::<GtkBox>() {
+                    let enabled = sw.enabled.borrow().get(pos).copied().unwrap_or(true);
+                    let ids     = sw.ids.borrow();
+                    let id      = ids.get(pos).map(String::as_str).unwrap_or("");
+                    if let Some(img) = hbox.first_child().and_downcast::<gtk::Image>() {
+                        img.set_paintable(Some(icons.source_paintable(id)));
+                    }
+                    if let Some(lbl) = hbox.last_child().and_downcast::<Label>() {
+                        if let Some(so) = item.item().and_downcast::<gtk::StringObject>() {
+                            lbl.set_label(&so.string());
+                        }
+                        lbl.set_sensitive(enabled);
+                    }
+                    item.set_activatable(enabled);
+                }
+            }
+    ));
+    factory.connect_unbind(|_, obj| {
+        let item = obj.downcast_ref::<gtk::ListItem>().unwrap();
+        item.set_activatable(true);
+        if let Some(hbox) = item.child().and_downcast::<GtkBox>() {
+            if let Some(lbl) = hbox.last_child().and_downcast::<Label>() {
+                lbl.set_sensitive(true);
+            }
+        }
+    });
+    sw.dropdown.set_factory(Some(&factory));
+    sw
+}
+
+fn build_output_widgets(icons: &Rc<icons::IconSet>) -> OutputWidgets {
+    let icons = Rc::clone(icons);
+    let ow = OutputWidgets {
+        dropdown:    gtk::DropDown::from_strings(&["—"]),
+        section:     GtkBox::builder()
+            .orientation(Orientation::Vertical).spacing(4).visible(false).build(),
+        modes:       Rc::new(RefCell::new(Vec::new())),
+        canon_names: Rc::new(RefCell::new(Vec::new())),
+        updating:    Rc::new(RefCell::new(false)),
+    };
+    ow.dropdown.add_css_class("panel-dropdown");
+    ow.dropdown.set_sensitive(false);
+
+    let factory = gtk::SignalListItemFactory::new();
+    factory.connect_setup(|_, obj| {
+        let item = obj.downcast_ref::<gtk::ListItem>().unwrap();
+        let hbox = GtkBox::builder()
+            .orientation(Orientation::Horizontal).spacing(6).build();
+        hbox.append(&gtk::Image::builder().pixel_size(16).build());
+        hbox.append(&Label::builder().halign(Align::Start).build());
+        item.set_child(Some(&hbox));
+    });
+    factory.connect_bind(clone!(@strong ow, @strong icons => move |_, obj| {
+        let item = obj.downcast_ref::<gtk::ListItem>().unwrap();
+        let pos  = item.position() as usize;
+        if let Some(hbox) = item.child().and_downcast::<GtkBox>() {
+            let names = ow.canon_names.borrow();
+            let canon = names.get(pos).copied().unwrap_or("");
+            if let Some(img) = hbox.first_child().and_downcast::<gtk::Image>() {
+                img.set_paintable(Some(icons.output_paintable(canon)));
+            }
+            if let Some(lbl) = hbox.last_child().and_downcast::<Label>() {
+                if let Some(so) = item.item().and_downcast::<gtk::StringObject>() {
+                    lbl.set_label(&so.string());
+                }
+            }
+        }
+    }));
+    ow.dropdown.set_factory(Some(&factory));
+
+    ow.section.append(
+        &Label::builder()
+            .label("OUTPUT").css_classes(["section-label"]).halign(Align::Start).build(),
+    );
+    ow.section.append(&ow.dropdown);
+
+    ow
+}
+
+fn build_left_pane(sw: &SourceWidgets, ow: &OutputWidgets, presets_scroll: &gtk::ScrolledWindow) -> gtk::Box {
+    let io_box = GtkBox::builder()
+        .orientation(Orientation::Vertical).spacing(4)
+        .margin_top(4).margin_bottom(8).margin_start(8).margin_end(8)
+        .build();
+    io_box.append(&gtk::Separator::new(Orientation::Horizontal));
+    io_box.append(
+        &Label::builder()
+            .label("INPUT").css_classes(["section-label"])
+            .halign(Align::Start).margin_top(6).build(),
+    );
+    io_box.append(&sw.dropdown);
+    io_box.append(&ow.section);
+
+    let left_pane = GtkBox::builder().orientation(Orientation::Vertical).build();
+    left_pane.append(presets_scroll);
+    left_pane.append(&io_box);
+    left_pane
+}
+
+fn build_playback_widgets() -> (PlaybackWidgets, Scale) {
+    let pw = PlaybackWidgets {
+        artwork:    gtk::Picture::builder()
+            .content_fit(gtk::ContentFit::Contain).can_shrink(true)
+            .halign(Align::Center).vexpand(true).build(),
+        input_icon: gtk::Image::builder()
+            .pixel_size(128).halign(Align::Center).valign(Align::Center).build(),
+        art_stack: {
+            let s = gtk::Stack::new();
+            s.set_vexpand(true);
+            s.set_transition_type(gtk::StackTransitionType::Crossfade);
+            s.set_transition_duration(200);
+            s
+        },
+        title:    Label::builder().label("Not connected").css_classes(["track-title"])
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .halign(Align::Center).justify(gtk::Justification::Center).build(),
+        artist:   Label::builder().css_classes(["track-artist"])
+            .ellipsize(gtk::pango::EllipsizeMode::End).halign(Align::Center).build(),
+        album:    Label::builder().css_classes(["track-album"])
+            .ellipsize(gtk::pango::EllipsizeMode::End).halign(Align::Center).build(),
+        status:   Label::builder().css_classes(["status-badge"]).halign(Align::Center).build(),
+        quality:  Label::builder().css_classes(["quality-label"]).halign(Align::Center)
+            .visible(false).build(),
+        pos:      Label::builder().label("0:00").css_classes(["dim-label"]).build(),
+        dur:      Label::builder().label("0:00").css_classes(["dim-label"]).build(),
+        seek:     Scale::with_range(Orientation::Horizontal, 0.0, 100.0, 1.0),
+        btn_prev: Button::builder()
+            .icon_name("media-skip-backward-symbolic")
+            .css_classes(["transport-btn", "circular"]).build(),
+        btn_play: Button::builder()
+            .icon_name("media-playback-start-symbolic")
+            .css_classes(["play-btn", "circular"]).build(),
+        btn_next: Button::builder()
+            .icon_name("media-skip-forward-symbolic")
+            .css_classes(["transport-btn", "circular"]).build(),
+        mute_btn: Button::builder()
+            .icon_name("audio-volume-high-symbolic")
+            .css_classes(["transport-btn", "circular"]).tooltip_text("Mute").build(),
+        shuffle:  Button::builder()
+            .icon_name("media-playlist-shuffle-symbolic")
+            .css_classes(["loop-btn", "circular"]).tooltip_text("Shuffle: Off").build(),
+        repeat:   Button::builder()
+            .icon_name("media-playlist-repeat-symbolic")
+            .css_classes(["loop-btn", "circular"]).tooltip_text("Repeat: Off").build(),
+    };
+
+    pw.art_stack.add_named(&pw.artwork, Some("artwork"));
+    pw.art_stack.add_named(&pw.input_icon, Some("icon"));
+    pw.seek.set_hexpand(true);
+    pw.seek.set_draw_value(false);
+    pw.seek.add_css_class("seek-scale");
+    pw.seek.set_round_digits(0);
+
+    let vol_scale = Scale::with_range(Orientation::Horizontal, 0.0, 100.0, 1.0);
+    vol_scale.set_hexpand(true);
+    vol_scale.set_draw_value(false);
+    vol_scale.add_css_class("vol-scale");
+    vol_scale.set_increments(5.0, 20.0);
+
+    (pw, vol_scale)
+}
+
+fn build_right_pane(pw: &PlaybackWidgets, vol_scale: &Scale) -> gtk::Box {
+    let transport = GtkBox::builder()
+        .orientation(Orientation::Horizontal).spacing(12).halign(Align::Center).build();
+    transport.prepend(&pw.shuffle);
+    transport.append(&pw.btn_prev);
+    transport.append(&pw.btn_play);
+    transport.append(&pw.btn_next);
+    transport.append(&pw.repeat);
+
+    let vol_row = GtkBox::builder().orientation(Orientation::Horizontal).spacing(6).build();
+    vol_row.append(&pw.mute_btn);
+    vol_row.append(vol_scale);
+
+    let seek_row = GtkBox::builder().orientation(Orientation::Horizontal).spacing(8).build();
+    seek_row.append(&pw.pos);
+    seek_row.append(&pw.seek);
+    seek_row.append(&pw.dur);
+
+    let right_pane = GtkBox::builder()
+        .orientation(Orientation::Vertical).spacing(8).hexpand(true)
+        .margin_top(8).margin_bottom(8).margin_start(12).margin_end(16)
+        .build();
+    right_pane.append(&pw.art_stack);
+    right_pane.append(&pw.title);
+    right_pane.append(&pw.artist);
+    right_pane.append(&pw.album);
+    right_pane.append(&pw.status);
+    right_pane.append(&pw.quality);
+    right_pane.append(&seek_row);
+    right_pane.append(&transport);
+    right_pane.append(&vol_row);
+
+    right_pane
+}
+
+fn build_mini_window() -> (MiniWidgets, gtk::Window) {
+    let mini_artwork = gtk::Picture::builder()
+        .content_fit(gtk::ContentFit::Cover).can_shrink(true)
+        .halign(Align::Fill).valign(Align::Fill)
+        .hexpand(true).vexpand(true)
+        .build();
+    let mini_input_icon = gtk::Image::builder()
+        .pixel_size(36).halign(Align::Center).valign(Align::Center)
+        .build();
+    let mini_art_stack = {
+        let s = gtk::Stack::new();
+        s.set_hexpand(false);
+        s.set_vexpand(false);
+        s.set_valign(Align::Center);
+        s.add_css_class("mini-art");
+        s.set_transition_type(gtk::StackTransitionType::Crossfade);
+        s.set_transition_duration(200);
+        s
+    };
+    mini_art_stack.add_named(&mini_artwork, Some("artwork"));
+    mini_art_stack.add_named(&mini_input_icon, Some("icon"));
+
+    let mini_device_label = Label::builder()
+        .label("").css_classes(["mini-device-label"])
+        .halign(Align::Start).hexpand(true)
+        .ellipsize(gtk::pango::EllipsizeMode::End)
+        .build();
+    let mini_restore_btn = Button::builder()
+        .icon_name("view-fullscreen-symbolic")
+        .css_classes(["mini-restore-btn"])
+        .tooltip_text("Restore")
+        .build();
+    let mini_top_bar = GtkBox::builder()
+        .orientation(Orientation::Horizontal).spacing(4)
+        .margin_start(8).margin_end(6).margin_top(6).margin_bottom(2)
+        .build();
+    mini_top_bar.append(&mini_device_label);
+    mini_top_bar.append(&mini_restore_btn);
+
+    let mini_title_label = Label::builder()
+        .label("—").css_classes(["mini-title"])
+        .halign(Align::Start).hexpand(true)
+        .build();
+    let mini_artist_label = Label::builder()
+        .label("").css_classes(["mini-artist"])
+        .halign(Align::Start).hexpand(true)
+        .build();
+    let mini_title_scroll = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .vscrollbar_policy(gtk::PolicyType::Never)
+        .hexpand(true)
+        .build();
+    mini_title_scroll.set_child(Some(&mini_title_label));
+    let mini_artist_scroll = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .vscrollbar_policy(gtk::PolicyType::Never)
+        .hexpand(true)
+        .build();
+    mini_artist_scroll.set_child(Some(&mini_artist_label));
+
+    let mini_btn_prev = Button::builder()
+        .icon_name("media-skip-backward-symbolic")
+        .css_classes(["mini-transport-btn"]).build();
+    let mini_btn_play = Button::builder()
+        .icon_name("media-playback-start-symbolic")
+        .css_classes(["mini-play-btn"]).build();
+    let mini_btn_next = Button::builder()
+        .icon_name("media-skip-forward-symbolic")
+        .css_classes(["mini-transport-btn"]).build();
+    let mini_transport = GtkBox::builder()
+        .orientation(Orientation::Horizontal).spacing(6)
+        .halign(Align::Start)
+        .build();
+    mini_transport.append(&mini_btn_prev);
+    mini_transport.append(&mini_btn_play);
+    mini_transport.append(&mini_btn_next);
+
+    let mini_info_box = GtkBox::builder()
+        .orientation(Orientation::Vertical).spacing(2)
+        .valign(Align::Center).hexpand(true)
+        .build();
+    mini_info_box.append(&mini_title_scroll);
+    mini_info_box.append(&mini_artist_scroll);
+    mini_info_box.append(&mini_transport);
+
+    let mini_main_row = GtkBox::builder()
+        .orientation(Orientation::Horizontal).spacing(8)
+        .margin_start(8).margin_end(8).margin_bottom(4)
+        .build();
+    mini_main_row.append(&mini_art_stack);
+    mini_main_row.append(&mini_info_box);
+
+    let mini_mute_btn = Button::builder()
+        .icon_name("audio-volume-high-symbolic")
+        .css_classes(["mini-transport-btn"])
+        .tooltip_text("Mute").build();
+    let mini_vol_scale = Scale::with_range(Orientation::Horizontal, 0.0, 100.0, 1.0);
+    mini_vol_scale.set_hexpand(true);
+    mini_vol_scale.set_width_request(40);
+    mini_vol_scale.set_draw_value(false);
+    mini_vol_scale.add_css_class("mini-vol");
+    let mini_vol_row = GtkBox::builder()
+        .orientation(Orientation::Horizontal).spacing(4)
+        .margin_start(8).margin_end(8).margin_bottom(4)
+        .vexpand(false)
+        .build();
+    mini_vol_row.append(&mini_mute_btn);
+    mini_vol_row.append(&mini_vol_scale);
+
+    let mini_outer = GtkBox::builder()
+        .orientation(Orientation::Vertical).spacing(0)
+        .build();
+    mini_outer.append(&mini_top_bar);
+    mini_outer.append(&mini_main_row);
+    mini_outer.append(&mini_vol_row);
+
+    let mini_root = gtk::WindowHandle::new();
+    mini_root.set_child(Some(&mini_outer));
+
+    let mini_win = gtk::Window::builder()
+        .decorated(false)
+        .resizable(false)
+        .default_width(200)
+        .title("RustyWiiM")
+        .child(&mini_root)
+        .build();
+    mini_win.add_css_class("mini-window");
+
+    let mini = MiniWidgets {
+        root:          mini_root,
+        art_stack:     mini_art_stack,
+        artwork:       mini_artwork,
+        input_icon:    mini_input_icon,
+        device_label:  mini_device_label,
+        restore_btn:   mini_restore_btn,
+        title_scroll:  mini_title_scroll,
+        title_label:   mini_title_label,
+        artist_scroll: mini_artist_scroll,
+        artist_label:  mini_artist_label,
+        btn_prev:      mini_btn_prev,
+        btn_play:      mini_btn_play,
+        btn_next:      mini_btn_next,
+        mute_btn:      mini_mute_btn,
+        vol_scale:     mini_vol_scale,
+    };
+
+    (mini, mini_win)
+}
+
 // ── Main UI ───────────────────────────────────────────────────────────────────
 
 // ── CSS ───────────────────────────────────────────────────────────────────────
@@ -1219,300 +1688,14 @@ impl DeviceWindow {
         }
         ds.start_polling();
 
-        // ── Header ───────────────────────────────────────────────────────────────
-        let header = adw::HeaderBar::new();
-
-        let sidebar_btn = gtk::ToggleButton::builder()
-            .icon_name("sidebar-show-symbolic")
-            .active(init_dev_cfg.panel_visible)
-            .tooltip_text("Toggle presets panel")
-            .build();
-        sidebar_btn.add_css_class("sidebar-toggle");
-        header.pack_start(&sidebar_btn);
-
-        let dev_btn = gtk::MenuButton::builder().label("Scanning…").build();
-        header.pack_start(&dev_btn);
-
-        let app_menu = gio::Menu::new();
-        app_menu.append(Some("About RustyWiiM"), Some("win.about"));
-        let app_menu_btn = gtk::MenuButton::builder()
-            .icon_name("open-menu-symbolic")
-            .menu_model(&app_menu)
-            .tooltip_text("Menu")
-            .build();
-        header.pack_end(&app_menu_btn);
-
-        let mini_btn = gtk::ToggleButton::builder()
-            .icon_name("view-restore-symbolic")
-            .tooltip_text("Mini player")
-            .build();
-        header.pack_end(&mini_btn);
-
-        // ── Left panel: presets ───────────────────────────────────────────────────
-        let presets_box = GtkBox::builder()
-            .orientation(Orientation::Vertical).spacing(2)
-            .margin_top(8).margin_bottom(4).margin_start(8).margin_end(8)
-            .build();
-        presets_box.append(
-            &Label::builder()
-                .label("PRESETS").css_classes(["section-label"])
-                .halign(Align::Start).margin_bottom(4)
-                .build(),
-        );
-
-        let mut preset_btns: Vec<Button>       = Vec::new();
-        let mut preset_pics: Vec<gtk::Image>   = Vec::new();
-        let mut preset_labels: Vec<Label>      = Vec::new();
-
-        for i in 1..=12u32 {
-            let badge = Label::builder()
-                .label(&i.to_string()).css_classes(["preset-badge"])
-                .halign(Align::Center).valign(Align::Center)
-                .build();
-            let pic = gtk::Image::builder()
-                .pixel_size(40).icon_name("audio-x-generic-symbolic")
-                .build();
-            pic.add_css_class("preset-art");
-            pic.set_overflow(gtk::Overflow::Hidden);
-            let lbl = Label::builder()
-                .label("").css_classes(["preset-name"])
-                .ellipsize(gtk::pango::EllipsizeMode::End)
-                .halign(Align::Start).hexpand(true).width_chars(0)
-                .build();
-            let tile = GtkBox::builder()
-                .orientation(Orientation::Horizontal).spacing(6)
-                .css_classes(["preset-tile"]).overflow(gtk::Overflow::Hidden)
-                .build();
-            tile.append(&badge);
-            tile.append(&pic);
-            tile.append(&lbl);
-            let btn = Button::builder().child(&tile).css_classes(["flat"]).build();
-            btn.set_tooltip_text(Some(&format!("Preset {i}")));
-            btn.set_visible(false);
-            presets_box.append(&btn);
-            preset_btns.push(btn);
-            preset_pics.push(pic);
-            preset_labels.push(lbl);
-        }
-
-        let preset_btns   = Rc::new(preset_btns);
-        let preset_pics   = Rc::new(preset_pics);
-        let preset_labels = Rc::new(preset_labels);
-
-        let presets_scroll = gtk::ScrolledWindow::builder()
-            .child(&presets_box)
-            .hscrollbar_policy(gtk::PolicyType::Never)
-            .vexpand(true)
-            .build();
-
-        // ── Left panel: input / output selectors ──────────────────────────────────
-        let sw = SourceWidgets {
-            dropdown: gtk::DropDown::from_strings(&["—"]),
-            ids:      Rc::new(RefCell::new(Vec::new())),
-            enabled:  Rc::new(RefCell::new(Vec::new())),
-            updating: Rc::new(RefCell::new(false)),
-        };
-        sw.dropdown.add_css_class("panel-dropdown");
-        sw.dropdown.set_sensitive(false);
-
-        {
-            let factory = gtk::SignalListItemFactory::new();
-            factory.connect_setup(|_, obj| {
-                let item = obj.downcast_ref::<gtk::ListItem>().unwrap();
-                let hbox = GtkBox::builder()
-                    .orientation(Orientation::Horizontal).spacing(6).build();
-                hbox.append(&gtk::Image::builder().pixel_size(16).build());
-                hbox.append(&Label::builder().halign(Align::Start).build());
-                item.set_child(Some(&hbox));
-            });
-            factory.connect_bind(clone!(
-                @strong sw, @strong icons
-                    => move |_, obj| {
-                        let item = obj.downcast_ref::<gtk::ListItem>().unwrap();
-                        let pos  = item.position() as usize;
-                        if let Some(hbox) = item.child().and_downcast::<GtkBox>() {
-                            let enabled = sw.enabled.borrow().get(pos).copied().unwrap_or(true);
-                            let ids     = sw.ids.borrow();
-                            let id      = ids.get(pos).map(String::as_str).unwrap_or("");
-                            if let Some(img) = hbox.first_child().and_downcast::<gtk::Image>() {
-                                img.set_paintable(Some(icons.source_paintable(id)));
-                            }
-                            if let Some(lbl) = hbox.last_child().and_downcast::<Label>() {
-                                if let Some(so) = item.item().and_downcast::<gtk::StringObject>() {
-                                    lbl.set_label(&so.string());
-                                }
-                                lbl.set_sensitive(enabled);
-                            }
-                            item.set_activatable(enabled);
-                        }
-                    }
-            ));
-            factory.connect_unbind(|_, obj| {
-                let item = obj.downcast_ref::<gtk::ListItem>().unwrap();
-                item.set_activatable(true);
-                if let Some(hbox) = item.child().and_downcast::<GtkBox>() {
-                    if let Some(lbl) = hbox.last_child().and_downcast::<Label>() {
-                        lbl.set_sensitive(true);
-                    }
-                }
-            });
-            sw.dropdown.set_factory(Some(&factory));
-        }
-
-        let ow = OutputWidgets {
-            dropdown:    gtk::DropDown::from_strings(&["—"]),
-            section:     GtkBox::builder()
-                .orientation(Orientation::Vertical).spacing(4).visible(false).build(),
-            modes:       Rc::new(RefCell::new(Vec::new())),
-            canon_names: Rc::new(RefCell::new(Vec::new())),
-            updating:    Rc::new(RefCell::new(false)),
-        };
-        ow.dropdown.add_css_class("panel-dropdown");
-        ow.dropdown.set_sensitive(false);
-
-        {
-            let factory = gtk::SignalListItemFactory::new();
-            factory.connect_setup(|_, obj| {
-                let item = obj.downcast_ref::<gtk::ListItem>().unwrap();
-                let hbox = GtkBox::builder()
-                    .orientation(Orientation::Horizontal).spacing(6).build();
-                hbox.append(&gtk::Image::builder().pixel_size(16).build());
-                hbox.append(&Label::builder().halign(Align::Start).build());
-                item.set_child(Some(&hbox));
-            });
-            factory.connect_bind(clone!(@strong ow, @strong icons => move |_, obj| {
-                let item = obj.downcast_ref::<gtk::ListItem>().unwrap();
-                let pos  = item.position() as usize;
-                if let Some(hbox) = item.child().and_downcast::<GtkBox>() {
-                    let names = ow.canon_names.borrow();
-                    let canon = names.get(pos).copied().unwrap_or("");
-                    if let Some(img) = hbox.first_child().and_downcast::<gtk::Image>() {
-                        img.set_paintable(Some(icons.output_paintable(canon)));
-                    }
-                    if let Some(lbl) = hbox.last_child().and_downcast::<Label>() {
-                        if let Some(so) = item.item().and_downcast::<gtk::StringObject>() {
-                            lbl.set_label(&so.string());
-                        }
-                    }
-                }
-            }));
-            ow.dropdown.set_factory(Some(&factory));
-        }
-
-        ow.section.append(
-            &Label::builder()
-                .label("OUTPUT").css_classes(["section-label"]).halign(Align::Start).build(),
-        );
-        ow.section.append(&ow.dropdown);
-
-        let io_box = GtkBox::builder()
-            .orientation(Orientation::Vertical).spacing(4)
-            .margin_top(4).margin_bottom(8).margin_start(8).margin_end(8)
-            .build();
-        io_box.append(&gtk::Separator::new(Orientation::Horizontal));
-        io_box.append(
-            &Label::builder()
-                .label("INPUT").css_classes(["section-label"])
-                .halign(Align::Start).margin_top(6).build(),
-        );
-        io_box.append(&sw.dropdown);
-        io_box.append(&ow.section);
-
-        let left_pane = GtkBox::builder().orientation(Orientation::Vertical).build();
-        left_pane.append(&presets_scroll);
-        left_pane.append(&io_box);
-
-        // ── Right pane: now playing ───────────────────────────────────────────────
-        let pw = PlaybackWidgets {
-            artwork:    gtk::Picture::builder()
-                .content_fit(gtk::ContentFit::Contain).can_shrink(true)
-                .halign(Align::Center).vexpand(true).build(),
-            input_icon: gtk::Image::builder()
-                .pixel_size(128).halign(Align::Center).valign(Align::Center).build(),
-            art_stack: {
-                let s = gtk::Stack::new();
-                s.set_vexpand(true);
-                s.set_transition_type(gtk::StackTransitionType::Crossfade);
-                s.set_transition_duration(200);
-                s
-            },
-            title:    Label::builder().label("Not connected").css_classes(["track-title"])
-                .ellipsize(gtk::pango::EllipsizeMode::End)
-                .halign(Align::Center).justify(gtk::Justification::Center).build(),
-            artist:   Label::builder().css_classes(["track-artist"])
-                .ellipsize(gtk::pango::EllipsizeMode::End).halign(Align::Center).build(),
-            album:    Label::builder().css_classes(["track-album"])
-                .ellipsize(gtk::pango::EllipsizeMode::End).halign(Align::Center).build(),
-            status:   Label::builder().css_classes(["status-badge"]).halign(Align::Center).build(),
-            quality:  Label::builder().css_classes(["quality-label"]).halign(Align::Center)
-                .visible(false).build(),
-            pos:      Label::builder().label("0:00").css_classes(["dim-label"]).build(),
-            dur:      Label::builder().label("0:00").css_classes(["dim-label"]).build(),
-            seek:     Scale::with_range(Orientation::Horizontal, 0.0, 100.0, 1.0),
-            btn_play: Button::builder()
-                .icon_name("media-playback-start-symbolic")
-                .css_classes(["play-btn", "circular"]).build(),
-            mute_btn: Button::builder()
-                .icon_name("audio-volume-high-symbolic")
-                .css_classes(["transport-btn", "circular"]).tooltip_text("Mute").build(),
-            shuffle:  Button::builder()
-                .icon_name("media-playlist-shuffle-symbolic")
-                .css_classes(["loop-btn", "circular"]).tooltip_text("Shuffle: Off").build(),
-            repeat:   Button::builder()
-                .icon_name("media-playlist-repeat-symbolic")
-                .css_classes(["loop-btn", "circular"]).tooltip_text("Repeat: Off").build(),
-        };
-
-        pw.art_stack.add_named(&pw.artwork, Some("artwork"));
-        pw.art_stack.add_named(&pw.input_icon, Some("icon"));
-        pw.seek.set_hexpand(true);
-        pw.seek.set_draw_value(false);
-        pw.seek.add_css_class("seek-scale");
-        pw.seek.set_round_digits(0);
-
-        let btn_prev = Button::builder()
-            .icon_name("media-skip-backward-symbolic")
-            .css_classes(["transport-btn", "circular"]).build();
-        let btn_next = Button::builder()
-            .icon_name("media-skip-forward-symbolic")
-            .css_classes(["transport-btn", "circular"]).build();
-
-        let transport = GtkBox::builder()
-            .orientation(Orientation::Horizontal).spacing(12).halign(Align::Center).build();
-        transport.prepend(&pw.shuffle);
-        transport.append(&btn_prev);
-        transport.append(&pw.btn_play);
-        transport.append(&btn_next);
-        transport.append(&pw.repeat);
-
-        let vol_scale = Scale::with_range(Orientation::Horizontal, 0.0, 100.0, 1.0);
-        vol_scale.set_hexpand(true);
-        vol_scale.set_draw_value(false);
-        vol_scale.add_css_class("vol-scale");
-        vol_scale.set_increments(5.0, 20.0);
-
-        let vol_row = GtkBox::builder().orientation(Orientation::Horizontal).spacing(6).build();
-        vol_row.append(&pw.mute_btn);
-        vol_row.append(&vol_scale);
-
-        let seek_row = GtkBox::builder().orientation(Orientation::Horizontal).spacing(8).build();
-        seek_row.append(&pw.pos);
-        seek_row.append(&pw.seek);
-        seek_row.append(&pw.dur);
-
-        let right_pane = GtkBox::builder()
-            .orientation(Orientation::Vertical).spacing(8).hexpand(true)
-            .margin_top(8).margin_bottom(8).margin_start(12).margin_end(16)
-            .build();
-        right_pane.append(&pw.art_stack);
-        right_pane.append(&pw.title);
-        right_pane.append(&pw.artist);
-        right_pane.append(&pw.album);
-        right_pane.append(&pw.status);
-        right_pane.append(&pw.quality);
-        right_pane.append(&seek_row);
-        right_pane.append(&transport);
-        right_pane.append(&vol_row);
+        let (header, sidebar_btn, dev_btn, mini_btn) = build_header(init_dev_cfg.panel_visible);
+        let (pp, presets_scroll) = build_presets_panel();
+        let sw = build_source_widgets(&icons);
+        let ow = build_output_widgets(&icons);
+        let left_pane = build_left_pane(&sw, &ow, &presets_scroll);
+        let (pw, vol_scale) = build_playback_widgets();
+        let right_pane = build_right_pane(&pw, &vol_scale);
+        let (mini, mini_win) = build_mini_window();
 
         // ── Paned split + sidebar logic ───────────────────────────────────────────
         let paned = gtk::Paned::new(Orientation::Horizontal);
@@ -1529,7 +1712,6 @@ impl DeviceWindow {
         paned.set_position(panel_width);
         left_pane.set_visible(init_dev_cfg.panel_visible);
 
-        // Create the panel-state Rc values here so they can be moved into inner.
         let saved_panel_width  = Rc::new(RefCell::new(panel_width));
         let panel_collapsing   = Rc::new(RefCell::new(false));
         let settle_timer:      Rc<RefCell<Option<glib::SourceId>>> = Rc::new(RefCell::new(None));
@@ -1560,160 +1742,6 @@ impl DeviceWindow {
         full_toolbar.add_top_bar(&header);
         full_toolbar.set_content(Some(&outer));
 
-        // ── Mini player widgets ───────────────────────────────────────────────────
-        let mini_artwork = gtk::Picture::builder()
-            .content_fit(gtk::ContentFit::Cover).can_shrink(true)
-            .halign(Align::Fill).valign(Align::Fill)
-            .hexpand(true).vexpand(true)
-            .build();
-        let mini_input_icon = gtk::Image::builder()
-            .pixel_size(36).halign(Align::Center).valign(Align::Center)
-            .build();
-        let mini_art_stack = {
-            let s = gtk::Stack::new();
-            s.set_hexpand(false);
-            s.set_vexpand(false);
-            s.set_valign(Align::Center);
-            s.add_css_class("mini-art");
-            s.set_transition_type(gtk::StackTransitionType::Crossfade);
-            s.set_transition_duration(200);
-            s
-        };
-        mini_art_stack.add_named(&mini_artwork, Some("artwork"));
-        mini_art_stack.add_named(&mini_input_icon, Some("icon"));
-
-        // Top bar: device name + restore button
-        let mini_device_label = Label::builder()
-            .label("").css_classes(["mini-device-label"])
-            .halign(Align::Start).hexpand(true)
-            .ellipsize(gtk::pango::EllipsizeMode::End)
-            .build();
-        let mini_restore_btn = Button::builder()
-            .icon_name("view-fullscreen-symbolic")
-            .css_classes(["mini-restore-btn"])
-            .tooltip_text("Restore")
-            .build();
-        let mini_top_bar = GtkBox::builder()
-            .orientation(Orientation::Horizontal).spacing(4)
-            .margin_start(8).margin_end(6).margin_top(6).margin_bottom(2)
-            .build();
-        mini_top_bar.append(&mini_device_label);
-        mini_top_bar.append(&mini_restore_btn);
-
-        // Scrolling title + artist
-        let mini_title_label = Label::builder()
-            .label("—").css_classes(["mini-title"])
-            .halign(Align::Start).hexpand(true)
-            .build();
-        let mini_artist_label = Label::builder()
-            .label("").css_classes(["mini-artist"])
-            .halign(Align::Start).hexpand(true)
-            .build();
-        let mini_title_scroll = gtk::ScrolledWindow::builder()
-            .hscrollbar_policy(gtk::PolicyType::Never)
-            .vscrollbar_policy(gtk::PolicyType::Never)
-            .hexpand(true)
-            .build();
-        mini_title_scroll.set_child(Some(&mini_title_label));
-        let mini_artist_scroll = gtk::ScrolledWindow::builder()
-            .hscrollbar_policy(gtk::PolicyType::Never)
-            .vscrollbar_policy(gtk::PolicyType::Never)
-            .hexpand(true)
-            .build();
-        mini_artist_scroll.set_child(Some(&mini_artist_label));
-
-        // Transport row: [⏮] [⏵] [⏭]
-        let mini_btn_prev = Button::builder()
-            .icon_name("media-skip-backward-symbolic")
-            .css_classes(["mini-transport-btn"]).build();
-        let mini_btn_play = Button::builder()
-            .icon_name("media-playback-start-symbolic")
-            .css_classes(["mini-play-btn"]).build();
-        let mini_btn_next = Button::builder()
-            .icon_name("media-skip-forward-symbolic")
-            .css_classes(["mini-transport-btn"]).build();
-        let mini_transport = GtkBox::builder()
-            .orientation(Orientation::Horizontal).spacing(6)
-            .halign(Align::Start)
-            .build();
-        mini_transport.append(&mini_btn_prev);
-        mini_transport.append(&mini_btn_play);
-        mini_transport.append(&mini_btn_next);
-
-        // Right-side info column: title + artist + transport
-        let mini_info_box = GtkBox::builder()
-            .orientation(Orientation::Vertical).spacing(2)
-            .valign(Align::Center).hexpand(true)
-            .build();
-        mini_info_box.append(&mini_title_scroll);
-        mini_info_box.append(&mini_artist_scroll);
-        mini_info_box.append(&mini_transport);
-
-        // Main row: art + info
-        let mini_main_row = GtkBox::builder()
-            .orientation(Orientation::Horizontal).spacing(8)
-            .margin_start(8).margin_end(8).margin_bottom(4)
-            .build();
-        mini_main_row.append(&mini_art_stack);
-        mini_main_row.append(&mini_info_box);
-
-        // Volume row (full width below): [🔇] [===vol===]
-        let mini_mute_btn = Button::builder()
-            .icon_name("audio-volume-high-symbolic")
-            .css_classes(["mini-transport-btn"])
-            .tooltip_text("Mute").build();
-        let mini_vol_scale = Scale::with_range(Orientation::Horizontal, 0.0, 100.0, 1.0);
-        mini_vol_scale.set_hexpand(true);
-        mini_vol_scale.set_width_request(40);
-        mini_vol_scale.set_draw_value(false);
-        mini_vol_scale.add_css_class("mini-vol");
-        let mini_vol_row = GtkBox::builder()
-            .orientation(Orientation::Horizontal).spacing(4)
-            .margin_start(8).margin_end(8).margin_bottom(4)
-            .vexpand(false)
-            .build();
-        mini_vol_row.append(&mini_mute_btn);
-        mini_vol_row.append(&mini_vol_scale);
-
-        // Outer vertical: top bar + main row + vol row
-        let mini_outer = GtkBox::builder()
-            .orientation(Orientation::Vertical).spacing(0)
-            .build();
-        mini_outer.append(&mini_top_bar);
-        mini_outer.append(&mini_main_row);
-        mini_outer.append(&mini_vol_row);
-
-        let mini_root = gtk::WindowHandle::new();
-        mini_root.set_child(Some(&mini_outer));
-
-        // Separate mini-player window — avoids GTK4's inability to shrink an
-        // already-shown window.  We hide the main window and present this one.
-        let mini_win = gtk::Window::builder()
-            .decorated(false)
-            .resizable(false)
-            .default_width(200)
-            .title("RustyWiiM")
-            .child(&mini_root)
-            .build();
-        mini_win.add_css_class("mini-window");
-        let mini = MiniWidgets {
-            root:          mini_root,
-            art_stack:     mini_art_stack,
-            artwork:       mini_artwork,
-            input_icon:    mini_input_icon,
-            device_label:  mini_device_label,
-            restore_btn:   mini_restore_btn,
-            title_scroll:  mini_title_scroll,
-            title_label:   mini_title_label,
-            artist_scroll: mini_artist_scroll,
-            artist_label:  mini_artist_label,
-            btn_prev:      mini_btn_prev,
-            btn_play:      mini_btn_play,
-            btn_next:      mini_btn_next,
-            mute_btn:      mini_mute_btn,
-            vol_scale:     mini_vol_scale,
-        };
-
         let win_w = if init_dev_cfg.window_width  > 0 { init_dev_cfg.window_width  } else { 680 };
         let win_h = if init_dev_cfg.window_height > 0 { init_dev_cfg.window_height } else { 640 };
         let window = adw::ApplicationWindow::builder()
@@ -1731,14 +1759,6 @@ impl DeviceWindow {
             updating_vol: Rc::new(RefCell::new(false)),
         };
 
-        let pp = PresetWidgets {
-            btns:   preset_btns,
-            pics:   preset_pics,
-            labels: preset_labels,
-        };
-
-        // Bundle all content-widget and window state into a single Rc so every
-        // signal closure only needs one clone instead of capturing 6–8 variables.
         let inner = Rc::new(DeviceWindowInner {
             ds: ds.clone(),
             sw,
@@ -1794,12 +1814,12 @@ impl DeviceWindow {
 
         ds.connect_playback_changed({
             let i = Rc::clone(&inner);
-            move |_| { i.update_playback_ui(); }
+            move |_| { i.update_playback_ui(); i.update_mini_playback(); }
         });
 
         ds.connect_input_changed({
             let i = Rc::clone(&inner);
-            move |_| { i.update_input_display(); }
+            move |_| { i.update_input_display(); i.update_mini_playback(); }
         });
 
         ds.connect_output_changed({
@@ -1992,14 +2012,14 @@ impl DeviceWindow {
             }
         });
 
-        btn_prev.connect_clicked({
+        inner.pw.btn_prev.connect_clicked({
             let i = Rc::clone(&inner);
             move |_| {
                 if let Some(c) = i.ds.client() { i.ds.rt().spawn(async move { let _ = c.prev().await; }); }
             }
         });
 
-        btn_next.connect_clicked({
+        inner.pw.btn_next.connect_clicked({
             let i = Rc::clone(&inner);
             move |_| {
                 if let Some(c) = i.ds.client() { i.ds.rt().spawn(async move { let _ = c.next().await; }); }
