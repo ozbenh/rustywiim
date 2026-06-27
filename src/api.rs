@@ -471,14 +471,32 @@ impl WiimClient {
     }
 
     async fn cmd(&self, command: &str) -> anyhow::Result<String> {
+        const MAX_RETRIES: u32 = 3;
         let url = format!("{}?command={}", self.base, command);
-        let resp = self.http.get(&url).send().await.map_err(|e| {
-            log_request_error(command, &e);
-            e
-        })?;
-        let text = resp.text().await?;
-        debug(command, &text);
-        Ok(text)
+        for attempt in 0..=MAX_RETRIES {
+            if attempt > 0 {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            let err = match self.http.get(&url).send().await {
+                Ok(resp) => {
+                    let text = resp.text().await?;
+                    debug(command, &text);
+                    return Ok(text);
+                }
+                Err(e) => e,
+            };
+            // is_request() covers SendRequest errors (connection closed before
+            // message completed).  These are transient; retry up to MAX_RETRIES.
+            if !err.is_request() || attempt == MAX_RETRIES {
+                log_request_error(command, &err);
+                return Err(err.into());
+            }
+            eprintln!(
+                "[API] {command}: transient send error (attempt {}/{}), retrying in 100ms: {err}",
+                attempt + 1, MAX_RETRIES,
+            );
+        }
+        unreachable!()
     }
 
     pub async fn get_status(&self) -> anyhow::Result<PlayerStatus> {
