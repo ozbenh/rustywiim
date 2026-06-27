@@ -39,14 +39,24 @@ For now just those two:
 ## Events ##
 
 
-  * 0.1.0 - 2026-06-24 - Initial release 0.1.0
+  * 0.1.0 - 2026-06-24
+    * Initial release 0.1.0
 
-  * 0.2.0 - 2026-06-25 - Internal implementation rework
+  * 0.2.0 - 2026-06-25
     * Sorry, had to rebase ! Initial commit had to be fixed up.
     * Significant internal refactoring, code is a lot cleaner now, smaller
 	  functions, better abstractions, better detection of device capabilities,
 	  inputs and outputs etc... Should work better with other devices.
 
-## Screenshot ##
+  * 0.3.0 - 2026-06-27
+    * New mini-window mode
+	* Various GUI cleanups, fixes and improvements
+	* Support using system themes or our custom dark theme via a (primitive) settings dialog
+	* Rate limit some API calls and add retries on request failures caused by disconnections
+    * Additional implementation cleanups, still plenty of AI slop but slowly getting better
 
-![Screenshot](screenshot.png)
+## Screenshots ##
+
+![Screenshot](screenshot1.png)
+![Screenshot](screenshot2.png)
+![Screenshot](screenshot3.png)
