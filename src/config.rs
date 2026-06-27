@@ -5,6 +5,14 @@ use std::path::PathBuf;
 
 fn default_panel_visible() -> bool { true }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ThemeMode {
+    #[default]
+    Custom,
+    System,
+}
+
 /// Per-device window state, keyed on the WiFi SSID the device is connected to.
 /// The SSID is a stable hardware-level identifier that does not change when
 /// the user renames the device.
@@ -51,6 +59,9 @@ pub struct Config {
     /// Per-device window/panel state, keyed on device WiFi SSID.
     #[serde(default)]
     pub devices: HashMap<String, DeviceConfig>,
+    /// Application-wide color scheme.
+    #[serde(default)]
+    pub theme: ThemeMode,
 }
 
 fn config_path() -> PathBuf {

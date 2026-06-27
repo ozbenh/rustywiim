@@ -768,6 +768,12 @@ impl DeviceState {
         self.trigger_poll_after(400);
     }
 
+    pub fn do_set_loop_mode(&self, mode: i32) {
+        let Some(client) = self.imp().inner.borrow().client.clone() else { return };
+        self.rt().spawn(async move { let _ = client.set_loop_mode(mode).await; });
+        self.trigger_poll_after(400);
+    }
+
     fn trigger_poll_after(&self, delay_ms: u64) {
         let Some(tx) = self.imp().poll_tx.borrow().clone() else { return };
         let ds = self.downgrade();

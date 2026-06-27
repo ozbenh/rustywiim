@@ -1,9 +1,8 @@
 #![allow(deprecated)] // glib clone! old-style @strong syntax
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use adw::prelude::*;
 use glib::clone;
@@ -12,289 +11,158 @@ use gtk::{Align, Box as GtkBox, Button, CssProvider, Label, Orientation, Scale, 
 
 use crate::api::{OutputEntry, TlsMode};
 use crate::capabilities;
-use crate::config::{Config, DeviceConfig};
+use crate::config::{Config, DeviceConfig, ThemeMode};
 use crate::device_state::{ConnectionState, DeviceState};
 use crate::discovery;
 use crate::icons;
 
-const CSS: &str = r#"
-window {
-    background-color: #0a0a0a;
-}
-.track-title {
-    font-size: 20px;
-    font-weight: 800;
-    color: #ffffff;
-}
-.track-artist {
-    font-size: 14px;
-    font-weight: 600;
-    color: #b0b0b0;
-}
-.track-album {
-    font-size: 12px;
-    color: #707070;
-}
-.status-badge {
-    font-size: 11px;
-    font-weight: 600;
-    color: #4ecdc4;
-}
-.quality-label {
-    font-size: 11px;
-    color: #505050;
-}
-.dim-label {
-    font-size: 11px;
-    color: #606060;
-}
+// Structural-only CSS used in System theme mode.
+// No color overrides — Adwaita handles all colours.
+const SYSTEM_CSS: &str = r#"
+.track-title  { font-size: 20px; font-weight: 800; }
+.track-artist { font-size: 14px; font-weight: 600; }
+.track-album  { font-size: 12px; }
+.status-badge { font-size: 11px; font-weight: 600; }
+.quality-label { font-size: 11px; }
+.dim-label    { font-size: 11px; }
+.section-label { font-size: 11px; font-weight: 700; letter-spacing: 1px; }
+.panel-dropdown { font-size: 11px; min-width: 0; }
+.device-info  { font-size: 10px; }
 .transport-btn {
-    min-width: 36px;
-    min-height: 36px;
-    padding: 0;
-    -gtk-icon-size: 16px;
-    background-color: #2a2a2a;
-    color: #ffffff;
-    border: none;
-    border-radius: 50%;
-    box-shadow: none;
-}
-.transport-btn:hover {
-    background-color: #3a3a3a;
+    min-width: 36px; min-height: 36px;
+    padding: 0; -gtk-icon-size: 16px;
+    border: none; border-radius: 50%; box-shadow: none;
 }
 .play-btn {
-    min-width: 44px;
-    min-height: 44px;
-    padding: 0;
-    -gtk-icon-size: 20px;
-    background-color: #4ecdc4;
-    color: #0a0a0a;
-    border: none;
-    box-shadow: none;
+    min-width: 44px; min-height: 44px;
+    padding: 0; -gtk-icon-size: 20px;
+    border: none; border-radius: 50%; box-shadow: none;
 }
-.play-btn:hover {
-    background-color: #5fd9d0;
-}
-.vol-scale trough {
-    min-height: 3px;
-    border-radius: 2px;
-    background-color: #2a2a2a;
-}
-.vol-scale trough highlight {
-    background-color: #4a4a4a;
-}
-.vol-scale slider {
-    min-width: 8px;
-    min-height: 8px;
-    margin: -3px;
-    background-color: #808080;
-    border-radius: 50%;
-    border: none;
-    box-shadow: none;
-}
-.vol-pop trough {
-    min-width: 3px;
-    border-radius: 2px;
-    background-color: #2a2a2a;
-}
-.vol-pop trough highlight {
-    background-color: #4ecdc4;
-}
-.vol-pop slider {
-    min-width: 8px;
-    min-height: 8px;
-    margin: -3px;
-    background-color: #808080;
-    border-radius: 50%;
-    border: none;
-    box-shadow: none;
-}
-.mini-vol-pop trough {
-    min-width: 3px;
-    border-radius: 2px;
-    background-color: #2a2a2a;
-}
-.mini-vol-pop trough highlight {
-    background-color: #4a4a4a;
-}
-.mini-vol-pop slider {
-    min-width: 6px;
-    min-height: 6px;
-    margin: -2px;
-    background-color: #808080;
-    border-radius: 50%;
-    border: none;
-    box-shadow: none;
-}
-.mini-vol-popover > contents {
-    min-width: 0;
-    padding: 0;
-}
-.seek-scale trough {
-    min-height: 4px;
-    border-radius: 2px;
-    background-color: #2a2a2a;
-}
-.seek-scale trough highlight {
-    background-color: #4ecdc4;
-}
-.seek-scale slider {
-    min-width: 0;
-    min-height: 0;
-    margin: 0;
-    padding: 0;
-    opacity: 0;
-}
-.section-label {
-    font-size: 11px;
-    font-weight: 700;
-    color: #505050;
-    letter-spacing: 1px;
-}
-.preset-tile {
-    border-radius: 8px;
-    background-color: #141414;
-    padding: 4px;
-}
-.preset-tile:hover {
-    background-color: #202020;
-}
-.preset-art {
-    border-radius: 5px;
-    min-width: 40px;
-    min-height: 40px;
-}
-.preset-art-small {
-    min-width: 26px;
-    min-height: 26px;
-    padding: 7px;
-}
-.preset-name {
-    font-size: 11px;
-    color: #a0a0a0;
-}
-.preset-badge {
-    font-size: 9px;
-    font-weight: 700;
-    color: #1a1a1a;
-    background-color: #606060;
-    border-radius: 50%;
-    min-width: 16px;
-    min-height: 16px;
-    padding: 1px;
-}
-.panel-dropdown {
-    font-size: 11px;
-    min-width: 0;
-}
-.device-info {
-    font-size: 10px;
-    color: #686868;
-}
-.net-icon {
-    color: #4a9fd4;
-}
-.sidebar-toggle:checked {
-    color: #4ecdc4;
-}
-.loop-btn {
-    min-width: 36px;
-    min-height: 36px;
-    padding: 0;
-    -gtk-icon-size: 16px;
-    background-color: #1a1a1a;
-    color: #606060;
-}
-.loop-btn:hover {
-    background-color: #2a2a2a;
-}
-.loop-active {
-    color: #ffffff;
-}
-.mini-window {
-    background-color: #0a0a0a;
-}
-.mini-title {
-    font-size: 13px;
-    font-weight: 700;
-    color: #ffffff;
-}
-.mini-artist {
-    font-size: 11px;
-    color: #b0b0b0;
-}
-.mini-vol trough {
-    min-height: 3px;
-    border-radius: 2px;
-    background-color: #2a2a2a;
-}
-.mini-vol trough highlight {
-    background-color: #4a4a4a;
-}
-.mini-vol slider {
-    min-width: 6px;
-    min-height: 6px;
-    margin: -2px;
-    background-color: #808080;
-    border-radius: 50%;
-    border: none;
-    box-shadow: none;
-}
+.loop-btn { min-width: 36px; min-height: 36px; padding: 0; -gtk-icon-size: 16px; }
+.vol-btn  { background-color: transparent; }
+.vol-pop trough   { min-width: 3px; border-radius: 2px; }
+.vol-pop slider   { min-width: 8px; min-height: 8px; margin: -3px; border-radius: 50%; border: none; box-shadow: none; }
+.mini-vol-btn { background-color: transparent; }
+.mini-vol-pop trough { min-width: 3px; border-radius: 2px; }
+.mini-vol-pop slider { min-width: 6px; min-height: 6px; margin: -2px; border-radius: 50%; border: none; box-shadow: none; }
+.mini-vol-popover > contents { min-width: 0; padding: 0; }
+.seek-scale trough { min-height: 4px; border-radius: 2px; }
+.seek-scale slider { min-width: 0; min-height: 0; margin: 0; padding: 0; opacity: 0; }
+.preset-tile  { border-radius: 8px; padding: 4px; }
+.preset-art   { border-radius: 5px; min-width: 40px; min-height: 40px; }
+.preset-art-small { min-width: 26px; min-height: 26px; padding: 7px; }
+.preset-name  { font-size: 11px; }
+.preset-badge { font-size: 9px; font-weight: 700; border-radius: 50%; min-width: 16px; min-height: 16px; padding: 1px; }
+.loop-active  { color: @accent_color; }
+.mini-window  { border-radius: 10px; }
 .mini-art {
-    min-width: 48px;
-    min-height: 48px;
-    max-width: 48px;
-    max-height: 48px;
-    overflow: hidden;
+    min-width: 48px; min-height: 48px;
+    max-width: 48px; max-height: 48px;
+    overflow: hidden; border-radius: 6px;
 }
-.mini-device-label {
-    font-size: 12px;
-    font-weight: 600;
-    color: #686868;
-}
+.mini-title        { font-size: 13px; font-weight: 700; }
+.mini-artist       { font-size: 11px; }
+.mini-status-label { font-size: 10px; }
+.mini-device-label { font-size: 11px; font-weight: 700; }
 .mini-restore-btn {
-    min-width: 16px;
-    min-height: 16px;
-    padding: 1px;
-    -gtk-icon-size: 10px;
-    background-color: transparent;
-    color: #606060;
-    border: none;
-    box-shadow: none;
-    border-radius: 50%;
-}
-.mini-restore-btn:hover {
-    color: #ffffff;
-    background-color: #2a2a2a;
+    min-width: 18px; min-height: 18px;
+    padding: 1px; -gtk-icon-size: 10px;
+    border: none; border-radius: 50%; box-shadow: none; background-color: transparent;
 }
 .mini-transport-btn {
-    min-width: 18px;
-    min-height: 18px;
-    padding: 0;
-    -gtk-icon-size: 9px;
-    background-color: #2a2a2a;
-    color: #ffffff;
-    border: none;
-    box-shadow: none;
-    border-radius: 50%;
-}
-.mini-transport-btn:hover {
-    background-color: #3a3a3a;
+    min-width: 18px; min-height: 18px;
+    padding: 0; -gtk-icon-size: 9px;
+    border: none; border-radius: 50%; box-shadow: none; background-color: transparent;
 }
 .mini-play-btn {
-    min-width: 22px;
-    min-height: 22px;
-    padding: 0;
-    -gtk-icon-size: 10px;
-    background-color: #4ecdc4;
-    color: #0a0a0a;
-    border: none;
-    box-shadow: none;
-    border-radius: 50%;
+    min-width: 22px; min-height: 22px;
+    padding: 0; -gtk-icon-size: 10px;
+    border: none; border-radius: 50%; box-shadow: none;
 }
-.mini-play-btn:hover {
-    background-color: #5fd9d0;
+"#;
+
+// Full custom dark theme.  Loaded over SYSTEM_CSS in Custom mode.
+const DARK_CSS: &str = r#"
+window { background-color: #0a0a0a; }
+.track-title  { font-size: 20px; font-weight: 800; color: #ffffff; }
+.track-artist { font-size: 14px; font-weight: 600; color: #b0b0b0; }
+.track-album  { font-size: 12px; color: #707070; }
+.status-badge { font-size: 11px; font-weight: 600; color: #4ecdc4; }
+.quality-label { font-size: 11px; color: #505050; }
+.dim-label    { font-size: 11px; color: #606060; }
+.transport-btn {
+    min-width: 36px; min-height: 36px;
+    padding: 0; -gtk-icon-size: 16px;
+    background-color: transparent; color: #ffffff;
+    border: none; border-radius: 50%; box-shadow: none;
 }
+.transport-btn:hover { background-color: #2a2a2a; }
+.play-btn {
+    min-width: 44px; min-height: 44px;
+    padding: 0; -gtk-icon-size: 20px;
+    background-color: #4ecdc4; color: #0a0a0a;
+    border: none; border-radius: 50%; box-shadow: none;
+}
+.play-btn:hover { background-color: #5fd9d0; }
+.vol-btn { background-color: transparent; color: #ffffff; }
+.vol-btn:hover { background-color: #2a2a2a; }
+.vol-pop trough   { min-width: 3px; border-radius: 2px; background-color: #2a2a2a; }
+.vol-pop trough highlight { background-color: #4ecdc4; }
+.vol-pop slider   { min-width: 8px; min-height: 8px; margin: -3px; background-color: #808080; border-radius: 50%; border: none; box-shadow: none; }
+.mini-vol-btn { background-color: transparent; color: #cccccc; }
+.mini-vol-btn:hover { background-color: #2a2a2a; }
+.mini-vol-pop trough { min-width: 3px; border-radius: 2px; background-color: #2a2a2a; }
+.mini-vol-pop trough highlight { background-color: #4a4a4a; }
+.mini-vol-pop slider { min-width: 6px; min-height: 6px; margin: -2px; background-color: #808080; border-radius: 50%; border: none; box-shadow: none; }
+.mini-vol-popover > contents { min-width: 0; padding: 0; }
+.seek-scale trough { min-height: 4px; border-radius: 2px; background-color: #2a2a2a; }
+.seek-scale trough highlight { background-color: #4ecdc4; }
+.seek-scale slider { min-width: 0; min-height: 0; margin: 0; padding: 0; opacity: 0; }
+.section-label { font-size: 11px; font-weight: 700; color: #505050; letter-spacing: 1px; }
+.preset-tile  { border-radius: 8px; background-color: #141414; padding: 4px; }
+.preset-tile:hover { background-color: #202020; }
+.preset-art   { border-radius: 5px; min-width: 40px; min-height: 40px; }
+.preset-art-small { min-width: 26px; min-height: 26px; padding: 7px; }
+.preset-name  { font-size: 11px; color: #a0a0a0; }
+.preset-badge { font-size: 9px; font-weight: 700; color: #1a1a1a; background-color: #606060; border-radius: 50%; min-width: 16px; min-height: 16px; padding: 1px; }
+.panel-dropdown { font-size: 11px; min-width: 0; }
+.device-info  { font-size: 10px; color: #686868; }
+.net-icon     { color: #686868; }
+.sidebar-toggle:checked { color: #4ecdc4; }
+.loop-btn     { min-width: 36px; min-height: 36px; padding: 0; -gtk-icon-size: 16px; background-color: transparent; color: #606060; }
+.loop-btn:hover { background-color: #2a2a2a; color: #ffffff; }
+.loop-active  { color: #4ecdc4; }
+.mini-window  { background-color: #111111; border-radius: 10px; }
+.mini-art {
+    min-width: 48px; min-height: 48px;
+    max-width: 48px; max-height: 48px;
+    overflow: hidden; border-radius: 6px;
+}
+.mini-title        { font-size: 13px; font-weight: 700; color: #ffffff; }
+.mini-artist       { font-size: 11px; color: #909090; }
+.mini-status-label { font-size: 10px; color: #606060; }
+.mini-device-label { font-size: 11px; font-weight: 700; color: #555555; }
+.mini-restore-btn {
+    min-width: 18px; min-height: 18px;
+    padding: 1px; -gtk-icon-size: 10px;
+    background-color: transparent; color: #555555;
+    border: none; border-radius: 50%; box-shadow: none;
+}
+.mini-restore-btn:hover { color: #ffffff; background-color: #2a2a2a; }
+.mini-transport-btn {
+    min-width: 18px; min-height: 18px;
+    padding: 0; -gtk-icon-size: 9px;
+    background-color: transparent; color: #cccccc;
+    border: none; border-radius: 50%; box-shadow: none;
+}
+.mini-transport-btn:hover { background-color: #2a2a2a; }
+.mini-play-btn {
+    min-width: 22px; min-height: 22px;
+    padding: 0; -gtk-icon-size: 10px;
+    background-color: #4ecdc4; color: #0a0a0a;
+    border: none; border-radius: 50%; box-shadow: none;
+}
+.mini-play-btn:hover { background-color: #5fd9d0; }
 "#;
 
 // ── String helpers ────────────────────────────────────────────────────────────
@@ -400,6 +268,23 @@ fn vol_icon(muted: bool, vol: f64) -> &'static str {
 
 // ── Loop helpers ──────────────────────────────────────────────────────────────
 
+fn apply_shuffle_ui(btn: &Button, on: bool) {
+    if on { btn.add_css_class("loop-active"); }
+    else   { btn.remove_css_class("loop-active"); }
+    btn.set_tooltip_text(Some(if on { "Shuffle: On" } else { "Shuffle: Off" }));
+}
+
+fn apply_repeat_ui(btn: &Button, state: u32) {
+    let icons = ["media-playlist-repeat-symbolic",
+                 "media-playlist-repeat-symbolic",
+                 "media-playlist-repeat-song-symbolic"];
+    let tips  = ["Repeat: Off", "Repeat: All", "Repeat: One"];
+    btn.set_icon_name(icons[state as usize]);
+    btn.set_tooltip_text(Some(tips[state as usize]));
+    if state == 0 { btn.remove_css_class("loop-active"); }
+    else           { btn.add_css_class("loop-active"); }
+}
+
 fn loop_api_mode(shuffle: bool, repeat: u32) -> i32 {
     match (shuffle, repeat) {
         (false, 0) => 4,
@@ -480,8 +365,6 @@ struct PlaybackWidgets {
 #[derive(Clone)]
 struct PlaybackUiState {
     is_playing:   Rc<RefCell<bool>>,
-    shuffle_on:   Rc<RefCell<bool>>,
-    repeat_state: Rc<RefCell<u32>>,
     updating_vol: Rc<RefCell<bool>>,
 }
 
@@ -494,6 +377,7 @@ struct MiniWidgets {
     restore_btn:   Button,
     title_label:   Label,
     artist_label:  Label,
+    status_label:  Label,
     btn_prev:      Button,
     btn_play:      Button,
     btn_next:      Button,
@@ -726,25 +610,8 @@ impl DeviceWindowInner {
             self.pw.status.set_label(&format_status(&st.status, &st.mode, &st.vendor));
 
             let (dev_shuf, dev_rep) = decode_loop_mode(&st.loop_mode);
-            if *self.ui_state.shuffle_on.borrow() != dev_shuf {
-                *self.ui_state.shuffle_on.borrow_mut() = dev_shuf;
-                if dev_shuf { self.pw.shuffle.add_css_class("loop-active"); }
-                else         { self.pw.shuffle.remove_css_class("loop-active"); }
-                self.pw.shuffle.set_tooltip_text(Some(
-                    if dev_shuf { "Shuffle: On" } else { "Shuffle: Off" }
-                ));
-            }
-            if *self.ui_state.repeat_state.borrow() != dev_rep {
-                *self.ui_state.repeat_state.borrow_mut() = dev_rep;
-                let icons = ["media-playlist-repeat-symbolic",
-                             "media-playlist-repeat-symbolic",
-                             "media-playlist-repeat-song-symbolic"];
-                let tips  = ["Repeat: Off", "Repeat: All", "Repeat: One"];
-                self.pw.repeat.set_icon_name(icons[dev_rep as usize]);
-                self.pw.repeat.set_tooltip_text(Some(tips[dev_rep as usize]));
-                if dev_rep == 0 { self.pw.repeat.remove_css_class("loop-active"); }
-                else             { self.pw.repeat.add_css_class("loop-active"); }
-            }
+            apply_shuffle_ui(&self.pw.shuffle, dev_shuf);
+            apply_repeat_ui(&self.pw.repeat, dev_rep);
 
             self.pw.pos.set_label(&format!("{}:{:02}", cur_s / 60, cur_s % 60));
             self.pw.dur.set_label(&format!("{}:{:02}", tot_s / 60, tot_s % 60));
@@ -969,6 +836,8 @@ impl DeviceWindowInner {
             } else {
                 "media-playback-start-symbolic"
             });
+            self.mini.status_label.set_label(
+                &format_status(&st.status, &st.mode, &st.vendor));
         }
         if let Some(m) = self.ds.metadata() {
             let title = if is_unknown(&m.title) { "—".to_string() } else { m.title.clone() };
@@ -1167,6 +1036,7 @@ fn build_header(init_panel_visible: bool) -> (adw::HeaderBar, gtk::ToggleButton,
     header.pack_start(&dev_btn);
 
     let app_menu = gio::Menu::new();
+    app_menu.append(Some("Settings…"), Some("win.settings"));
     app_menu.append(Some("About RustyWiiM"), Some("win.about"));
     let app_menu_btn = gtk::MenuButton::builder()
         .icon_name("open-menu-symbolic")
@@ -1374,7 +1244,7 @@ fn build_playback_widgets() -> (PlaybackWidgets, Scale) {
     // vol_btn must exist before we can set it as the popover's parent.
     let vol_btn = Button::builder()
         .icon_name("audio-volume-high-symbolic")
-        .css_classes(["transport-btn", "circular"])
+        .css_classes(["transport-btn", "circular", "vol-btn"])
         .tooltip_text("Volume")
         .build();
 
@@ -1434,19 +1304,19 @@ fn build_playback_widgets() -> (PlaybackWidgets, Scale) {
         seek:     Scale::with_range(Orientation::Horizontal, 0.0, 100.0, 1.0),
         btn_prev: Button::builder()
             .icon_name("media-skip-backward-symbolic")
-            .css_classes(["transport-btn", "circular"]).build(),
+            .css_classes(["transport-btn", "circular", "flat"]).build(),
         btn_play: Button::builder()
             .icon_name("media-playback-start-symbolic")
-            .css_classes(["play-btn", "circular"]).build(),
+            .css_classes(["play-btn", "circular", "suggested-action"]).build(),
         btn_next: Button::builder()
             .icon_name("media-skip-forward-symbolic")
-            .css_classes(["transport-btn", "circular"]).build(),
+            .css_classes(["transport-btn", "circular", "flat"]).build(),
         shuffle:  Button::builder()
             .icon_name("media-playlist-shuffle-symbolic")
-            .css_classes(["loop-btn", "circular"]).tooltip_text("Shuffle: Off").build(),
+            .css_classes(["loop-btn", "circular", "flat"]).tooltip_text("Shuffle: Off").build(),
         repeat:   Button::builder()
             .icon_name("media-playlist-repeat-symbolic")
-            .css_classes(["loop-btn", "circular"]).tooltip_text("Repeat: Off").build(),
+            .css_classes(["loop-btn", "circular", "flat"]).tooltip_text("Repeat: Off").build(),
         vol_btn,
         vol_popover,
         mute_btn,
@@ -1463,6 +1333,7 @@ fn build_playback_widgets() -> (PlaybackWidgets, Scale) {
 }
 
 fn build_right_pane(pw: &PlaybackWidgets) -> gtk::Box {
+    // Transport buttons are centred.
     let transport = GtkBox::builder()
         .orientation(Orientation::Horizontal).spacing(12).halign(Align::Center).build();
     transport.prepend(&pw.shuffle);
@@ -1470,18 +1341,31 @@ fn build_right_pane(pw: &PlaybackWidgets) -> gtk::Box {
     transport.append(&pw.btn_play);
     transport.append(&pw.btn_next);
     transport.append(&pw.repeat);
-    transport.append(&pw.vol_btn);
 
+    // Vol button sits at the right edge of the seek row, aligned with the bar's right end.
     let seek_row = GtkBox::builder().orientation(Orientation::Horizontal).spacing(8).build();
     seek_row.append(&pw.pos);
     seek_row.append(&pw.seek);
     seek_row.append(&pw.dur);
+    pw.vol_btn.set_margin_start(4);
+    seek_row.append(&pw.vol_btn);
+
+    // Overlay adds a radial vignette frame over the artwork that fades into the panel background.
+    let art_overlay = gtk::Overlay::new();
+    art_overlay.set_vexpand(true);
+    art_overlay.set_child(Some(&pw.art_stack));
+    let art_frame = GtkBox::builder()
+        .hexpand(true).vexpand(true)
+        .css_classes(["art-frame"])
+        .can_target(false)
+        .build();
+    art_overlay.add_overlay(&art_frame);
 
     let right_pane = GtkBox::builder()
         .orientation(Orientation::Vertical).spacing(8).hexpand(true)
         .margin_top(8).margin_bottom(8).margin_start(12).margin_end(16)
         .build();
-    right_pane.append(&pw.art_stack);
+    right_pane.append(&art_overlay);
     right_pane.append(&pw.title);
     right_pane.append(&pw.artist);
     right_pane.append(&pw.album);
@@ -1527,7 +1411,7 @@ fn build_mini_window() -> (MiniWidgets, gtk::Window) {
         .build();
     let mini_top_bar = GtkBox::builder()
         .orientation(Orientation::Horizontal).spacing(4)
-        .margin_start(8).margin_end(6).margin_top(6).margin_bottom(2)
+        .margin_start(14).margin_end(12).margin_top(10).margin_bottom(4)
         .build();
     mini_top_bar.append(&mini_device_label);
     mini_top_bar.append(&mini_restore_btn);
@@ -1545,18 +1429,18 @@ fn build_mini_window() -> (MiniWidgets, gtk::Window) {
 
     let mini_btn_prev = Button::builder()
         .icon_name("media-skip-backward-symbolic")
-        .css_classes(["mini-transport-btn"]).build();
+        .css_classes(["mini-transport-btn", "flat"]).build();
     let mini_btn_play = Button::builder()
         .icon_name("media-playback-start-symbolic")
-        .css_classes(["mini-play-btn"]).build();
+        .css_classes(["mini-play-btn", "suggested-action"]).build();
     let mini_btn_next = Button::builder()
         .icon_name("media-skip-forward-symbolic")
-        .css_classes(["mini-transport-btn"]).build();
+        .css_classes(["mini-transport-btn", "flat"]).build();
 
     // Volume button with popover — must be created before mini_transport append.
     let mini_vol_btn = Button::builder()
         .icon_name("audio-volume-high-symbolic")
-        .css_classes(["mini-transport-btn"])
+        .css_classes(["mini-transport-btn", "mini-vol-btn"])
         .tooltip_text("Volume")
         .build();
     let mini_vol_scale = Scale::with_range(Orientation::Vertical, 0.0, 100.0, 1.0);
@@ -1586,17 +1470,30 @@ fn build_mini_window() -> (MiniWidgets, gtk::Window) {
     mini_vol_popover.set_child(Some(&mini_vol_pop_box));
     mini_vol_popover.set_parent(&mini_vol_btn);
 
-    let mini_transport = GtkBox::builder()
-        .orientation(Orientation::Horizontal).spacing(6)
-        .halign(Align::Start)
+    let mini_transport_center = GtkBox::builder()
+        .orientation(Orientation::Horizontal).spacing(6).build();
+    mini_transport_center.append(&mini_btn_prev);
+    mini_transport_center.append(&mini_btn_play);
+    mini_transport_center.append(&mini_btn_next);
+
+    mini_vol_btn.set_margin_end(6);
+    let mini_vol_end = GtkBox::builder()
+        .hexpand(true).halign(Align::End).valign(Align::Center).build();
+    mini_vol_end.append(&mini_vol_btn);
+
+    let mini_status_label = Label::builder()
+        .label("").css_classes(["mini-status-label"])
+        .halign(Align::Start).hexpand(true)
+        .ellipsize(gtk::pango::EllipsizeMode::End)
         .build();
-    mini_transport.append(&mini_btn_prev);
-    mini_transport.append(&mini_btn_play);
-    mini_transport.append(&mini_btn_next);
-    mini_transport.append(&mini_vol_btn);
+    let mini_transport = GtkBox::builder()
+        .orientation(Orientation::Horizontal).hexpand(true).build();
+    mini_transport.append(&mini_status_label);
+    mini_transport.append(&mini_transport_center);
+    mini_transport.append(&mini_vol_end);
 
     let mini_info_box = GtkBox::builder()
-        .orientation(Orientation::Vertical).spacing(2)
+        .orientation(Orientation::Vertical).spacing(4)
         .valign(Align::Center).hexpand(true)
         .build();
     mini_info_box.append(&mini_title_label);
@@ -1604,8 +1501,8 @@ fn build_mini_window() -> (MiniWidgets, gtk::Window) {
     mini_info_box.append(&mini_transport);
 
     let mini_main_row = GtkBox::builder()
-        .orientation(Orientation::Horizontal).spacing(8)
-        .margin_start(8).margin_end(8).margin_bottom(4)
+        .orientation(Orientation::Horizontal).spacing(12)
+        .margin_start(14).margin_end(14).margin_bottom(14)
         .build();
     mini_main_row.append(&mini_art_stack);
     mini_main_row.append(&mini_info_box);
@@ -1622,7 +1519,7 @@ fn build_mini_window() -> (MiniWidgets, gtk::Window) {
     let mini_win = gtk::Window::builder()
         .decorated(false)
         .resizable(false)
-        .default_width(300)
+        .default_width(360)
         .title("RustyWiiM")
         .child(&mini_root)
         .build();
@@ -1637,6 +1534,7 @@ fn build_mini_window() -> (MiniWidgets, gtk::Window) {
         restore_btn:   mini_restore_btn,
         title_label:   mini_title_label,
         artist_label:  mini_artist_label,
+        status_label:  mini_status_label,
         btn_prev:      mini_btn_prev,
         btn_play:      mini_btn_play,
         btn_next:      mini_btn_next,
@@ -1653,19 +1551,70 @@ fn build_mini_window() -> (MiniWidgets, gtk::Window) {
 
 // ── CSS ───────────────────────────────────────────────────────────────────────
 
-static CSS_LOADED: AtomicBool = AtomicBool::new(false);
+thread_local! {
+    static THEME_PROVIDER: RefCell<Option<CssProvider>> = const { RefCell::new(None) };
+}
 
-/// Load the application CSS into the default display.  Safe to call multiple
-/// times; the provider is only registered once per process.
-fn load_css() {
-    if CSS_LOADED.swap(true, Ordering::Relaxed) { return; }
+fn theme_css(theme: ThemeMode) -> &'static str {
+    match theme {
+        ThemeMode::Custom => DARK_CSS,
+        ThemeMode::System => SYSTEM_CSS,
+    }
+}
+
+/// Initialise the CSS provider for the current process.  Must be called once.
+fn init_css(theme: ThemeMode) {
     let provider = CssProvider::new();
-    provider.load_from_string(CSS);
+    provider.load_from_string(theme_css(theme));
     gtk::style_context_add_provider_for_display(
         &gtk::gdk::Display::default().unwrap(),
         &provider,
         gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
     );
+    THEME_PROVIDER.with(|p| *p.borrow_mut() = Some(provider));
+}
+
+/// Switch the active CSS theme at runtime.
+fn apply_theme(theme: ThemeMode) {
+    THEME_PROVIDER.with(|p| {
+        if let Some(provider) = p.borrow().as_ref() {
+            provider.load_from_string(theme_css(theme));
+        }
+    });
+}
+
+fn show_settings_dialog(window: &adw::ApplicationWindow) {
+    let cfg = Config::load();
+
+    let theme_list = gtk::StringList::new(&["Custom (Dark)", "Follow System"]);
+    let theme_row = adw::ComboRow::builder()
+        .title("Theme")
+        .subtitle("Application colour scheme")
+        .model(&theme_list)
+        .build();
+    theme_row.set_selected(match cfg.theme {
+        ThemeMode::Custom => 0,
+        ThemeMode::System => 1,
+    });
+    theme_row.connect_selected_notify(move |row| {
+        let theme = if row.selected() == 0 { ThemeMode::Custom } else { ThemeMode::System };
+        apply_theme(theme);
+        let mut cfg = Config::load();
+        cfg.theme = theme;
+        cfg.save();
+    });
+
+    let group = adw::PreferencesGroup::builder()
+        .title("Appearance")
+        .build();
+    group.add(&theme_row);
+
+    let page = adw::PreferencesPage::new();
+    page.add(&group);
+
+    let dialog = adw::PreferencesDialog::new();
+    dialog.add(&page);
+    dialog.present(Some(window));
 }
 
 // ── DeviceWindow ──────────────────────────────────────────────────────────────
@@ -1683,10 +1632,10 @@ impl DeviceWindow {
     /// Build and wire a complete device window.  The tokio `rt` is shared across
     /// all windows so there is only one thread-pool for the whole process.
     pub fn new(app: &adw::Application, rt: Arc<tokio::runtime::Runtime>) -> Self {
-        load_css();
+        let cfg         = Config::load();
+        init_css(cfg.theme);
 
         let icons = Rc::new(icons::IconSet::load());
-        let cfg         = Config::load();
         let init_dev_cfg = cfg.device(&cfg.last_ssid);
 
         let ds = DeviceState::new(rt);
@@ -1765,8 +1714,6 @@ impl DeviceWindow {
         // ── Shared UI state ───────────────────────────────────────────────────────
         let ui_state = PlaybackUiState {
             is_playing:   Rc::new(RefCell::new(false)),
-            shuffle_on:   Rc::new(RefCell::new(false)),
-            repeat_state: Rc::new(RefCell::new(0u32)),
             updating_vol: Rc::new(RefCell::new(false)),
         };
 
@@ -2032,35 +1979,20 @@ impl DeviceWindow {
         inner.pw.shuffle.connect_clicked({
             let i = Rc::clone(&inner);
             move |_| {
-                let new_val = !*i.ui_state.shuffle_on.borrow();
-                *i.ui_state.shuffle_on.borrow_mut() = new_val;
-                if new_val { i.pw.shuffle.add_css_class("loop-active"); }
-                else        { i.pw.shuffle.remove_css_class("loop-active"); }
-                i.pw.shuffle.set_tooltip_text(Some(if new_val { "Shuffle: On" } else { "Shuffle: Off" }));
-                let mode = loop_api_mode(new_val, *i.ui_state.repeat_state.borrow());
-                if let Some(c) = i.ds.client() {
-                    i.ds.rt().spawn(async move { let _ = c.set_loop_mode(mode).await; });
-                }
+                let (shuf, rep) = i.ds.player_status()
+                    .map(|s| decode_loop_mode(&s.loop_mode))
+                    .unwrap_or((false, 0));
+                i.ds.do_set_loop_mode(loop_api_mode(!shuf, rep));
             }
         });
 
         inner.pw.repeat.connect_clicked({
             let i = Rc::clone(&inner);
             move |_| {
-                let next = (*i.ui_state.repeat_state.borrow() + 1) % 3;
-                *i.ui_state.repeat_state.borrow_mut() = next;
-                let ico = ["media-playlist-repeat-symbolic",
-                           "media-playlist-repeat-symbolic",
-                           "media-playlist-repeat-song-symbolic"];
-                let tip = ["Repeat: Off", "Repeat: All", "Repeat: One"];
-                i.pw.repeat.set_icon_name(ico[next as usize]);
-                i.pw.repeat.set_tooltip_text(Some(tip[next as usize]));
-                if next == 0 { i.pw.repeat.remove_css_class("loop-active"); }
-                else          { i.pw.repeat.add_css_class("loop-active"); }
-                let mode = loop_api_mode(*i.ui_state.shuffle_on.borrow(), next);
-                if let Some(c) = i.ds.client() {
-                    i.ds.rt().spawn(async move { let _ = c.set_loop_mode(mode).await; });
-                }
+                let (shuf, rep) = i.ds.player_status()
+                    .map(|s| decode_loop_mode(&s.loop_mode))
+                    .unwrap_or((false, 0));
+                i.ds.do_set_loop_mode(loop_api_mode(shuf, (rep + 1) % 3));
             }
         });
 
@@ -2226,6 +2158,12 @@ impl DeviceWindow {
         quit_action.connect_activate(clone!(@strong window => move |_, _| { window.close(); }));
         window.add_action(&quit_action);
         app.set_accels_for_action("win.quit", &["<Ctrl>Q"]);
+
+        let settings_action = gio::SimpleAction::new("settings", None);
+        settings_action.connect_activate(clone!(@strong window => move |_, _| {
+            show_settings_dialog(&window);
+        }));
+        window.add_action(&settings_action);
 
         let about_action = gio::SimpleAction::new("about", None);
         about_action.connect_activate(clone!(@strong window => move |_, _| {
