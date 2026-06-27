@@ -40,6 +40,7 @@ const SYSTEM_CSS: &str = r#"
 }
 .loop-btn { min-width: 36px; min-height: 36px; padding: 0; -gtk-icon-size: 16px; }
 .vol-btn  { background-color: transparent; }
+.vol-btn:hover { background-color: rgba(127, 127, 127, 0.15); }
 .vol-pop trough   { min-width: 3px; border-radius: 2px; }
 .vol-pop slider   { min-width: 8px; min-height: 8px; margin: -3px; border-radius: 50%; border: none; box-shadow: none; }
 .mini-vol-btn { background-color: transparent; }
