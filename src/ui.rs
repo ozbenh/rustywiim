@@ -112,7 +112,7 @@ window { background-color: #0a0a0a; }
 .mini-vol-btn { background-color: transparent; color: #cccccc; }
 .mini-vol-btn:hover { background-color: #2a2a2a; }
 .mini-vol-pop trough { min-width: 3px; border-radius: 2px; background-color: #2a2a2a; }
-.mini-vol-pop trough highlight { background-color: #4a4a4a; }
+.mini-vol-pop trough highlight { background-color: #4ecdc4; }
 .mini-vol-pop slider { min-width: 6px; min-height: 6px; margin: -2px; background-color: #808080; border-radius: 50%; border: none; box-shadow: none; }
 .mini-vol-popover > contents { min-width: 0; padding: 0; }
 .seek-scale trough { min-height: 4px; border-radius: 2px; background-color: #2a2a2a; }
@@ -141,7 +141,7 @@ window { background-color: #0a0a0a; }
 .mini-title        { font-size: 13px; font-weight: 700; color: #ffffff; }
 .mini-artist       { font-size: 11px; color: #909090; }
 .mini-status-label { font-size: 10px; color: #606060; }
-.mini-device-label { font-size: 11px; font-weight: 700; color: #555555; }
+.mini-device-label { font-size: 11px; font-weight: 700; color: #606060; }
 .mini-restore-btn {
     min-width: 18px; min-height: 18px;
     padding: 1px; -gtk-icon-size: 10px;
