@@ -1565,13 +1565,24 @@ thread_local! {
 
 fn theme_css(theme: ThemeMode) -> &'static str {
     match theme {
-        ThemeMode::Custom => DARK_CSS,
-        ThemeMode::System => SYSTEM_CSS,
+        ThemeMode::RustyWiiM => DARK_CSS,
+        _                    => SYSTEM_CSS,
     }
+}
+
+fn apply_color_scheme(theme: ThemeMode) {
+    let scheme = match theme {
+        ThemeMode::System      => adw::ColorScheme::Default,
+        ThemeMode::SystemLight => adw::ColorScheme::ForceLight,
+        ThemeMode::SystemDark  => adw::ColorScheme::ForceDark,
+        ThemeMode::RustyWiiM  => adw::ColorScheme::ForceDark,
+    };
+    adw::StyleManager::default().set_color_scheme(scheme);
 }
 
 /// Initialise the CSS provider for the current process.  Must be called once.
 fn init_css(theme: ThemeMode) {
+    apply_color_scheme(theme);
     let provider = CssProvider::new();
     provider.load_from_string(theme_css(theme));
     gtk::style_context_add_provider_for_display(
@@ -1584,6 +1595,7 @@ fn init_css(theme: ThemeMode) {
 
 /// Switch the active CSS theme at runtime.
 fn apply_theme(theme: ThemeMode) {
+    apply_color_scheme(theme);
     THEME_PROVIDER.with(|p| {
         if let Some(provider) = p.borrow().as_ref() {
             provider.load_from_string(theme_css(theme));
@@ -1594,18 +1606,25 @@ fn apply_theme(theme: ThemeMode) {
 fn show_settings_dialog(window: &adw::ApplicationWindow) {
     let cfg = Config::load();
 
-    let theme_list = gtk::StringList::new(&["Custom (Dark)", "Follow System"]);
+    let theme_list = gtk::StringList::new(&["System", "System Light", "System Dark", "RustyWiiM"]);
     let theme_row = adw::ComboRow::builder()
         .title("Theme")
         .subtitle("Application colour scheme")
         .model(&theme_list)
         .build();
     theme_row.set_selected(match cfg.theme {
-        ThemeMode::Custom => 0,
-        ThemeMode::System => 1,
+        ThemeMode::System      => 0,
+        ThemeMode::SystemLight => 1,
+        ThemeMode::SystemDark  => 2,
+        ThemeMode::RustyWiiM  => 3,
     });
     theme_row.connect_selected_notify(move |row| {
-        let theme = if row.selected() == 0 { ThemeMode::Custom } else { ThemeMode::System };
+        let theme = match row.selected() {
+            0 => ThemeMode::System,
+            1 => ThemeMode::SystemLight,
+            2 => ThemeMode::SystemDark,
+            _ => ThemeMode::RustyWiiM,
+        };
         apply_theme(theme);
         let mut cfg = Config::load();
         cfg.theme = theme;

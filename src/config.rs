@@ -8,9 +8,17 @@ fn default_panel_visible() -> bool { true }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ThemeMode {
+    /// Adwaita, follows the OS light/dark preference.
     #[default]
-    Custom,
     System,
+    /// Force Adwaita light mode.
+    SystemLight,
+    /// Force Adwaita dark mode.
+    SystemDark,
+    /// RustyWiiM custom dark theme.
+    // "custom" is the old serialised name kept for backwards compatibility.
+    #[serde(rename = "rusty_wiim", alias = "custom")]
+    RustyWiiM,
 }
 
 /// Per-device window state, keyed on the WiFi SSID the device is connected to.
