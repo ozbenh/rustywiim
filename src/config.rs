@@ -20,6 +20,8 @@ pub struct DeviceConfig {
     pub paned_position: i32,
     #[serde(default = "default_panel_visible")]
     pub panel_visible: bool,
+    #[serde(default)]
+    pub mini_mode: bool,
 }
 
 impl Default for DeviceConfig {
@@ -30,6 +32,7 @@ impl Default for DeviceConfig {
             window_maximized: false,
             paned_position:  0,
             panel_visible:   true,
+            mini_mode:       false,
         }
     }
 }

@@ -882,6 +882,7 @@ impl DeviceWindowInner {
                 window_height:    if self.window.is_maximized() { 0 } else { self.window.height() },
                 panel_visible:    self.sidebar_btn.is_active(),
                 paned_position:   *self.saved_panel_width.borrow(),
+                mini_mode:        *self.mini_mode.borrow(),
             };
             let mut cfg = Config::load();
             cfg.save_device(&prev_ssid, dev_cfg);
@@ -941,6 +942,7 @@ impl DeviceWindowInner {
             window_height:    if maximized { 0 } else { h },
             panel_visible:    self.sidebar_btn.is_active(),
             paned_position:   *self.saved_panel_width.borrow(),
+            mini_mode:        *self.mini_mode.borrow(),
         };
         let mut cfg = Config::load();
         cfg.last_ssid = ssid.clone();
@@ -2252,10 +2254,18 @@ impl DeviceWindow {
             }
         });
 
+        if init_dev_cfg.mini_mode {
+            inner.enter_mini_mode();
+        }
+
         Self { window, inner }
     }
 
     pub fn present(&self) {
-        self.window.present();
+        if *self.inner.mini_mode.borrow() {
+            self.inner.mini_win.present();
+        } else {
+            self.window.present();
+        }
     }
 }
