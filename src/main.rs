@@ -59,13 +59,23 @@ fn main() -> glib::ExitCode {
         -1 // continue normal startup
     });
 
-    // One tokio runtime shared across all device windows.
+    // One single-threaded tokio runtime shared across all device windows.
+    // Using current_thread ensures all async tasks run on a single dedicated
+    // OS thread, so API calls to the same device are never truly concurrent.
+    // The runtime is driven by a permanent background thread.
     let rt = Arc::new(
-        tokio::runtime::Builder::new_multi_thread()
+        tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .expect("tokio runtime"),
     );
+    {
+        let rt2 = Arc::clone(&rt);
+        std::thread::Builder::new()
+            .name("tokio-rt".into())
+            .spawn(move || rt2.block_on(std::future::pending::<()>()))
+            .expect("tokio thread");
+    }
 
     app.connect_startup(|_| {
         adw::StyleManager::default().set_color_scheme(adw::ColorScheme::ForceDark);

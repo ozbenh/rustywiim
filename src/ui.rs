@@ -1,6 +1,6 @@
 #![allow(deprecated)] // glib clone! old-style @strong syntax
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -39,8 +39,6 @@ const SYSTEM_CSS: &str = r#"
     border: none; border-radius: 50%; box-shadow: none;
 }
 .loop-btn { min-width: 36px; min-height: 36px; padding: 0; -gtk-icon-size: 16px; }
-.vol-btn  { background-color: transparent; }
-.vol-btn:hover { background-color: rgba(127, 127, 127, 0.15); }
 .vol-pop trough   { min-width: 3px; border-radius: 2px; }
 .vol-pop slider   { min-width: 8px; min-height: 8px; margin: -3px; border-radius: 50%; border: none; box-shadow: none; }
 .mini-vol-btn { background-color: transparent; }
@@ -367,7 +365,9 @@ struct PlaybackWidgets {
 #[derive(Clone)]
 struct PlaybackUiState {
     is_playing:   Rc<RefCell<bool>>,
-    updating_vol: Rc<RefCell<bool>>,
+    // Set while the user is dragging the volume slider (or within 500ms after).
+    // Prevents poll updates from jumping the slider back mid-drag.
+    drag_timer:   Rc<RefCell<Option<glib::SourceId>>>,
 }
 
 struct MiniWidgets {
@@ -581,18 +581,52 @@ impl DeviceWindowInner {
         self.apply_device_window_state(&info.ssid);
     }
 
+    // ── Volume helpers ────────────────────────────────────────────────────────
+
+    /// Sync one volume slider + its vol button + mute button from device state.
+    /// Skips the `set_value` call while the user is dragging either slider.
+    fn sync_vol_display(&self, scale: &Scale, vol_btn: &Button, mute_btn: &Button, muted: bool) {
+        // Fetch the authoritative volume first; used for both the slider position
+        // and the icon so they stay consistent even when set_value is inhibited.
+        let device_vol = self.ds.get_vol();
+        if self.ui_state.drag_timer.borrow().is_none() {
+            if let Some(v) = device_vol {
+                scale.set_value(v as f64);
+            }
+        }
+        // Use device_vol for the icon rather than scale.value() so that a scale
+        // that hasn't been initialised yet (value = 0) doesn't produce a false
+        // muted icon.  Fall back to scale.value() only when there is no data.
+        let display_vol = device_vol.map(|v| v as f64).unwrap_or_else(|| scale.value());
+        vol_btn.set_icon_name(vol_icon(muted, display_vol));
+        mute_btn.set_icon_name(if muted { "audio-volume-muted-symbolic" } else { "audio-volume-high-symbolic" });
+    }
+
+    /// Called when either vol slider value changes due to user interaction.
+    /// Updates both vol button icons and sends the rate-limited volume command.
+    /// Resets a 500 ms drag-protection timer so poll updates don't jump the
+    /// slider while the user is still interacting with it.
+    fn on_vol_changed(&self, vol: f64) {
+        let icon = vol_icon(self.ds.muted(), vol);
+        self.pw.vol_btn.set_icon_name(icon);
+        self.mini.vol_btn.set_icon_name(icon);
+        self.ds.do_set_volume(vol as u32);
+
+        // Cancel any pending reset and schedule a fresh one.
+        if let Some(id) = self.ui_state.drag_timer.borrow_mut().take() { id.remove(); }
+        let timer_cell = Rc::clone(&self.ui_state.drag_timer);
+        let id = glib::timeout_add_local_once(std::time::Duration::from_millis(500), move || {
+            timer_cell.borrow_mut().take();
+        });
+        *self.ui_state.drag_timer.borrow_mut() = Some(id);
+    }
+
     // ── Playback ──────────────────────────────────────────────────────────────
 
     fn update_playback_ui(&self) {
         if let Some(st) = self.ds.player_status() {
             let muted = st.mute == "1";
-            if let Ok(v) = st.vol.parse::<f64>() {
-                *self.ui_state.updating_vol.borrow_mut() = true;
-                self.vol_scale.set_value(v);
-                *self.ui_state.updating_vol.borrow_mut() = false;
-            }
-            self.pw.vol_btn.set_icon_name(vol_icon(muted, self.vol_scale.value()));
-            self.pw.mute_btn.set_icon_name(if muted { "audio-volume-muted-symbolic" } else { "audio-volume-high-symbolic" });
+            self.sync_vol_display(&self.vol_scale.clone(), &self.pw.vol_btn, &self.pw.mute_btn, muted);
 
             let cur_s = st.curpos.parse::<u64>().unwrap_or(0) / 1000;
             let tot_s = st.totlen.parse::<u64>().unwrap_or(0) / 1000;
@@ -826,13 +860,7 @@ impl DeviceWindowInner {
         }
         if let Some(st) = self.ds.player_status() {
             let muted = st.mute == "1";
-            if let Ok(v) = st.vol.parse::<f64>() {
-                *self.ui_state.updating_vol.borrow_mut() = true;
-                self.mini.vol_scale.set_value(v);
-                *self.ui_state.updating_vol.borrow_mut() = false;
-            }
-            self.mini.vol_btn.set_icon_name(vol_icon(muted, self.mini.vol_scale.value()));
-            self.mini.mute_btn.set_icon_name(if muted { "audio-volume-muted-symbolic" } else { "audio-volume-high-symbolic" });
+            self.sync_vol_display(&self.mini.vol_scale.clone(), &self.mini.vol_btn, &self.mini.mute_btn, muted);
             self.mini.btn_play.set_icon_name(if st.status == "play" {
                 "media-playback-pause-symbolic"
             } else {
@@ -1253,14 +1281,14 @@ fn build_playback_widgets() -> (PlaybackWidgets, Scale) {
     // vol_btn must exist before we can set it as the popover's parent.
     let vol_btn = Button::builder()
         .icon_name("audio-volume-high-symbolic")
-        .css_classes(["transport-btn", "circular", "vol-btn"])
+        .css_classes(["transport-btn", "circular", "flat", "vol-btn"])
         .tooltip_text("Volume")
         .build();
 
     let vol_scale = Scale::with_range(Orientation::Vertical, 0.0, 100.0, 1.0);
     vol_scale.set_inverted(true);
     vol_scale.set_vexpand(true);
-    vol_scale.set_height_request(100);
+    vol_scale.set_height_request(150);
     vol_scale.set_draw_value(false);
     vol_scale.set_width_request(24);
     vol_scale.set_round_digits(0);
@@ -1455,7 +1483,7 @@ fn build_mini_window() -> (MiniWidgets, gtk::Window) {
     let mini_vol_scale = Scale::with_range(Orientation::Vertical, 0.0, 100.0, 1.0);
     mini_vol_scale.set_inverted(true);
     mini_vol_scale.set_vexpand(true);
-    mini_vol_scale.set_height_request(80);
+    mini_vol_scale.set_height_request(120);
     mini_vol_scale.set_draw_value(false);
     mini_vol_scale.set_width_request(20);
     mini_vol_scale.set_round_digits(0);
@@ -1742,7 +1770,7 @@ impl DeviceWindow {
         // ── Shared UI state ───────────────────────────────────────────────────────
         let ui_state = PlaybackUiState {
             is_playing:   Rc::new(RefCell::new(false)),
-            updating_vol: Rc::new(RefCell::new(false)),
+            drag_timer:   Rc::new(RefCell::new(None)),
         };
 
         let inner = Rc::new(DeviceWindowInner {
@@ -2037,14 +2065,9 @@ impl DeviceWindow {
             move |_| { i.ds.do_set_mute(!i.ds.muted()); }
         });
 
-        inner.vol_scale.connect_value_changed({
+        inner.vol_scale.connect_change_value({
             let i = Rc::clone(&inner);
-            move |scale| {
-                if *i.ui_state.updating_vol.borrow() { return; }
-                let vol = scale.value();
-                i.pw.vol_btn.set_icon_name(vol_icon(i.ds.muted(), vol));
-                i.ds.do_set_volume(vol as u32);
-            }
+            move |_, _, vol| { i.on_vol_changed(vol); glib::Propagation::Proceed }
         });
 
         inner.pw.seek.connect_change_value({
@@ -2144,16 +2167,9 @@ impl DeviceWindow {
             move |_| { i.ds.do_set_mute(!i.ds.muted()); }
         });
 
-        inner.mini.vol_scale.connect_value_changed({
+        inner.mini.vol_scale.connect_change_value({
             let i = Rc::clone(&inner);
-            move |scale| {
-                if *i.ui_state.updating_vol.borrow() { return; }
-                let vol = scale.value();
-                let icon = vol_icon(i.ds.muted(), vol);
-                i.pw.vol_btn.set_icon_name(icon);
-                i.mini.vol_btn.set_icon_name(icon);
-                i.ds.do_set_volume(vol as u32);
-            }
+            move |_, _, vol| { i.on_vol_changed(vol); glib::Propagation::Proceed }
         });
 
         // ── Mini window signals ───────────────────────────────────────────────────

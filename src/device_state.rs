@@ -17,7 +17,12 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+/// Slow poll (device info, outputs, presets) runs at most this often.
+const SLOW_POLL_INTERVAL: Duration = Duration::from_secs(10);
+/// Volume commands are rate-limited: at most one per this interval.
+const VOLUME_DEBOUNCE: Duration = Duration::from_millis(500);
 
 use glib::prelude::*;
 use glib::subclass::prelude::*;
@@ -124,6 +129,12 @@ struct Inner {
     /// Expected WiFi SSID for the current startup reconnect attempt.
     /// `None` means accept any SSID (user-initiated connect or already verified).
     expected_ssid:    Option<String>,
+    /// Pending volume level to send on the next 1s tick (-1 = none pending).
+    target_volume:    i32,
+    /// When the last volume API command was sent (None = never).
+    last_volume_cmd:  Option<Instant>,
+    /// When the last slow poll completed (None = never; triggers immediately).
+    last_slow_poll:   Option<Instant>,
 }
 
 impl Default for Inner {
@@ -149,6 +160,9 @@ impl Default for Inner {
             presets:          Vec::new(),
             preset_fp:        String::new(),
             expected_ssid:    None,
+            target_volume:    -1,
+            last_volume_cmd:  None,
+            last_slow_poll:   None,
         }
     }
 }
@@ -371,11 +385,13 @@ impl DeviceState {
     /// immediate execution.  Safe to call from the GTK thread at any time;
     /// does nothing when the slow-poll channel isn't set up yet.
     fn fire_slow_poll(&self) {
-        let inner = self.imp().inner.borrow();
+        let mut inner = self.imp().inner.borrow_mut();
         let Some(client)  = inner.client.clone()   else { return };
         let probe_outputs = inner.probe_outputs;
         let probe_presets = inner.probe_presets;
         let preset_fp     = inner.preset_fp.clone();
+        // Mark as just polled so the unified timer doesn't pile on immediately.
+        inner.last_slow_poll = Some(Instant::now());
         drop(inner);
         let Some(tx) = self.imp().slow_poll_tx.borrow().clone() else { return };
         self.rt().spawn(async move {
@@ -386,40 +402,111 @@ impl DeviceState {
 
     // ── Polling ───────────────────────────────────────────────────────────────
 
-    /// Start the 1-second poll timer and background result processors.
+    /// Start the unified 1-second timer plus background result processors.
+    /// The timer handles fast polls every tick, slow polls every
+    /// SLOW_POLL_INTERVAL, pending volume commands, and reconnection attempts.
     /// Call once after `new()`.
     pub fn start_polling(&self) {
         let (poll_tx, poll_rx) = async_channel::unbounded::<PollData>();
+        let (slow_tx, slow_rx) = async_channel::unbounded::<SlowPollResult>();
         let (art_tx,  art_rx)  = async_channel::unbounded::<Vec<u8>>();
 
-        self.start_poll_timer(poll_tx);
+        *self.imp().slow_poll_tx.borrow_mut() = Some(slow_tx.clone());
+
+        self.start_unified_timer(poll_tx, slow_tx);
         self.start_poll_processor(poll_rx, art_tx);
         self.start_art_loader(art_rx);
-        self.start_slow_pollers();
+        self.start_slow_poll_processor(slow_rx);
     }
 
-    fn start_poll_timer(&self, poll_tx: async_channel::Sender<PollData>) {
+    fn start_unified_timer(
+        &self,
+        poll_tx: async_channel::Sender<PollData>,
+        slow_tx: async_channel::Sender<SlowPollResult>,
+    ) {
         *self.imp().poll_tx.borrow_mut() = Some(poll_tx.clone());
-        let ds = self.downgrade();
+        let ds_weak = self.downgrade();
         let rt = self.rt();
         glib::timeout_add_local(Duration::from_secs(1), move || {
-            let Some(ds) = ds.upgrade() else { return glib::ControlFlow::Break };
-            let inner = ds.imp().inner.borrow();
-            // Only poll when fully connected; skip during connecting / failed / disconnected.
-            if inner.connection_state != ConnectionState::Connected {
+            let Some(ds) = ds_weak.upgrade() else { return glib::ControlFlow::Break };
+            let mut inner = ds.imp().inner.borrow_mut();
+            let state = inner.connection_state;
+
+            // Nothing to do while not yet connected or deliberately disconnected.
+            if matches!(state, ConnectionState::Disconnected | ConnectionState::Connecting) {
                 return glib::ControlFlow::Continue;
             }
-            let client = inner.client.clone();
+
+            let now = Instant::now();
+
+            // Is it time for a slow poll / reconnect attempt?
+            let slow_due = inner.last_slow_poll
+                .map_or(true, |t| now.duration_since(t) >= SLOW_POLL_INTERVAL);
+
+            // Flush any pending volume command if the debounce window has elapsed.
+            let pending_vol = if state == ConnectionState::Connected
+                && inner.target_volume >= 0
+                && inner.last_volume_cmd
+                    .map_or(true, |t| now.duration_since(t) >= VOLUME_DEBOUNCE)
+            {
+                let v = inner.target_volume as u32;
+                inner.target_volume   = -1;
+                inner.last_volume_cmd = Some(now);
+                Some(v)
+            } else {
+                None
+            };
+
+            let do_slow      = slow_due && state == ConnectionState::Connected;
+            let do_reconnect = slow_due && state == ConnectionState::Failed;
+            if slow_due { inner.last_slow_poll = Some(now); }
+
+            let client        = inner.client.clone();
+            let probe_outputs = inner.probe_outputs;
+            let probe_presets = inner.probe_presets;
+            let preset_fp     = inner.preset_fp.clone();
             drop(inner);
-            if let Some(c) = client {
+
+            // Reconnect when Failed and the interval has elapsed.
+            if do_reconnect {
+                if client.is_some() {
+                    dbg("reconnect attempt: transitioning Connecting");
+                    ds.imp().inner.borrow_mut().connection_state = ConnectionState::Connecting;
+                    ds.emit_by_name::<()>("device-changed", &[]);
+                    ds.fetch_device_info();
+                }
+                return glib::ControlFlow::Continue;
+            }
+
+            let Some(c) = client else { return glib::ControlFlow::Continue };
+
+            // Send any deferred volume command first.
+            if let Some(vol) = pending_vol {
+                let cv = c.clone();
+                rt.spawn(async move { let _ = cv.set_volume(vol).await; });
+            }
+
+            // Fast poll — always runs when Connected.
+            {
+                let cp = c.clone();
                 let tx = poll_tx.clone();
                 rt.spawn(async move {
-                    let status = c.get_status().await.ok();
-                    let meta   = c.get_meta_info().await.ok();
-                    let output = c.get_audio_output().await.ok();
+                    let status = cp.get_status().await.ok();
+                    let meta   = cp.get_meta_info().await.ok();
+                    let output = cp.get_audio_output().await.ok();
                     let _ = tx.send(PollData { status, meta, output }).await;
                 });
             }
+
+            // Slow poll — only when SLOW_POLL_INTERVAL has elapsed.
+            if do_slow {
+                let tx = slow_tx.clone();
+                rt.spawn(async move {
+                    let result = run_slow_poll(c, probe_outputs, probe_presets, preset_fp).await;
+                    let _ = tx.send(result).await;
+                });
+            }
+
             glib::ControlFlow::Continue
         });
     }
@@ -451,51 +538,7 @@ impl DeviceState {
         });
     }
 
-    fn start_slow_pollers(&self) {
-        let (tx, rx) = async_channel::unbounded::<SlowPollResult>();
-
-        // Store the sender so fire_slow_poll() can enqueue an immediate cycle.
-        *self.imp().slow_poll_tx.borrow_mut() = Some(tx.clone());
-
-        // Timer: fires every 5 seconds.
-        //  - Connected → run normal slow polls (output list + getStatusEx + presets).
-        //  - Failed    → attempt to reconnect via fetch_device_info().
-        //  - Connecting / Disconnected → skip.
-        let ds_weak = self.downgrade();
-        let rt = self.rt();
-        glib::timeout_add_local(Duration::from_secs(5), move || {
-            let Some(ds) = ds_weak.upgrade() else { return glib::ControlFlow::Break };
-            let inner = ds.imp().inner.borrow();
-            let state         = inner.connection_state;
-            let probe_outputs = inner.probe_outputs;
-            let probe_presets = inner.probe_presets;
-            let preset_fp     = inner.preset_fp.clone();
-            let client        = inner.client.clone();
-            drop(inner);
-
-            match state {
-                ConnectionState::Failed => {
-                    if client.is_some() {
-                        dbg("reconnect attempt: transitioning Connecting");
-                        ds.imp().inner.borrow_mut().connection_state = ConnectionState::Connecting;
-                        ds.emit_by_name::<()>("device-changed", &[]);
-                        ds.fetch_device_info();
-                    }
-                }
-                ConnectionState::Connected => {
-                    let Some(client) = client else { return glib::ControlFlow::Continue };
-                    let tx = tx.clone();
-                    rt.spawn(async move {
-                        let result = run_slow_poll(client, probe_outputs, probe_presets, preset_fp).await;
-                        let _ = tx.send(result).await;
-                    });
-                }
-                _ => {} // Connecting or Disconnected — skip
-            }
-            glib::ControlFlow::Continue
-        });
-
-        // Processor: handles results from the Connected slow polls.
+    fn start_slow_poll_processor(&self, rx: async_channel::Receiver<SlowPollResult>) {
         let ds_weak = self.downgrade();
         glib::spawn_future_local(async move {
             while let Ok(result) = rx.recv().await {
@@ -733,10 +776,24 @@ impl DeviceState {
     }
 
     pub fn do_set_volume(&self, vol: u32) {
-        let Some(client) = self.imp().inner.borrow().client.clone() else { return };
-        if let Some(ref mut st) = self.imp().inner.borrow_mut().player_status {
+        let mut inner = self.imp().inner.borrow_mut();
+        // Optimistic cached update so the UI stays responsive.
+        if let Some(ref mut st) = inner.player_status {
             st.vol = vol.to_string();
         }
+        let now = Instant::now();
+        let since_last = inner.last_volume_cmd
+            .map_or(VOLUME_DEBOUNCE, |t| now.duration_since(t));
+        if since_last < VOLUME_DEBOUNCE {
+            // Within the debounce window — save as pending; the 1s timer will flush it.
+            inner.target_volume = vol as i32;
+            return;
+        }
+        // Debounce window has elapsed — send immediately.
+        inner.target_volume   = -1;
+        inner.last_volume_cmd = Some(now);
+        let Some(client) = inner.client.clone() else { return };
+        drop(inner);
         self.rt().spawn(async move { let _ = client.set_volume(vol).await; });
     }
 
@@ -815,6 +872,16 @@ impl DeviceState {
 
     pub fn muted(&self) -> bool {
         self.imp().inner.borrow().player_status.as_ref().map(|s| s.mute == "1").unwrap_or(false)
+    }
+
+    /// Return the effective volume: the pending target if a rate-limited command
+    /// is queued, otherwise the last server-reported value.
+    pub fn get_vol(&self) -> Option<u32> {
+        let inner = self.imp().inner.borrow();
+        if inner.target_volume >= 0 {
+            return Some(inner.target_volume as u32);
+        }
+        inner.player_status.as_ref()?.vol.parse().ok()
     }
 
     pub fn metadata(&self) -> Option<MetaData> {
