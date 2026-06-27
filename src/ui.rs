@@ -70,13 +70,14 @@ const SYSTEM_CSS: &str = r#"
     border: none; border-radius: 50%; box-shadow: none; background-color: transparent;
 }
 .mini-transport-btn {
-    min-width: 18px; min-height: 18px;
-    padding: 0; -gtk-icon-size: 9px;
+    min-width: 22px; min-height: 22px;
+    padding: 0; -gtk-icon-size: 11px;
     border: none; border-radius: 50%; box-shadow: none; background-color: transparent;
 }
+.mini-transport-btn:hover { background-color: rgba(127, 127, 127, 0.15); }
 .mini-play-btn {
-    min-width: 22px; min-height: 22px;
-    padding: 0; -gtk-icon-size: 10px;
+    min-width: 26px; min-height: 26px;
+    padding: 0; -gtk-icon-size: 12px;
     border: none; border-radius: 50%; box-shadow: none;
 }
 "#;
@@ -150,15 +151,15 @@ window { background-color: #0a0a0a; }
 }
 .mini-restore-btn:hover { color: #ffffff; background-color: #2a2a2a; }
 .mini-transport-btn {
-    min-width: 18px; min-height: 18px;
-    padding: 0; -gtk-icon-size: 9px;
+    min-width: 22px; min-height: 22px;
+    padding: 0; -gtk-icon-size: 11px;
     background-color: transparent; color: #cccccc;
     border: none; border-radius: 50%; box-shadow: none;
 }
 .mini-transport-btn:hover { background-color: #2a2a2a; }
 .mini-play-btn {
-    min-width: 22px; min-height: 22px;
-    padding: 0; -gtk-icon-size: 10px;
+    min-width: 26px; min-height: 26px;
+    padding: 0; -gtk-icon-size: 12px;
     background-color: #4ecdc4; color: #0a0a0a;
     border: none; border-radius: 50%; box-shadow: none;
 }
@@ -843,7 +844,14 @@ impl DeviceWindowInner {
             let title = if is_unknown(&m.title) { "—".to_string() } else { m.title.clone() };
             self.mini.title_label.set_label(&title);
             let artist = if is_unknown(&m.artist) { String::new() } else { m.artist.clone() };
-            self.mini.artist_label.set_label(&artist);
+            let album  = if is_unknown(&m.album)  { String::new() } else { m.album.clone() };
+            let artist_line = match (artist.is_empty(), album.is_empty()) {
+                (true,  true)  => String::new(),
+                (true,  false) => album,
+                (false, true)  => artist,
+                (false, false) => format!("{artist} \u{00b7} {album}"),
+            };
+            self.mini.artist_label.set_label(&artist_line);
         }
         if let Some(bytes) = self.ds.art_bytes() {
             let gbytes = glib::Bytes::from(&bytes);
@@ -1440,7 +1448,7 @@ fn build_mini_window() -> (MiniWidgets, gtk::Window) {
     // Volume button with popover — must be created before mini_transport append.
     let mini_vol_btn = Button::builder()
         .icon_name("audio-volume-high-symbolic")
-        .css_classes(["mini-transport-btn", "mini-vol-btn"])
+        .css_classes(["mini-transport-btn", "mini-vol-btn", "flat"])
         .tooltip_text("Volume")
         .build();
     let mini_vol_scale = Scale::with_range(Orientation::Vertical, 0.0, 100.0, 1.0);
