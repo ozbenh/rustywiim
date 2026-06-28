@@ -6,9 +6,11 @@ Copyright (c) 2026 Benjamin Herrenschmidt
 
 Licensed under the [MIT License](LICENSE).
 
-This was almost entirely written with the help of an AI tool and using quite a lot of "inspiration" from https://github.com/mjcumming/pywiim (and in some case translating the python code almost verbatim). My own contribution is mostly to direct the AI and some additional API reverse engineering beyond what I could find in pywiim.
+This started as an exercise in using AI to program in Rust which I am not familiar with, so trying to both build experience with driving AI and learn a bit of Rust...
 
-This was mostly an exercise for me in using AI to program in a language I am not (yet) familiar with (Rust). The AI is so good I barely learned any Rust at this point but since the end result might be useful to some, here it is.
+The former is a hit, the latter, less so, at least initially as the AI did too well :-)
+
+Now, though, as the project slowly evolves (matures ?), I'm getting more involved with the code, and while a lot is still written by AI, it's under much more precise directions, ie the amount of "slop" is hopefully decreasing. As a result I am slowly learning Rust, ah !
 
 ## Build instructions ##
 
