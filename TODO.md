@@ -7,8 +7,6 @@
   * Add more caps detection around sub, EQ, etc...
   * Find testers :-)
 
-* Implement a "miniaturized" UI
-
 * Support monitoring multiple devices (maybe a device selector ?)
 
 * Move most of the device handling and API wrappers to a crate separate from
