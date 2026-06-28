@@ -1541,6 +1541,11 @@ fn build_mini_window() -> (MiniWidgets, gtk::Window) {
         .orientation(Orientation::Horizontal).spacing(12)
         .margin_start(14).margin_end(14).margin_bottom(14)
         .build();
+    // Prevent the NGL renderer from leaving stale GPU buffer pixels in the
+    // vertical centering gap above mini_info_box (valign=Center inside a row
+    // that is taller than the info box).  overflow=hidden forces GTK4 to
+    // render into a freshly-cleared offscreen surface before compositing.
+    mini_main_row.set_overflow(gtk::Overflow::Hidden);
     mini_main_row.append(&mini_art_stack);
     mini_main_row.append(&mini_info_box);
 
