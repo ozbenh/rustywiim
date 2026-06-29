@@ -678,6 +678,43 @@ impl DeviceWindow {
 
         wire_window_actions(&window, Some(ds.clone()));
 
+        // mini_win is a plain gtk::Window (not ApplicationWindow) so it has no
+        // action map and is not connected to the application's action group.
+        // Insert synthetic "win" and "app" groups that delegate to the real targets.
+        {
+            let win_actions = gio::SimpleActionGroup::new();
+
+            let fwd_devices = gio::SimpleAction::new("devices", None);
+            fwd_devices.connect_activate(clone!(@strong inner => move |_, _| {
+                (inner.show_devices_fn)();
+            }));
+            win_actions.add_action(&fwd_devices);
+
+            let fwd_settings = gio::SimpleAction::new("settings", None);
+            fwd_settings.connect_activate(clone!(@strong window => move |_, _| {
+                gtk::prelude::WidgetExt::activate_action(&window, "win.settings", None).ok();
+            }));
+            win_actions.add_action(&fwd_settings);
+
+            let fwd_about = gio::SimpleAction::new("about", None);
+            fwd_about.connect_activate(clone!(@strong window => move |_, _| {
+                gtk::prelude::WidgetExt::activate_action(&window, "win.about", None).ok();
+            }));
+            win_actions.add_action(&fwd_about);
+
+            mini_win.insert_action_group("win", Some(&win_actions));
+
+            // app.quit: mini_win is not registered with the application, so the
+            // app.* group is unreachable from it.  Bridge it explicitly.
+            let app_actions = gio::SimpleActionGroup::new();
+            let fwd_quit = gio::SimpleAction::new("quit", None);
+            fwd_quit.connect_activate(clone!(@strong window => move |_, _| {
+                if let Some(app) = window.application() { app.quit(); }
+            }));
+            app_actions.add_action(&fwd_quit);
+            mini_win.insert_action_group("app", Some(&app_actions));
+        }
+
         // ── Save window state ─────────────────────────────────────────────────────
         window.connect_close_request({
             let i = Rc::clone(&inner);
