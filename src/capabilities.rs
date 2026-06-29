@@ -5,7 +5,17 @@
 /// PEQ support cannot be determined statically and starts as `false`; it must
 /// be confirmed via a runtime probe before being set to `true`.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use crate::api::DeviceInfo;
+
+pub static DEBUG_DEVICE: AtomicBool = AtomicBool::new(false);
+
+fn dbg(msg: &str) {
+    if DEBUG_DEVICE.load(Ordering::Relaxed) {
+        println!("[device] {msg}");
+    }
+}
 
 // ── Vendor ────────────────────────────────────────────────────────────────────
 
@@ -27,6 +37,281 @@ impl Vendor {
         }
     }
 }
+
+// ── Family profile ────────────────────────────────────────────────────────────
+//
+// A FamilyProfile captures device-family–level behaviour that is common across
+// all individual models in that family: protocol preferences, UPnP vs HTTP state
+// sources, which endpoints are available, and grouping topology.
+//
+// This mirrors pywiim's DeviceProfile dataclass (profiles.py).  Each DeviceId
+// carries a reference to its family's static profile.  When a device cannot be
+// identified (LinkPlayGeneric fallback), `detect_family_from_info()` runs the
+// same vendor/generation logic pywiim uses and returns the matching family.
+
+/// Which loop-mode integer scheme this family uses.
+/// WiiM scheme and Arylic/LinkPlay scheme differ in their bit assignments.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoopModeScheme {
+    WiiM,
+    Arylic,
+}
+
+/// Per-field preference for HTTP polling vs UPnP events.
+/// `true` = prefer UPnP events; `false` = HTTP is authoritative.
+/// Fields not listed (title, artist, album, image_url) always prefer HTTP.
+#[derive(Debug)]
+pub struct StateSourceConfig {
+    pub play_state_upnp: bool,
+    pub volume_upnp:     bool,
+    pub mute_upnp:       bool,
+    /// Position and duration: Audio Pro MkII requires UPnP for these.
+    pub position_upnp:   bool,
+    pub duration_upnp:   bool,
+    /// Input source: Audio Pro MkII HTTP returns 0 (idle) when nothing plays.
+    pub source_upnp:     bool,
+}
+
+impl StateSourceConfig {
+    const fn all_http() -> Self {
+        Self {
+            play_state_upnp: false,
+            volume_upnp:     false,
+            mute_upnp:       false,
+            position_upnp:   false,
+            duration_upnp:   false,
+            source_upnp:     false,
+        }
+    }
+}
+
+/// Connection and protocol settings.
+#[derive(Debug)]
+pub struct ConnectionConfig {
+    /// Audio Pro MkII requires mTLS client certificate.
+    pub requires_client_cert: bool,
+    /// Ports to try, in order of preference.
+    pub preferred_ports:      &'static [u16],
+    /// Try HTTPS before HTTP.
+    pub https_first:          bool,
+    pub response_timeout_ms:  u32,
+    pub retry_count:          u8,
+}
+
+/// Which API endpoints are available on this device family.
+#[derive(Debug)]
+pub struct EndpointConfig {
+    /// `getPlayerStatusEx` available (Audio Pro MkII uses `getStatusEx` instead).
+    pub supports_player_status_ex: bool,
+    pub supports_get_meta_info:    bool,
+    pub supports_preset_info:      bool,
+    pub supports_eq:               bool,
+    /// Some devices can read EQ but not write it (many Arylic).
+    pub supports_eq_set:           bool,
+    /// WiiM-only alarm scheduling endpoint.
+    pub supports_alarms:           bool,
+    /// WiiM-only sleep timer endpoint.
+    pub supports_sleep_timer:      bool,
+    /// Full path for the primary status poll (differs on Audio Pro MkII).
+    pub status_endpoint:           &'static str,
+    /// Command string for the reboot API call.
+    pub reboot_command:            &'static str,
+}
+
+/// Multiroom grouping topology for this family.
+#[derive(Debug)]
+pub struct GroupingConfig {
+    /// Gen1 devices use WiFi Direct peer-to-peer grouping instead of
+    /// router-based multiroom.  Detected at runtime via `wmrm_version`.
+    pub uses_wifi_direct: bool,
+}
+
+/// Complete behavioural profile for a device family.
+#[derive(Debug)]
+pub struct FamilyProfile {
+    pub display_name:     &'static str,
+    pub loop_mode_scheme: LoopModeScheme,
+    pub state_sources:    StateSourceConfig,
+    pub connection:       ConnectionConfig,
+    pub endpoints:        EndpointConfig,
+    pub grouping:         GroupingConfig,
+}
+
+// ── Static family profiles ────────────────────────────────────────────────────
+
+static FAMILY_WIIM: FamilyProfile = FamilyProfile {
+    display_name:     "WiiM",
+    loop_mode_scheme: LoopModeScheme::WiiM,
+    state_sources: StateSourceConfig {
+        // Real-time fields prefer UPnP events for immediate UI updates.
+        play_state_upnp: true,
+        volume_upnp:     true,
+        mute_upnp:       true,
+        position_upnp:   false,
+        duration_upnp:   false,
+        source_upnp:     false,
+    },
+    connection: ConnectionConfig {
+        requires_client_cert: false,
+        // WiiM HTTPS:443 only; plain HTTP:80 is closed on WiiM hardware.
+        preferred_ports:      &[443, 80],
+        https_first:          true,
+        response_timeout_ms:  5000,
+        retry_count:          2,
+    },
+    endpoints: EndpointConfig {
+        supports_player_status_ex: true,
+        supports_get_meta_info:    true,
+        supports_preset_info:      true,
+        supports_eq:               true,
+        supports_eq_set:           true,
+        supports_alarms:           true,
+        supports_sleep_timer:      true,
+        status_endpoint:           "/httpapi.asp?command=getPlayerStatusEx",
+        reboot_command:            "reboot",
+    },
+    grouping: GroupingConfig { uses_wifi_direct: false },
+};
+
+static FAMILY_ARYLIC: FamilyProfile = FamilyProfile {
+    display_name:     "Arylic",
+    loop_mode_scheme: LoopModeScheme::Arylic,
+    state_sources: StateSourceConfig::all_http(),
+    connection: ConnectionConfig {
+        requires_client_cert: false,
+        preferred_ports:      &[80, 443],
+        https_first:          false,
+        response_timeout_ms:  5000,
+        retry_count:          2,
+    },
+    endpoints: EndpointConfig {
+        supports_player_status_ex: true,
+        supports_get_meta_info:    true,
+        supports_preset_info:      true,
+        supports_eq:               true,
+        supports_eq_set:           false, // Many Arylic devices: read-only EQ
+        supports_alarms:           false,
+        supports_sleep_timer:      false,
+        status_endpoint:           "/httpapi.asp?command=getPlayerStatusEx",
+        reboot_command:            "reboot",
+    },
+    grouping: GroupingConfig { uses_wifi_direct: false },
+};
+
+/// Audio Pro MkII: mTLS, UPnP-primary state, restricted endpoints.
+static FAMILY_AUDIO_PRO_MKII: FamilyProfile = FamilyProfile {
+    display_name:     "Audio Pro MkII",
+    loop_mode_scheme: LoopModeScheme::Arylic,
+    state_sources: StateSourceConfig {
+        // HTTP doesn't expose play state, volume, or mute on MkII.
+        play_state_upnp: true,
+        volume_upnp:     true,
+        mute_upnp:       true,
+        // Real-time position/duration also more reliable via UPnP.
+        position_upnp:   true,
+        duration_upnp:   true,
+        // HTTP mode returns 0 (idle) when nothing plays, masking actual input.
+        source_upnp:     true,
+    },
+    connection: ConnectionConfig {
+        requires_client_cert: true,
+        preferred_ports:      &[4443, 8443, 443],
+        https_first:          true,
+        response_timeout_ms:  6000,
+        retry_count:          3,
+    },
+    endpoints: EndpointConfig {
+        supports_player_status_ex: false, // Uses getStatusEx instead
+        supports_get_meta_info:    false,
+        supports_preset_info:      false,
+        supports_eq:               false,
+        supports_eq_set:           false,
+        supports_alarms:           false,
+        supports_sleep_timer:      false,
+        status_endpoint:           "/httpapi.asp?command=getStatusEx",
+        reboot_command:            "StartRebootTime:0",
+    },
+    grouping: GroupingConfig { uses_wifi_direct: false },
+};
+
+/// Audio Pro W-Generation: HTTPS-first, modern endpoints, no client cert.
+static FAMILY_AUDIO_PRO_WGEN: FamilyProfile = FamilyProfile {
+    display_name:     "Audio Pro W-Generation",
+    loop_mode_scheme: LoopModeScheme::Arylic,
+    state_sources: StateSourceConfig::all_http(),
+    connection: ConnectionConfig {
+        requires_client_cert: false,
+        preferred_ports:      &[443, 8443, 80],
+        https_first:          true,
+        response_timeout_ms:  4000,
+        retry_count:          2,
+    },
+    endpoints: EndpointConfig {
+        supports_player_status_ex: true,
+        supports_get_meta_info:    true,
+        supports_preset_info:      true,
+        supports_eq:               true,
+        supports_eq_set:           true,
+        supports_alarms:           false,
+        supports_sleep_timer:      false,
+        status_endpoint:           "/httpapi.asp?command=getPlayerStatusEx",
+        reboot_command:            "StartRebootTime:0",
+    },
+    grouping: GroupingConfig { uses_wifi_direct: false },
+};
+
+/// Audio Pro Original (Gen1): HTTP-first, WiFi Direct grouping.
+static FAMILY_AUDIO_PRO_ORIGINAL: FamilyProfile = FamilyProfile {
+    display_name:     "Audio Pro Original",
+    loop_mode_scheme: LoopModeScheme::Arylic,
+    state_sources: StateSourceConfig::all_http(),
+    connection: ConnectionConfig {
+        requires_client_cert: false,
+        preferred_ports:      &[80, 443],
+        https_first:          false,
+        response_timeout_ms:  5000,
+        retry_count:          2,
+    },
+    endpoints: EndpointConfig {
+        supports_player_status_ex: true,
+        supports_get_meta_info:    true,
+        supports_preset_info:      true,
+        supports_eq:               false,
+        supports_eq_set:           false,
+        supports_alarms:           false,
+        supports_sleep_timer:      false,
+        status_endpoint:           "/httpapi.asp?command=getPlayerStatusEx",
+        reboot_command:            "StartRebootTime:0",
+    },
+    // Gen1 Audio Pro uses WiFi Direct peer-to-peer grouping.
+    grouping: GroupingConfig { uses_wifi_direct: true },
+};
+
+/// Generic LinkPlay: conservative HTTP-first defaults, probe to confirm.
+static FAMILY_LINKPLAY_GENERIC: FamilyProfile = FamilyProfile {
+    display_name:     "LinkPlay Generic",
+    loop_mode_scheme: LoopModeScheme::Arylic,
+    state_sources: StateSourceConfig::all_http(),
+    connection: ConnectionConfig {
+        requires_client_cert: false,
+        preferred_ports:      &[80, 443, 8080],
+        https_first:          false,
+        response_timeout_ms:  5000,
+        retry_count:          2,
+    },
+    endpoints: EndpointConfig {
+        supports_player_status_ex: true,
+        supports_get_meta_info:    true,
+        supports_preset_info:      true,
+        supports_eq:               true,
+        supports_eq_set:           true,
+        supports_alarms:           false,
+        supports_sleep_timer:      false,
+        status_endpoint:           "/httpapi.asp?command=getPlayerStatusEx",
+        reboot_command:            "reboot",
+    },
+    grouping: GroupingConfig { uses_wifi_direct: false },
+};
 
 // ── Device ID ─────────────────────────────────────────────────────────────────
 //
@@ -115,20 +400,19 @@ impl DeviceId {
     fn detect_audio_pro_gen(project: &str, fw: &str) -> Self {
         if project.contains("mkii") || project.contains("mk2")
             || project.contains("mk_ii") || project.contains("mark_ii")
-            // Firmware 1.56–1.60 → MkII
-            || fw.split('.').collect::<Vec<_>>().windows(2)
-                .any(|s| s[0] == "1" && matches!(s[1], "56"|"57"|"58"|"59"|"60"))
+            || is_fw_audio_pro_mkii(fw)
         {
             return Self::AudioProMkII;
         }
         if project.contains("w_") || project.contains("w_series")
-            || project.contains("w_generation")
-            // Firmware 2.x → W-generation
-            || fw.starts_with("2.")
+            || project.contains("w_generation") || project.contains("w_gen")
+            || is_fw_audio_pro_wgen(fw)
         {
             return Self::AudioProWGen;
         }
-        Self::AudioProOriginal
+        // Pywiim defaults to MkII for known modern Audio Pro models that don't
+        // have explicit generation markers in the project string.
+        Self::AudioProMkII
     }
 
     /// Vendor implied by this device ID.
@@ -149,7 +433,7 @@ impl DeviceId {
         }
     }
 
-    /// Per-device capability profile.
+    /// Per-device capability profile (inputs, outputs, PLM mask).
     pub fn profile(self) -> &'static DeviceProfile {
         let id = self as usize;
         match id {
@@ -157,6 +441,34 @@ impl DeviceId {
             100..=199 => &ARYLIC_PROFILES[id - 100],
             200..=299 => &AUDIO_PRO_PROFILES[id - 200],
             _         => &LINKPLAY_PROFILES[0],
+        }
+    }
+
+    /// Family profile for this device ID.
+    ///
+    /// Audio Pro specific model IDs (Link2, A28, AddonC5) are not mapped here
+    /// because their family (MkII vs W-Gen vs Original) depends on firmware
+    /// version; `DeviceCapabilities::from_device_info` handles those via
+    /// `detect_audio_pro_family()`.  `LinkPlayGeneric` is similarly handled
+    /// via `detect_family_from_info()`.
+    pub fn family_profile(self) -> &'static FamilyProfile {
+        match self {
+            Self::WiimMini | Self::WiimPro | Self::WiimProPlus | Self::WiimAmp
+            | Self::WiimAmpPro | Self::WiimUltra | Self::WiimSound
+            | Self::WiimGeneric                    => &FAMILY_WIIM,
+
+            Self::ArylicUp2StreamAmp | Self::ArylicH50
+            | Self::ArylicGeneric                  => &FAMILY_ARYLIC,
+
+            Self::AudioProMkII                     => &FAMILY_AUDIO_PRO_MKII,
+            Self::AudioProWGen                     => &FAMILY_AUDIO_PRO_WGEN,
+            // Specific model IDs: fall back to Original; from_device_info
+            // overrides with firmware-based detection.
+            Self::AudioProLink2 | Self::AudioProA28
+            | Self::AudioProAddonC5
+            | Self::AudioProOriginal               => &FAMILY_AUDIO_PRO_ORIGINAL,
+
+            Self::LinkPlayGeneric                  => &FAMILY_LINKPLAY_GENERIC,
         }
     }
 }
@@ -305,15 +617,23 @@ static LINKPLAY_PROFILES: [DeviceProfile; 1] = [
 
 #[derive(Debug, Clone)]
 pub struct DeviceCapabilities {
-    pub device_id:        DeviceId,
-    pub vendor:           Vendor,
+    pub device_id:          DeviceId,
+    pub vendor:             Vendor,
     /// Marketing-friendly model name (e.g. "WiiM Pro Plus").
-    pub model:            String,
-    pub supports_presets: bool,
-    pub supports_eq:      bool,
+    pub model:              String,
+    /// Family profile for protocol/endpoint/grouping behaviour.
+    pub family:             &'static FamilyProfile,
+    /// Effective loop mode scheme.  Normally `family.loop_mode_scheme`, but
+    /// WiiM Ultra on firmware ≥ 5.2 switches to `Arylic` (pywiim issue #17).
+    pub loop_mode_scheme:   LoopModeScheme,
+    /// Effective WiFi Direct flag.  Normally `family.grouping.uses_wifi_direct`,
+    /// but overridden to `true` for Gen1 devices detected via `wmrm_version`.
+    pub uses_wifi_direct:   bool,
+    pub supports_presets:   bool,
+    pub supports_eq:        bool,
     /// Parametric EQ.  Cannot be determined statically; starts `false` and
     /// must be updated after a successful runtime probe.
-    pub supports_peq:     bool,
+    pub supports_peq:       bool,
 }
 
 impl DeviceCapabilities {
@@ -322,22 +642,104 @@ impl DeviceCapabilities {
         let name_lc    = info.device_name.to_lowercase();
         let fw_lc      = info.firmware.to_lowercase();
 
+        dbg(&format!(
+            "raw  project={:?}  name={:?}  firmware={:?}  wmrm_version={:?}",
+            info.project, info.device_name, info.firmware, info.wmrm_version,
+        ));
+
         let device_id = DeviceId::detect(&project_lc, &fw_lc);
-        // For unrecognized devices, fall back to name/firmware-based detection
-        // which can identify Arylic or Audio Pro devices by other signals.
+        // For unrecognized devices, fall back to name/firmware-based detection.
         let vendor = if device_id == DeviceId::LinkPlayGeneric {
             detect_vendor_extended(&project_lc, &name_lc, &fw_lc)
         } else {
             device_id.vendor()
         };
 
-        let model  = device_id.profile().model_name
+        dbg(&format!("DeviceId: {device_id:?}  vendor: {vendor:?}"));
+
+        // Family profile: use the known device table's direct mapping when
+        // the device was positively identified.  For Audio Pro specific model
+        // IDs the family still depends on firmware (generation detection).
+        // For completely unknown devices (LinkPlayGeneric) run pywiim-style
+        // fallback detection from project/name/firmware.
+        let (family, family_source): (&'static FamilyProfile, &'static str) = match device_id {
+            DeviceId::LinkPlayGeneric => (
+                detect_family_from_info(&project_lc, &name_lc, &fw_lc),
+                "pywiim fallback (no table match)",
+            ),
+            DeviceId::AudioProLink2
+            | DeviceId::AudioProA28
+            | DeviceId::AudioProAddonC5 => (
+                detect_audio_pro_family(&project_lc, &fw_lc),
+                "known model, fw-based generation detection",
+            ),
+            _ => (device_id.family_profile(), "direct table lookup"),
+        };
+
+        dbg(&format!(
+            "family: {:?}  (via {})",
+            family.display_name, family_source,
+        ));
+
+        // WiiM Ultra on firmware ≥ 5.2 switches to Arylic loop mode (pywiim#17).
+        let loop_mode_scheme = if device_id == DeviceId::WiimUltra
+            && fw_ver_at_least(&info.firmware, 5, 2)
+        {
+            dbg("loop_mode_scheme: Arylic (WiiM Ultra fw ≥ 5.2 override)");
+            LoopModeScheme::Arylic
+        } else {
+            family.loop_mode_scheme
+        };
+
+        // Gen1 devices (wmrm_version "2.0" or very old firmware) use WiFi Direct.
+        let gen1 = is_gen1(&info.wmrm_version, &info.firmware);
+        let uses_wifi_direct = family.grouping.uses_wifi_direct || gen1;
+        if gen1 && !family.grouping.uses_wifi_direct {
+            dbg("wifi_direct: true (Gen1 override via wmrm_version/firmware)");
+        }
+
+        let model = device_id.profile().model_name
             .map(|s| s.to_string())
             .unwrap_or_else(|| model_name_fallback(&project_lc, &info.device_name));
         let (supports_presets, supports_eq, supports_peq) =
             static_playback_caps(device_id);
 
-        Self { device_id, vendor, model, supports_presets, supports_eq, supports_peq }
+        let caps = Self {
+            device_id, vendor, model, family,
+            loop_mode_scheme, uses_wifi_direct,
+            supports_presets, supports_eq, supports_peq,
+        };
+
+        if DEBUG_DEVICE.load(Ordering::Relaxed) {
+            let s  = &caps.family.state_sources;
+            let c  = &caps.family.connection;
+            let ep = &caps.family.endpoints;
+
+            dbg(&format!("model: {:?}  loop_mode: {:?}  wifi_direct: {}",
+                caps.model, caps.loop_mode_scheme, caps.uses_wifi_direct));
+            dbg(&format!("capabilities: presets={}  eq={}  peq={}",
+                caps.supports_presets, caps.supports_eq, caps.supports_peq));
+            dbg(&format!(
+                "state_sources (upnp preferred): play_state={}  volume={}  mute={}  position={}  duration={}  source={}",
+                s.play_state_upnp, s.volume_upnp, s.mute_upnp,
+                s.position_upnp, s.duration_upnp, s.source_upnp,
+            ));
+            dbg(&format!(
+                "connection: ports={:?}  https_first={}  timeout={}ms  retries={}  client_cert={}",
+                c.preferred_ports, c.https_first, c.response_timeout_ms,
+                c.retry_count, c.requires_client_cert,
+            ));
+            dbg(&format!(
+                "endpoints: player_status_ex={}  meta={}  presets={}  eq={}  eq_set={}  alarms={}  sleep_timer={}",
+                ep.supports_player_status_ex, ep.supports_get_meta_info,
+                ep.supports_preset_info, ep.supports_eq, ep.supports_eq_set,
+                ep.supports_alarms, ep.supports_sleep_timer,
+            ));
+            dbg(&format!("  status_endpoint: {:?}", ep.status_endpoint));
+            dbg(&format!("  reboot_command:  {:?}", ep.reboot_command));
+        }
+
+        caps
     }
 }
 
@@ -393,6 +795,78 @@ fn detect_vendor_extended(project: &str, name_lc: &str, fw_lc: &str) -> Vendor {
         return Vendor::AudioPro;
     }
     Vendor::LinkPlayGeneric
+}
+
+/// Fallback family detection for devices that hit the `LinkPlayGeneric`
+/// DeviceId.  Mirrors pywiim's `get_device_profile()` logic: detect vendor
+/// from project/name/firmware, then for Audio Pro also detect generation.
+fn detect_family_from_info(
+    project: &str,
+    name_lc: &str,
+    fw_lc:   &str,
+) -> &'static FamilyProfile {
+    let vendor = detect_vendor_extended(project, name_lc, fw_lc);
+    match vendor {
+        Vendor::WiiM            => &FAMILY_WIIM,
+        Vendor::Arylic          => &FAMILY_ARYLIC,
+        Vendor::AudioPro        => detect_audio_pro_family(project, fw_lc),
+        Vendor::LinkPlayGeneric => &FAMILY_LINKPLAY_GENERIC,
+    }
+}
+
+/// Select the Audio Pro family profile from firmware-based generation detection.
+fn detect_audio_pro_family(project: &str, fw: &str) -> &'static FamilyProfile {
+    match DeviceId::detect_audio_pro_gen(project, fw) {
+        DeviceId::AudioProMkII => &FAMILY_AUDIO_PRO_MKII,
+        DeviceId::AudioProWGen => &FAMILY_AUDIO_PRO_WGEN,
+        _                      => &FAMILY_AUDIO_PRO_ORIGINAL,
+    }
+}
+
+/// Firmware version 1.56–1.60 indicates Audio Pro MkII generation.
+/// Mirrors pywiim `_MKII_FIRMWARE_RE = r"(?<!\d)1\.5[6-9](?!\d)|(?<!\d)1\.60(?!\d)"`.
+fn is_fw_audio_pro_mkii(fw: &str) -> bool {
+    let parts: Vec<&str> = fw.splitn(3, '.').collect();
+    if parts.len() < 2 || parts[0] != "1" { return false; }
+    parts[1].parse::<u32>().map_or(false, |n| (56..=60).contains(&n))
+}
+
+/// Firmware version 2.0–2.3 indicates Audio Pro W-Generation.
+/// Mirrors pywiim `_W_GEN_FIRMWARE_RE = r"(?<!\d)2\.[0-3](?!\d)"`.
+fn is_fw_audio_pro_wgen(fw: &str) -> bool {
+    let parts: Vec<&str> = fw.splitn(3, '.').collect();
+    parts.len() >= 2
+        && parts[0] == "2"
+        && parts[1].parse::<u32>().map_or(false, |n| n <= 3)
+}
+
+/// Returns `true` when firmware version is at least `major.minor`.
+/// Used for WiiM Ultra FW ≥ 5.2 loop mode detection (pywiim issue #17).
+fn fw_ver_at_least(fw: &str, major: u32, minor: u32) -> bool {
+    let mut parts = fw.splitn(3, '.');
+    let fmaj = parts.next().and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
+    let fmin = parts.next().and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
+    (fmaj, fmin) >= (major, minor)
+}
+
+/// Returns `true` for Gen1 devices that use WiFi Direct grouping.
+/// `wmrm_version == "2.0"` is the primary signal; very old firmware
+/// (< 4.2.8020) is the fallback when wmrm_version is absent.
+fn is_gen1(wmrm_version: &str, fw: &str) -> bool {
+    if wmrm_version == "2.0" { return true;  }
+    if wmrm_version == "4.2" { return false; }
+    if fw.is_empty()          { return false; }
+    // Numeric comparison: parse up to three components and compare tuples.
+    let parts: Vec<u32> = fw.splitn(4, '.')
+        .take(3)
+        .map(|s| s.parse().unwrap_or(0))
+        .collect();
+    match parts.as_slice() {
+        [maj, min, patch] => (*maj, *min, *patch) < (4, 2, 8020),
+        [maj, min]        => (*maj, *min) < (4, 2),
+        [maj]             => *maj < 4,
+        _                 => false,
+    }
 }
 
 /// Fallback model name for devices that hit a generic catch-all profile

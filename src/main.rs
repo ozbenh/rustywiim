@@ -17,20 +17,12 @@ fn main() -> glib::ExitCode {
         .build();
 
     app.add_main_option(
-        "debug-api",
+        "debug",
         glib::Char(0),
         glib::OptionFlags::NONE,
-        glib::OptionArg::None,
-        "Print API protocol messages to stdout",
-        None,
-    );
-    app.add_main_option(
-        "debug-state",
-        glib::Char(0),
-        glib::OptionFlags::NONE,
-        glib::OptionArg::None,
-        "Print device state changes and signals to stdout",
-        None,
+        glib::OptionArg::String,
+        "Enable debug output: comma-separated list of api, state, device, or all",
+        Some("LIST"),
     );
     app.add_main_option(
         "tls",
@@ -42,11 +34,22 @@ fn main() -> glib::ExitCode {
     );
 
     app.connect_handle_local_options(|_, opts| {
-        if opts.contains("debug-api") {
-            api::DEBUG.store(true, Ordering::Relaxed);
-        }
-        if opts.contains("debug-state") {
-            device_state::DEBUG_STATE.store(true, Ordering::Relaxed);
+        if let Ok(Some(list)) = opts.lookup::<String>("debug") {
+            for token in list.split(',').map(str::trim) {
+                match token {
+                    "api"    => { api::DEBUG.store(true, Ordering::Relaxed); }
+                    "state"  => { device_state::DEBUG_STATE.store(true, Ordering::Relaxed); }
+                    "device" => { capabilities::DEBUG_DEVICE.store(true, Ordering::Relaxed); }
+                    "all"    => {
+                        api::DEBUG.store(true, Ordering::Relaxed);
+                        device_state::DEBUG_STATE.store(true, Ordering::Relaxed);
+                        capabilities::DEBUG_DEVICE.store(true, Ordering::Relaxed);
+                    }
+                    other => {
+                        eprintln!("rustywiim: unknown debug token {:?} (valid: api, state, device, all)", other);
+                    }
+                }
+            }
         }
         if let Ok(Some(mode)) = opts.lookup::<String>("tls") {
             let tls = match mode.as_str() {

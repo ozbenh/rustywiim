@@ -242,6 +242,10 @@ pub struct DeviceInfo {
     /// Wifi RSSI in dBm as a string (e.g. "-61").  Empty on ethernet.
     #[serde(default, rename = "RSSI")]
     pub rssi: String,
+    /// Multiroom protocol version.  "2.0" → Gen1 (WiFi Direct grouping).
+    /// "4.2" → Gen2+.  Used for Gen1 detection in capability profiles.
+    #[serde(default)]
+    pub wmrm_version: String,
 }
 
 impl DeviceInfo {
