@@ -1,6 +1,8 @@
 #![allow(deprecated)] // glib clone! old-style @strong syntax
 
 mod dialogs;
+mod icons;
+mod scroll_fade_label;
 mod playback;
 mod settings;
 mod widgets;
@@ -18,11 +20,10 @@ use glib::clone;
 use gtk::gio;
 use gtk::{Align, Box as GtkBox, CssProvider, Label, Orientation, Scale};
 
-use crate::api::TlsMode;
+use crate::device::api::TlsMode;
 use crate::config::{Config, ThemeMode};
-use crate::device_state::{ConnectionState, DeviceState};
-use crate::discovery;
-use crate::icons;
+use crate::device::state::{ConnectionState, DeviceState};
+use crate::device::discovery;
 
 // ── CSS ───────────────────────────────────────────────────────────────────────
 

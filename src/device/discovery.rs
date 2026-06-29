@@ -4,7 +4,7 @@ use std::time::Duration;
 use tokio::net::UdpSocket;
 use tokio::time::timeout;
 
-use crate::api::{TlsMode, api_base_url, build_reqwest_client};
+use super::api::{TlsMode, api_base_url, build_reqwest_client};
 
 #[derive(Debug, Clone)]
 pub struct DiscoveredDevice {
@@ -130,7 +130,7 @@ async fn probe_api(ip: &str, mode: TlsMode) -> Option<(String, String)> {
     let resp = match client.get(&url).send().await {
         Ok(r) => r,
         Err(e) => {
-            crate::api::log_request_error(
+            super::api::log_request_error(
                 &format!("probe {ip} [{}]", mode.description()),
                 &e,
             );

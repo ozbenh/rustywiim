@@ -8,8 +8,8 @@ use glib::clone;
 use gtk::gio;
 use gtk::{Align, Box as GtkBox, Button, Label, Orientation, Scale};
 
-use crate::icons;
-use crate::scroll_fade_label::ScrollFadeLabel;
+use super::icons;
+use super::scroll_fade_label::ScrollFadeLabel;
 
 // ── Widget bundles ────────────────────────────────────────────────────────────
 // Grouping related widgets + associated state into structs keeps signal-handler

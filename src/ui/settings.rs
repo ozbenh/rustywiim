@@ -10,7 +10,7 @@ use adw::prelude::*;
 use gtk::Orientation;
 
 use crate::config::{Config, ThemeMode};
-use crate::device_state::DeviceState;
+use crate::device::state::DeviceState;
 
 // ── Public handle ─────────────────────────────────────────────────────────────
 

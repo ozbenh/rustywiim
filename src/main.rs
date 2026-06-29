@@ -2,13 +2,10 @@ use adw::prelude::*;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-mod api;
-mod capabilities;
 mod config;
-mod device_state;
-mod discovery;
-mod icons;
-mod scroll_fade_label;
+mod device;
+
+
 mod ui;
 
 fn main() -> glib::ExitCode {
@@ -37,13 +34,13 @@ fn main() -> glib::ExitCode {
         if let Ok(Some(list)) = opts.lookup::<String>("debug") {
             for token in list.split(',').map(str::trim) {
                 match token {
-                    "api"    => { api::DEBUG.store(true, Ordering::Relaxed); }
-                    "state"  => { device_state::DEBUG_STATE.store(true, Ordering::Relaxed); }
-                    "device" => { capabilities::DEBUG_DEVICE.store(true, Ordering::Relaxed); }
+                    "api"    => { device::api::DEBUG.store(true, Ordering::Relaxed); }
+                    "state"  => { device::state::DEBUG_STATE.store(true, Ordering::Relaxed); }
+                    "device" => { device::capabilities::DEBUG_DEVICE.store(true, Ordering::Relaxed); }
                     "all"    => {
-                        api::DEBUG.store(true, Ordering::Relaxed);
-                        device_state::DEBUG_STATE.store(true, Ordering::Relaxed);
-                        capabilities::DEBUG_DEVICE.store(true, Ordering::Relaxed);
+                        device::api::DEBUG.store(true, Ordering::Relaxed);
+                        device::state::DEBUG_STATE.store(true, Ordering::Relaxed);
+                        device::capabilities::DEBUG_DEVICE.store(true, Ordering::Relaxed);
                     }
                     other => {
                         eprintln!("rustywiim: unknown debug token {:?} (valid: api, state, device, all)", other);
@@ -53,12 +50,12 @@ fn main() -> glib::ExitCode {
         }
         if let Ok(Some(mode)) = opts.lookup::<String>("tls") {
             let tls = match mode.as_str() {
-                "http"      => api::TlsMode::Http,
-                "any"       => api::TlsMode::HttpsAny,
-                "audio-pro" => api::TlsMode::HttpsAudioPro,
-                _           => api::TlsMode::HttpsWiiM,
+                "http"      => device::api::TlsMode::Http,
+                "any"       => device::api::TlsMode::HttpsAny,
+                "audio-pro" => device::api::TlsMode::HttpsAudioPro,
+                _           => device::api::TlsMode::HttpsWiiM,
             };
-            api::TLS_MODE.store(tls as usize, Ordering::Relaxed);
+            device::api::TLS_MODE.store(tls as usize, Ordering::Relaxed);
         }
         -1 // continue normal startup
     });

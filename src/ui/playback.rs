@@ -4,7 +4,7 @@ use std::rc::Rc;
 
 use adw::prelude::*;
 
-use crate::{api, capabilities, config::{Config, DeviceConfig}};
+use crate::{device::{api, capabilities}, config::{Config, DeviceConfig}};
 
 
 use super::*;
@@ -427,7 +427,7 @@ impl DeviceWindowInner {
     // ── Presets ───────────────────────────────────────────────────────────────
 
     pub(super) fn on_presets_changed(&self) {
-        use crate::api::PresetKind;
+        use crate::device::api::PresetKind;
         let presets = self.ds.presets();
 
         // Clear all slots first.

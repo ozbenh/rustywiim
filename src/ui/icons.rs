@@ -13,16 +13,16 @@ use std::collections::HashMap;
 // ── Embedded assets ───────────────────────────────────────────────────────────
 
 /// "Box with outward arrow" icon, used as the output-set fallback.
-static AUDIO_OUTPUT_SVG: &[u8] = include_bytes!("icons/audio-output.svg");
+static AUDIO_OUTPUT_SVG: &[u8] = include_bytes!("../icons/audio-output.svg");
 
 /// RCA connector icon
-static RCA_INOUT_SVG: &[u8] = include_bytes!("icons/rca-inout.svg");
+static RCA_INOUT_SVG: &[u8] = include_bytes!("../icons/rca-inout.svg");
 
 /// Optical connector icon
-static OPTICAL_INOUT_SVG: &[u8] = include_bytes!("icons/optical-inout.svg");
+static OPTICAL_INOUT_SVG: &[u8] = include_bytes!("../icons/optical-inout.svg");
 
 /// Coax connector icon
-static COAX_INOUT_SVG: &[u8] = include_bytes!("icons/coax-inout.svg");
+static COAX_INOUT_SVG: &[u8] = include_bytes!("../icons/coax-inout.svg");
 
 
 // ── Internal loaders ──────────────────────────────────────────────────────────

@@ -24,10 +24,10 @@ fn debug_info(msg: &str) {
 
 /// Self-signed CA certificate used by WiiM/LinkPlay devices (issued by www.linkplay.com).
 /// Used to verify the server certificate in `HttpsWiiM` mode.
-static WIIM_CA_CERT: &[u8] = include_bytes!("certs/wiim_ca.pem");
+static WIIM_CA_CERT: &[u8] = include_bytes!("../certs/wiim_ca.pem");
 
 /// Private key for Audio Pro mTLS client authentication.
-static AUDIO_PRO_KEY: &[u8] = include_bytes!("certs/audio_pro_key.pem");
+static AUDIO_PRO_KEY: &[u8] = include_bytes!("../certs/audio_pro_key.pem");
 
 /// Active connection protocol override.  `0` = `Auto` (default): use the per-device
 /// mode stored in config, falling back to `HttpsWiiM`.
@@ -438,7 +438,7 @@ fn soundcard_display_name(canon: &'static str, card_name: &str, dev_name: &str) 
     if card_name == "AMLAUGESOUND" && !dev_name.is_empty() {
         return dev_name.to_string();
     }
-    crate::capabilities::output_display_name(canon).to_string()
+    super::capabilities::output_display_name(canon).to_string()
 }
 
 // ── PlayerStatus fixups ───────────────────────────────────────────────────────
@@ -646,7 +646,7 @@ impl WiimClient {
         let mut seen = std::collections::HashSet::new();
         let outputs = arr.iter()
             .filter_map(|v| {
-                let canon = crate::capabilities::canon_new_output_name(
+                let canon = super::capabilities::canon_new_output_name(
                     v["mode"].as_str()?
                 );
                 if canon == "unknown" || !seen.insert(canon) { return None; }

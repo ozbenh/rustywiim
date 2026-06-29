@@ -36,11 +36,11 @@ fn dbg(msg: &str) {
     }
 }
 
-use crate::api::{
+use super::api::{
     AudioInputEntry, AudioOutputStatus, DeviceInfo, MetaData, OutputEntry, PlayerStatus,
     PresetEntry, TlsMode, WiimClient, TLS_MODE,
 };
-use crate::capabilities::{DeviceCapabilities, detect_outputs, output_display_name};
+use super::capabilities::{DeviceCapabilities, detect_outputs, output_display_name};
 
 // ── Connection state ──────────────────────────────────────────────────────────
 

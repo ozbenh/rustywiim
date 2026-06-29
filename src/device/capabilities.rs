@@ -7,7 +7,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::api::DeviceInfo;
+use super::api::DeviceInfo;
 
 pub static DEBUG_DEVICE: AtomicBool = AtomicBool::new(false);
 

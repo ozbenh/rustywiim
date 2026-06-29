@@ -7,9 +7,9 @@ use adw::prelude::*;
 use glib::clone;
 use gtk::{Button, Orientation};
 
-use crate::api::TlsMode;
-use crate::device_state::DeviceState;
-use crate::discovery;
+use crate::device::api::TlsMode;
+use crate::device::state::DeviceState;
+use crate::device::discovery;
 
 pub(super) fn show_manual_ip_dialog(
     window:     &adw::ApplicationWindow,
