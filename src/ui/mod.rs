@@ -2,9 +2,10 @@
 
 mod dialogs;
 mod playback;
+mod settings;
 mod widgets;
 
-use dialogs::{build_device_popover, show_settings_dialog};
+use dialogs::build_device_popover;
 use playback::decode_loop_mode;
 use widgets::*;
 
@@ -641,10 +642,18 @@ impl DeviceWindow {
         window.add_action(&quit_action);
         app.set_accels_for_action("win.quit", &["<Ctrl>Q"]);
 
+        let settings_win: Rc<RefCell<Option<settings::SettingsWindow>>> =
+            Rc::new(RefCell::new(None));
         let settings_action = gio::SimpleAction::new("settings", None);
-        settings_action.connect_activate(clone!(@strong window => move |_, _| {
-            show_settings_dialog(&window);
-        }));
+        settings_action.connect_activate(clone!(@strong window, @strong ds, @strong settings_win
+            => move |_, _| {
+                let mut sw = settings_win.borrow_mut();
+                if sw.is_none() {
+                    *sw = Some(settings::SettingsWindow::new(&ds, &window));
+                }
+                sw.as_ref().unwrap().present();
+            }
+        ));
         window.add_action(&settings_action);
 
         let about_action = gio::SimpleAction::new("about", None);

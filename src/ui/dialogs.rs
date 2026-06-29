@@ -8,7 +8,6 @@ use glib::clone;
 use gtk::{Button, Orientation};
 
 use crate::api::TlsMode;
-use crate::config::{Config, ThemeMode};
 use crate::device_state::DeviceState;
 use crate::discovery;
 
@@ -118,43 +117,3 @@ pub(super) fn build_device_popover(
     popover
 }
 
-pub(super) fn show_settings_dialog(window: &adw::ApplicationWindow) {
-    let cfg = Config::load();
-
-    let theme_list = gtk::StringList::new(&["System", "System Light", "System Dark", "RustyWiiM"]);
-    let theme_row = adw::ComboRow::builder()
-        .title("Theme")
-        .subtitle("Application colour scheme")
-        .model(&theme_list)
-        .build();
-    theme_row.set_selected(match cfg.theme {
-        ThemeMode::System      => 0,
-        ThemeMode::SystemLight => 1,
-        ThemeMode::SystemDark  => 2,
-        ThemeMode::RustyWiiM  => 3,
-    });
-    theme_row.connect_selected_notify(move |row| {
-        let theme = match row.selected() {
-            0 => ThemeMode::System,
-            1 => ThemeMode::SystemLight,
-            2 => ThemeMode::SystemDark,
-            _ => ThemeMode::RustyWiiM,
-        };
-        super::apply_theme(theme);
-        let mut cfg = Config::load();
-        cfg.theme = theme;
-        cfg.save();
-    });
-
-    let group = adw::PreferencesGroup::builder()
-        .title("Appearance")
-        .build();
-    group.add(&theme_row);
-
-    let page = adw::PreferencesPage::new();
-    page.add(&group);
-
-    let dialog = adw::PreferencesDialog::new();
-    dialog.add(&page);
-    dialog.present(Some(window));
-}
