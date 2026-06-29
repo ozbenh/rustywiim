@@ -52,7 +52,16 @@ pub(crate) fn wire_window_actions(window: &adw::ApplicationWindow, ds: Option<De
     settings_action.connect_activate(clone!(@strong window, @strong settings_win => move |_, _| {
         let mut sw = settings_win.borrow_mut();
         if sw.is_none() {
-            *sw = Some(settings::SettingsWindow::new(ds.as_ref(), &window));
+            let s = settings::SettingsWindow::new(ds.clone(), &window);
+            // Clear the cached reference when the window is closed so the next
+            // open creates a fresh window rather than re-presenting a destroyed one.
+            let weak = Rc::downgrade(&settings_win);
+            s.connect_closed(move || {
+                if let Some(sw) = weak.upgrade() {
+                    *sw.borrow_mut() = None;
+                }
+            });
+            *sw = Some(s);
         }
         sw.as_ref().unwrap().present();
     }));

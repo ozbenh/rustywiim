@@ -2,7 +2,11 @@
 //
 // Left sidebar: section-titled navigation list (gtk::ListBox .navigation-sidebar).
 // Right panel:  gtk::Stack of adw::PreferencesPage widgets, one per topic.
-// Access to DeviceState is threaded through for pages that need live device data.
+//
+// `ds` carries the associated DeviceState when opened from a device window.
+// When `ds` is None the window was opened from the device list and shows only
+// application-wide settings.  Device-specific pages (added in the future) must
+// check `ds.is_some()` before rendering.
 
 #![allow(deprecated)] // glib clone! @strong syntax
 
@@ -17,10 +21,14 @@ use crate::device::state::DeviceState;
 
 pub(crate) struct SettingsWindow {
     window: adw::Window,
+    /// Non-None when opened from a device window; None from the device list.
+    /// Stored for future device-specific settings pages.
+    #[allow(dead_code)]
+    pub(crate) ds: Option<DeviceState>,
 }
 
 impl SettingsWindow {
-    pub(crate) fn new(ds: Option<&DeviceState>, parent: &adw::ApplicationWindow) -> Self {
+    pub(crate) fn new(ds: Option<DeviceState>, parent: &adw::ApplicationWindow) -> Self {
         // ── Navigation sidebar ─────────────────────────────────────────────────
         let sidebar_box = gtk::Box::builder()
             .orientation(Orientation::Vertical)
@@ -96,7 +104,7 @@ impl SettingsWindow {
         toolbar_view.add_top_bar(&header);
         toolbar_view.set_content(Some(&paned));
 
-        let initial_title = match ds.and_then(|d| d.device_info()) {
+        let initial_title = match ds.as_ref().and_then(|d| d.device_info()) {
             Some(i) => format!("Settings ({})", i.device_name),
             None    => "Settings".to_string(),
         };
@@ -109,8 +117,8 @@ impl SettingsWindow {
             .build();
         window.set_content(Some(&toolbar_view));
 
-        if let Some(ds) = ds {
-            ds.connect_device_changed(glib::clone!(@weak window => move |ds| {
+        if let Some(ref d) = ds {
+            d.connect_device_changed(glib::clone!(@weak window => move |ds| {
                 let title = match ds.device_info() {
                     Some(i) => format!("Settings ({})", i.device_name),
                     None    => "Settings".to_string(),
@@ -119,11 +127,18 @@ impl SettingsWindow {
             }));
         }
 
-        Self { window }
+        Self { window, ds }
     }
 
     pub(crate) fn present(&self) {
         self.window.present();
+    }
+
+    /// Call `f` once when the settings window is destroyed (e.g. user clicks X).
+    /// Use this to clear any cached reference to this window so a fresh one is
+    /// created on the next open.
+    pub(crate) fn connect_closed<F: Fn() + 'static>(&self, f: F) {
+        self.window.connect_destroy(move |_| f());
     }
 }
 
