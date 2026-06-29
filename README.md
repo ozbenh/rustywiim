@@ -33,13 +33,10 @@ There is no installer or package yet and you can of course build a release build
 ## Options ##
 For now just this one:
 
-| Option              | Description                                                                |
-|:--------------------|:---------------------------------------------------------------------------|
-| `--debug=<options>` | Comma-separated list of debug/tracing options to enable, supported values: |
-|                     |  - `api     ` : Dump all API calls                                         |
-|                     |  - `state   ` : Debug state change messages                                |
-|                     |  - `device  ` : Debug device details and capabilities                      |
-|                     |  - `all     ` : All of the above                                           |
+| Option              | Description                                                                                                                                                              |
+|:--------------------|:-------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `--debug=<options>` | Comma-separated list of debug/tracing options: `api` (dump API calls), `state` (state change messages), `device` (device capabilities detection), `all` (all of the above) |
+| `--tls=<mode>`      | Override TLS mode: `wiim` (default), `audio-pro`, `any`, `http`                                                                                                         |
 
 ## Events ##
 
