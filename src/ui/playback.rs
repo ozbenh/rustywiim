@@ -371,8 +371,7 @@ impl DeviceWindowInner {
         }
 
         if let Some(m) = self.ds.metadata() {
-            let title = if is_unknown(&m.title) { String::new() } else { m.title.clone() };
-            self.pw.title.set_text(&title);
+            self.pw.title.set_text(if is_unknown(&m.title) { "" } else { &m.title });
             self.pw.artist.set_text(if is_unknown(&m.artist) { "" } else { &m.artist });
             self.pw.album.set_text(if is_unknown(&m.album)  { "" } else { &m.album });
 
@@ -588,14 +587,13 @@ impl DeviceWindowInner {
                 &format_status(&st.status, &st.mode, &st.vendor));
         }
         if let Some(m) = self.ds.metadata() {
-            let title = if is_unknown(&m.title) { String::new() } else { m.title.clone() };
-            self.mini.title_label.set_text(&title);
-            let artist = if is_unknown(&m.artist) { String::new() } else { m.artist.clone() };
-            let album  = if is_unknown(&m.album)  { String::new() } else { m.album.clone() };
+            self.mini.title_label.set_text(if is_unknown(&m.title) { "" } else { &m.title });
+            let artist = if is_unknown(&m.artist) { "" } else { m.artist.as_str() };
+            let album  = if is_unknown(&m.album)  { "" } else { m.album.as_str() };
             let artist_line = match (artist.is_empty(), album.is_empty()) {
                 (true,  true)  => String::new(),
-                (true,  false) => album,
-                (false, true)  => artist,
+                (true,  false) => album.to_owned(),
+                (false, true)  => artist.to_owned(),
                 (false, false) => format!("{artist} \u{00b7} {album}"),
             };
             self.mini.artist_label.set_text(&artist_line);
