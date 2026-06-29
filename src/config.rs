@@ -38,6 +38,21 @@ pub struct DeviceConfig {
     pub panel_visible: bool,
     #[serde(default)]
     pub mini_mode: bool,
+    /// Keep in the device list even when not seen on the network.
+    /// `None` means the device predates the pinning feature (legacy entry);
+    /// it is treated as a ghost candidate until the user explicitly pins or
+    /// unpins it, which writes `Some(true)` / `Some(false)` and ends legacy treatment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pinned: Option<bool>,
+    /// Whether the device's main window was open when the app last exited.
+    #[serde(default)]
+    pub window_open: bool,
+    /// Last known IP — used to reconnect pinned ghosts on startup.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_ip: Option<String>,
+    /// Last known friendly name — displayed while connecting / offline.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 impl Default for DeviceConfig {
@@ -49,6 +64,10 @@ impl Default for DeviceConfig {
             paned_position:  0,
             panel_visible:   true,
             mini_mode:       false,
+            pinned:          None,
+            window_open:     false,
+            last_ip:         None,
+            name:            None,
         }
     }
 }
@@ -56,13 +75,14 @@ impl Default for DeviceConfig {
 /// Top-level application config.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Config {
-    /// IP of the last connected device (for reconnect on startup).
-    #[serde(default)]
+    /// IP of the last connected device.  Legacy field: read from old configs
+    /// but not written back once cleared.  Per-device `DeviceConfig::last_ip`
+    /// is the canonical source of truth going forward.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub last_ip: String,
-    /// UUID of the last connected device.  Used to look up the right
-    /// DeviceConfig for initial window sizing before the device has reported
-    /// its UUID to us.
-    #[serde(default)]
+    /// UUID of the last connected device.  Legacy field: read from old configs
+    /// but not written back once cleared.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub last_uuid: String,
     /// Per-device window/panel state, keyed on device UUID.
     #[serde(default)]
@@ -70,6 +90,51 @@ pub struct Config {
     /// Application-wide color scheme.
     #[serde(default)]
     pub theme: ThemeMode,
+    /// Whether the device-list window was open when the app last exited.
+    #[serde(default)]
+    pub discovery_open: bool,
+    /// Last known size of the device-list window.
+    #[serde(default)]
+    pub discovery_window_width: i32,
+    #[serde(default)]
+    pub discovery_window_height: i32,
+}
+
+/// Remove trailing commas before `}` or `]` so VS Code / hand-edited configs
+/// don't blow up the parser.  Handles string literals correctly (ignores
+/// commas inside quoted values).
+fn strip_trailing_commas(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut in_string = false;
+    let mut escapes: u32 = 0;
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if in_string {
+            out.push(b);
+            if b == b'\\' { escapes += 1; } else {
+                if b == b'"' && escapes % 2 == 0 { in_string = false; }
+                escapes = 0;
+            }
+        } else if b == b'"' {
+            in_string = true;
+            out.push(b);
+        } else if b == b',' {
+            // Peek past whitespace; if next token is } or ] this is a trailing comma.
+            let mut j = i + 1;
+            while j < bytes.len() && matches!(bytes[j], b' ' | b'\t' | b'\n' | b'\r') { j += 1; }
+            if j < bytes.len() && matches!(bytes[j], b'}' | b']') {
+                // skip the comma
+            } else {
+                out.push(b);
+            }
+        } else {
+            out.push(b);
+        }
+        i += 1;
+    }
+    String::from_utf8(out).unwrap_or_else(|_| s.to_owned())
 }
 
 fn config_path() -> PathBuf {
@@ -82,10 +147,26 @@ fn config_path() -> PathBuf {
 
 impl Config {
     pub fn load() -> Self {
-        fs::read_to_string(config_path())
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default()
+        let path = config_path();
+        let text = match fs::read_to_string(&path) {
+            Ok(s) => s,
+            Err(e) => {
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    eprintln!("[config] failed to read {}: {e}", path.display());
+                }
+                return Self::default();
+            }
+        };
+        let cleaned = strip_trailing_commas(&text);
+        match serde_json::from_str::<Self>(&cleaned) {
+            Ok(cfg) => cfg,
+            Err(e) => {
+                eprintln!("[config] failed to parse {}: {e}", path.display());
+                eprintln!("[config] file contents:\n{text}");
+                eprintln!("[config] using defaults (discovery window will open)");
+                Self::default()
+            }
+        }
     }
 
     pub fn save(&self) {
@@ -99,8 +180,34 @@ impl Config {
         self.devices.get(uuid).cloned().unwrap_or_default()
     }
 
-    /// Upsert the per-device config for `uuid`.
-    pub fn save_device(&mut self, uuid: impl Into<String>, dev_cfg: DeviceConfig) {
-        self.devices.insert(uuid.into(), dev_cfg);
+    /// Return a mutable reference to the per-device config for `uuid`,
+    /// inserting a default entry if none exists yet.
+    pub fn device_mut(&mut self, uuid: &str) -> &mut DeviceConfig {
+        self.devices.entry(uuid.to_string()).or_default()
+    }
+
+    /// Migrate legacy `last_ip` / `last_uuid` fields into the matching per-device
+    /// entry and then clear them.  Should be called once at startup before any
+    /// component reads `DeviceConfig::last_ip`.  Returns `true` if anything changed.
+    pub fn migrate(&mut self) -> bool {
+        if cfg!(debug_assertions) {
+            // Just to avoid the name clash with the Rust `cfg!` macro below.
+        }
+        if self.last_ip.is_empty() && self.last_uuid.is_empty() {
+            return false;
+        }
+        let uuid = std::mem::take(&mut self.last_uuid);
+        let ip   = std::mem::take(&mut self.last_ip);
+        if !uuid.is_empty() && !ip.is_empty() && self.devices.contains_key(&uuid) {
+            let dev = self.device_mut(&uuid);
+            if dev.last_ip.is_none() {
+                dev.last_ip = Some(ip);
+            }
+            // Pin the device so it is visible in the discovery window after migration.
+            if dev.pinned.is_none() {
+                dev.pinned = Some(true);
+            }
+        }
+        true
     }
 }

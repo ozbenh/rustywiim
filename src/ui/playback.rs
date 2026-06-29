@@ -4,7 +4,7 @@ use std::rc::Rc;
 
 use adw::prelude::*;
 
-use crate::{device::{api, capabilities}, config::{Config, DeviceConfig}};
+use crate::{device::{api, capabilities}, config::Config};
 
 
 use super::*;
@@ -495,16 +495,15 @@ impl DeviceWindowInner {
         // time this is called from apply_device_info, device_info() already points
         // to the new device.
         if !prev_uuid.is_empty() {
-            let dev_cfg = DeviceConfig {
-                window_maximized: self.window.is_maximized(),
-                window_width:     if self.window.is_maximized() { 0 } else { self.window.width() },
-                window_height:    if self.window.is_maximized() { 0 } else { self.window.height() },
-                panel_visible:    self.sidebar_btn.is_active(),
-                paned_position:   *self.saved_panel_width.borrow(),
-                mini_mode:        *self.mini_mode.borrow(),
-            };
-            let mut cfg = Config::load();
-            cfg.save_device(&prev_uuid, dev_cfg);
+            let maximized = self.window.is_maximized();
+            let mut cfg  = Config::load();
+            let dev      = cfg.device_mut(&prev_uuid);
+            dev.window_maximized = maximized;
+            dev.window_width     = if maximized { 0 } else { self.window.width() };
+            dev.window_height    = if maximized { 0 } else { self.window.height() };
+            dev.panel_visible    = self.sidebar_btn.is_active();
+            dev.paned_position   = *self.saved_panel_width.borrow();
+            dev.mini_mode        = *self.mini_mode.borrow();
             cfg.save();
         }
 
@@ -555,17 +554,16 @@ impl DeviceWindowInner {
         } else {
             (self.window.width(), self.window.height())
         };
-        let dev_cfg = DeviceConfig {
-            window_maximized: maximized,
-            window_width:     if maximized { 0 } else { w },
-            window_height:    if maximized { 0 } else { h },
-            panel_visible:    self.sidebar_btn.is_active(),
-            paned_position:   *self.saved_panel_width.borrow(),
-            mini_mode:        *self.mini_mode.borrow(),
-        };
         let mut cfg = Config::load();
         cfg.last_uuid = uuid.clone();
-        cfg.save_device(uuid, dev_cfg);
+        // Update only the window-related fields; preserve pinned / window_open / etc.
+        let dev = cfg.device_mut(&uuid);
+        dev.window_maximized = maximized;
+        dev.window_width     = if maximized { 0 } else { w };
+        dev.window_height    = if maximized { 0 } else { h };
+        dev.panel_visible    = self.sidebar_btn.is_active();
+        dev.paned_position   = *self.saved_panel_width.borrow();
+        dev.mini_mode        = *self.mini_mode.borrow();
         cfg.save();
     }
 

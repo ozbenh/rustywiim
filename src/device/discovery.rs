@@ -197,6 +197,13 @@ impl DiscoveryService {
         devs
     }
 
+    /// Probe a single IP across all TLS modes.  Returns a `DiscoveredDevice`
+    /// if the device responds and is identified as a WiiM/LinkPlay device.
+    /// Intended for manually-added devices where there is no SSDP location URL.
+    pub async fn probe_device(ip: &str) -> Option<DiscoveredDevice> {
+        identify_device(ip, "").await
+    }
+
     pub fn connect_discovery_updated<F: Fn(&Self) + 'static>(
         &self, f: F,
     ) -> glib::SignalHandlerId {

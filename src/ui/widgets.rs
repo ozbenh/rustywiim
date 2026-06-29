@@ -108,8 +108,12 @@ pub(super) fn build_header(init_panel_visible: bool) -> (adw::HeaderBar, gtk::To
     header.pack_start(&dev_btn);
 
     let app_menu = gio::Menu::new();
+    app_menu.append(Some("Devices…"), Some("win.devices"));
     app_menu.append(Some("Settings…"), Some("win.settings"));
     app_menu.append(Some("About RustyWiiM"), Some("win.about"));
+    let quit_section = gio::Menu::new();
+    quit_section.append(Some("Quit"), Some("app.quit"));
+    app_menu.append_section(None, &quit_section);
     let app_menu_btn = gtk::MenuButton::builder()
         .icon_name("open-menu-symbolic")
         .menu_model(&app_menu)

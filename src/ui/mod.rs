@@ -1,6 +1,7 @@
 #![allow(deprecated)] // glib clone! old-style @strong syntax
 
 mod dialogs;
+pub mod devlist;
 mod icons;
 mod scroll_fade_label;
 mod playback;
@@ -21,9 +22,19 @@ use gtk::gio;
 use gtk::{Align, Box as GtkBox, CssProvider, Label, Orientation, Scale};
 
 use crate::device::api::TlsMode;
-use crate::config::{Config, ThemeMode};
+use crate::config::Config;
+use crate::config::ThemeMode;
 use crate::device::state::{ConnectionState, DeviceState};
 use crate::device::discovery::DiscoveryService;
+
+// ── DeviceSpec ────────────────────────────────────────────────────────────────
+
+/// Describes a specific device to connect to when creating a new device window.
+pub struct DeviceSpec {
+    pub ip:       String,
+    pub uuid:     String,
+    pub tls_mode: TlsMode,
+}
 
 // ── CSS ───────────────────────────────────────────────────────────────────────
 
@@ -80,8 +91,9 @@ pub(crate) fn apply_theme(theme: ThemeMode) {
 // capturing half a dozen independent `Rc<RefCell<...>>` values.
 
 struct DeviceWindowInner {
-    ds:             DeviceState,
-    discovery:      DiscoveryService,
+    ds:               DeviceState,
+    discovery:        DiscoveryService,
+    show_devices_fn:  Rc<dyn Fn()>,
     sw:             SourceWidgets,
     ow:             OutputWidgets,
     pw:             PlaybackWidgets,
@@ -118,33 +130,72 @@ struct DeviceWindowInner {
 // ── DeviceWindow ──────────────────────────────────────────────────────────────
 
 /// One device window.  Owns the GTK window and all content widgets.
-/// Future work: keep a list of these in a top-level app struct for multi-device support.
+#[derive(Clone)]
 pub struct DeviceWindow {
     pub window: adw::ApplicationWindow,
     inner:      Rc<DeviceWindowInner>,
 }
 
 impl DeviceWindow {
+    #[allow(dead_code)]
     pub fn ds(&self) -> &DeviceState { &self.inner.ds }
 
-    /// Build and wire a complete device window.  The tokio `rt` is shared across
-    /// all windows so there is only one thread-pool for the whole process.
-    pub fn new(app: &adw::Application, rt: Arc<tokio::runtime::Runtime>, discovery: DiscoveryService) -> Self {
-        let cfg         = Config::load();
+    /// UUID of the currently connected device, or `None` if not yet connected
+    /// or the UUID is empty.
+    pub fn uuid(&self) -> Option<String> {
+        self.inner.ds.device_info()
+            .map(|i| i.uuid)
+            .filter(|u| !u.is_empty())
+    }
+
+    /// Build a device window that waits for SSDP discovery to auto-connect.
+    #[allow(dead_code)]
+    pub fn new(
+        app:             &adw::Application,
+        rt:              Arc<tokio::runtime::Runtime>,
+        discovery:       DiscoveryService,
+        show_devices_fn: Rc<dyn Fn()>,
+    ) -> Self {
+        Self::new_inner(app, rt, discovery, show_devices_fn, None)
+    }
+
+    /// Build a device window connected to a specific device.
+    pub fn new_for_device(
+        app:             &adw::Application,
+        rt:              Arc<tokio::runtime::Runtime>,
+        discovery:       DiscoveryService,
+        show_devices_fn: Rc<dyn Fn()>,
+        spec:            DeviceSpec,
+    ) -> Self {
+        Self::new_inner(app, rt, discovery, show_devices_fn, Some(spec))
+    }
+
+    fn new_inner(
+        app:             &adw::Application,
+        rt:              Arc<tokio::runtime::Runtime>,
+        discovery:       DiscoveryService,
+        show_devices_fn: Rc<dyn Fn()>,
+        device_spec:     Option<DeviceSpec>,
+    ) -> Self {
+        let cfg = Config::load();
         init_css(cfg.theme);
 
         let icons = Rc::new(icons::IconSet::load());
-        let init_dev_cfg = cfg.device(&cfg.last_uuid);
+
+        // Pick the device UUID to use for loading per-device window config.
+        // The no-spec path no longer falls back to last_uuid (phased out).
+        let cfg_uuid: String = device_spec.as_ref()
+            .map(|s| s.uuid.clone())
+            .filter(|u| !u.is_empty())
+            .unwrap_or_default();
+
+        let init_dev_cfg = cfg.device(&cfg_uuid);
 
         let ds = DeviceState::new(rt);
-        if !cfg.last_ip.is_empty() {
-            // Pass the last known SSID so fetch_device_info can abort if the IP
-            // was reassigned to a different device.  Discovery will then reconnect
-            // to the right device by SSID.  Pass None if no SSID is on record
-            // (first run or old config) so we connect unconditionally.
-            let expected = if cfg.last_uuid.is_empty() { None } else { Some(cfg.last_uuid.as_str()) };
-            ds.set_device(&cfg.last_ip, TlsMode::HttpsWiiM, expected);
+        if let Some(ref spec) = device_spec {
+            ds.set_device(&spec.ip, spec.tls_mode, None);
         }
+        // No-spec path: discovery auto-connect (wire_discovery below) handles it.
         ds.start_polling();
 
         let (header, sidebar_btn, dev_btn, mini_btn) = build_header(init_dev_cfg.panel_visible);
@@ -218,6 +269,7 @@ impl DeviceWindow {
         let inner = Rc::new(DeviceWindowInner {
             ds: ds.clone(),
             discovery: discovery.clone(),
+            show_devices_fn,
             sw,
             ow,
             pw,
@@ -235,7 +287,7 @@ impl DeviceWindow {
             panel_collapsing,
             settle_timer,
             config_save_timer,
-            applied_window_key: RefCell::new(cfg.last_uuid.clone()),
+            applied_window_key: RefCell::new(cfg_uuid.clone()),
             mini,
             mini_mode:         RefCell::new(false),
             mini_toggling:     RefCell::new(false),
@@ -399,12 +451,15 @@ impl DeviceWindow {
 
         // ── SSDP discovery ────────────────────────────────────────────────────────
         {
-            let saved_ip = Rc::new(RefCell::new(cfg.last_ip.clone()));
+            let saved_ip = Rc::new(RefCell::new(
+                cfg.device(&cfg_uuid).last_ip.clone().unwrap_or_default()
+            ));
             wire_discovery(
                 &inner.discovery.clone(),
                 &ds, &dev_btn, &window,
                 &saved_ip, &inner,
-                cfg.last_uuid.clone(),
+                cfg_uuid.clone(),
+                device_spec.is_none(),
             );
         }
 
@@ -574,14 +629,14 @@ impl DeviceWindow {
             }
         });
 
-        // Ctrl+Q while the mini window is focused → quit the app.
+        // Ctrl+Q while the mini window is focused → quit the whole app.
         {
             let key_ctrl = gtk::EventControllerKey::new();
             key_ctrl.connect_key_pressed(clone!(@strong window => move |_, key, _, mods| {
                 if key == gtk::gdk::Key::q
                     && mods.contains(gtk::gdk::ModifierType::CONTROL_MASK)
                 {
-                    window.close();
+                    if let Some(a) = window.application() { a.quit(); }
                     return glib::Propagation::Stop;
                 }
                 glib::Propagation::Proceed
@@ -590,10 +645,16 @@ impl DeviceWindow {
         }
 
         // ── Window actions ────────────────────────────────────────────────────────
-        let quit_action = gio::SimpleAction::new("quit", None);
-        quit_action.connect_activate(clone!(@strong window => move |_, _| { window.close(); }));
-        window.add_action(&quit_action);
-        app.set_accels_for_action("win.quit", &["<Ctrl>Q"]);
+        // win.close → close this window (Ctrl-W set app-wide in main.rs)
+        let close_action = gio::SimpleAction::new("close", None);
+        close_action.connect_activate(clone!(@strong window => move |_, _| { window.close(); }));
+        window.add_action(&close_action);
+
+        let devices_action = gio::SimpleAction::new("devices", None);
+        devices_action.connect_activate(clone!(@strong inner => move |_, _| {
+            (inner.show_devices_fn)();
+        }));
+        window.add_action(&devices_action);
 
         let settings_win: Rc<RefCell<Option<settings::SettingsWindow>>> =
             Rc::new(RefCell::new(None));
@@ -631,6 +692,16 @@ impl DeviceWindow {
                 if let Some(id) = i.settle_timer.borrow_mut().take() { id.remove(); }
                 if let Some(id) = i.config_save_timer.borrow_mut().take() { id.remove(); }
                 i.save_config_now();
+                // Mark window as closed so it is not reopened on next launch.
+                let uuid = i.ds.device_info()
+                    .map(|di| di.uuid)
+                    .filter(|u| !u.is_empty())
+                    .unwrap_or_else(|| i.applied_window_key.borrow().clone());
+                if !uuid.is_empty() {
+                    let mut cfg = Config::load();
+                    cfg.device_mut(&uuid).window_open = false;
+                    cfg.save();
+                }
                 i.mini_win.destroy();
                 glib::Propagation::Proceed
             }
@@ -643,6 +714,7 @@ impl DeviceWindow {
         Self { window, inner }
     }
 
+    #[allow(dead_code)]
     pub fn present(&self) {
         if *self.inner.mini_mode.borrow() {
             self.inner.mini_win.present();
@@ -658,13 +730,14 @@ impl DeviceWindow {
 /// label to reflect the best-match device (UUID preferred over IP), and
 /// auto-connects if the DeviceState is still Disconnected.
 fn wire_discovery(
-    discovery:  &DiscoveryService,
-    ds:         &DeviceState,
-    dev_btn:    &gtk::MenuButton,
-    window:     &adw::ApplicationWindow,
-    saved_ip:   &Rc<RefCell<String>>,
-    inner:      &Rc<DeviceWindowInner>,
-    last_uuid:  String,
+    discovery:    &DiscoveryService,
+    ds:           &DeviceState,
+    dev_btn:      &gtk::MenuButton,
+    window:       &adw::ApplicationWindow,
+    saved_ip:     &Rc<RefCell<String>>,
+    inner:        &Rc<DeviceWindowInner>,
+    last_uuid:    String,
+    auto_connect: bool,
 ) {
     discovery.connect_discovery_updated(clone!(
         @strong ds, @strong dev_btn, @strong window, @strong saved_ip, @strong inner
@@ -698,9 +771,9 @@ fn wire_discovery(
                     None => {}
                 }
 
-                // Auto-connect only while still Disconnected so user-initiated
-                // connections are never overridden.
-                if ds.connection_state() == ConnectionState::Disconnected {
+                // Auto-connect only while still Disconnected and when no specific
+                // device was specified at window creation.
+                if auto_connect && ds.connection_state() == ConnectionState::Disconnected {
                     let target = best.or_else(|| {
                         if saved.is_empty() { devs.first() } else { None }
                     });
@@ -720,9 +793,9 @@ fn wire_discovery(
 pub(super) fn select_device(ds: &DeviceState, ip: &str, uuid: &str, tls: TlsMode) {
     {
         let mut cfg = Config::load();
-        cfg.last_ip = ip.to_string();
         if !uuid.is_empty() {
-            cfg.last_uuid = uuid.to_string();
+            // Store IP per-device; global last_ip and last_uuid are phased out.
+            cfg.device_mut(uuid).last_ip = Some(ip.to_string());
         }
         cfg.save();
     }
