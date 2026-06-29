@@ -7,6 +7,7 @@
 #![allow(deprecated)] // glib clone! @strong syntax
 
 use adw::prelude::*;
+use gtk::glib;
 use gtk::Orientation;
 
 use crate::config::{Config, ThemeMode};
@@ -95,14 +96,26 @@ impl SettingsWindow {
         toolbar_view.add_top_bar(&header);
         toolbar_view.set_content(Some(&paned));
 
+        let initial_title = match ds.device_info() {
+            Some(i) => format!("Settings ({})", i.device_name),
+            None    => "Settings".to_string(),
+        };
         let window = adw::Window::builder()
-            .title("Settings")
+            .title(&initial_title)
             .transient_for(parent)
             .default_width(720)
             .default_height(520)
             .modal(false)
             .build();
         window.set_content(Some(&toolbar_view));
+
+        ds.connect_device_changed(glib::clone!(@weak window => move |ds| {
+            let title = match ds.device_info() {
+                Some(i) => format!("Settings ({})", i.device_name),
+                None    => "Settings".to_string(),
+            };
+            window.set_title(Some(&title));
+        }));
 
         Self { window }
     }

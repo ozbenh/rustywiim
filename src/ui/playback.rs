@@ -147,6 +147,7 @@ impl DeviceWindowInner {
     // ── Reset ─────────────────────────────────────────────────────────────────
 
     pub(super) fn reset_device_ui(&self, title: &str) {
+        self.window.set_title(Some("RustyWiiM"));
         self.pw.title.set_text(title);
         self.pw.artist.set_text("");
         self.pw.album.set_text("");
@@ -284,6 +285,8 @@ impl DeviceWindowInner {
     pub(super) fn apply_device_info(&self) {
         let info = match self.ds.device_info() { Some(i) => i, None => return };
         let caps = match self.ds.capabilities() { Some(c) => c, None => return };
+
+        self.window.set_title(Some(&format!("RustyWiiM ({})", info.device_name)));
 
         self.dev_info_label.set_label(&format!(
             "{} · {} · FW {}",
