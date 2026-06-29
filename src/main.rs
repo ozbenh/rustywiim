@@ -8,6 +8,7 @@ mod config;
 mod device_state;
 mod discovery;
 mod icons;
+mod scroll_fade_label;
 mod ui;
 
 fn main() -> glib::ExitCode {

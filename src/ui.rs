@@ -15,6 +15,7 @@ use crate::config::{Config, DeviceConfig, ThemeMode};
 use crate::device_state::{ConnectionState, DeviceState};
 use crate::discovery;
 use crate::icons;
+use crate::scroll_fade_label::ScrollFadeLabel;
 
 // Structural-only CSS used in System theme mode.
 // No color overrides — Adwaita handles all colours.
@@ -53,12 +54,9 @@ const SYSTEM_CSS: &str = r#"
 .preset-name  { font-size: 11px; }
 .preset-badge { font-size: 9px; font-weight: 700; border-radius: 50%; min-width: 16px; min-height: 16px; padding: 1px; }
 .loop-active  { color: @accent_color; }
-.mini-window  { border-radius: 10px; }
-.mini-art {
-    min-width: 48px; min-height: 48px;
-    max-width: 48px; max-height: 48px;
-    overflow: hidden; border-radius: 6px;
-}
+.mini-window  { background-color: @window_bg_color; border-radius: 10px; }
+.mini-art     { min-width: 48px; min-height: 48px; border-radius: 6px; }
+.mini-main-row { background-color: @window_bg_color; }
 .mini-title        { font-size: 13px; font-weight: 700; }
 .mini-artist       { font-size: 11px; }
 .mini-status-label { font-size: 10px; }
@@ -78,6 +76,11 @@ const SYSTEM_CSS: &str = r#"
     min-width: 26px; min-height: 26px;
     padding: 0; -gtk-icon-size: 12px;
     border: none; border-radius: 50%; box-shadow: none;
+}
+.marquee-fade {
+    background-image: linear-gradient(to right,
+        @window_bg_color 0%, transparent 15%,
+        transparent 85%, @window_bg_color 100%);
 }
 "#;
 
@@ -133,11 +136,8 @@ window { background-color: #0a0a0a; }
 .loop-btn:hover { background-color: #2a2a2a; color: #ffffff; }
 .loop-active  { color: #4ecdc4; }
 .mini-window  { background-color: #111111; border-radius: 10px; }
-.mini-art {
-    min-width: 48px; min-height: 48px;
-    max-width: 48px; max-height: 48px;
-    overflow: hidden; border-radius: 6px;
-}
+.mini-art     { min-width: 48px; min-height: 48px; border-radius: 6px; }
+.mini-main-row { background-color: #111111; }
 .mini-title        { font-size: 13px; font-weight: 700; color: #ffffff; }
 .mini-artist       { font-size: 11px; color: #909090; }
 .mini-status-label { font-size: 10px; color: #606060; }
@@ -163,6 +163,17 @@ window { background-color: #0a0a0a; }
     border: none; border-radius: 50%; box-shadow: none;
 }
 .mini-play-btn:hover { background-color: #5fd9d0; }
+/* Fade gradient: different colours for main window (#0a0a0a) vs mini (#111111) */
+window.adw-application-window .marquee-fade {
+    background-image: linear-gradient(to right,
+        #0a0a0a 0%, transparent 15%,
+        transparent 85%, #0a0a0a 100%);
+}
+window.mini-window .marquee-fade {
+    background-image: linear-gradient(to right,
+        #111111 0%, transparent 15%,
+        transparent 85%, #111111 100%);
+}
 "#;
 
 // ── String helpers ────────────────────────────────────────────────────────────
@@ -339,9 +350,9 @@ struct PresetWidgets {
 
 #[derive(Clone)]
 struct PlaybackWidgets {
-    title:      Label,
-    artist:     Label,
-    album:      Label,
+    title:      ScrollFadeLabel,
+    artist:     ScrollFadeLabel,
+    album:      ScrollFadeLabel,
     status:     Label,
     quality:    Label,
     pos:        Label,
@@ -377,8 +388,8 @@ struct MiniWidgets {
     input_icon:    gtk::Image,
     device_label:  Label,
     restore_btn:   Button,
-    title_label:   Label,
-    artist_label:  Label,
+    title_label:   ScrollFadeLabel,
+    artist_label:  ScrollFadeLabel,
     status_label:  Label,
     btn_prev:      Button,
     btn_play:      Button,
@@ -433,9 +444,9 @@ impl DeviceWindowInner {
     // ── Reset ─────────────────────────────────────────────────────────────────
 
     fn reset_device_ui(&self, title: &str) {
-        self.pw.title.set_label(title);
-        self.pw.artist.set_label("");
-        self.pw.album.set_label("");
+        self.pw.title.set_text(title);
+        self.pw.artist.set_text("");
+        self.pw.album.set_text("");
         self.pw.status.set_label("");
         self.pw.quality.set_visible(false);
         self.pw.artwork.set_paintable(None::<&gtk::gdk::Paintable>);
@@ -655,9 +666,9 @@ impl DeviceWindowInner {
 
         if let Some(m) = self.ds.metadata() {
             let title = if is_unknown(&m.title) { String::new() } else { m.title.clone() };
-            self.pw.title.set_label(if title.is_empty() { "—" } else { &title });
-            self.pw.artist.set_label(if is_unknown(&m.artist) { "" } else { &m.artist });
-            self.pw.album.set_label(if is_unknown(&m.album)  { "" } else { &m.album });
+            self.pw.title.set_text(if title.is_empty() { "—" } else { &title });
+            self.pw.artist.set_text(if is_unknown(&m.artist) { "" } else { &m.artist });
+            self.pw.album.set_text(if is_unknown(&m.album)  { "" } else { &m.album });
 
             match format_quality(&m.bit_rate, &m.sample_rate, &m.bit_depth) {
                 Some(q) => { self.pw.quality.set_label(&q); self.pw.quality.set_visible(true); }
@@ -871,7 +882,7 @@ impl DeviceWindowInner {
         }
         if let Some(m) = self.ds.metadata() {
             let title = if is_unknown(&m.title) { "—".to_string() } else { m.title.clone() };
-            self.mini.title_label.set_label(&title);
+            self.mini.title_label.set_text(&title);
             let artist = if is_unknown(&m.artist) { String::new() } else { m.artist.clone() };
             let album  = if is_unknown(&m.album)  { String::new() } else { m.album.clone() };
             let artist_line = match (artist.is_empty(), album.is_empty()) {
@@ -880,7 +891,7 @@ impl DeviceWindowInner {
                 (false, true)  => artist,
                 (false, false) => format!("{artist} \u{00b7} {album}"),
             };
-            self.mini.artist_label.set_label(&artist_line);
+            self.mini.artist_label.set_text(&artist_line);
         }
         if let Some(bytes) = self.ds.art_bytes() {
             let gbytes = glib::Bytes::from(&bytes);
@@ -1326,13 +1337,12 @@ fn build_playback_widgets() -> (PlaybackWidgets, Scale) {
             s.set_transition_duration(200);
             s
         },
-        title:    Label::builder().label("Not connected").css_classes(["track-title"])
-            .ellipsize(gtk::pango::EllipsizeMode::End)
-            .halign(Align::Center).justify(gtk::Justification::Center).build(),
-        artist:   Label::builder().css_classes(["track-artist"])
-            .ellipsize(gtk::pango::EllipsizeMode::End).halign(Align::Center).build(),
-        album:    Label::builder().css_classes(["track-album"])
-            .ellipsize(gtk::pango::EllipsizeMode::End).halign(Align::Center).build(),
+        title:  { let l = ScrollFadeLabel::new("Not connected");
+                   l.add_label_css_class("track-title"); l.set_hexpand(true); l },
+        artist: { let l = ScrollFadeLabel::new("");
+                   l.add_label_css_class("track-artist"); l.set_hexpand(true); l },
+        album:  { let l = ScrollFadeLabel::new("");
+                   l.add_label_css_class("track-album");  l.set_hexpand(true); l },
         status:   Label::builder().css_classes(["status-badge"]).halign(Align::Center).build(),
         quality:  Label::builder().css_classes(["quality-label"]).halign(Align::Center)
             .visible(false).build(),
@@ -1429,6 +1439,7 @@ fn build_mini_window() -> (MiniWidgets, gtk::Window) {
         s.set_vexpand(false);
         s.set_valign(Align::Center);
         s.add_css_class("mini-art");
+        s.set_overflow(gtk::Overflow::Hidden); // clips border-radius corners
         s.set_transition_type(gtk::StackTransitionType::Crossfade);
         s.set_transition_duration(200);
         s
@@ -1453,16 +1464,10 @@ fn build_mini_window() -> (MiniWidgets, gtk::Window) {
     mini_top_bar.append(&mini_device_label);
     mini_top_bar.append(&mini_restore_btn);
 
-    let mini_title_label = Label::builder()
-        .label("—").css_classes(["mini-title"])
-        .halign(Align::Start).hexpand(true)
-        .ellipsize(gtk::pango::EllipsizeMode::End)
-        .build();
-    let mini_artist_label = Label::builder()
-        .label("").css_classes(["mini-artist"])
-        .halign(Align::Start).hexpand(true)
-        .ellipsize(gtk::pango::EllipsizeMode::End)
-        .build();
+    let mini_title_label = { let l = ScrollFadeLabel::new("—");
+                              l.add_label_css_class("mini-title"); l.set_hexpand(true); l };
+    let mini_artist_label = { let l = ScrollFadeLabel::new("");
+                               l.add_label_css_class("mini-artist"); l.set_hexpand(true); l };
 
     let mini_btn_prev = Button::builder()
         .icon_name("media-skip-backward-symbolic")
@@ -1541,11 +1546,10 @@ fn build_mini_window() -> (MiniWidgets, gtk::Window) {
         .orientation(Orientation::Horizontal).spacing(12)
         .margin_start(14).margin_end(14).margin_bottom(14)
         .build();
-    // Prevent the NGL renderer from leaving stale GPU buffer pixels in the
-    // vertical centering gap above mini_info_box (valign=Center inside a row
-    // that is taller than the info box).  overflow=hidden forces GTK4 to
-    // render into a freshly-cleared offscreen surface before compositing.
-    mini_main_row.set_overflow(gtk::Overflow::Hidden);
+    // Explicit background fills the vertical centering gap that appears above
+    // mini_info_box (valign=Center, shorter than the art stack).  Without it
+    // the NGL renderer can leave stale GPU buffer pixels there.
+    mini_main_row.add_css_class("mini-main-row");
     mini_main_row.append(&mini_art_stack);
     mini_main_row.append(&mini_info_box);
 
