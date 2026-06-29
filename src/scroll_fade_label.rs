@@ -1,3 +1,60 @@
+//! # ScrollFadeLabel
+//!
+//! A GTK4 widget that displays a single line of text and automatically scrolls
+//! it horizontally (marquee style) when the text is too wide to fit, fading
+//! both edges into the background colour.  When the text fits, it is displayed
+//! statically — centred or left-aligned depending on configuration.
+//!
+//! ## Scroll behaviour
+//!
+//! - When `label1` overflows the viewport, `label2` (an identical copy) is
+//!   revealed 50 px to its right.  Scrolling advances both until `label1` is
+//!   fully off-screen, at which point the position wraps back silently, giving
+//!   the illusion of an infinite loop.
+//! - Scrolling pauses while the pointer hovers over the widget.
+//! - The scroll timer runs **only while text is actually overflowing**; it is
+//!   started and stopped by `update_overflow_state()`, which is wired to the
+//!   viewport hadjustment `changed` signal.  That signal fires automatically on
+//!   both text changes (content reflow) and window resizes (page-size change),
+//!   so no polling is needed.
+//! - Timer interval is derived from `speed` to fire roughly once per pixel of
+//!   movement, reducing CPU wakeups at low speeds.
+//!
+//! ## CSS nodes
+//!
+//! | Class           | Widget           | Purpose                                       |
+//! |-----------------|------------------|-----------------------------------------------|
+//! | `.marquee-bg`   | GtkOverlay       | Opaque background — prevents NGL stale-buffer |
+//! |                 |                  | artefacts behind the ScrolledWindow clip.     |
+//! | `.marquee-fade` | GtkBox (overlay) | `background-image: linear-gradient(…)` fades  |
+//! |                 |                  | the left and right edges into the background. |
+//! |                 |                  | Must use same-hue zero-alpha stops, not       |
+//! |                 |                  | `transparent` (which is black at α=0).        |
+//!
+//! ## GLib properties
+//!
+//! | Property           | Type    | Default | Description                              |
+//! |--------------------|---------|---------|------------------------------------------|
+//! | `text`             | String  | `""`    | The string to display.                   |
+//! | `speed`            | f64     | `0.33`  | Pixels advanced per timer tick (~20 px/s |
+//! |                    |         |         | at default interval).                    |
+//! | `fade-width`       | i32     | `10`    | Width of each fade zone (percent of      |
+//! |                    |         |         | widget width) — set via CSS gradient.    |
+//! | `center-when-fits` | bool    | `true`  | Centre text when it fits (main window).  |
+//! |                    |         |         | Set to `false` for left-aligned display  |
+//! |                    |         |         | (mini window).                           |
+//!
+//! ## Usage
+//!
+//! ```rust,ignore
+//! let label = ScrollFadeLabel::new("My track title");
+//! label.add_label_css_class("track-title");  // font/colour via CSS
+//! label.set_hexpand(true);
+//! label.set_center_when_fits(false);         // left-align in mini window
+//! // later:
+//! label.set_text("New title");
+//! ```
+
 #![allow(deprecated)] // glib clone! old-style @weak syntax
 
 pub mod imp {
@@ -14,42 +71,52 @@ pub mod imp {
         Overlay, PolicyType, ScrolledWindow, Viewport,
     };
 
+    // Property defaults — single source of truth used by the ParamSpec
+    // declarations, the struct Default impl, and the set_property fallbacks.
+    const SPEED_DEFAULT:            f64  = 0.33; // px/tick → ~20 px/s at default interval
+    const FADE_WIDTH_DEFAULT:       i32  = 10;   // percent of widget width per fade zone
+    const CENTER_WHEN_FITS_DEFAULT: bool = true;
+
     pub struct ScrollFadeLabel {
         // Top-level layout: an Overlay containing the ScrolledWindow + fade layer.
         pub overlay:         Overlay,
         // Gradient overlay drawn on top to fade text at both edges.
-        // Toggled visible only when text overflows (hidden when it fits).
+        // Shown only when text overflows.
         pub fade_layer:      GtkBox,
         pub scrolled_window: ScrolledWindow,
         pub viewport:        Viewport,
         pub container_box:   GtkBox,
         pub label1:          Label,
-        pub label2:          Label, // duplicate for seamless infinite loop
-        pub timeout_id:      Cell<Option<glib::SourceId>>,
+        pub label2:          Label,   // duplicate for seamless infinite loop
+        pub scroll_timer_id: RefCell<Option<glib::SourceId>>, // None when idle
         pub speed:           Cell<f64>,
         pub fade_width:      Cell<i32>,
         pub is_hovered:      Cell<bool>,
         pub text:            RefCell<String>,
-        pub is_masked:       Cell<bool>,
+        pub is_scrolling:    Cell<bool>, // true while scroll timer is running
+        // When true, centre the text when it fits (main window).
+        // When false, left-align it (mini window).
+        pub center_when_fits: Cell<bool>,
     }
 
     impl Default for ScrollFadeLabel {
         fn default() -> Self {
             Self {
-                overlay:         Overlay::new(),
-                fade_layer:      GtkBox::new(Orientation::Horizontal, 0),
-                scrolled_window: ScrolledWindow::default(),
-                viewport:        Viewport::default(),
+                overlay:          Overlay::new(),
+                fade_layer:       GtkBox::new(Orientation::Horizontal, 0),
+                scrolled_window:  ScrolledWindow::default(),
+                viewport:         Viewport::default(),
                 // 50 px gap between the two copies so the loop feels continuous
-                container_box:   GtkBox::new(Orientation::Horizontal, 50),
-                label1:          Label::default(),
-                label2:          Label::default(),
-                timeout_id:      Cell::new(None),
-                speed:           Cell::new(0.33), // ~20 px/s at 60 fps
-                fade_width:      Cell::new(10),
-                is_hovered:      Cell::new(false),
-                text:            RefCell::new(String::new()),
-                is_masked:       Cell::new(false),
+                container_box:    GtkBox::new(Orientation::Horizontal, 50),
+                label1:           Label::default(),
+                label2:           Label::default(),
+                scroll_timer_id:  RefCell::new(None),
+                speed:            Cell::new(SPEED_DEFAULT),
+                fade_width:       Cell::new(FADE_WIDTH_DEFAULT),
+                is_hovered:       Cell::new(false),
+                text:             RefCell::new(String::new()),
+                is_scrolling:     Cell::new(false),
+                center_when_fits: Cell::new(CENTER_WHEN_FITS_DEFAULT),
             }
         }
     }
@@ -77,13 +144,17 @@ pub mod imp {
                         .nick("Speed")
                         .minimum(0.1)
                         .maximum(20.0)
-                        .default_value(0.33)
+                        .default_value(SPEED_DEFAULT)
                         .build(),
                     glib::ParamSpecInt::builder("fade-width")
                         .nick("Fade Width")
                         .minimum(0)
                         .maximum(45)
-                        .default_value(10)
+                        .default_value(FADE_WIDTH_DEFAULT)
+                        .build(),
+                    glib::ParamSpecBoolean::builder("center-when-fits")
+                        .nick("Center When Fits")
+                        .default_value(CENTER_WHEN_FITS_DEFAULT)
                         .build(),
                 ]
             })
@@ -96,12 +167,18 @@ pub mod imp {
                     self.label1.set_text(&s);
                     self.label2.set_text(&s);
                     self.text.replace(s);
-                    self.is_masked.set(false);
+                    // adj "changed" fires automatically after the layout pass and
+                    // calls update_overflow_state() — no manual reset needed here.
                 }
-                "speed"      => self.speed.set(value.get::<f64>().unwrap_or(0.33)),
-                "fade-width" => {
-                    self.fade_width.set(value.get::<i32>().unwrap_or(10));
-                    self.is_masked.set(false);
+                "speed"      => self.speed.set(value.get::<f64>().unwrap_or(SPEED_DEFAULT)),
+                "fade-width" => self.fade_width.set(value.get::<i32>().unwrap_or(FADE_WIDTH_DEFAULT)),
+                "center-when-fits" => {
+                    let center = value.get::<bool>().unwrap_or(CENTER_WHEN_FITS_DEFAULT);
+                    self.center_when_fits.set(center);
+                    // Apply immediately if not scrolling (no adj signal needed).
+                    if !self.is_scrolling.get() {
+                        self.label1.set_xalign(if center { 0.5 } else { 0.0 });
+                    }
                 }
                 _ => unimplemented!(),
             }
@@ -109,9 +186,10 @@ pub mod imp {
 
         fn property(&self, _id: usize, pspec: &ParamSpec) -> Value {
             match pspec.name() {
-                "text"       => self.text.borrow().to_value(),
-                "speed"      => self.speed.get().to_value(),
-                "fade-width" => self.fade_width.get().to_value(),
+                "text"             => self.text.borrow().to_value(),
+                "speed"            => self.speed.get().to_value(),
+                "fade-width"       => self.fade_width.get().to_value(),
+                "center-when-fits" => self.center_when_fits.get().to_value(),
                 _ => unimplemented!(),
             }
         }
@@ -119,10 +197,12 @@ pub mod imp {
         fn constructed(&self) {
             let obj = self.obj();
 
-            // Left-align text so the marquee starts cleanly from the left edge.
-            self.label1.set_xalign(0.0);
+            // Initial idle state: label1 fills the container; text is centred
+            // (or left-aligned once center_when_fits is set to false externally).
+            self.label1.set_hexpand(true);
+            self.label1.set_xalign(0.5);
+            // label2 is a scrolling duplicate; always left-aligned and hidden at rest.
             self.label2.set_xalign(0.0);
-            // label2 is hidden at rest; shown only when text overflows.
             self.label2.set_visible(false);
 
             // Scrolled content: [label1] [50 px gap] [label2]
@@ -146,9 +226,13 @@ pub mod imp {
             self.fade_layer.set_hexpand(true);
             self.fade_layer.set_vexpand(true);
             self.fade_layer.set_can_target(false);
-            self.fade_layer.set_visible(false); // shown only when scrolling
+            self.fade_layer.set_visible(false);
 
             // Stack them: scrolled window as main child, fade box as overlay.
+            // marquee-bg sets an opaque background matching the window colour so
+            // the NGL renderer never exposes stale GPU buffer content behind
+            // the ScrolledWindow's clipping region.
+            self.overlay.add_css_class("marquee-bg");
             self.overlay.set_child(Some(&self.scrolled_window));
             self.overlay.add_overlay(&self.fade_layer);
             self.overlay.set_parent(&*obj);
@@ -163,53 +247,19 @@ pub mod imp {
             }));
             obj.add_controller(motion);
 
-            // Drive the marquee at ~60 fps (16 ms tick).
-            let hadjustment = self.viewport.hadjustment();
-            let id = glib::timeout_add_local(
-                Duration::from_millis(16),
-                glib::clone!(@weak obj => @default-panic, move || {
-                    let Some(ref adj) = hadjustment else {
-                        return glib::ControlFlow::Break;
-                    };
-                    let imp = obj.imp();
-
-                    let visible_width  = adj.page_size();
-                    let label_w        = imp.label1.width_request()
-                                            .max(imp.label1.allocated_width());
-                    let spacing        = imp.container_box.spacing();
-                    // Wrap point: after one full label + the separator gap.
-                    let loop_threshold = (label_w + spacing) as f64;
-
-                    if (label_w as f64) > visible_width {
-                        // Text overflows: enable fade overlay and start scrolling.
-                        if !imp.is_masked.get() {
-                            imp.fade_layer.set_visible(true);
-                            imp.label2.set_visible(true);
-                            imp.is_masked.set(true);
-                        }
-                        if !imp.is_hovered.get() {
-                            let mut next = adj.value() + imp.speed.get();
-                            // Seamless loop: once past label1, wrap back silently.
-                            if next >= loop_threshold { next -= loop_threshold; }
-                            adj.set_value(next);
-                        }
-                    } else {
-                        // Text fits: hide fade overlay and reset scroll position.
-                        if imp.is_masked.get() {
-                            imp.fade_layer.set_visible(false);
-                            imp.label2.set_visible(false);
-                            imp.is_masked.set(false);
-                        }
-                        adj.set_value(0.0);
-                    }
-                    glib::ControlFlow::Continue
-                }),
-            );
-            self.timeout_id.set(Some(id));
+            // React to content or viewport size changes.  This signal fires when
+            // the label is reflowed after a set_text() call (adj.upper changes) or
+            // when the window is resized (adj.page_size changes).  The 60 fps timer
+            // runs only while actually scrolling; this signal starts and stops it.
+            if let Some(adj) = self.viewport.hadjustment() {
+                adj.connect_changed(glib::clone!(@weak obj => move |a| {
+                    obj.imp().update_overflow_state(a);
+                }));
+            }
         }
 
         fn dispose(&self) {
-            if let Some(id) = self.timeout_id.take() { id.remove(); }
+            self.stop_scroll_timer();
             self.overlay.unparent();
         }
     }
@@ -220,6 +270,82 @@ pub mod imp {
         }
         fn size_allocate(&self, width: i32, height: i32, baseline: i32) {
             self.overlay.allocate(width, height, baseline, None);
+        }
+    }
+
+    impl ScrollFadeLabel {
+        /// Re-evaluate whether text overflows based on current sizes.
+        /// Called from the hadjustment "changed" signal, which fires whenever
+        /// content is reflowed (text change) or the viewport is resized.
+        /// Starts or stops the scroll timer as needed.
+        pub fn update_overflow_state(&self, adj: &gtk::Adjustment) {
+            let visible_width = adj.page_size();
+            let label_w       = self.label1.allocated_width();
+
+            // Skip until the widget has been laid out at least once.
+            if visible_width == 0.0 { return; }
+
+            if (label_w as f64) > visible_width {
+                // Text overflows — enter scroll mode if not already in it.
+                if !self.is_scrolling.get() {
+                    self.label1.set_hexpand(false);
+                    self.label1.set_xalign(0.0);
+                    self.fade_layer.set_visible(true);
+                    self.label2.set_visible(true);
+                    self.is_scrolling.set(true);
+                }
+                self.start_scroll_timer();
+            } else {
+                // Text fits — enforce idle state and stop the timer.
+                let xalign = if self.center_when_fits.get() { 0.5 } else { 0.0 };
+                self.label1.set_hexpand(true);
+                self.label1.set_xalign(xalign);
+                self.fade_layer.set_visible(false);
+                self.label2.set_visible(false);
+                self.is_scrolling.set(false);
+                adj.set_value(0.0);
+                self.stop_scroll_timer();
+            }
+        }
+
+        /// Advance the scroll position by one timer tick.  Called from the scroll
+        /// timer.  Only handles position arithmetic — all state management is in
+        /// update_overflow_state().
+        pub fn scroll_tick(&self, adj: &gtk::Adjustment) {
+            if self.is_hovered.get() { return; }
+            let label_w        = self.label1.allocated_width();
+            let loop_threshold = (label_w + self.container_box.spacing()) as f64;
+            // Step size equals speed so the visual velocity is always speed px/tick
+            // regardless of the timer interval chosen in start_scroll_timer().
+            let mut next = adj.value() + self.speed.get();
+            if next >= loop_threshold { next -= loop_threshold; }
+            adj.set_value(next);
+        }
+
+        fn start_scroll_timer(&self) {
+            if self.scroll_timer_id.borrow().is_some() { return; } // already running
+            let Some(adj) = self.viewport.hadjustment() else { return; };
+
+            // Fire at a rate that moves the text by ~1 px per tick.  This keeps
+            // motion smooth while reducing wakeups at low speeds.
+            // At speed=0.33 px/tick → ~33 ms interval (~30 fps).
+            // At speed=1.0 px/tick → ~16 ms interval (~60 fps).
+            // Minimum interval 16 ms (capped at 60 fps regardless of speed).
+            let interval_ms = (1000.0 / (self.speed.get() * 60.0)).round().max(16.0) as u64;
+
+            let obj = self.obj();
+            let id = glib::timeout_add_local(
+                Duration::from_millis(interval_ms),
+                glib::clone!(@weak obj => @default-return glib::ControlFlow::Break, move || {
+                    obj.imp().scroll_tick(&adj);
+                    glib::ControlFlow::Continue
+                }),
+            );
+            *self.scroll_timer_id.borrow_mut() = Some(id);
+        }
+
+        fn stop_scroll_timer(&self) {
+            if let Some(id) = self.scroll_timer_id.borrow_mut().take() { id.remove(); }
         }
     }
 }
@@ -245,7 +371,8 @@ impl ScrollFadeLabel {
         imp.label1.set_text(text);
         imp.label2.set_text(text);
         imp.text.replace(text.to_string());
-        imp.is_masked.set(false);
+        // The adj "changed" signal fires after the layout pass and calls
+        // update_overflow_state() — no manual state reset needed here.
     }
 
     pub fn text(&self) -> glib::GString {
@@ -257,6 +384,16 @@ impl ScrollFadeLabel {
         let imp = self.imp();
         imp.label1.add_css_class(class);
         imp.label2.add_css_class(class);
+    }
+
+    /// Control whether text is centred (true, default) or left-aligned (false)
+    /// when it fits within the available width without scrolling.
+    pub fn set_center_when_fits(&self, center: bool) {
+        let imp = self.imp();
+        imp.center_when_fits.set(center);
+        if !imp.is_scrolling.get() {
+            imp.label1.set_xalign(if center { 0.5 } else { 0.0 });
+        }
     }
 }
 

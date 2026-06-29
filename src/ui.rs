@@ -77,10 +77,15 @@ const SYSTEM_CSS: &str = r#"
     padding: 0; -gtk-icon-size: 12px;
     border: none; border-radius: 50%; box-shadow: none;
 }
+/* Opaque background prevents NGL from exposing stale GPU memory through
+   the ScrolledWindow's clipping region. */
+.marquee-bg { background-color: @window_bg_color; }
+/* Use alpha(@window_bg_color, 0) — same hue at zero opacity — instead of
+   `transparent` (which is black at zero alpha and produces a dark fringe). */
 .marquee-fade {
     background-image: linear-gradient(to right,
-        @window_bg_color 0%, transparent 15%,
-        transparent 85%, @window_bg_color 100%);
+        @window_bg_color 0%, alpha(@window_bg_color, 0) 15%,
+        alpha(@window_bg_color, 0) 85%, @window_bg_color 100%);
 }
 "#;
 
@@ -163,16 +168,19 @@ window { background-color: #0a0a0a; }
     border: none; border-radius: 50%; box-shadow: none;
 }
 .mini-play-btn:hover { background-color: #5fd9d0; }
-/* Fade gradient: different colours for main window (#0a0a0a) vs mini (#111111) */
+window.adw-application-window .marquee-bg { background-color: #0a0a0a; }
+window.mini-window .marquee-bg { background-color: #111111; }
+/* Use rgba(r,g,b,0) — same hue at zero opacity — instead of `transparent`
+   (which is black at alpha=0 and creates a dark fringe in GTK's GL renderer). */
 window.adw-application-window .marquee-fade {
     background-image: linear-gradient(to right,
-        #0a0a0a 0%, transparent 15%,
-        transparent 85%, #0a0a0a 100%);
+        #0a0a0a 0%, rgba(10,10,10,0) 15%,
+        rgba(10,10,10,0) 85%, #0a0a0a 100%);
 }
 window.mini-window .marquee-fade {
     background-image: linear-gradient(to right,
-        #111111 0%, transparent 15%,
-        transparent 85%, #111111 100%);
+        #111111 0%, rgba(17,17,17,0) 15%,
+        rgba(17,17,17,0) 85%, #111111 100%);
 }
 "#;
 
@@ -1465,9 +1473,11 @@ fn build_mini_window() -> (MiniWidgets, gtk::Window) {
     mini_top_bar.append(&mini_restore_btn);
 
     let mini_title_label = { let l = ScrollFadeLabel::new("—");
-                              l.add_label_css_class("mini-title"); l.set_hexpand(true); l };
+                              l.add_label_css_class("mini-title"); l.set_hexpand(true);
+                              l.set_center_when_fits(false); l };
     let mini_artist_label = { let l = ScrollFadeLabel::new("");
-                               l.add_label_css_class("mini-artist"); l.set_hexpand(true); l };
+                               l.add_label_css_class("mini-artist"); l.set_hexpand(true);
+                               l.set_center_when_fits(false); l };
 
     let mini_btn_prev = Button::builder()
         .icon_name("media-skip-backward-symbolic")
