@@ -53,6 +53,9 @@ pub struct DeviceConfig {
     /// Last known friendly name — displayed while connecting / offline.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// Last known marketing model name (e.g. "WiiM Pro Plus").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 impl Default for DeviceConfig {
@@ -68,6 +71,7 @@ impl Default for DeviceConfig {
             window_open:     false,
             last_ip:         None,
             name:            None,
+            model:           None,
         }
     }
 }

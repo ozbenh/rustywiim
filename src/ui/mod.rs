@@ -139,6 +139,7 @@ struct DeviceWindowInner {
     pw:             PlaybackWidgets,
     pp:             PresetWidgets,
     dev_info_label: Label,
+    ip_label:       Label,
     net_icon:       gtk::Image,
     icons:          Rc<icons::IconSet>,
     vol_scale:      Scale,
@@ -264,6 +265,12 @@ impl DeviceWindow {
             .hexpand(true)
             .margin_top(4).margin_bottom(4).build();
 
+        let ip_label = Label::builder()
+            .css_classes(["ip-label", "dim-label"])
+            .margin_end(6).margin_top(4).margin_bottom(4)
+            .visible(false)
+            .build();
+
         let net_icon = gtk::Image::builder()
             .icon_size(gtk::IconSize::Normal)
             .css_classes(["net-icon"])
@@ -271,9 +278,13 @@ impl DeviceWindow {
             .visible(false)
             .build();
 
+        let bottom_end = GtkBox::new(Orientation::Horizontal, 0);
+        bottom_end.append(&ip_label);
+        bottom_end.append(&net_icon);
+
         let bottom_bar = gtk::CenterBox::new();
         bottom_bar.set_center_widget(Some(&dev_info_label));
-        bottom_bar.set_end_widget(Some(&net_icon));
+        bottom_bar.set_end_widget(Some(&bottom_end));
 
         let outer = GtkBox::new(Orientation::Vertical, 0);
         outer.append(&paned);
@@ -306,6 +317,7 @@ impl DeviceWindow {
             pw,
             pp,
             dev_info_label,
+            ip_label,
             net_icon,
             icons,
             vol_scale,

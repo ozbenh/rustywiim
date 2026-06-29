@@ -22,6 +22,7 @@ use gtk::{glib, Orientation};
 
 use crate::config::Config;
 use crate::device::api::{TlsMode, WiimClient};
+use crate::device::capabilities::DeviceCapabilities;
 use crate::device::discovery::{DiscoveredDevice, DiscoveryService};
 
 // ── Public types ──────────────────────────────────────────────────────────────
@@ -37,6 +38,7 @@ pub enum DevicePresence {
 pub struct ManagedEntry {
     pub uuid:     String,
     pub name:     String,
+    pub model:    String,
     pub ip:       String,
     pub tls_mode: TlsMode,
     pub pinned:   bool,
@@ -54,6 +56,8 @@ struct DeviceRecord {
 struct HealthResult {
     key:   String, // uuid, or "ip:<ip>" when uuid is unknown
     alive: bool,
+    /// Model string from a successful `getStatusEx` call; None when offline.
+    model: Option<String>,
 }
 
 struct Inner {
@@ -181,15 +185,18 @@ impl DiscoveryManager {
             let mut inner = self.imp().inner.borrow_mut();
             if inner.devices.contains_key(&key) { return; }
             let entry = ManagedEntry {
-                uuid: uuid.clone(), name: name.clone(), ip: ip.clone(),
-                tls_mode, pinned: true, presence: DevicePresence::Active,
+                uuid: uuid.clone(), name: name.clone(), model: String::new(),
+                ip: ip.clone(), tls_mode, pinned: true, presence: DevicePresence::Active,
             };
-            inner.devices.insert(key, DeviceRecord {
+            inner.devices.insert(key.clone(), DeviceRecord {
                 entry, in_discovery: false, client: WiimClient::new(&ip, tls_mode),
             });
         }
         self.persist_pinned();
         self.emit_by_name::<()>("list-changed", &[]);
+        // Fetch model (and confirm liveness) immediately rather than waiting for
+        // the next 30-second health-check cycle.
+        self.trigger_health_check_for(&key);
     }
 
     pub fn connect_list_changed<F: Fn(&Self) + 'static>(&self, f: F) -> glib::SignalHandlerId {
@@ -222,6 +229,7 @@ impl DiscoveryManager {
                     let entry = ManagedEntry {
                         uuid:     dev.uuid.clone(),
                         name:     dev.name.clone(),
+                        model:    String::new(),
                         ip:       dev.ip.clone(),
                         tls_mode: dev.tls_mode,
                         pinned:   false,
@@ -242,19 +250,27 @@ impl DiscoveryManager {
     }
 
     fn trigger_health_checks(&self) {
-        let Some(tx) = self.imp().health_tx.borrow().clone() else { return };
-        let rt = self.rt();
-        let records: Vec<(String, WiimClient)> = self.imp().inner.borrow()
+        let keys: Vec<(String, WiimClient)> = self.imp().inner.borrow()
             .devices.iter()
             .map(|(k, r)| (k.clone(), r.client.clone()))
             .collect();
-        for (key, client) in records {
-            let tx = tx.clone();
-            rt.spawn(async move {
-                let alive = client.get_device_info().await.is_ok();
-                let _ = tx.send(HealthResult { key, alive }).await;
-            });
+        for (key, _) in keys {
+            self.trigger_health_check_for(&key);
         }
+    }
+
+    fn trigger_health_check_for(&self, key: &str) {
+        let Some(tx) = self.imp().health_tx.borrow().clone() else { return };
+        let Some(client) = self.imp().inner.borrow()
+            .devices.get(key).map(|r| r.client.clone()) else { return };
+        let key = key.to_string();
+        self.rt().spawn(async move {
+            let (alive, model) = match client.get_device_info().await {
+                Ok(info) => (true, Some(DeviceCapabilities::from_device_info(&info).model)),
+                Err(_)   => (false, None),
+            };
+            let _ = tx.send(HealthResult { key, alive, model }).await;
+        });
     }
 
     fn on_health_result(&self, result: HealthResult) {
@@ -268,6 +284,11 @@ impl DiscoveryManager {
                 } else {
                     DevicePresence::Dead
                 };
+                if let Some(model) = result.model {
+                    if rec.entry.model.is_empty() {
+                        rec.entry.model = model;
+                    }
+                }
             }
         }
         self.do_prune();
@@ -299,9 +320,10 @@ impl DiscoveryManager {
             if inner.devices.contains_key(uuid) { continue; }
             let tls    = TlsMode::HttpsWiiM;
             let name   = dev_cfg.name.clone().unwrap_or_else(|| format!("Device @ {ip}"));
+            let model  = dev_cfg.model.clone().unwrap_or_default();
             let pinned = dev_cfg.pinned == Some(true);
             let entry  = ManagedEntry {
-                uuid: uuid.clone(), name, ip: ip.clone(),
+                uuid: uuid.clone(), name, model, ip: ip.clone(),
                 // Start Active (optimistic); health check will demote to Ghost if offline.
                 tls_mode: tls, pinned, presence: DevicePresence::Active,
             };
@@ -319,6 +341,9 @@ impl DiscoveryManager {
             dev.pinned  = Some(rec.entry.pinned); // Explicit Some(true/false) ends legacy treatment.
             dev.last_ip = Some(rec.entry.ip.clone());
             dev.name    = Some(rec.entry.name.clone());
+            if !rec.entry.model.is_empty() {
+                dev.model = Some(rec.entry.model.clone());
+            }
         }
         cfg.save();
     }
@@ -476,11 +501,14 @@ impl DiscoveryWindow {
         open_device: &Rc<dyn Fn(&ManagedEntry)>,
         manager:     &DiscoveryManager,
     ) -> adw::ActionRow {
-        let subtitle = match entry.presence {
-            DevicePresence::Active => entry.ip.clone(),
-            DevicePresence::Ghost  => format!("{} · offline (pinned)", entry.ip),
-            DevicePresence::Dead   => format!("{} · offline", entry.ip),
+        let subtitle = if entry.model.is_empty() { String::new() } else { entry.model.clone() };
+
+        let status_suffix = match entry.presence {
+            DevicePresence::Active => String::new(),
+            DevicePresence::Ghost  => " · offline (pinned)".to_string(),
+            DevicePresence::Dead   => " · offline".to_string(),
         };
+        let ip_label_text = format!("{}{}", entry.ip, status_suffix);
 
         let row = adw::ActionRow::builder()
             .title(&entry.name)
@@ -490,6 +518,13 @@ impl DiscoveryWindow {
         if entry.presence != DevicePresence::Active {
             row.add_css_class("dim-label");
         }
+
+        let ip_label = gtk::Label::builder()
+            .label(&ip_label_text)
+            .valign(gtk::Align::Center)
+            .css_classes(["dim-label", "caption"])
+            .build();
+        row.add_suffix(&ip_label);
 
         // Pin / unpin toggle button.
         let pin_btn = gtk::ToggleButton::builder()

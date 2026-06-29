@@ -43,6 +43,7 @@ window { background-color: #0a0a0a; }
 .preset-badge { font-size: 9px; font-weight: 700; color: #1a1a1a; background-color: #606060; border-radius: 50%; min-width: 16px; min-height: 16px; padding: 1px; }
 .panel-dropdown { font-size: 11px; min-width: 0; }
 .device-info  { font-size: 10px; color: #686868; }
+.ip-label     { font-size: 10px; color: #484848; }
 .net-icon     { color: #686868; }
 .sidebar-toggle:checked { color: #4ecdc4; }
 .loop-btn     { min-width: 36px; min-height: 36px; padding: 0; -gtk-icon-size: 16px; background-color: transparent; color: #606060; }

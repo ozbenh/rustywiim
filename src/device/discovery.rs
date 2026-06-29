@@ -421,9 +421,9 @@ async fn identify_device(ip: &str, location: &str) -> Option<DiscoveredDevice> {
                 let name = extract_xml_tag(&xml, "friendlyName")
                     .unwrap_or_else(|| format!("WiiM @ {ip}"));
                 return Some(DiscoveredDevice {
-                    ip:       ip.to_string(),
+                    ip: ip.to_string(),
                     name,
-                    uuid:     String::new(),
+                    uuid: String::new(),
                     tls_mode: TlsMode::HttpsWiiM,
                 });
             }

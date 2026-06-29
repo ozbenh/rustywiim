@@ -156,6 +156,7 @@ impl DeviceWindowInner {
         self.pw.artwork.set_paintable(None::<&gtk::gdk::Paintable>);
         self.pw.art_stack.set_visible_child_name("artwork");
         self.dev_info_label.set_label("");
+        self.ip_label.set_visible(false);
 
         for btn in self.pp.btns.iter() { btn.set_visible(false); }
         for lbl in self.pp.labels.iter() { lbl.set_label(""); }
@@ -292,6 +293,14 @@ impl DeviceWindowInner {
             "{} · {} · FW {}",
             caps.vendor.display_name(), caps.model, info.firmware,
         ));
+
+        let ip = info.ip_addr();
+        if !ip.is_empty() {
+            self.ip_label.set_label(ip);
+            self.ip_label.set_visible(true);
+        } else {
+            self.ip_label.set_visible(false);
+        }
 
         self.populate_source();
         self.populate_output();
