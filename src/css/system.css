@@ -1,0 +1,68 @@
+
+.track-title  { font-size: 20px; font-weight: 800; }
+.track-artist { font-size: 14px; font-weight: 600; }
+.track-album  { font-size: 12px; }
+.status-badge { font-size: 11px; font-weight: 600; }
+.quality-label { font-size: 11px; }
+.dim-label    { font-size: 11px; }
+.section-label { font-size: 11px; font-weight: 700; letter-spacing: 1px; }
+.panel-dropdown { font-size: 11px; min-width: 0; }
+.device-info  { font-size: 10px; }
+.transport-btn {
+    min-width: 36px; min-height: 36px;
+    padding: 0; -gtk-icon-size: 16px;
+    border: none; border-radius: 50%; box-shadow: none;
+}
+.play-btn {
+    min-width: 44px; min-height: 44px;
+    padding: 0; -gtk-icon-size: 20px;
+    border: none; border-radius: 50%; box-shadow: none;
+}
+.loop-btn { min-width: 36px; min-height: 36px; padding: 0; -gtk-icon-size: 16px; }
+.vol-pop trough   { min-width: 3px; border-radius: 2px; }
+.vol-pop slider   { min-width: 8px; min-height: 8px; margin: -3px; border-radius: 50%; border: none; box-shadow: none; }
+.mini-vol-btn { background-color: transparent; }
+.mini-vol-pop trough { min-width: 3px; border-radius: 2px; }
+.mini-vol-pop slider { min-width: 6px; min-height: 6px; margin: -2px; border-radius: 50%; border: none; box-shadow: none; }
+.mini-vol-popover > contents { min-width: 0; padding: 0; }
+.seek-scale trough { min-height: 4px; border-radius: 2px; }
+.seek-scale slider { min-width: 0; min-height: 0; margin: 0; padding: 0; opacity: 0; }
+.preset-tile  { border-radius: 8px; padding: 4px; }
+.preset-art   { border-radius: 5px; min-width: 40px; min-height: 40px; }
+.preset-art-small { min-width: 26px; min-height: 26px; padding: 7px; }
+.preset-name  { font-size: 11px; }
+.preset-badge { font-size: 9px; font-weight: 700; border-radius: 50%; min-width: 16px; min-height: 16px; padding: 1px; }
+.loop-active  { color: @accent_color; }
+.mini-window  { background-color: @window_bg_color; border-radius: 10px; }
+.mini-art     { min-width: 48px; min-height: 48px; border-radius: 6px; }
+.mini-main-row { background-color: @window_bg_color; }
+.mini-title        { font-size: 13px; font-weight: 700; }
+.mini-artist       { font-size: 11px; }
+.mini-status-label { font-size: 10px; }
+.mini-device-label { font-size: 11px; font-weight: 700; }
+.mini-restore-btn {
+    min-width: 18px; min-height: 18px;
+    padding: 1px; -gtk-icon-size: 10px;
+    border: none; border-radius: 50%; box-shadow: none; background-color: transparent;
+}
+.mini-transport-btn {
+    min-width: 22px; min-height: 22px;
+    padding: 0; -gtk-icon-size: 11px;
+    border: none; border-radius: 50%; box-shadow: none; background-color: transparent;
+}
+.mini-transport-btn:hover { background-color: rgba(127, 127, 127, 0.15); }
+.mini-play-btn {
+    min-width: 26px; min-height: 26px;
+    padding: 0; -gtk-icon-size: 12px;
+    border: none; border-radius: 50%; box-shadow: none;
+}
+/* Opaque background prevents NGL from exposing stale GPU memory through
+   the ScrolledWindow's clipping region. */
+.marquee-bg { background-color: @window_bg_color; }
+/* Use alpha(@window_bg_color, 0) — same hue at zero opacity — instead of
+   `transparent` (which is black at zero alpha and produces a dark fringe). */
+.marquee-fade {
+    background-image: linear-gradient(to right,
+        @window_bg_color 0%, alpha(@window_bg_color, 0) 15%,
+        alpha(@window_bg_color, 0) 85%, @window_bg_color 100%);
+}

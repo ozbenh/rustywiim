@@ -1,0 +1,92 @@
+
+window { background-color: #0a0a0a; }
+.track-title  { font-size: 20px; font-weight: 800; color: #ffffff; }
+.track-artist { font-size: 14px; font-weight: 600; color: #b0b0b0; }
+.track-album  { font-size: 12px; color: #707070; }
+.status-badge { font-size: 11px; font-weight: 600; color: #4ecdc4; }
+.quality-label { font-size: 11px; color: #505050; }
+.dim-label    { font-size: 11px; color: #606060; }
+.transport-btn {
+    min-width: 36px; min-height: 36px;
+    padding: 0; -gtk-icon-size: 16px;
+    background-color: transparent; color: #ffffff;
+    border: none; border-radius: 50%; box-shadow: none;
+}
+.transport-btn:hover { background-color: #2a2a2a; }
+.play-btn {
+    min-width: 44px; min-height: 44px;
+    padding: 0; -gtk-icon-size: 20px;
+    background-color: #4ecdc4; color: #0a0a0a;
+    border: none; border-radius: 50%; box-shadow: none;
+}
+.play-btn:hover { background-color: #5fd9d0; }
+.vol-btn { background-color: transparent; color: #ffffff; }
+.vol-btn:hover { background-color: #2a2a2a; }
+.vol-pop trough   { min-width: 3px; border-radius: 2px; background-color: #2a2a2a; }
+.vol-pop trough highlight { background-color: #4ecdc4; }
+.vol-pop slider   { min-width: 8px; min-height: 8px; margin: -3px; background-color: #808080; border-radius: 50%; border: none; box-shadow: none; }
+.mini-vol-btn { background-color: transparent; color: #cccccc; }
+.mini-vol-btn:hover { background-color: #2a2a2a; }
+.mini-vol-pop trough { min-width: 3px; border-radius: 2px; background-color: #2a2a2a; }
+.mini-vol-pop trough highlight { background-color: #4ecdc4; }
+.mini-vol-pop slider { min-width: 6px; min-height: 6px; margin: -2px; background-color: #808080; border-radius: 50%; border: none; box-shadow: none; }
+.mini-vol-popover > contents { min-width: 0; padding: 0; }
+.seek-scale trough { min-height: 4px; border-radius: 2px; background-color: #2a2a2a; }
+.seek-scale trough highlight { background-color: #4ecdc4; }
+.seek-scale slider { min-width: 0; min-height: 0; margin: 0; padding: 0; opacity: 0; }
+.section-label { font-size: 11px; font-weight: 700; color: #505050; letter-spacing: 1px; }
+.preset-tile  { border-radius: 8px; background-color: #141414; padding: 4px; }
+.preset-tile:hover { background-color: #202020; }
+.preset-art   { border-radius: 5px; min-width: 40px; min-height: 40px; }
+.preset-art-small { min-width: 26px; min-height: 26px; padding: 7px; }
+.preset-name  { font-size: 11px; color: #a0a0a0; }
+.preset-badge { font-size: 9px; font-weight: 700; color: #1a1a1a; background-color: #606060; border-radius: 50%; min-width: 16px; min-height: 16px; padding: 1px; }
+.panel-dropdown { font-size: 11px; min-width: 0; }
+.device-info  { font-size: 10px; color: #686868; }
+.net-icon     { color: #686868; }
+.sidebar-toggle:checked { color: #4ecdc4; }
+.loop-btn     { min-width: 36px; min-height: 36px; padding: 0; -gtk-icon-size: 16px; background-color: transparent; color: #606060; }
+.loop-btn:hover { background-color: #2a2a2a; color: #ffffff; }
+.loop-active  { color: #4ecdc4; }
+.mini-window  { background-color: #111111; border-radius: 10px; }
+.mini-art     { min-width: 48px; min-height: 48px; border-radius: 6px; }
+.mini-main-row { background-color: #111111; }
+.mini-title        { font-size: 13px; font-weight: 700; color: #ffffff; }
+.mini-artist       { font-size: 11px; color: #909090; }
+.mini-status-label { font-size: 10px; color: #606060; }
+.mini-device-label { font-size: 11px; font-weight: 700; color: #606060; }
+.mini-restore-btn {
+    min-width: 18px; min-height: 18px;
+    padding: 1px; -gtk-icon-size: 10px;
+    background-color: transparent; color: #555555;
+    border: none; border-radius: 50%; box-shadow: none;
+}
+.mini-restore-btn:hover { color: #ffffff; background-color: #2a2a2a; }
+.mini-transport-btn {
+    min-width: 22px; min-height: 22px;
+    padding: 0; -gtk-icon-size: 11px;
+    background-color: transparent; color: #cccccc;
+    border: none; border-radius: 50%; box-shadow: none;
+}
+.mini-transport-btn:hover { background-color: #2a2a2a; }
+.mini-play-btn {
+    min-width: 26px; min-height: 26px;
+    padding: 0; -gtk-icon-size: 12px;
+    background-color: #4ecdc4; color: #0a0a0a;
+    border: none; border-radius: 50%; box-shadow: none;
+}
+.mini-play-btn:hover { background-color: #5fd9d0; }
+window.adw-application-window .marquee-bg { background-color: #0a0a0a; }
+window.mini-window .marquee-bg { background-color: #111111; }
+/* Use rgba(r,g,b,0) — same hue at zero opacity — instead of `transparent`
+   (which is black at alpha=0 and creates a dark fringe in GTK's GL renderer). */
+window.adw-application-window .marquee-fade {
+    background-image: linear-gradient(to right,
+        #0a0a0a 0%, rgba(10,10,10,0) 15%,
+        rgba(10,10,10,0) 85%, #0a0a0a 100%);
+}
+window.mini-window .marquee-fade {
+    background-image: linear-gradient(to right,
+        #111111 0%, rgba(17,17,17,0) 15%,
+        rgba(17,17,17,0) 85%, #111111 100%);
+}
