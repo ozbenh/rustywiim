@@ -46,6 +46,13 @@
     padding: 1px; -gtk-icon-size: 10px;
     border: none; border-radius: 50%; box-shadow: none; background-color: transparent;
 }
+.mini-restore-btn:hover { background-color: rgba(127, 127, 127, 0.15); }
+menubutton.mini-restore-btn > button {
+    min-width: 0; min-height: 0;
+    padding: 1px; -gtk-icon-size: 10px;
+    border: none; border-radius: 50%; box-shadow: none; background-color: transparent;
+}
+menubutton.mini-restore-btn > button:hover { background-color: rgba(127, 127, 127, 0.15); }
 .mini-transport-btn {
     min-width: 22px; min-height: 22px;
     padding: 0; -gtk-icon-size: 11px;

@@ -63,6 +63,14 @@ window { background-color: #0a0a0a; }
     border: none; border-radius: 50%; box-shadow: none;
 }
 .mini-restore-btn:hover { color: #ffffff; background-color: #2a2a2a; }
+/* MenuButton wraps an inner <button> node that ignores the parent's padding/size. */
+menubutton.mini-restore-btn > button {
+    min-width: 0; min-height: 0;
+    padding: 1px; -gtk-icon-size: 10px;
+    background-color: transparent; color: #555555;
+    border: none; border-radius: 50%; box-shadow: none;
+}
+menubutton.mini-restore-btn > button:hover { color: #ffffff; background-color: #2a2a2a; }
 .mini-transport-btn {
     min-width: 22px; min-height: 22px;
     padding: 0; -gtk-icon-size: 11px;
