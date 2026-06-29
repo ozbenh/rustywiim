@@ -5,7 +5,6 @@ use std::rc::Rc;
 
 use adw::prelude::*;
 use glib::clone;
-use gtk::gio;
 use gtk::{Align, Box as GtkBox, Button, Label, Orientation, Scale};
 
 use super::icons;
@@ -93,7 +92,7 @@ pub(crate) struct MiniWidgets {
 
 // ── Build functions ───────────────────────────────────────────────────────────
 
-pub(super) fn build_header(init_panel_visible: bool) -> (adw::HeaderBar, gtk::ToggleButton, gtk::MenuButton, gtk::ToggleButton) {
+pub(super) fn build_header(init_panel_visible: bool) -> (adw::HeaderBar, gtk::ToggleButton, gtk::ToggleButton) {
     let header = adw::HeaderBar::new();
 
     let sidebar_btn = gtk::ToggleButton::builder()
@@ -104,22 +103,7 @@ pub(super) fn build_header(init_panel_visible: bool) -> (adw::HeaderBar, gtk::To
     sidebar_btn.add_css_class("sidebar-toggle");
     header.pack_start(&sidebar_btn);
 
-    let dev_btn = gtk::MenuButton::builder().label("Scanning…").build();
-    header.pack_start(&dev_btn);
-
-    let app_menu = gio::Menu::new();
-    app_menu.append(Some("Devices…"), Some("win.devices"));
-    app_menu.append(Some("Settings…"), Some("win.settings"));
-    app_menu.append(Some("About RustyWiiM"), Some("win.about"));
-    let quit_section = gio::Menu::new();
-    quit_section.append(Some("Quit"), Some("app.quit"));
-    app_menu.append_section(None, &quit_section);
-    let app_menu_btn = gtk::MenuButton::builder()
-        .icon_name("open-menu-symbolic")
-        .menu_model(&app_menu)
-        .tooltip_text("Menu")
-        .build();
-    header.pack_end(&app_menu_btn);
+    header.pack_end(&super::menu::build_menu_button(true));
 
     let mini_btn = gtk::ToggleButton::builder()
         .icon_name("view-restore-symbolic")
@@ -127,7 +111,7 @@ pub(super) fn build_header(init_panel_visible: bool) -> (adw::HeaderBar, gtk::To
         .build();
     header.pack_end(&mini_btn);
 
-    (header, sidebar_btn, dev_btn, mini_btn)
+    (header, sidebar_btn, mini_btn)
 }
 
 pub(super) fn build_presets_panel() -> (PresetWidgets, gtk::ScrolledWindow) {

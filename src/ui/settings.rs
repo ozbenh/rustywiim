@@ -15,12 +15,12 @@ use crate::device::state::DeviceState;
 
 // ── Public handle ─────────────────────────────────────────────────────────────
 
-pub(super) struct SettingsWindow {
+pub(crate) struct SettingsWindow {
     window: adw::Window,
 }
 
 impl SettingsWindow {
-    pub(super) fn new(ds: &DeviceState, parent: &adw::ApplicationWindow) -> Self {
+    pub(crate) fn new(ds: Option<&DeviceState>, parent: &adw::ApplicationWindow) -> Self {
         // ── Navigation sidebar ─────────────────────────────────────────────────
         let sidebar_box = gtk::Box::builder()
             .orientation(Orientation::Vertical)
@@ -62,7 +62,7 @@ impl SettingsWindow {
             .hexpand(true)
             .build();
 
-        let appearance_page = build_appearance_page(ds);
+        let appearance_page = build_appearance_page();
         content_stack.add_named(&appearance_page, Some("appearance"));
 
         // Select "Appearance" by default
@@ -96,7 +96,7 @@ impl SettingsWindow {
         toolbar_view.add_top_bar(&header);
         toolbar_view.set_content(Some(&paned));
 
-        let initial_title = match ds.device_info() {
+        let initial_title = match ds.and_then(|d| d.device_info()) {
             Some(i) => format!("Settings ({})", i.device_name),
             None    => "Settings".to_string(),
         };
@@ -109,25 +109,27 @@ impl SettingsWindow {
             .build();
         window.set_content(Some(&toolbar_view));
 
-        ds.connect_device_changed(glib::clone!(@weak window => move |ds| {
-            let title = match ds.device_info() {
-                Some(i) => format!("Settings ({})", i.device_name),
-                None    => "Settings".to_string(),
-            };
-            window.set_title(Some(&title));
-        }));
+        if let Some(ds) = ds {
+            ds.connect_device_changed(glib::clone!(@weak window => move |ds| {
+                let title = match ds.device_info() {
+                    Some(i) => format!("Settings ({})", i.device_name),
+                    None    => "Settings".to_string(),
+                };
+                window.set_title(Some(&title));
+            }));
+        }
 
         Self { window }
     }
 
-    pub(super) fn present(&self) {
+    pub(crate) fn present(&self) {
         self.window.present();
     }
 }
 
 // ── Per-page builders ─────────────────────────────────────────────────────────
 
-fn build_appearance_page(_ds: &DeviceState) -> adw::PreferencesPage {
+fn build_appearance_page() -> adw::PreferencesPage {
     let cfg = Config::load();
 
     let theme_list = gtk::StringList::new(&["System", "System Light", "System Dark", "RustyWiiM"]);

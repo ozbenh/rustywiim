@@ -258,25 +258,21 @@ impl DiscoveryManager {
     }
 
     fn on_health_result(&self, result: HealthResult) {
-        let changed = {
+        {
             let mut inner = self.imp().inner.borrow_mut();
             if let Some(rec) = inner.devices.get_mut(&result.key) {
-                let new_p = if result.alive {
+                rec.entry.presence = if result.alive {
                     DevicePresence::Active
                 } else if rec.entry.pinned {
                     DevicePresence::Ghost
                 } else {
                     DevicePresence::Dead
                 };
-                let was = rec.entry.presence;
-                rec.entry.presence = new_p;
-                was != new_p
-            } else { false }
-        };
-        let pruned = self.do_prune();
-        if changed || pruned {
-            self.emit_by_name::<()>("list-changed", &[]);
+            }
         }
+        self.do_prune();
+        // Always emit so the scanning indicator clears even when presence is unchanged.
+        self.emit_by_name::<()>("list-changed", &[]);
     }
 
     /// Remove entries that are Dead (not pinned, not responding) and no longer
@@ -306,7 +302,8 @@ impl DiscoveryManager {
             let pinned = dev_cfg.pinned == Some(true);
             let entry  = ManagedEntry {
                 uuid: uuid.clone(), name, ip: ip.clone(),
-                tls_mode: tls, pinned, presence: DevicePresence::Ghost,
+                // Start Active (optimistic); health check will demote to Ghost if offline.
+                tls_mode: tls, pinned, presence: DevicePresence::Active,
             };
             inner.devices.insert(uuid.clone(), DeviceRecord {
                 entry, in_discovery: false, client: WiimClient::new(ip, tls),
@@ -348,18 +345,26 @@ impl DiscoveryWindow {
         let init_h = if saved_cfg.discovery_window_height > 0 { saved_cfg.discovery_window_height } else { 440 };
         let window = adw::ApplicationWindow::builder()
             .application(app)
-            .title("Devices")
+            .title("RustyWiiM")
             .default_width(init_w)
             .default_height(init_h)
             .build();
 
         let header = adw::HeaderBar::new();
 
+        let window_title = adw::WindowTitle::builder()
+            .title("RustyWiiM")
+            .subtitle("Scanning\u{2026}")
+            .build();
+        header.set_title_widget(Some(&window_title));
+
         let add_btn = gtk::Button::builder()
             .icon_name("list-add-symbolic")
             .tooltip_text("Add device by IP address…")
             .build();
         header.pack_end(&add_btn);
+        header.pack_end(&super::menu::build_menu_button(false));
+        super::wire_window_actions(&window, None);
 
         // Device list
         let list_box = gtk::ListBox::builder()
@@ -388,9 +393,13 @@ impl DiscoveryWindow {
         // Populate list and subscribe to manager changes.
         Self::rebuild_list(&list_box, &manager.entries(), &open_device, manager);
 
+        let scanning = Rc::new(std::cell::Cell::new(true));
         manager.connect_list_changed(clone!(
-            @strong list_box, @strong open_device
+            @strong list_box, @strong open_device, @strong window_title, @strong scanning
                 => move |mgr| {
+                    if scanning.replace(false) {
+                        window_title.set_subtitle("");
+                    }
                     Self::rebuild_list(&list_box, &mgr.entries(), &open_device, mgr);
                 }
         ));

@@ -1,14 +1,13 @@
 #![allow(deprecated)] // glib clone! old-style @strong syntax
 
-mod dialogs;
 pub mod devlist;
 mod icons;
+pub(crate) mod menu;
 mod scroll_fade_label;
 mod playback;
 mod settings;
 mod widgets;
 
-use dialogs::build_device_popover;
 use playback::decode_loop_mode;
 use widgets::*;
 
@@ -25,7 +24,40 @@ use crate::device::api::TlsMode;
 use crate::config::Config;
 use crate::config::ThemeMode;
 use crate::device::state::{ConnectionState, DeviceState};
-use crate::device::discovery::DiscoveryService;
+
+// ── Shared window actions ─────────────────────────────────────────────────────
+
+/// Register `win.about` and `win.settings` on any ApplicationWindow.
+/// Both the device window and the discovery window share these actions.
+/// `ds` is `None` for the discovery window (settings window title has no device name).
+pub(crate) fn wire_window_actions(window: &adw::ApplicationWindow, ds: Option<DeviceState>) {
+    let about_action = gio::SimpleAction::new("about", None);
+    about_action.connect_activate(clone!(@strong window => move |_, _| {
+        adw::AboutDialog::builder()
+            .application_name("RustyWiiM")
+            .application_icon("audio-x-generic")
+            .version(concat!(env!("CARGO_PKG_VERSION"), " (", env!("GIT_HASH"), ")"))
+            .developer_name("Benjamin Herrenschmidt")
+            .copyright("© 2026 Benjamin Herrenschmidt")
+            .license_type(gtk::License::MitX11)
+            .website("https://github.com/ozbenh/rustywiim")
+            .build()
+            .present(Some(&window));
+    }));
+    window.add_action(&about_action);
+
+    let settings_win: Rc<RefCell<Option<settings::SettingsWindow>>> =
+        Rc::new(RefCell::new(None));
+    let settings_action = gio::SimpleAction::new("settings", None);
+    settings_action.connect_activate(clone!(@strong window, @strong settings_win => move |_, _| {
+        let mut sw = settings_win.borrow_mut();
+        if sw.is_none() {
+            *sw = Some(settings::SettingsWindow::new(ds.as_ref(), &window));
+        }
+        sw.as_ref().unwrap().present();
+    }));
+    window.add_action(&settings_action);
+}
 
 // ── DeviceSpec ────────────────────────────────────────────────────────────────
 
@@ -92,7 +124,6 @@ pub(crate) fn apply_theme(theme: ThemeMode) {
 
 struct DeviceWindowInner {
     ds:               DeviceState,
-    discovery:        DiscoveryService,
     show_devices_fn:  Rc<dyn Fn()>,
     sw:             SourceWidgets,
     ow:             OutputWidgets,
@@ -148,32 +179,19 @@ impl DeviceWindow {
             .filter(|u| !u.is_empty())
     }
 
-    /// Build a device window that waits for SSDP discovery to auto-connect.
-    #[allow(dead_code)]
-    pub fn new(
-        app:             &adw::Application,
-        rt:              Arc<tokio::runtime::Runtime>,
-        discovery:       DiscoveryService,
-        show_devices_fn: Rc<dyn Fn()>,
-    ) -> Self {
-        Self::new_inner(app, rt, discovery, show_devices_fn, None)
-    }
-
     /// Build a device window connected to a specific device.
     pub fn new_for_device(
         app:             &adw::Application,
         rt:              Arc<tokio::runtime::Runtime>,
-        discovery:       DiscoveryService,
         show_devices_fn: Rc<dyn Fn()>,
         spec:            DeviceSpec,
     ) -> Self {
-        Self::new_inner(app, rt, discovery, show_devices_fn, Some(spec))
+        Self::new_inner(app, rt, show_devices_fn, Some(spec))
     }
 
     fn new_inner(
         app:             &adw::Application,
         rt:              Arc<tokio::runtime::Runtime>,
-        discovery:       DiscoveryService,
         show_devices_fn: Rc<dyn Fn()>,
         device_spec:     Option<DeviceSpec>,
     ) -> Self {
@@ -195,10 +213,9 @@ impl DeviceWindow {
         if let Some(ref spec) = device_spec {
             ds.set_device(&spec.ip, spec.tls_mode, None);
         }
-        // No-spec path: discovery auto-connect (wire_discovery below) handles it.
         ds.start_polling();
 
-        let (header, sidebar_btn, dev_btn, mini_btn) = build_header(init_dev_cfg.panel_visible);
+        let (header, sidebar_btn, mini_btn) = build_header(init_dev_cfg.panel_visible);
         let (pp, presets_scroll) = build_presets_panel();
         let sw = build_source_widgets(&icons);
         let ow = build_output_widgets(&icons);
@@ -268,7 +285,6 @@ impl DeviceWindow {
 
         let inner = Rc::new(DeviceWindowInner {
             ds: ds.clone(),
-            discovery: discovery.clone(),
             show_devices_fn,
             sw,
             ow,
@@ -449,19 +465,6 @@ impl DeviceWindow {
             }
         });
 
-        // ── SSDP discovery ────────────────────────────────────────────────────────
-        {
-            let saved_ip = Rc::new(RefCell::new(
-                cfg.device(&cfg_uuid).last_ip.clone().unwrap_or_default()
-            ));
-            wire_discovery(
-                &inner.discovery.clone(),
-                &ds, &dev_btn, &window,
-                &saved_ip, &inner,
-                cfg_uuid.clone(),
-                device_spec.is_none(),
-            );
-        }
 
         // ── Transport / control signal handlers ───────────────────────────────────
         inner.pw.btn_play.connect_clicked({
@@ -656,34 +659,7 @@ impl DeviceWindow {
         }));
         window.add_action(&devices_action);
 
-        let settings_win: Rc<RefCell<Option<settings::SettingsWindow>>> =
-            Rc::new(RefCell::new(None));
-        let settings_action = gio::SimpleAction::new("settings", None);
-        settings_action.connect_activate(clone!(@strong window, @strong ds, @strong settings_win
-            => move |_, _| {
-                let mut sw = settings_win.borrow_mut();
-                if sw.is_none() {
-                    *sw = Some(settings::SettingsWindow::new(&ds, &window));
-                }
-                sw.as_ref().unwrap().present();
-            }
-        ));
-        window.add_action(&settings_action);
-
-        let about_action = gio::SimpleAction::new("about", None);
-        about_action.connect_activate(clone!(@strong window => move |_, _| {
-            adw::AboutDialog::builder()
-                .application_name("RustyWiiM")
-                .application_icon("audio-x-generic")
-                .version(concat!(env!("CARGO_PKG_VERSION"), " (", env!("GIT_HASH"), ")"))
-                .developer_name("Benjamin Herrenschmidt")
-                .copyright("© 2026 Benjamin Herrenschmidt")
-                .license_type(gtk::License::MitX11)
-                .website("https://github.com/ozbenh/rustywiim")
-                .build()
-                .present(Some(&window));
-        }));
-        window.add_action(&about_action);
+        wire_window_actions(&window, Some(ds.clone()));
 
         // ── Save window state ─────────────────────────────────────────────────────
         window.connect_close_request({
@@ -722,84 +698,6 @@ impl DeviceWindow {
             self.window.present();
         }
     }
-}
-
-/// Connect the `discovery-updated` signal to the device-selection UI.
-///
-/// On every list change: rebuilds the device popover, updates the button
-/// label to reflect the best-match device (UUID preferred over IP), and
-/// auto-connects if the DeviceState is still Disconnected.
-fn wire_discovery(
-    discovery:    &DiscoveryService,
-    ds:           &DeviceState,
-    dev_btn:      &gtk::MenuButton,
-    window:       &adw::ApplicationWindow,
-    saved_ip:     &Rc<RefCell<String>>,
-    inner:        &Rc<DeviceWindowInner>,
-    last_uuid:    String,
-    auto_connect: bool,
-) {
-    discovery.connect_discovery_updated(clone!(
-        @strong ds, @strong dev_btn, @strong window, @strong saved_ip, @strong inner
-            => move |svc| {
-                let devs = svc.devices();
-
-                // Rebuild the device popover with the current list.
-                let popover = build_device_popover(
-                    &devs, &ds, &dev_btn, &window, &saved_ip,
-                    {
-                        let i = Rc::clone(&inner);
-                        move |uuid| { i.apply_device_window_state(uuid); }
-                    },
-                );
-                dev_btn.set_popover(Some(&popover));
-
-                let saved = saved_ip.borrow().clone();
-
-                // Prefer UUID match (survives IP changes); fall back to IP.
-                let by_uuid = devs.iter().find(|d| {
-                    !last_uuid.is_empty() && !d.uuid.is_empty() && d.uuid == last_uuid
-                });
-                let by_ip = devs.iter().find(|d| !saved.is_empty() && d.ip == saved);
-                let best  = by_uuid.or(by_ip);
-
-                // Update the button label.
-                match best {
-                    Some(d) => dev_btn.set_label(&format!("{} ({})", d.name, d.ip)),
-                    None if !saved.is_empty() => dev_btn.set_label(&format!("Manual: {saved}")),
-                    None if devs.is_empty()   => dev_btn.set_label("No device"),
-                    None => {}
-                }
-
-                // Auto-connect only while still Disconnected and when no specific
-                // device was specified at window creation.
-                if auto_connect && ds.connection_state() == ConnectionState::Disconnected {
-                    let target = best.or_else(|| {
-                        if saved.is_empty() { devs.first() } else { None }
-                    });
-                    if let Some(d) = target {
-                        dev_btn.set_label(&format!("{} ({})", d.name, d.ip));
-                        *saved_ip.borrow_mut() = d.ip.clone();
-                        select_device(&ds, &d.ip, &d.uuid, d.tls_mode);
-                    }
-                }
-            }
-    ));
-}
-
-/// Select a device: save the IP (and UUID when known) to config, then connect.
-/// Use this for all user-initiated device changes; the startup reconnect path
-/// calls `ds.set_device()` directly because it must not overwrite the config.
-pub(super) fn select_device(ds: &DeviceState, ip: &str, uuid: &str, tls: TlsMode) {
-    {
-        let mut cfg = Config::load();
-        if !uuid.is_empty() {
-            // Store IP per-device; global last_ip and last_uuid are phased out.
-            cfg.device_mut(uuid).last_ip = Some(ip.to_string());
-        }
-        cfg.save();
-    }
-    ds.set_device(ip, tls, None);
 }
 
 // Private helper used within mod.rs new() — also accessible from child modules.

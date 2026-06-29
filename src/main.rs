@@ -149,7 +149,6 @@ fn main() -> glib::ExitCode {
         *open_device.borrow_mut() = Some({
             let app          = app.clone();
             let rt           = rt.clone();
-            let disc_svc     = disc_svc.clone();
             let show_devices = Rc::clone(&show_devices);
             let registry     = Rc::clone(&registry);
             Rc::new(move |entry: &ui::devlist::ManagedEntry| {
@@ -168,9 +167,7 @@ fn main() -> glib::ExitCode {
                     uuid:     entry.uuid.clone(),
                     tls_mode: entry.tls_mode,
                 };
-                let dw = ui::DeviceWindow::new_for_device(
-                    &app, rt.clone(), disc_svc.clone(), Rc::clone(&show_devices), spec,
-                );
+                let dw = ui::DeviceWindow::new_for_device(&app, rt.clone(), Rc::clone(&show_devices), spec);
                 // Mark window open in config.
                 if !entry.uuid.is_empty() {
                     let mut cfg = config::Config::load();
@@ -213,9 +210,7 @@ fn main() -> glib::ExitCode {
                 uuid:     uuid.clone(),
                 tls_mode: device::api::TlsMode::HttpsWiiM,
             };
-            let dw = ui::DeviceWindow::new_for_device(
-                app, rt.clone(), disc_svc.clone(), Rc::clone(&show_devices), spec,
-            );
+            let dw = ui::DeviceWindow::new_for_device(app, rt.clone(), Rc::clone(&show_devices), spec);
             let gtk_win = dw.window.clone();
             registry.borrow_mut().push(dw);
             let win_key  = gtk_win.clone();
