@@ -232,6 +232,12 @@ impl DeviceWindow {
         let (pw, vol_scale) = build_playback_widgets();
         let right_pane = build_right_pane(&pw);
         let (mini, mini_win) = build_mini_window();
+        // Register mini_win with the application so app.windows() includes it.
+        // Without this, the discovery-window close handler and the
+        // connect_window_removed quit-guard both fail to see the mini window as
+        // "a visible window", causing premature quit when the device list is
+        // closed while a device is in mini mode.
+        app.add_window(&mini_win);
 
         // ── Paned split + sidebar logic ───────────────────────────────────────────
         let paned = gtk::Paned::new(Orientation::Horizontal);
