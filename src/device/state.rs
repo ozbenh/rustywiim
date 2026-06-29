@@ -254,12 +254,6 @@ impl DeviceState {
             inner.connection_state = ConnectionState::Connecting;
             inner.expected_uuid    = expected_uuid.map(String::from);
         }
-        {
-            use crate::config::Config;
-            let mut cfg = Config::load();
-            cfg.last_ip = ip.to_string();
-            cfg.save();
-        }
         dbg("signal: device-changed (connecting)");
         self.emit_by_name::<()>("device-changed", &[]);
         self.fetch_device_info();

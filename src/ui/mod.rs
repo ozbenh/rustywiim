@@ -23,7 +23,7 @@ use gtk::{Align, Box as GtkBox, CssProvider, Label, Orientation, Scale};
 use crate::device::api::TlsMode;
 use crate::config::{Config, ThemeMode};
 use crate::device::state::{ConnectionState, DeviceState};
-use crate::device::discovery;
+use crate::device::discovery::DiscoveryService;
 
 // ── CSS ───────────────────────────────────────────────────────────────────────
 
@@ -81,6 +81,7 @@ pub(crate) fn apply_theme(theme: ThemeMode) {
 
 struct DeviceWindowInner {
     ds:             DeviceState,
+    discovery:      DiscoveryService,
     sw:             SourceWidgets,
     ow:             OutputWidgets,
     pw:             PlaybackWidgets,
@@ -128,7 +129,7 @@ impl DeviceWindow {
 
     /// Build and wire a complete device window.  The tokio `rt` is shared across
     /// all windows so there is only one thread-pool for the whole process.
-    pub fn new(app: &adw::Application, rt: Arc<tokio::runtime::Runtime>) -> Self {
+    pub fn new(app: &adw::Application, rt: Arc<tokio::runtime::Runtime>, discovery: DiscoveryService) -> Self {
         let cfg         = Config::load();
         init_css(cfg.theme);
 
@@ -216,6 +217,7 @@ impl DeviceWindow {
 
         let inner = Rc::new(DeviceWindowInner {
             ds: ds.clone(),
+            discovery: discovery.clone(),
             sw,
             ow,
             pw,
@@ -397,63 +399,13 @@ impl DeviceWindow {
 
         // ── SSDP discovery ────────────────────────────────────────────────────────
         {
-            let (tx, rx) = async_channel::bounded::<Vec<discovery::DiscoveredDevice>>(1);
-            ds.rt().spawn(async move {
-                let devs = discovery::discover(std::time::Duration::from_secs(4)).await;
-                let _ = tx.send(devs).await;
-            });
-
-            let last_uuid_for_disc = cfg.last_uuid.clone();
-            let saved_ip           = Rc::new(RefCell::new(cfg.last_ip.clone()));
-            let inner_for_popover  = Rc::clone(&inner);
-            glib::spawn_future_local(clone!(
-                @strong ds, @strong dev_btn, @strong window, @strong saved_ip
-                    => async move {
-                        if let Ok(devs) = rx.recv().await {
-                            let popover = build_device_popover(
-                                &devs, &ds, &dev_btn, &window, &saved_ip,
-                                {
-                                    let i = inner_for_popover;
-                                    move |uuid| { i.apply_device_window_state(uuid); }
-                                },
-                            );
-                            dev_btn.set_popover(Some(&popover));
-                            let saved = saved_ip.borrow().clone();
-
-                            // Prefer UUID match (survives IP changes); fall back to IP match.
-                            let by_uuid = devs.iter().find(|d| {
-                                !last_uuid_for_disc.is_empty()
-                                    && !d.uuid.is_empty()
-                                    && d.uuid == last_uuid_for_disc
-                            });
-                            let by_ip = devs.iter().find(|d| !saved.is_empty() && d.ip == saved);
-                            let best = by_uuid.or(by_ip);
-
-                            // Update the button label to reflect the discovered device
-                            // (may now be at a different IP from last_ip).
-                            match best {
-                                Some(d) => dev_btn.set_label(&format!("{} ({})", d.name, d.ip)),
-                                None if !saved.is_empty() => dev_btn.set_label(&format!("Manual: {saved}")),
-                                None if devs.is_empty()   => dev_btn.set_label("No device"),
-                                None => {}
-                            }
-
-                            // Auto-connect only if not already connecting/connected.
-                            // Disconnected means either no last_ip or the SSID check failed.
-                            if ds.connection_state() == ConnectionState::Disconnected {
-                                let target = best.or_else(|| {
-                                    // No SSID/IP match and no prior device — pick the only one.
-                                    if saved.is_empty() { devs.first() } else { None }
-                                });
-                                if let Some(d) = target {
-                                    dev_btn.set_label(&format!("{} ({})", d.name, d.ip));
-                                    *saved_ip.borrow_mut() = d.ip.clone();
-                                    ds.set_device(&d.ip, d.tls_mode, None);
-                                }
-                            }
-                        }
-                    }
-            ));
+            let saved_ip = Rc::new(RefCell::new(cfg.last_ip.clone()));
+            wire_discovery(
+                &inner.discovery.clone(),
+                &ds, &dev_btn, &window,
+                &saved_ip, &inner,
+                cfg.last_uuid.clone(),
+            );
         }
 
         // ── Transport / control signal handlers ───────────────────────────────────
@@ -698,6 +650,83 @@ impl DeviceWindow {
             self.window.present();
         }
     }
+}
+
+/// Connect the `discovery-updated` signal to the device-selection UI.
+///
+/// On every list change: rebuilds the device popover, updates the button
+/// label to reflect the best-match device (UUID preferred over IP), and
+/// auto-connects if the DeviceState is still Disconnected.
+fn wire_discovery(
+    discovery:  &DiscoveryService,
+    ds:         &DeviceState,
+    dev_btn:    &gtk::MenuButton,
+    window:     &adw::ApplicationWindow,
+    saved_ip:   &Rc<RefCell<String>>,
+    inner:      &Rc<DeviceWindowInner>,
+    last_uuid:  String,
+) {
+    discovery.connect_discovery_updated(clone!(
+        @strong ds, @strong dev_btn, @strong window, @strong saved_ip, @strong inner
+            => move |svc| {
+                let devs = svc.devices();
+
+                // Rebuild the device popover with the current list.
+                let popover = build_device_popover(
+                    &devs, &ds, &dev_btn, &window, &saved_ip,
+                    {
+                        let i = Rc::clone(&inner);
+                        move |uuid| { i.apply_device_window_state(uuid); }
+                    },
+                );
+                dev_btn.set_popover(Some(&popover));
+
+                let saved = saved_ip.borrow().clone();
+
+                // Prefer UUID match (survives IP changes); fall back to IP.
+                let by_uuid = devs.iter().find(|d| {
+                    !last_uuid.is_empty() && !d.uuid.is_empty() && d.uuid == last_uuid
+                });
+                let by_ip = devs.iter().find(|d| !saved.is_empty() && d.ip == saved);
+                let best  = by_uuid.or(by_ip);
+
+                // Update the button label.
+                match best {
+                    Some(d) => dev_btn.set_label(&format!("{} ({})", d.name, d.ip)),
+                    None if !saved.is_empty() => dev_btn.set_label(&format!("Manual: {saved}")),
+                    None if devs.is_empty()   => dev_btn.set_label("No device"),
+                    None => {}
+                }
+
+                // Auto-connect only while still Disconnected so user-initiated
+                // connections are never overridden.
+                if ds.connection_state() == ConnectionState::Disconnected {
+                    let target = best.or_else(|| {
+                        if saved.is_empty() { devs.first() } else { None }
+                    });
+                    if let Some(d) = target {
+                        dev_btn.set_label(&format!("{} ({})", d.name, d.ip));
+                        *saved_ip.borrow_mut() = d.ip.clone();
+                        select_device(&ds, &d.ip, &d.uuid, d.tls_mode);
+                    }
+                }
+            }
+    ));
+}
+
+/// Select a device: save the IP (and UUID when known) to config, then connect.
+/// Use this for all user-initiated device changes; the startup reconnect path
+/// calls `ds.set_device()` directly because it must not overwrite the config.
+pub(super) fn select_device(ds: &DeviceState, ip: &str, uuid: &str, tls: TlsMode) {
+    {
+        let mut cfg = Config::load();
+        cfg.last_ip = ip.to_string();
+        if !uuid.is_empty() {
+            cfg.last_uuid = uuid.to_string();
+        }
+        cfg.save();
+    }
+    ds.set_device(ip, tls, None);
 }
 
 // Private helper used within mod.rs new() — also accessible from child modules.

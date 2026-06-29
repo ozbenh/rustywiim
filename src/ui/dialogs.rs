@@ -10,6 +10,7 @@ use gtk::{Button, Orientation};
 use crate::device::api::TlsMode;
 use crate::device::state::DeviceState;
 use crate::device::discovery;
+use super::select_device;
 
 pub(super) fn show_manual_ip_dialog(
     window:     &adw::ApplicationWindow,
@@ -46,7 +47,7 @@ pub(super) fn show_manual_ip_dialog(
                         let label = format!("Manual: {ip}");
                         dev_btn.set_label(&label);
                         manual_btn.set_label(&label);
-                        ds.set_device(&ip, TlsMode::HttpsWiiM, None);
+                        select_device(&ds, &ip, "", TlsMode::HttpsWiiM);
                     }
                 }
             }
@@ -87,7 +88,7 @@ pub(super) fn build_device_popover(
                         on_sel(&uuid);
                         dev_btn.set_label(&label);
                         dev_btn.popdown();
-                        ds.set_device(&ip, tls_mode, None);
+                        select_device(&ds, &ip, &uuid, tls_mode);
                     }
             ));
             vbox.append(&btn);

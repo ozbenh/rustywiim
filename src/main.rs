@@ -18,7 +18,7 @@ fn main() -> glib::ExitCode {
         glib::Char(0),
         glib::OptionFlags::NONE,
         glib::OptionArg::String,
-        "Enable debug output: comma-separated list of api, state, device, or all",
+        "Enable debug output: comma-separated list of api, state, device, discovery, or all",
         Some("LIST"),
     );
     app.add_main_option(
@@ -34,16 +34,18 @@ fn main() -> glib::ExitCode {
         if let Ok(Some(list)) = opts.lookup::<String>("debug") {
             for token in list.split(',').map(str::trim) {
                 match token {
-                    "api"    => { device::api::DEBUG.store(true, Ordering::Relaxed); }
-                    "state"  => { device::state::DEBUG_STATE.store(true, Ordering::Relaxed); }
-                    "device" => { device::capabilities::DEBUG_DEVICE.store(true, Ordering::Relaxed); }
-                    "all"    => {
+                    "api"       => { device::api::DEBUG.store(true, Ordering::Relaxed); }
+                    "state"     => { device::state::DEBUG_STATE.store(true, Ordering::Relaxed); }
+                    "device"    => { device::capabilities::DEBUG_DEVICE.store(true, Ordering::Relaxed); }
+                    "discovery" => { device::discovery::DEBUG_DISCOVERY.store(true, Ordering::Relaxed); }
+                    "all"       => {
                         device::api::DEBUG.store(true, Ordering::Relaxed);
                         device::state::DEBUG_STATE.store(true, Ordering::Relaxed);
                         device::capabilities::DEBUG_DEVICE.store(true, Ordering::Relaxed);
+                        device::discovery::DEBUG_DISCOVERY.store(true, Ordering::Relaxed);
                     }
                     other => {
-                        eprintln!("rustywiim: unknown debug token {:?} (valid: api, state, device, all)", other);
+                        eprintln!("rustywiim: unknown debug token {:?} (valid: api, state, device, discovery, all)", other);
                     }
                 }
             }
@@ -82,7 +84,11 @@ fn main() -> glib::ExitCode {
         adw::StyleManager::default().set_color_scheme(adw::ColorScheme::ForceDark);
     });
     app.connect_activate(move |app| {
-        ui::DeviceWindow::new(app, rt.clone()).present();
+        // Create the discovery service here so it runs on the GTK main thread
+        // (glib::spawn_future_local requires the main context to be active).
+        let discovery = device::discovery::DiscoveryService::new(rt.clone());
+        discovery.start();
+        ui::DeviceWindow::new(app, rt.clone(), discovery).present();
     });
     app.run()
 }
