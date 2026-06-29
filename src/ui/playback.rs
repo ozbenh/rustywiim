@@ -372,7 +372,7 @@ impl DeviceWindowInner {
 
         if let Some(m) = self.ds.metadata() {
             let title = if is_unknown(&m.title) { String::new() } else { m.title.clone() };
-            self.pw.title.set_text(if title.is_empty() { "—" } else { &title });
+            self.pw.title.set_text(&title);
             self.pw.artist.set_text(if is_unknown(&m.artist) { "" } else { &m.artist });
             self.pw.album.set_text(if is_unknown(&m.album)  { "" } else { &m.album });
 
@@ -588,7 +588,7 @@ impl DeviceWindowInner {
                 &format_status(&st.status, &st.mode, &st.vendor));
         }
         if let Some(m) = self.ds.metadata() {
-            let title = if is_unknown(&m.title) { "—".to_string() } else { m.title.clone() };
+            let title = if is_unknown(&m.title) { String::new() } else { m.title.clone() };
             self.mini.title_label.set_text(&title);
             let artist = if is_unknown(&m.artist) { String::new() } else { m.artist.clone() };
             let album  = if is_unknown(&m.album)  { String::new() } else { m.album.clone() };
