@@ -579,12 +579,16 @@ impl DeviceWindow {
             move |btn| {
                 if *i.mini_toggling.borrow() { return; }
                 if btn.is_active() { i.enter_mini_mode(); } else { i.exit_mini_mode(); }
+                playback::schedule_config_save(&i);
             }
         });
 
         inner.mini.restore_btn.connect_clicked({
             let i = Rc::clone(&inner);
-            move |_| { i.exit_mini_mode(); }
+            move |_| {
+                i.exit_mini_mode();
+                playback::schedule_config_save(&i);
+            }
         });
 
         {
@@ -592,7 +596,10 @@ impl DeviceWindow {
             gesture.connect_pressed({
                 let i = Rc::clone(&inner);
                 move |_, n_press, _, _| {
-                    if n_press >= 2 { i.exit_mini_mode(); }
+                    if n_press >= 2 {
+                        i.exit_mini_mode();
+                        playback::schedule_config_save(&i);
+                    }
                 }
             });
             inner.mini.root.add_controller(gesture);
@@ -637,6 +644,7 @@ impl DeviceWindow {
             let i = Rc::clone(&inner);
             move |_win| {
                 i.exit_mini_mode();
+                playback::schedule_config_save(&i);
                 glib::Propagation::Stop
             }
         });
@@ -693,13 +701,21 @@ impl DeviceWindow {
         });
 
         if init_dev_cfg.mini_mode {
-            inner.enter_mini_mode();
+            // Set up mini-mode state without calling enter_mini_mode(), which would
+            // try to hide a window not yet shown and call mini_win.present() too early.
+            // DeviceWindow::present() (called by the caller) will show the mini window.
+            *inner.mini_mode.borrow_mut() = true;
+            *inner.mini_toggling.borrow_mut() = true;
+            inner.mini_btn.set_active(true);
+            *inner.mini_toggling.borrow_mut() = false;
+            // Seed pre_mini_size from saved config so exit_mini_mode() can restore
+            // the right size even before the main window has ever been realised.
+            *inner.pre_mini_size.borrow_mut() = (win_w, win_h);
         }
 
         Self { window, inner }
     }
 
-    #[allow(dead_code)]
     pub fn present(&self) {
         if *self.inner.mini_mode.borrow() {
             self.inner.mini_win.present();

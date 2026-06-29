@@ -175,6 +175,7 @@ fn main() -> glib::ExitCode {
                     cfg.save();
                 }
                 let gtk_win = dw.window.clone();
+                dw.present();
                 registry.borrow_mut().push(dw);
                 let win_key  = gtk_win.clone();
                 let reg_weak = Rc::clone(&registry);
@@ -182,7 +183,6 @@ fn main() -> glib::ExitCode {
                     reg_weak.borrow_mut().retain(|w| w.window != win_key);
                     glib::Propagation::Proceed
                 });
-                gtk_win.present();
             })
         });
 
@@ -212,6 +212,7 @@ fn main() -> glib::ExitCode {
             };
             let dw = ui::DeviceWindow::new_for_device(app, rt.clone(), Rc::clone(&show_devices), spec);
             let gtk_win = dw.window.clone();
+            dw.present();
             registry.borrow_mut().push(dw);
             let win_key  = gtk_win.clone();
             let reg_weak = Rc::clone(&registry);
@@ -219,7 +220,6 @@ fn main() -> glib::ExitCode {
                 reg_weak.borrow_mut().retain(|w| w.window != win_key);
                 glib::Propagation::Proceed
             });
-            gtk_win.present();
             device_windows_opened += 1;
         }
 
