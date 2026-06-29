@@ -77,14 +77,14 @@ pub(super) fn build_device_popover(
         for d in devs {
             let label    = format!("{} ({})", d.name, d.ip);
             let ip       = d.ip.clone();
-            let ssid     = d.ssid.clone();
+            let uuid     = d.uuid.clone();
             let tls_mode = d.tls_mode;
             let on_sel   = on_select.clone();
             let btn = Button::builder().label(&label).css_classes(["flat"]).build();
             btn.connect_clicked(clone!(
                 @strong ds, @strong dev_btn, @strong label
                     => move |_| {
-                        on_sel(&ssid);
+                        on_sel(&uuid);
                         dev_btn.set_label(&label);
                         dev_btn.popdown();
                         ds.set_device(&ip, tls_mode, None);

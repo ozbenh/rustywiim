@@ -292,7 +292,7 @@ impl DeviceWindowInner {
 
         self.populate_source();
         self.populate_output();
-        self.apply_device_window_state(&info.ssid);
+        self.apply_device_window_state(&info.uuid);
     }
 
     // ── Volume helpers ────────────────────────────────────────────────────────
@@ -481,18 +481,18 @@ impl DeviceWindowInner {
     }
 
     /// Apply per-device window/panel state for the device identified by
-    /// `ssid`.  Guarded by `applied_window_key` so repeated device-changed
+    /// `uuid`.  Guarded by `applied_window_key` so repeated device-changed
     /// fires for the same device don't override the user's manual resizes.
-    pub(super) fn apply_device_window_state(&self, ssid: &str) {
-        if ssid.is_empty() { return; }
-        let prev_ssid = self.applied_window_key.borrow().clone();
-        if prev_ssid == ssid { return; }
+    pub(super) fn apply_device_window_state(&self, uuid: &str) {
+        if uuid.is_empty() { return; }
+        let prev_uuid = self.applied_window_key.borrow().clone();
+        if prev_uuid == uuid { return; }
 
         // Save the previous device's window state before overwriting the layout.
-        // We use prev_ssid directly rather than ds.device_info() because by the
+        // We use prev_uuid directly rather than ds.device_info() because by the
         // time this is called from apply_device_info, device_info() already points
         // to the new device.
-        if !prev_ssid.is_empty() {
+        if !prev_uuid.is_empty() {
             let dev_cfg = DeviceConfig {
                 window_maximized: self.window.is_maximized(),
                 window_width:     if self.window.is_maximized() { 0 } else { self.window.width() },
@@ -502,13 +502,13 @@ impl DeviceWindowInner {
                 mini_mode:        *self.mini_mode.borrow(),
             };
             let mut cfg = Config::load();
-            cfg.save_device(&prev_ssid, dev_cfg);
+            cfg.save_device(&prev_uuid, dev_cfg);
             cfg.save();
         }
 
-        *self.applied_window_key.borrow_mut() = ssid.to_string();
+        *self.applied_window_key.borrow_mut() = uuid.to_string();
 
-        let dev_cfg = Config::load().device(ssid);
+        let dev_cfg = Config::load().device(uuid);
 
         let panel_width = if dev_cfg.paned_position > 0 { dev_cfg.paned_position } else { 200 };
         *self.saved_panel_width.borrow_mut() = panel_width;
@@ -541,8 +541,8 @@ impl DeviceWindowInner {
     /// Loads the full config, updates only the current device's entry, and
     /// saves so no other device's entry is overwritten.
     pub(super) fn save_config_now(&self) {
-        let ssid = match self.ds.device_info() {
-            Some(di) if !di.ssid.is_empty() => di.ssid,
+        let uuid = match self.ds.device_info() {
+            Some(di) if !di.uuid.is_empty() => di.uuid,
             _ => return,
         };
         // In mini mode, use the saved pre-mini size rather than the mini window size.
@@ -562,8 +562,8 @@ impl DeviceWindowInner {
             mini_mode:        *self.mini_mode.borrow(),
         };
         let mut cfg = Config::load();
-        cfg.last_ssid = ssid.clone();
-        cfg.save_device(ssid, dev_cfg);
+        cfg.last_uuid = uuid.clone();
+        cfg.save_device(uuid, dev_cfg);
         cfg.save();
     }
 

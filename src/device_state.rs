@@ -126,9 +126,9 @@ struct Inner {
     presets:          Vec<PresetEntry>,
     /// Fingerprint of the last fetched preset list (used to skip re-fetches).
     preset_fp:        String,
-    /// Expected WiFi SSID for the current startup reconnect attempt.
-    /// `None` means accept any SSID (user-initiated connect or already verified).
-    expected_ssid:    Option<String>,
+    /// Expected UUID for the current startup reconnect attempt.
+    /// `None` means accept any device (user-initiated connect or already verified).
+    expected_uuid:    Option<String>,
     /// Pending volume level to send on the next 1s tick (-1 = none pending).
     target_volume:    i32,
     /// When the last volume API command was sent (None = never).
@@ -159,7 +159,7 @@ impl Default for Inner {
             connection_state: ConnectionState::Disconnected,
             presets:          Vec::new(),
             preset_fp:        String::new(),
-            expected_ssid:    None,
+            expected_uuid:    None,
             target_volume:    -1,
             last_volume_cmd:  None,
             last_slow_poll:   None,
@@ -236,11 +236,11 @@ impl DeviceState {
     /// show "Connecting…"), then fetches device info asynchronously and emits
     /// `device-changed` again when the data arrives.
     ///
-    /// `expected_ssid` — when `Some`, the SSID reported by the device must
+    /// `expected_uuid` — when `Some`, the UUID reported by the device must
     /// match; on mismatch the connection is aborted and state reverts to
     /// `Disconnected` so the caller can try a different IP.  Pass `None` for
     /// user-initiated connects where the right device is already known.
-    pub fn set_device(&self, ip: &str, tls: TlsMode, expected_ssid: Option<&str>) {
+    pub fn set_device(&self, ip: &str, tls: TlsMode, expected_uuid: Option<&str>) {
         // Apply --tls CLI override if set; otherwise use the caller-supplied mode.
         let tls = {
             let global = TlsMode::from_usize(TLS_MODE.load(Ordering::Relaxed));
@@ -252,7 +252,7 @@ impl DeviceState {
             *inner = Inner::default();
             inner.client           = Some(WiimClient::new(ip, tls));
             inner.connection_state = ConnectionState::Connecting;
-            inner.expected_ssid    = expected_ssid.map(String::from);
+            inner.expected_uuid    = expected_uuid.map(String::from);
         }
         {
             use crate::config::Config;
@@ -308,16 +308,16 @@ impl DeviceState {
                 ds.emit_by_name::<()>("device-changed", &[]);
                 return;
             };
-            // If we were given an expected SSID (startup reconnect), verify it
+            // If we were given an expected UUID (startup reconnect), verify it
             // before accepting the connection.  On mismatch the device at this
             // IP is not ours; drop back to Disconnected so discovery can
-            // reconnect to the right IP by SSID.
-            let expected_ssid = ds.imp().inner.borrow().expected_ssid.clone();
-            if let Some(expected) = expected_ssid {
-                if info.ssid != expected {
+            // reconnect to the right IP by UUID.
+            let expected_uuid = ds.imp().inner.borrow().expected_uuid.clone();
+            if let Some(expected) = expected_uuid {
+                if info.uuid != expected {
                     dbg(&format!(
-                        "SSID mismatch: expected {:?}, got {:?}; aborting connection",
-                        expected, info.ssid,
+                        "UUID mismatch: expected {:?}, got {:?}; aborting connection",
+                        expected, info.uuid,
                     ));
                     *ds.imp().inner.borrow_mut() = Inner::default();
                     ds.emit_by_name::<()>("device-changed", &[]);
@@ -576,24 +576,24 @@ impl DeviceState {
                     continue;
                 };
 
-                let (prev_fw, prev_ssid, prev_name, prev_netstat, prev_rssi) = {
+                let (prev_fw, prev_uuid, prev_name, prev_netstat, prev_rssi) = {
                     let inner = ds.imp().inner.borrow();
                     let di = inner.device_info.as_ref();
                     (
                         di.map(|i| i.firmware.clone()).unwrap_or_default(),
-                        di.map(|i| i.ssid.clone()).unwrap_or_default(),
+                        di.map(|i| i.uuid.clone()).unwrap_or_default(),
                         di.map(|i| i.device_name.clone()).unwrap_or_default(),
                         inner.netstat,
                         inner.rssi,
                     )
                 };
 
-                // SSID change means the underlying device has been replaced on the
+                // UUID change means the underlying device has been replaced on the
                 // same IP.  Do a full re-init rather than a partial identity update.
-                if !prev_ssid.is_empty() && new_info.ssid != prev_ssid {
+                if !prev_uuid.is_empty() && new_info.uuid != prev_uuid {
                     dbg(&format!(
-                        "slow poll: SSID changed ({} → {}); resetting connection",
-                        prev_ssid, new_info.ssid,
+                        "slow poll: UUID changed ({} → {}); resetting connection",
+                        prev_uuid, new_info.uuid,
                     ));
                     let client = ds.imp().inner.borrow().client.clone();
                     {
@@ -624,8 +624,8 @@ impl DeviceState {
                     inner.rssi    = new_rssi;
                     if identity_changed {
                         dbg(&format!(
-                            "device identity changed: fw={} ssid={} name={}",
-                            new_info.firmware, new_info.ssid, new_info.device_name,
+                            "device identity changed: fw={} uuid={} name={}",
+                            new_info.firmware, new_info.uuid, new_info.device_name,
                         ));
                         inner.device_info = Some(new_info);
                     }

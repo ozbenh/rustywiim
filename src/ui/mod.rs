@@ -132,7 +132,7 @@ impl DeviceWindow {
         init_css(cfg.theme);
 
         let icons = Rc::new(icons::IconSet::load());
-        let init_dev_cfg = cfg.device(&cfg.last_ssid);
+        let init_dev_cfg = cfg.device(&cfg.last_uuid);
 
         let ds = DeviceState::new(rt);
         if !cfg.last_ip.is_empty() {
@@ -140,7 +140,7 @@ impl DeviceWindow {
             // was reassigned to a different device.  Discovery will then reconnect
             // to the right device by SSID.  Pass None if no SSID is on record
             // (first run or old config) so we connect unconditionally.
-            let expected = if cfg.last_ssid.is_empty() { None } else { Some(cfg.last_ssid.as_str()) };
+            let expected = if cfg.last_uuid.is_empty() { None } else { Some(cfg.last_uuid.as_str()) };
             ds.set_device(&cfg.last_ip, TlsMode::HttpsWiiM, expected);
         }
         ds.start_polling();
@@ -232,7 +232,7 @@ impl DeviceWindow {
             panel_collapsing,
             settle_timer,
             config_save_timer,
-            applied_window_key: RefCell::new(cfg.last_ssid.clone()),
+            applied_window_key: RefCell::new(cfg.last_uuid.clone()),
             mini,
             mini_mode:         RefCell::new(false),
             mini_toggling:     RefCell::new(false),
@@ -402,7 +402,7 @@ impl DeviceWindow {
                 let _ = tx.send(devs).await;
             });
 
-            let last_ssid_for_disc = cfg.last_ssid.clone();
+            let last_uuid_for_disc = cfg.last_uuid.clone();
             let saved_ip           = Rc::new(RefCell::new(cfg.last_ip.clone()));
             let inner_for_popover  = Rc::clone(&inner);
             glib::spawn_future_local(clone!(
@@ -413,20 +413,20 @@ impl DeviceWindow {
                                 &devs, &ds, &dev_btn, &window, &saved_ip,
                                 {
                                     let i = inner_for_popover;
-                                    move |ssid| { i.apply_device_window_state(ssid); }
+                                    move |uuid| { i.apply_device_window_state(uuid); }
                                 },
                             );
                             dev_btn.set_popover(Some(&popover));
                             let saved = saved_ip.borrow().clone();
 
-                            // Prefer SSID match (survives IP changes); fall back to IP match.
-                            let by_ssid = devs.iter().find(|d| {
-                                !last_ssid_for_disc.is_empty()
-                                    && !d.ssid.is_empty()
-                                    && d.ssid == last_ssid_for_disc
+                            // Prefer UUID match (survives IP changes); fall back to IP match.
+                            let by_uuid = devs.iter().find(|d| {
+                                !last_uuid_for_disc.is_empty()
+                                    && !d.uuid.is_empty()
+                                    && d.uuid == last_uuid_for_disc
                             });
                             let by_ip = devs.iter().find(|d| !saved.is_empty() && d.ip == saved);
-                            let best = by_ssid.or(by_ip);
+                            let best = by_uuid.or(by_ip);
 
                             // Update the button label to reflect the discovered device
                             // (may now be at a different IP from last_ip).

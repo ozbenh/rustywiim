@@ -21,9 +21,9 @@ pub enum ThemeMode {
     RustyWiiM,
 }
 
-/// Per-device window state, keyed on the WiFi SSID the device is connected to.
-/// The SSID is a stable hardware-level identifier that does not change when
-/// the user renames the device.
+/// Per-device window state, keyed on the device UUID from `getStatusEx`.
+/// The UUID is a stable hardware-level identifier that does not change when
+/// the device is renamed or moved to a different network.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeviceConfig {
     #[serde(default)]
@@ -59,12 +59,12 @@ pub struct Config {
     /// IP of the last connected device (for reconnect on startup).
     #[serde(default)]
     pub last_ip: String,
-    /// SSID of the last connected device.  Used to look up the right
+    /// UUID of the last connected device.  Used to look up the right
     /// DeviceConfig for initial window sizing before the device has reported
-    /// its SSID to us.
+    /// its UUID to us.
     #[serde(default)]
-    pub last_ssid: String,
-    /// Per-device window/panel state, keyed on device WiFi SSID.
+    pub last_uuid: String,
+    /// Per-device window/panel state, keyed on device UUID.
     #[serde(default)]
     pub devices: HashMap<String, DeviceConfig>,
     /// Application-wide color scheme.
@@ -94,13 +94,13 @@ impl Config {
         }
     }
 
-    /// Return the stored config for `ssid`, or a fresh default.
-    pub fn device(&self, ssid: &str) -> DeviceConfig {
-        self.devices.get(ssid).cloned().unwrap_or_default()
+    /// Return the stored config for `uuid`, or a fresh default.
+    pub fn device(&self, uuid: &str) -> DeviceConfig {
+        self.devices.get(uuid).cloned().unwrap_or_default()
     }
 
-    /// Upsert the per-device config for `ssid`.
-    pub fn save_device(&mut self, ssid: impl Into<String>, dev_cfg: DeviceConfig) {
-        self.devices.insert(ssid.into(), dev_cfg);
+    /// Upsert the per-device config for `uuid`.
+    pub fn save_device(&mut self, uuid: impl Into<String>, dev_cfg: DeviceConfig) {
+        self.devices.insert(uuid.into(), dev_cfg);
     }
 }

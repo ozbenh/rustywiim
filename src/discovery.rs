@@ -10,10 +10,10 @@ use crate::api::{TlsMode, api_base_url, build_reqwest_client};
 pub struct DiscoveredDevice {
     pub ip:       String,
     pub name:     String,
-    /// WiFi SSID the device is connected to (from `getStatusEx`).
-    /// Stable identifier used as the per-device config key.
-    /// Empty for devices found only via the UPnP fallback path.
-    pub ssid:     String,
+    /// UUID from `getStatusEx`.  Stable hardware identifier used as the
+    /// per-device config key.  Empty for devices found only via the UPnP
+    /// fallback path (where we can't reach the API).
+    pub uuid:     String,
     /// The TLS mode to use for subsequent connections to this device.
     pub tls_mode: TlsMode,
 }
@@ -94,8 +94,8 @@ pub async fn discover(duration: Duration) -> Vec<DiscoveredDevice> {
 /// whose API responds.  Falls back to the SSDP UPnP description if no API mode works.
 async fn identify_device(ip: &str, location: &str) -> Option<DiscoveredDevice> {
     for &mode in PROBE_MODES {
-        if let Some((name, ssid)) = probe_api(ip, mode).await {
-            return Some(DiscoveredDevice { ip: ip.to_string(), name, ssid, tls_mode: mode });
+        if let Some((name, uuid)) = probe_api(ip, mode).await {
+            return Some(DiscoveredDevice { ip: ip.to_string(), name, uuid, tls_mode: mode });
         }
     }
 
@@ -112,7 +112,7 @@ async fn identify_device(ip: &str, location: &str) -> Option<DiscoveredDevice> {
                 return Some(DiscoveredDevice {
                     ip:       ip.to_string(),
                     name,
-                    ssid:     String::new(),
+                    uuid:     String::new(),
                     tls_mode: TlsMode::HttpsWiiM,
                 });
             }
@@ -123,7 +123,7 @@ async fn identify_device(ip: &str, location: &str) -> Option<DiscoveredDevice> {
 }
 
 /// Try the WiiM API (`getStatusEx`) with a single TLS mode.
-/// Returns `(name, ssid)` on success, or `None` on any error or non-WiiM response.
+/// Returns `(name, uuid)` on success, or `None` on any error or non-WiiM response.
 async fn probe_api(ip: &str, mode: TlsMode) -> Option<(String, String)> {
     let client = build_reqwest_client(mode, Duration::from_secs(2));
     let url = format!("{}?command=getStatusEx", api_base_url(ip, mode));
@@ -142,8 +142,8 @@ async fn probe_api(ip: &str, mode: TlsMode) -> Option<(String, String)> {
         let val  = serde_json::from_str::<serde_json::Value>(&text).ok()?;
         let name = val["DeviceName"].as_str().map(String::from)
             .unwrap_or_else(|| format!("WiiM @ {ip}"));
-        let ssid = val["ssid"].as_str().map(String::from).unwrap_or_default();
-        Some((name, ssid))
+        let uuid = val["uuid"].as_str().map(String::from).unwrap_or_default();
+        Some((name, uuid))
     } else {
         None
     }
