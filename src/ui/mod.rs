@@ -108,25 +108,50 @@ fn init_css(theme: ThemeMode) {
     THEME_PROVIDER.with(|p| *p.borrow_mut() = Some(provider));
 }
 
+/// Walk the widget tree rooted at `widget` and call `queue_draw()` on every
+/// node.  `queue_draw()` on a container does NOT cascade to children in GTK4 —
+/// each widget owns its snapshot cache independently, and only the widgets
+/// that are individually marked dirty will be re-snapshot'd on the next frame.
+fn queue_draw_recursive(widget: &gtk::Widget) {
+    widget.queue_draw();
+    let mut child = widget.first_child();
+    while let Some(c) = child {
+        queue_draw_recursive(&c);
+        child = c.next_sibling();
+    }
+}
+
 /// Switch the active CSS theme at runtime.
 pub(crate) fn apply_theme(theme: ThemeMode) {
     apply_color_scheme(theme);
+
+    // Replace the provider object rather than mutating it with load_from_string.
+    // GTK can miss detecting a rule *removal* from the same provider object
+    // (e.g. `window { background-color }` present in dark.css but absent in
+    // system.css), leaving computed style caches stale.
+    let display = gtk::gdk::Display::default().unwrap();
     THEME_PROVIDER.with(|p| {
-        if let Some(provider) = p.borrow().as_ref() {
-            provider.load_from_string(theme_css(theme));
+        let mut borrow = p.borrow_mut();
+        if let Some(old) = borrow.take() {
+            gtk::style_context_remove_provider_for_display(&display, &old);
         }
+        let provider = CssProvider::new();
+        provider.load_from_string(theme_css(theme));
+        gtk::style_context_add_provider_for_display(
+            &display, &provider, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+        );
+        *borrow = Some(provider);
     });
-    // Two-pass repaint:
-    // Pass 1 — immediate: covers the common case where CSS updates are sync.
+
+    // Mark every widget in every window dirty so the next frame re-snapshot's
+    // everything from the updated CSS.  Two passes: immediate + LOW-priority
+    // idle (after any async Adwaita colour-scheme work at DEFAULT_IDLE priority).
     for win in gtk::Window::list_toplevels() {
-        win.queue_draw();
+        queue_draw_recursive(&win);
     }
-    // Pass 2 — Priority::LOW idle: adw::StyleManager may defer some CSS cascade
-    // work at DEFAULT_IDLE priority (200); firing at LOW (300) guarantees we run
-    // after all of that has settled, catching any widgets still stale after pass 1.
     glib::idle_add_local_full(glib::Priority::LOW, || {
         for win in gtk::Window::list_toplevels() {
-            win.queue_draw();
+            queue_draw_recursive(&win);
         }
         glib::ControlFlow::Break
     });
@@ -273,7 +298,7 @@ impl DeviceWindow {
             .margin_top(4).margin_bottom(4).build();
 
         let ip_label = Label::builder()
-            .css_classes(["dim-label"])
+            .css_classes(["ip-label", "dim-label"])
             .margin_end(6).margin_top(4).margin_bottom(4)
             .visible(false)
             .build();
