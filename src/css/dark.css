@@ -49,7 +49,8 @@ window { background-color: #0a0a0a; }
 .loop-btn     { min-width: 36px; min-height: 36px; padding: 0; -gtk-icon-size: 16px; background-color: transparent; color: #606060; }
 .loop-btn:hover { background-color: #2a2a2a; color: #ffffff; }
 .loop-active  { color: #4ecdc4; }
-.mini-window  { background-color: #111111; border-radius: 10px; }
+window.mini-window { background-color: transparent; }
+.mini-outer   { background-color: #111111; border-radius: 10px; overflow: hidden; }
 .mini-art     { min-width: 64px; min-height: 64px; border-radius: 6px; }
 .mini-main-row { background-color: #111111; }
 .mini-title        { font-size: 13px; font-weight: 700; color: #ffffff; }
@@ -87,6 +88,9 @@ menubutton.mini-restore-btn > button:hover { color: #ffffff; background-color: #
 .mini-play-btn:hover { background-color: #5fd9d0; }
 window.adw-application-window .marquee-bg { background-color: #0a0a0a; }
 window.mini-window .marquee-bg { background-color: #111111; }
+/* Viewport inherits marquee-bg's colour so the 1-px NGL stale row at the
+   Viewport clip boundary is covered on GTK ≤4.15. */
+.marquee-bg viewport { background-color: inherit; }
 /* Use rgba(r,g,b,0) — same hue at zero opacity — instead of `transparent`
    (which is black at alpha=0 and creates a dark fringe in GTK's GL renderer). */
 window.adw-application-window .marquee-fade {

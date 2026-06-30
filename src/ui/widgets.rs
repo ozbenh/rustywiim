@@ -604,6 +604,7 @@ pub(super) fn build_mini_window(app: &adw::Application) -> (MiniWidgets, gtk::Ap
 
     let mini_outer = GtkBox::builder()
         .orientation(Orientation::Vertical).spacing(0)
+        .css_classes(["mini-outer"])
         .build();
     mini_outer.append(&mini_top_bar);
     mini_outer.append(&mini_main_row);
