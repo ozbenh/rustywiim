@@ -85,6 +85,9 @@ For now just this one:
     * Various small cosmetic and UI behaviour adjustments
 	* Fix auto-reopening on windows for non-pinned devices
 
+  * 0.4.3 - 2026-06-30
+    * Fix name/model display in device list for non pinned devices
+
 ## Screenshots ##
 
 ![Screenshot](screenshot1.png)
