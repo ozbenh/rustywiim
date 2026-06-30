@@ -63,7 +63,8 @@ struct DeviceRecord {
 struct HealthResult {
     key:   String, // uuid, or "ip:<ip>" when uuid is unknown
     alive: bool,
-    /// Model string from a successful `getStatusEx` call; None when offline.
+    /// Device name and model from a successful `getStatusEx` call; None when offline.
+    name:  Option<String>,
     model: Option<String>,
 }
 
@@ -258,6 +259,7 @@ impl DiscoveryManager {
             .collect();
 
         let mut changed = false;
+        let mut new_keys: Vec<String> = Vec::new();
         {
             let mut inner = self.imp().inner.borrow_mut();
             for rec in inner.devices.values_mut() {
@@ -268,23 +270,33 @@ impl DiscoveryManager {
                     dbg(&format!("discovery: {} ({}) left SSDP scope", rec.entry.name, rec.entry.ip));
                 }
             }
+            let cfg = Config::load();
             for dev in &discovered {
                 let key = device_key(&dev.uuid, &dev.ip);
                 if !inner.devices.contains_key(&key) {
-                    dbg(&format!("discovery: new device {} ({}) uuid={:?}", dev.name, dev.ip, dev.uuid));
+                    // Use cached name/model from config so the list shows
+                    // correct values immediately, before the health check returns.
+                    let cached = cfg.devices.get(&dev.uuid);
+                    let name  = cached.and_then(|c| c.name.clone())
+                        .filter(|n| !n.is_empty())
+                        .unwrap_or_else(|| dev.name.clone());
+                    let model = cached.and_then(|c| c.model.clone())
+                        .unwrap_or_default();
+                    dbg(&format!("discovery: new device {} ({}) uuid={:?}", name, dev.ip, dev.uuid));
                     let entry = ManagedEntry {
                         uuid:     dev.uuid.clone(),
-                        name:     dev.name.clone(),
-                        model:    String::new(),
+                        name,
+                        model,
                         ip:       dev.ip.clone(),
                         tls_mode: dev.tls_mode,
                         pinned:   false,
                         presence: DevicePresence::Active,
                     };
-                    inner.devices.insert(key, DeviceRecord {
+                    inner.devices.insert(key.clone(), DeviceRecord {
                         entry, in_discovery: true,
                         client: WiimClient::new(&dev.ip, dev.tls_mode),
                     });
+                    new_keys.push(key);
                     changed = true;
                 }
             }
@@ -292,6 +304,11 @@ impl DiscoveryManager {
         let pruned = self.do_prune();
         if changed || pruned {
             self.emit_by_name::<()>("list-changed", &[]);
+        }
+        // Immediately fetch name/model for newly discovered devices rather than
+        // waiting for the 30-second health-check cycle.
+        for key in new_keys {
+            self.trigger_health_check_for(&key);
         }
     }
 
@@ -314,15 +331,18 @@ impl DiscoveryManager {
         dbg(&format!("health check: pinging {name} ({key})"));
         let key = key.to_string();
         self.rt().spawn(async move {
-            let (alive, model) = match client.get_device_info().await {
-                Ok(info) => (true, Some(DeviceCapabilities::from_device_info(&info).model)),
-                Err(_)   => (false, None),
+            let (alive, name, model) = match client.get_device_info().await {
+                Ok(info) => (true,
+                             Some(info.device_name.clone()),
+                             Some(DeviceCapabilities::from_device_info(&info).model)),
+                Err(_)   => (false, None, None),
             };
-            let _ = tx.send(HealthResult { key, alive, model }).await;
+            let _ = tx.send(HealthResult { key, alive, name, model }).await;
         });
     }
 
     fn on_health_result(&self, result: HealthResult) {
+        let mut needs_persist = false;
         {
             let mut inner = self.imp().inner.borrow_mut();
             if let Some(rec) = inner.devices.get_mut(&result.key) {
@@ -341,10 +361,18 @@ impl DiscoveryManager {
                         rec.entry.name, rec.entry.ip, new_presence));
                 }
                 rec.entry.presence = new_presence;
+                if let Some(name) = result.name {
+                    if !name.is_empty() && rec.entry.name != name {
+                        dbg(&format!("health result: {} name → {:?}", rec.entry.ip, name));
+                        rec.entry.name = name;
+                        needs_persist = true;
+                    }
+                }
                 if let Some(model) = result.model {
-                    if rec.entry.model.is_empty() {
+                    if !model.is_empty() && rec.entry.model != model {
                         dbg(&format!("health result: {} model = {:?}", rec.entry.name, model));
                         rec.entry.model = model;
+                        needs_persist = true;
                     }
                 }
             } else {
@@ -352,6 +380,7 @@ impl DiscoveryManager {
             }
         }
         self.do_prune();
+        if needs_persist { self.persist_pinned(); }
         // Always emit so the scanning indicator clears even when presence is unchanged.
         self.emit_by_name::<()>("list-changed", &[]);
     }
