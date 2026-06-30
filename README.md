@@ -77,6 +77,13 @@ For now just this one:
 
   * 0.4.1 - 2026-06-30
     * Fix (again, maybe for real now ?) refresh of all windows when changing theme
+	  [EDIT: FAIL ! It didn't fix it]
+
+  * 0.4.2 - 2026-06-30
+    * Really fix the refresh of all windows and widgets on theme switch ! So far it does
+	  seem to work even when starting the app with the custom dark theme.
+    * Various small cosmetic and UI behaviour adjustments
+	* Fix auto-reopening on windows for non-pinned devices
 
 ## Screenshots ##
 
