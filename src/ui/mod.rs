@@ -971,15 +971,13 @@ impl AppState {
             self_rc.app.add_action(&quit_action);
         }
 
-        // Keep last_ip current for every discovered device that has a config entry,
-        // and open any window that config says should be open.  This handler runs
-        // on every list-changed; open_device() deduplicates so repeat firings are
-        // harmless.  Must be connected before disc_mgr.start() so we catch the
-        // synchronous list-changed emitted right after the initial config load.
+        // Keep last_ip current whenever the device list changes.  Must be
+        // connected before start() so we catch the synchronous emission after
+        // the initial config load.
         {
             let s = Rc::downgrade(self_rc);
             self_rc.disc_mgr.connect_list_changed(move |mgr| {
-                let Some(self_rc) = s.upgrade() else { return };
+                let Some(_) = s.upgrade() else { return };
                 let mut cfg = Config::load();
                 let mut dirty = false;
                 for entry in mgr.entries() {
@@ -989,29 +987,28 @@ impl AppState {
                         dev.last_ip = Some(entry.ip.clone());
                         dirty = true;
                     }
-                    // Only create windows that aren't open yet — do NOT call
-                    // open_device() here because that also calls present() on
-                    // already-open windows, which would raise them on every
-                    // list-changed (e.g. every time the pin button is toggled).
-                    if dev.window_open {
-                        let already_open = self_rc.registry.borrow()
-                            .iter()
-                            .any(|w| w.uuid().map_or(false, |u| u == entry.uuid));
-                        if !already_open {
-                            Self::open_device_spec(&self_rc, DeviceSpec {
-                                ip:       entry.ip.clone(),
-                                uuid:     entry.uuid.clone(),
-                                tls_mode: entry.tls_mode,
-                            });
-                        }
-                    }
                 }
                 if dirty { cfg.save(); }
             });
         }
 
-        // start() loads devices from config and emits list-changed synchronously,
-        // which opens windows for any device that has window_open=true in config.
+        // Restore windows from config on startup.  initial-load fires once,
+        // synchronously inside start(), so open_device() here is safe — no
+        // risk of raising already-open windows on subsequent list changes.
+        {
+            let s = Rc::downgrade(self_rc);
+            self_rc.disc_mgr.connect_initial_load(move |mgr| {
+                let Some(self_rc) = s.upgrade() else { return };
+                let cfg = Config::load();
+                for entry in mgr.entries() {
+                    if entry.uuid.is_empty() { continue; }
+                    if cfg.devices.get(&entry.uuid).map_or(false, |d| d.window_open) {
+                        Self::open_device(&self_rc, &entry);
+                    }
+                }
+            });
+        }
+
         self_rc.disc_mgr.start();
 
         let cfg = Config::load();

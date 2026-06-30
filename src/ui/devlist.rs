@@ -109,7 +109,12 @@ mod mgr_imp {
     impl ObjectImpl for DiscoveryManager {
         fn signals() -> &'static [Signal] {
             static SIGNALS: OnceLock<Vec<Signal>> = OnceLock::new();
-            SIGNALS.get_or_init(|| vec![Signal::builder("list-changed").build()])
+            SIGNALS.get_or_init(|| vec![
+                Signal::builder("list-changed").build(),
+                // Fired once, synchronously in start(), after the initial config
+                // load — before any async discovery or health-check results arrive.
+                Signal::builder("initial-load").build(),
+            ])
         }
     }
 }
@@ -139,8 +144,11 @@ impl DiscoveryManager {
         });
 
         self.load_known_devices_from_config();
-        // Fire synchronously so callers that connected list-changed before start()
-        // can open restored windows before any async discovery results arrive.
+        // initial-load fires once synchronously so AppState can open any windows
+        // that config says should be restored — before async discovery arrives.
+        self.emit_by_name::<()>("initial-load", &[]);
+        // list-changed lets already-connected handlers (e.g. last_ip tracking)
+        // see the initial device set.
         self.emit_by_name::<()>("list-changed", &[]);
 
         let weak2 = self.downgrade();
@@ -211,6 +219,17 @@ impl DiscoveryManager {
 
     pub fn connect_list_changed<F: Fn(&Self) + 'static>(&self, f: F) -> glib::SignalHandlerId {
         self.connect_local("list-changed", false, move |args| {
+            f(&args[0].get::<Self>().unwrap());
+            None
+        })
+    }
+
+    /// Fired once, synchronously inside `start()`, after loading devices from
+    /// config — before any async discovery or health-check results arrive.
+    /// Use this to restore windows from config; do NOT use `list-changed` for
+    /// that, as it fires on every subsequent change (e.g. pin toggles).
+    pub fn connect_initial_load<F: Fn(&Self) + 'static>(&self, f: F) -> glib::SignalHandlerId {
+        self.connect_local("initial-load", false, move |args| {
             f(&args[0].get::<Self>().unwrap());
             None
         })
