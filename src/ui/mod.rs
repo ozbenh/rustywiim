@@ -605,6 +605,11 @@ impl DeviceWindow {
             }
         });
 
+        inner.mini.close_btn.connect_clicked(clone!(@strong window => move |_| {
+            gtk::prelude::WidgetExt::realize(&window); // close() is a no-op on an unrealized window
+            window.close();
+        }));
+
         {
             let gesture = gtk::GestureClick::builder().button(1).build();
             gesture.connect_pressed({
@@ -663,15 +668,23 @@ impl DeviceWindow {
             }
         });
 
-        // Ctrl+Q while the mini window is focused → quit the whole app.
+        // Ctrl+Q / Ctrl+W while the mini window is focused.
         {
             let key_ctrl = gtk::EventControllerKey::new();
             key_ctrl.connect_key_pressed(clone!(@strong window => move |_, key, _, mods| {
-                if key == gtk::gdk::Key::q
-                    && mods.contains(gtk::gdk::ModifierType::CONTROL_MASK)
-                {
-                    if let Some(a) = window.application() { a.quit(); }
-                    return glib::Propagation::Stop;
+                if mods.contains(gtk::gdk::ModifierType::CONTROL_MASK) {
+                    match key {
+                        gtk::gdk::Key::q => {
+                            if let Some(a) = window.application() { a.quit(); }
+                            return glib::Propagation::Stop;
+                        }
+                        gtk::gdk::Key::w => {
+                            gtk::prelude::WidgetExt::realize(&window); // close() is a no-op on an unrealized window
+                            window.close();
+                            return glib::Propagation::Stop;
+                        }
+                        _ => {}
+                    }
                 }
                 glib::Propagation::Proceed
             }));

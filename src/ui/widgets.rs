@@ -80,6 +80,7 @@ pub(crate) struct MiniWidgets {
     #[allow(dead_code)] // owned for lifetime; the widget is parented to the top bar
     pub menu_btn:      gtk::MenuButton,
     pub restore_btn:   Button,
+    pub close_btn:     Button,
     pub title_label:   ScrollFadeLabel,
     pub artist_label:  ScrollFadeLabel,
     pub status_label:  Label,
@@ -468,28 +469,34 @@ fn build_mini_art_stack() -> (gtk::Image, gtk::Image, gtk::Stack) {
     (mini_artwork, mini_input_icon, mini_art_stack)
 }
 
-fn build_mini_top_bar() -> (Label, gtk::MenuButton, Button, GtkBox) {
+fn build_mini_top_bar() -> (Label, gtk::MenuButton, Button, Button, GtkBox) {
     let mini_device_label = Label::builder()
         .label("").css_classes(["mini-device-label"])
         .halign(Align::Start).hexpand(true)
         .ellipsize(gtk::pango::EllipsizeMode::End)
         .build();
-    let mini_menu_btn = super::menu::build_menu_button(true);
-    mini_menu_btn.add_css_class("mini-restore-btn");
-    mini_menu_btn.add_css_class("flat");
     let mini_restore_btn = Button::builder()
         .icon_name("view-fullscreen-symbolic")
         .css_classes(["mini-restore-btn"])
-        .tooltip_text("Restore")
+        .tooltip_text("Restore to full window")
+        .build();
+    let mini_menu_btn = super::menu::build_menu_button(true);
+    mini_menu_btn.add_css_class("mini-restore-btn");
+    mini_menu_btn.add_css_class("flat");
+    let mini_close_btn = Button::builder()
+        .icon_name("window-close-symbolic")
+        .css_classes(["mini-restore-btn"])
+        .tooltip_text("Close")
         .build();
     let mini_top_bar = GtkBox::builder()
         .orientation(Orientation::Horizontal).spacing(4)
         .margin_start(14).margin_end(12).margin_top(10).margin_bottom(4)
         .build();
     mini_top_bar.append(&mini_device_label);
-    mini_top_bar.append(&mini_menu_btn);
     mini_top_bar.append(&mini_restore_btn);
-    (mini_device_label, mini_menu_btn, mini_restore_btn, mini_top_bar)
+    mini_top_bar.append(&mini_menu_btn);
+    mini_top_bar.append(&mini_close_btn);
+    (mini_device_label, mini_menu_btn, mini_restore_btn, mini_close_btn, mini_top_bar)
 }
 
 fn build_mini_transport() -> (Label, Button, Button, Button, Button, Scale, Button, gtk::Popover, GtkBox) {
@@ -565,7 +572,7 @@ fn build_mini_transport() -> (Label, Button, Button, Button, Button, Scale, Butt
 
 pub(super) fn build_mini_window() -> (MiniWidgets, gtk::Window) {
     let (mini_artwork, mini_input_icon, mini_art_stack) = build_mini_art_stack();
-    let (mini_device_label, mini_menu_btn, mini_restore_btn, mini_top_bar) = build_mini_top_bar();
+    let (mini_device_label, mini_menu_btn, mini_restore_btn, mini_close_btn, mini_top_bar) = build_mini_top_bar();
     let (mini_status_label, mini_btn_prev, mini_btn_play, mini_btn_next,
          mini_vol_btn, mini_vol_scale, mini_mute_btn, mini_vol_popover, mini_transport) = build_mini_transport();
 
@@ -621,6 +628,7 @@ pub(super) fn build_mini_window() -> (MiniWidgets, gtk::Window) {
         device_label:  mini_device_label,
         menu_btn:      mini_menu_btn,
         restore_btn:   mini_restore_btn,
+        close_btn:     mini_close_btn,
         title_label:   mini_title_label,
         artist_label:  mini_artist_label,
         status_label:  mini_status_label,
