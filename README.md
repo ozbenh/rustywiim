@@ -38,6 +38,10 @@ For now just this one:
 | `--debug=<options>` | Comma-separated list of debug/tracing options: `api` (dump API calls), `state` (state change messages), `device` (device capabilities detection), `all` (all of the above) |
 | `--tls=<mode>`      | Override TLS mode: `wiim` (default), `audio-pro`, `any`, `http`                                                                                                         |
 
+## Known issues ##
+
+* There's an occasional row of stale pixels at the top of the scrolling song title in the miniaturized window. This happens with older gtk versions such as the one in Ubuntu 24.04 and is related to bugs in the gtk4 renderer. I have tried various workarounds but so far without great success. I'll investigate replacing some of this code with direct cairo rendering, see if that helps.
+
 ## Events ##
 
 
@@ -56,6 +60,20 @@ For now just this one:
 	* Support using system themes or our custom dark theme via a (primitive) settings dialog
 	* Rate limit some API calls and add retries on request failures caused by disconnections
     * Additional implementation cleanups, still plenty of AI slop but slowly getting better
+
+  * 0.4.0 - 2026-06-30
+    * A whole lot of internal shuffling and cleaning up, various bug fixes, etc...
+	* There is now a "Devices list" window. It will be displayed on launch in absence of
+	  existing opened window in the config, and can be opened via the menu otherwise. It
+	  replaces the old device selection popover. As a result it is now possible to open
+	  multiple device windows. Each device entry has a "pin" button (currently a star but
+	  that might change). This forces the device to remain listed even if it is not
+	  responding on the network. There is a + button to add devices via manual IP entry
+	  (they will be pinned by default).
+    * Song title, album & artist fields are now scrollable. When they are too big to fit
+	  the window they will slowly scroll.
+    * Note: There have been significant changes to the config file format, it's unlikely
+	  that previous settings will be preserved.
 
 ## Screenshots ##
 
