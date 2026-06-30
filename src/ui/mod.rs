@@ -989,8 +989,21 @@ impl AppState {
                         dev.last_ip = Some(entry.ip.clone());
                         dirty = true;
                     }
+                    // Only create windows that aren't open yet — do NOT call
+                    // open_device() here because that also calls present() on
+                    // already-open windows, which would raise them on every
+                    // list-changed (e.g. every time the pin button is toggled).
                     if dev.window_open {
-                        Self::open_device(&self_rc, &entry);
+                        let already_open = self_rc.registry.borrow()
+                            .iter()
+                            .any(|w| w.uuid().map_or(false, |u| u == entry.uuid));
+                        if !already_open {
+                            Self::open_device_spec(&self_rc, DeviceSpec {
+                                ip:       entry.ip.clone(),
+                                uuid:     entry.uuid.clone(),
+                                tls_mode: entry.tls_mode,
+                            });
+                        }
                     }
                 }
                 if dirty { cfg.save(); }

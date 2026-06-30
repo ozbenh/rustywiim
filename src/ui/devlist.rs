@@ -602,6 +602,7 @@ impl DiscoveryWindow {
         let row = adw::ActionRow::builder()
             .title(&entry.name)
             .subtitle(&subtitle)
+            .activatable(true)
             .build();
 
         if entry.presence != DevicePresence::Active {
@@ -633,16 +634,12 @@ impl DiscoveryWindow {
         }));
         row.add_suffix(&pin_btn);
 
-        // Double-click to open device window.
-        let gesture = gtk::GestureClick::builder().button(1).build();
-        let entry_clone  = entry.clone();
-        let open_fn      = Rc::clone(open_device);
-        gesture.connect_pressed(move |_, n_press, _, _| {
-            if n_press >= 2 {
-                open_fn(&entry_clone);
-            }
+        // Single click or Enter key opens the device window.
+        let entry_clone = entry.clone();
+        let open_fn     = Rc::clone(open_device);
+        row.connect_activated(move |_| {
+            open_fn(&entry_clone);
         });
-        row.add_controller(gesture);
 
         row
     }
