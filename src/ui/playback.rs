@@ -401,20 +401,33 @@ impl DeviceWindowInner {
             }
         }
 
+        self.update_artwork();
+    }
+
+    // ── Artwork ───────────────────────────────────────────────────────────────
+
+    /// Decode and display artwork, or fall back to the source icon.
+    /// Operates on the full-player or mini widgets depending on `mini_mode`.
+    fn update_artwork(&self) {
+        let mini = *self.mini_mode.borrow();
+        let art_stack  = if mini { &self.mini.art_stack  } else { &self.pw.art_stack  };
+        let input_icon = if mini { &self.mini.input_icon } else { &self.pw.input_icon };
+
         if let Some(bytes) = self.ds.art_bytes() {
             let gbytes = glib::Bytes::from(&bytes);
             if let Ok(tex) = gtk::gdk::Texture::from_bytes(&gbytes) {
-                self.pw.artwork.set_paintable(Some(&tex));
-                self.pw.art_stack.set_visible_child_name("artwork");
+                if mini { self.mini.artwork.set_paintable(Some(&tex)); }
+                else    { self.pw.artwork.set_paintable(Some(&tex)); }
+                art_stack.set_visible_child_name("artwork");
                 return;
             }
         }
         let mode = self.ds.current_mode();
         let source_id = capabilities::mode_to_input_source(&mode);
-        self.pw.input_icon.set_paintable(Some(self.icons.source_paintable(source_id)));
-        self.pw.artwork.set_paintable(None::<&gtk::gdk::Paintable>);
-        self.pw.art_stack.set_visible_child_name("icon");
-
+        input_icon.set_paintable(Some(self.icons.source_paintable(source_id)));
+        if mini { self.mini.artwork.set_paintable(None::<&gtk::gdk::Paintable>); }
+        else    { self.pw.artwork.set_paintable(None::<&gtk::gdk::Paintable>); }
+        art_stack.set_visible_child_name("icon");
     }
 
     // ── Input / Output display ────────────────────────────────────────────────
@@ -422,22 +435,14 @@ impl DeviceWindowInner {
     pub(super) fn update_input_display(&self) {
         let mode = self.ds.current_mode();
         let source_id = capabilities::mode_to_input_source(&mode);
-        self.pw.input_icon.set_paintable(Some(self.icons.source_paintable(source_id)));
-
         let sv = self.sw.ids.borrow();
         if let Some(idx) = sv.iter().position(|s| s == source_id) {
             *self.sw.updating.borrow_mut() = true;
             self.sw.dropdown.set_selected(idx as u32);
             *self.sw.updating.borrow_mut() = false;
         }
-
-        if self.ds.art_bytes().is_some() {
-            self.pw.art_stack.set_visible_child_name("artwork");
-        } else {
-            self.pw.artwork.set_paintable(None::<&gtk::gdk::Paintable>);
-            self.pw.art_stack.set_visible_child_name("icon");
-        }
-
+        drop(sv);
+        self.update_artwork();
     }
 
     pub(super) fn update_output_display(&self) {
@@ -622,19 +627,7 @@ impl DeviceWindowInner {
             };
             self.mini.artist_label.set_text(&artist_line);
         }
-        if let Some(bytes) = self.ds.art_bytes() {
-            let gbytes = glib::Bytes::from(&bytes);
-            if let Ok(tex) = gtk::gdk::Texture::from_bytes(&gbytes) {
-                self.mini.artwork.set_paintable(Some(&tex));
-                self.mini.art_stack.set_visible_child_name("artwork");
-                return;
-            }
-        }
-        let mode = self.ds.current_mode();
-        let source_id = capabilities::mode_to_input_source(&mode);
-        self.mini.input_icon.set_paintable(Some(self.icons.source_paintable(source_id)));
-        self.mini.artwork.set_paintable(None::<&gtk::gdk::Paintable>);
-        self.mini.art_stack.set_visible_child_name("icon");
+        self.update_artwork();
     }
 
     pub(super) fn enter_mini_mode(&self) {
