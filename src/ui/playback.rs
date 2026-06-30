@@ -311,7 +311,14 @@ impl DeviceWindowInner {
 
     /// Sync one volume slider + its vol button + mute button from device state.
     /// Skips the `set_value` call while the user is dragging either slider.
-    pub(super) fn sync_vol_display(&self, scale: &gtk::Scale, vol_btn: &gtk::Button, mute_btn: &gtk::Button, muted: bool) {
+    pub(super) fn sync_vol_display(
+        &self,
+        scale:        &gtk::Scale,
+        vol_icon_img: &gtk::Image,
+        vol_label:    &gtk::Label,
+        mute_btn:     &gtk::Button,
+        muted:        bool,
+    ) {
         // Fetch the authoritative volume first; used for both the slider position
         // and the icon so they stay consistent even when set_value is inhibited.
         let device_vol = self.ds.get_vol();
@@ -324,7 +331,8 @@ impl DeviceWindowInner {
         // that hasn't been initialised yet (value = 0) doesn't produce a false
         // muted icon.  Fall back to scale.value() only when there is no data.
         let display_vol = device_vol.map(|v| v as f64).unwrap_or_else(|| scale.value());
-        vol_btn.set_icon_name(vol_icon(muted, display_vol));
+        vol_icon_img.set_icon_name(Some(vol_icon(muted, display_vol)));
+        vol_label.set_label(&format!("{}", display_vol as u32));
         mute_btn.set_icon_name(if muted { "audio-volume-muted-symbolic" } else { "audio-volume-high-symbolic" });
     }
 
@@ -334,8 +342,11 @@ impl DeviceWindowInner {
     /// slider while the user is still interacting with it.
     pub(super) fn on_vol_changed(&self, vol: f64) {
         let icon = vol_icon(self.ds.muted(), vol);
-        self.pw.vol_btn.set_icon_name(icon);
-        self.mini.vol_btn.set_icon_name(icon);
+        let vol_str = format!("{}", vol as u32);
+        self.pw.vol_icon_img.set_icon_name(Some(icon));
+        self.pw.vol_label.set_label(&vol_str);
+        self.mini.vol_icon_img.set_icon_name(Some(icon));
+        self.mini.vol_label.set_label(&vol_str);
         self.ds.do_set_volume(vol as u32);
 
         // Cancel any pending reset and schedule a fresh one.
@@ -352,7 +363,7 @@ impl DeviceWindowInner {
     pub(super) fn update_playback_ui(&self) {
         if let Some(st) = self.ds.player_status() {
             let muted = st.mute == "1";
-            self.sync_vol_display(&self.vol_scale.clone(), &self.pw.vol_btn, &self.pw.mute_btn, muted);
+            self.sync_vol_display(&self.vol_scale.clone(), &self.pw.vol_icon_img, &self.pw.vol_label, &self.pw.mute_btn, muted);
 
             let cur_s = st.curpos.parse::<u64>().unwrap_or(0) / 1000;
             let tot_s = st.totlen.parse::<u64>().unwrap_or(0) / 1000;
@@ -584,7 +595,7 @@ impl DeviceWindowInner {
         }
         if let Some(st) = self.ds.player_status() {
             let muted = st.mute == "1";
-            self.sync_vol_display(&self.mini.vol_scale.clone(), &self.mini.vol_btn, &self.mini.mute_btn, muted);
+            self.sync_vol_display(&self.mini.vol_scale.clone(), &self.mini.vol_icon_img, &self.mini.vol_label, &self.mini.mute_btn, muted);
             self.mini.btn_play.set_icon_name(if st.status == "play" {
                 "media-playback-pause-symbolic"
             } else {

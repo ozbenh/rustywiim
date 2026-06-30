@@ -53,9 +53,11 @@ pub(crate) struct PlaybackWidgets {
     pub btn_next:    Button,
     pub shuffle:     Button,
     pub repeat:      Button,
-    pub vol_btn:     Button,
-    pub vol_popover: gtk::Popover,
-    pub mute_btn:    Button,
+    pub vol_btn:      Button,
+    pub vol_icon_img: gtk::Image,
+    pub vol_label:    gtk::Label,
+    pub vol_popover:  gtk::Popover,
+    pub mute_btn:     Button,
     pub artwork:     gtk::Picture,
     pub art_stack:   gtk::Stack,
     pub input_icon:  gtk::Image,
@@ -88,6 +90,8 @@ pub(crate) struct MiniWidgets {
     pub btn_play:      Button,
     pub btn_next:      Button,
     pub vol_btn:       Button,
+    pub vol_icon_img:  gtk::Image,
+    pub vol_label:     gtk::Label,
     pub vol_popover:   gtk::Popover,
     pub mute_btn:      Button,
     pub vol_scale:     Scale,
@@ -303,13 +307,29 @@ pub(super) fn build_left_pane(sw: &SourceWidgets, ow: &OutputWidgets, presets_sc
     left_pane
 }
 
-fn build_vol_popover() -> (Button, Scale, Button, gtk::Popover) {
+fn build_vol_popover() -> (Button, gtk::Image, gtk::Label, Scale, Button, gtk::Popover) {
     // vol_btn must exist before we can set it as the popover's parent.
-    let vol_btn = Button::builder()
+    // Use a custom child so we can show both the icon and the volume number.
+    let vol_icon_img = gtk::Image::builder()
         .icon_name("audio-volume-high-symbolic")
-        .css_classes(["transport-btn", "circular", "flat", "vol-btn"])
+        .pixel_size(16)
+        .build();
+    let vol_label = gtk::Label::builder()
+        .label("—")
+        .width_chars(3)
+        .xalign(1.0)
+        .build();
+    let btn_box = GtkBox::builder()
+        .orientation(Orientation::Horizontal)
+        .spacing(2)
+        .build();
+    btn_box.append(&vol_icon_img);
+    btn_box.append(&vol_label);
+    let vol_btn = Button::builder()
+        .css_classes(["transport-btn", "flat", "vol-btn"])
         .tooltip_text("Volume")
         .build();
+    vol_btn.set_child(Some(&btn_box));
 
     let vol_scale = Scale::with_range(Orientation::Vertical, 0.0, 100.0, 1.0);
     vol_scale.set_inverted(true);
@@ -339,11 +359,11 @@ fn build_vol_popover() -> (Button, Scale, Button, gtk::Popover) {
     vol_popover.set_child(Some(&vol_pop_box));
     vol_popover.set_parent(&vol_btn);
 
-    (vol_btn, vol_scale, mute_btn, vol_popover)
+    (vol_btn, vol_icon_img, vol_label, vol_scale, mute_btn, vol_popover)
 }
 
 pub(super) fn build_playback_widgets() -> (PlaybackWidgets, Scale) {
-    let (vol_btn, vol_scale, mute_btn, vol_popover) = build_vol_popover();
+    let (vol_btn, vol_icon_img, vol_label, vol_scale, mute_btn, vol_popover) = build_vol_popover();
 
     let pw = PlaybackWidgets {
         artwork:    gtk::Picture::builder()
@@ -386,6 +406,8 @@ pub(super) fn build_playback_widgets() -> (PlaybackWidgets, Scale) {
             .icon_name("media-playlist-repeat-symbolic")
             .css_classes(["loop-btn", "circular", "flat"]).tooltip_text("Repeat: Off").build(),
         vol_btn,
+        vol_icon_img,
+        vol_label,
         vol_popover,
         mute_btn,
     };
@@ -499,7 +521,7 @@ fn build_mini_top_bar() -> (Label, gtk::MenuButton, Button, Button, GtkBox) {
     (mini_device_label, mini_menu_btn, mini_restore_btn, mini_close_btn, mini_top_bar)
 }
 
-fn build_mini_transport() -> (Label, Button, Button, Button, Button, Scale, Button, gtk::Popover, GtkBox) {
+fn build_mini_transport() -> (Label, Button, Button, Button, Button, gtk::Image, gtk::Label, Scale, Button, gtk::Popover, GtkBox) {
     let mini_status_label = Label::builder()
         .label("").css_classes(["mini-status-label"])
         .halign(Align::Start).hexpand(true)
@@ -517,11 +539,26 @@ fn build_mini_transport() -> (Label, Button, Button, Button, Button, Scale, Butt
         .css_classes(["mini-transport-btn", "flat"]).build();
 
     // Volume button with popover — must be created before mini_transport append.
-    let mini_vol_btn = Button::builder()
+    let mini_vol_icon_img = gtk::Image::builder()
         .icon_name("audio-volume-high-symbolic")
+        .pixel_size(11)
+        .build();
+    let mini_vol_label = gtk::Label::builder()
+        .label("—")
+        .width_chars(3)
+        .xalign(1.0)
+        .build();
+    let mini_btn_box = GtkBox::builder()
+        .orientation(Orientation::Horizontal)
+        .spacing(1)
+        .build();
+    mini_btn_box.append(&mini_vol_icon_img);
+    mini_btn_box.append(&mini_vol_label);
+    let mini_vol_btn = Button::builder()
         .css_classes(["mini-transport-btn", "mini-vol-btn", "flat"])
         .tooltip_text("Volume")
         .build();
+    mini_vol_btn.set_child(Some(&mini_btn_box));
     let mini_vol_scale = Scale::with_range(Orientation::Vertical, 0.0, 100.0, 1.0);
     mini_vol_scale.set_inverted(true);
     mini_vol_scale.set_vexpand(true);
@@ -550,12 +587,12 @@ fn build_mini_transport() -> (Label, Button, Button, Button, Button, Scale, Butt
     mini_vol_popover.set_parent(&mini_vol_btn);
 
     let mini_transport_center = GtkBox::builder()
-        .orientation(Orientation::Horizontal).spacing(6).build();
+        .orientation(Orientation::Horizontal).spacing(2).build();
     mini_transport_center.append(&mini_btn_prev);
     mini_transport_center.append(&mini_btn_play);
     mini_transport_center.append(&mini_btn_next);
 
-    mini_vol_btn.set_margin_end(6);
+    mini_vol_btn.set_margin_end(0);
     let mini_vol_end = GtkBox::builder()
         .hexpand(true).halign(Align::End).valign(Align::Center).build();
     mini_vol_end.append(&mini_vol_btn);
@@ -567,14 +604,16 @@ fn build_mini_transport() -> (Label, Button, Button, Button, Button, Scale, Butt
     mini_transport.append(&mini_vol_end);
 
     (mini_status_label, mini_btn_prev, mini_btn_play, mini_btn_next,
-     mini_vol_btn, mini_vol_scale, mini_mute_btn, mini_vol_popover, mini_transport)
+     mini_vol_btn, mini_vol_icon_img, mini_vol_label,
+     mini_vol_scale, mini_mute_btn, mini_vol_popover, mini_transport)
 }
 
 pub(super) fn build_mini_window(app: &adw::Application) -> (MiniWidgets, gtk::ApplicationWindow) {
     let (mini_artwork, mini_input_icon, mini_art_stack) = build_mini_art_stack();
     let (mini_device_label, mini_menu_btn, mini_restore_btn, mini_close_btn, mini_top_bar) = build_mini_top_bar();
     let (mini_status_label, mini_btn_prev, mini_btn_play, mini_btn_next,
-         mini_vol_btn, mini_vol_scale, mini_mute_btn, mini_vol_popover, mini_transport) = build_mini_transport();
+         mini_vol_btn, mini_vol_icon_img, mini_vol_label,
+         mini_vol_scale, mini_mute_btn, mini_vol_popover, mini_transport) = build_mini_transport();
 
     let mini_title_label = { let l = ScrollFadeLabel::new("—");
                               l.add_label_css_class("mini-title"); l.set_hexpand(true);
@@ -617,7 +656,7 @@ pub(super) fn build_mini_window(app: &adw::Application) -> (MiniWidgets, gtk::Ap
         .application(app)
         .decorated(false)
         .resizable(false)
-        .default_width(360)
+        .default_width(380)
         .title("RustyWiiM")
         .child(&mini_root)
         .build();
@@ -639,6 +678,8 @@ pub(super) fn build_mini_window(app: &adw::Application) -> (MiniWidgets, gtk::Ap
         btn_play:      mini_btn_play,
         btn_next:      mini_btn_next,
         vol_btn:       mini_vol_btn,
+        vol_icon_img:  mini_vol_icon_img,
+        vol_label:     mini_vol_label,
         vol_popover:   mini_vol_popover,
         mute_btn:      mini_mute_btn,
         vol_scale:     mini_vol_scale,

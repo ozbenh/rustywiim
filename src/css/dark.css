@@ -20,13 +20,11 @@ window { background-color: #0a0a0a; }
     border: none; border-radius: 50%; box-shadow: none;
 }
 .play-btn:hover { background-color: #5fd9d0; }
-.vol-btn { background-color: transparent; color: #ffffff; }
+.vol-btn { background-color: transparent; color: #ffffff; border-radius: 6px; padding: 0 8px; min-width: 0; }
 .vol-btn:hover { background-color: #2a2a2a; }
 .vol-pop trough   { min-width: 3px; border-radius: 2px; background-color: #2a2a2a; }
 .vol-pop trough highlight { background-color: #4ecdc4; }
 .vol-pop slider   { min-width: 8px; min-height: 8px; margin: -3px; background-color: #808080; border-radius: 50%; border: none; box-shadow: none; }
-.mini-vol-btn { background-color: transparent; color: #cccccc; }
-.mini-vol-btn:hover { background-color: #2a2a2a; }
 .mini-vol-pop trough { min-width: 3px; border-radius: 2px; background-color: #2a2a2a; }
 .mini-vol-pop trough highlight { background-color: #4ecdc4; }
 .mini-vol-pop slider { min-width: 6px; min-height: 6px; margin: -2px; background-color: #808080; border-radius: 50%; border: none; box-shadow: none; }
@@ -45,7 +43,7 @@ window { background-color: #0a0a0a; }
 .device-info  { font-size: 10px; color: #686868; }
 .net-icon     { color: #686868; }
 .sidebar-toggle:checked { color: #4ecdc4; }
-.loop-btn     { min-width: 36px; min-height: 36px; padding: 0; -gtk-icon-size: 16px; background-color: transparent; color: #606060; }
+.loop-btn     { min-width: 36px; min-height: 36px; padding: 0; -gtk-icon-size: 16px; background-color: transparent; color: #909090; }
 .loop-btn:hover { background-color: #2a2a2a; color: #ffffff; }
 .loop-active  { color: #4ecdc4; }
 window.mini-window { background-color: transparent; }
@@ -78,6 +76,8 @@ menubutton.mini-restore-btn > button:hover { color: #ffffff; background-color: #
     border: none; border-radius: 50%; box-shadow: none;
 }
 .mini-transport-btn:hover { background-color: #2a2a2a; }
+.mini-vol-btn { background-color: transparent; color: #cccccc; border-radius: 4px; padding: 0 4px; min-width: 0; }
+.mini-vol-btn:hover { background-color: #2a2a2a; }
 .mini-play-btn {
     min-width: 26px; min-height: 26px;
     padding: 0; -gtk-icon-size: 12px;
