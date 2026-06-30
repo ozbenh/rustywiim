@@ -406,8 +406,14 @@ impl DeviceWindowInner {
             if let Ok(tex) = gtk::gdk::Texture::from_bytes(&gbytes) {
                 self.pw.artwork.set_paintable(Some(&tex));
                 self.pw.art_stack.set_visible_child_name("artwork");
+                return;
             }
         }
+        let mode = self.ds.current_mode();
+        let source_id = capabilities::mode_to_input_source(&mode);
+        self.pw.input_icon.set_paintable(Some(self.icons.source_paintable(source_id)));
+        self.pw.artwork.set_paintable(None::<&gtk::gdk::Paintable>);
+        self.pw.art_stack.set_visible_child_name("icon");
 
     }
 
