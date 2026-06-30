@@ -116,6 +116,15 @@ pub(crate) fn apply_theme(theme: ThemeMode) {
             provider.load_from_string(theme_css(theme));
         }
     });
+    // Defer the repaint to an idle callback so it fires after adw::StyleManager
+    // has finished applying the new colour scheme (set_color_scheme is async).
+    // gtk::Window::list_toplevels() covers all windows in the process —
+    // including adw::Window (settings) which is not tracked by the app object.
+    glib::idle_add_local_once(|| {
+        for win in gtk::Window::list_toplevels() {
+            win.queue_draw();
+        }
+    });
 }
 
 // ── DeviceWindowInner ─────────────────────────────────────────────────────────
@@ -294,6 +303,7 @@ impl DeviceWindow {
             .application(app).title("RustyWiiM").content(&full_toolbar)
             .default_width(win_w).default_height(win_h)
             .build();
+        window.add_css_class("player-window");
         if init_dev_cfg.window_maximized { window.maximize(); }
 
         // ── Shared UI state ───────────────────────────────────────────────────────

@@ -86,14 +86,9 @@ menubutton.mini-restore-btn > button:hover { color: #ffffff; background-color: #
     border: none; border-radius: 50%; box-shadow: none;
 }
 .mini-play-btn:hover { background-color: #5fd9d0; }
-window.adw-application-window .marquee-bg { background-color: #0a0a0a; }
-window.mini-window .marquee-bg { background-color: #111111; }
-/* Viewport inherits marquee-bg's colour so the 1-px NGL stale row at the
-   Viewport clip boundary is covered on GTK ≤4.15. */
-.marquee-bg viewport { background-color: inherit; }
 /* Use rgba(r,g,b,0) — same hue at zero opacity — instead of `transparent`
    (which is black at alpha=0 and creates a dark fringe in GTK's GL renderer). */
-window.adw-application-window .marquee-fade {
+window.player-window .marquee-fade {
     background-image: linear-gradient(to right,
         #0a0a0a 0%, rgba(10,10,10,0) 15%,
         rgba(10,10,10,0) 85%, #0a0a0a 100%);

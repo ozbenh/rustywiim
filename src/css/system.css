@@ -68,11 +68,6 @@ menubutton.mini-restore-btn > button:hover { background-color: rgba(127, 127, 12
     padding: 0; -gtk-icon-size: 12px;
     border: none; border-radius: 50%; box-shadow: none;
 }
-/* Opaque background prevents NGL from exposing stale GPU memory through
-   the ScrolledWindow's clipping region.  The viewport inherits it so the
-   1-px NGL stale-row at the Viewport clip boundary is also covered. */
-.marquee-bg { background-color: @window_bg_color; }
-.marquee-bg viewport { background-color: inherit; }
 /* Use alpha(@window_bg_color, 0) — same hue at zero opacity — instead of
    `transparent` (which is black at zero alpha and produces a dark fringe). */
 .marquee-fade {
