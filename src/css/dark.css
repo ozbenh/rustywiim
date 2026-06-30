@@ -50,7 +50,7 @@ window { background-color: #0a0a0a; }
 .loop-btn:hover { background-color: #2a2a2a; color: #ffffff; }
 .loop-active  { color: #4ecdc4; }
 window.mini-window { background-color: transparent; }
-.mini-outer   { background-color: #111111; border-radius: 10px; overflow: hidden; }
+.mini-outer   { background-color: #111111; border-radius: 10px; }
 .mini-art     { min-width: 64px; min-height: 64px; border-radius: 6px; }
 .mini-main-row { background-color: #111111; }
 .mini-title        { font-size: 13px; font-weight: 700; color: #ffffff; }

@@ -38,7 +38,7 @@
    (NGL renderer fails to update opaque region on window move — GTK#6164).
    Background and rounding live on the content widget instead. */
 window.mini-window { background-color: transparent; }
-.mini-outer   { background-color: @window_bg_color; border-radius: 10px; overflow: hidden; }
+.mini-outer   { background-color: @window_bg_color; border-radius: 10px; }
 .mini-art     { min-width: 64px; min-height: 64px; border-radius: 6px; }
 .mini-main-row { background-color: @window_bg_color; }
 .mini-title        { font-size: 13px; font-weight: 700; }
