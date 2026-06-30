@@ -74,7 +74,7 @@ pub(crate) struct PlaybackUiState {
 pub(crate) struct MiniWidgets {
     pub root:          gtk::WindowHandle,
     pub art_stack:     gtk::Stack,
-    pub artwork:       gtk::Picture,
+    pub artwork:       gtk::Image,
     pub input_icon:    gtk::Image,
     pub device_label:  Label,
     #[allow(dead_code)] // owned for lifetime; the widget is parented to the top bar
@@ -444,11 +444,10 @@ pub(super) fn build_right_pane(pw: &PlaybackWidgets) -> gtk::Box {
     right_pane
 }
 
-fn build_mini_art_stack() -> (gtk::Picture, gtk::Image, gtk::Stack) {
-    let mini_artwork = gtk::Picture::builder()
-        .content_fit(gtk::ContentFit::Cover).can_shrink(true)
+fn build_mini_art_stack() -> (gtk::Image, gtk::Image, gtk::Stack) {
+    let mini_artwork = gtk::Image::builder()
+        .pixel_size(64)
         .halign(Align::Fill).valign(Align::Fill)
-        .hexpand(true).vexpand(true)
         .build();
     let mini_input_icon = gtk::Image::builder()
         .pixel_size(36).halign(Align::Center).valign(Align::Center)

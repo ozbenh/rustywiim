@@ -35,7 +35,7 @@
 .preset-badge { font-size: 9px; font-weight: 700; border-radius: 50%; min-width: 16px; min-height: 16px; padding: 1px; }
 .loop-active  { color: @accent_color; }
 .mini-window  { background-color: @window_bg_color; border-radius: 10px; }
-.mini-art     { min-width: 48px; min-height: 48px; border-radius: 6px; }
+.mini-art     { min-width: 64px; min-height: 64px; border-radius: 6px; }
 .mini-main-row { background-color: @window_bg_color; }
 .mini-title        { font-size: 13px; font-weight: 700; }
 .mini-artist       { font-size: 11px; }

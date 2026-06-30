@@ -157,7 +157,7 @@ fn main() -> glib::ExitCode {
                     let reg = registry.borrow();
                     for w in reg.iter() {
                         if w.uuid().map_or(false, |u| u == entry.uuid) {
-                            w.window.present();
+                            w.present();
                             return;
                         }
                     }
