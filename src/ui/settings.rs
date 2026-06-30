@@ -28,7 +28,7 @@ pub(crate) struct SettingsWindow {
 }
 
 impl SettingsWindow {
-    pub(crate) fn new(ds: Option<DeviceState>, parent: &adw::ApplicationWindow) -> Self {
+    pub(crate) fn new(ds: Option<DeviceState>) -> Self {
         // ── Navigation sidebar ─────────────────────────────────────────────────
         let sidebar_box = gtk::Box::builder()
             .orientation(Orientation::Vertical)
@@ -110,7 +110,6 @@ impl SettingsWindow {
         };
         let window = adw::Window::builder()
             .title(&initial_title)
-            .transient_for(parent)
             .default_width(720)
             .default_height(520)
             .modal(false)
@@ -134,12 +133,16 @@ impl SettingsWindow {
         self.window.present();
     }
 
-    /// Call `f` once when the settings window is destroyed (e.g. user clicks X).
-    /// Use this to clear any cached reference to this window so a fresh one is
-    /// created on the next open.
-    pub(crate) fn connect_closed<F: Fn() + 'static>(&self, f: F) {
-        self.window.connect_destroy(move |_| f());
+    pub(crate) fn window_ref(&self) -> &adw::Window { &self.window }
+
+    /// Returns the UUID of the device this window is for, or None for global settings.
+    pub(crate) fn device_uuid(&self) -> Option<String> {
+        self.ds.as_ref()
+            .and_then(|d| d.device_info())
+            .map(|i| i.uuid)
+            .filter(|u| !u.is_empty())
     }
+
 }
 
 // ── Per-page builders ─────────────────────────────────────────────────────────

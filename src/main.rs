@@ -114,6 +114,10 @@ fn main() -> glib::ExitCode {
         disc_svc.start();
         let disc_mgr = ui::devlist::DiscoveryManager::new(rt.clone(), disc_svc.clone());
 
+        // Single device-state registry: deduplicates DeviceState objects by UUID
+        // so device windows and settings windows for the same device share one state.
+        let device_manager = device::manager::DeviceManager::new(rt.clone());
+
         // Registry of open device windows — used to present existing windows
         // instead of creating duplicates when activating a device from the list.
         let registry: Rc<RefCell<Vec<ui::DeviceWindow>>> = Rc::new(RefCell::new(Vec::new()));
@@ -127,11 +131,16 @@ fn main() -> glib::ExitCode {
         let open_device: Rc<RefCell<Option<Rc<dyn Fn(&ui::devlist::ManagedEntry)>>>> =
             Rc::new(RefCell::new(None));
 
+        // App-level settings window registry: deduplicates by device UUID and
+        // keeps settings windows alive independently of whichever window opened them.
+        let open_settings = ui::build_open_settings_fn();
+
         let show_devices: Rc<dyn Fn()> = {
-            let disc_win    = Rc::clone(&disc_win);
-            let open_device = Rc::clone(&open_device);
-            let disc_mgr    = disc_mgr.clone();
-            let app         = app.clone();
+            let disc_win      = Rc::clone(&disc_win);
+            let open_device   = Rc::clone(&open_device);
+            let disc_mgr      = disc_mgr.clone();
+            let app           = app.clone();
+            let open_settings = Rc::clone(&open_settings);
             Rc::new(move || {
                 let mut dw = disc_win.borrow_mut();
                 if dw.is_none() {
@@ -139,7 +148,9 @@ fn main() -> glib::ExitCode {
                         .as_ref()
                         .expect("open_device not yet initialised")
                         .clone();
-                    *dw = Some(ui::devlist::DiscoveryWindow::new(&app, &disc_mgr, open_fn));
+                    *dw = Some(ui::devlist::DiscoveryWindow::new(
+                        &app, &disc_mgr, open_fn, Rc::clone(&open_settings),
+                    ));
                 }
                 dw.as_ref().unwrap().present();
             })
@@ -147,10 +158,11 @@ fn main() -> glib::ExitCode {
 
         // Build the open_device callback now that show_devices is available.
         *open_device.borrow_mut() = Some({
-            let app          = app.clone();
-            let rt           = rt.clone();
-            let show_devices = Rc::clone(&show_devices);
-            let registry     = Rc::clone(&registry);
+            let app            = app.clone();
+            let device_manager = device_manager.clone();
+            let show_devices   = Rc::clone(&show_devices);
+            let registry       = Rc::clone(&registry);
+            let open_settings  = Rc::clone(&open_settings);
             Rc::new(move |entry: &ui::devlist::ManagedEntry| {
                 // If a window already exists for this UUID, bring it to front.
                 {
@@ -167,7 +179,9 @@ fn main() -> glib::ExitCode {
                     uuid:     entry.uuid.clone(),
                     tls_mode: entry.tls_mode,
                 };
-                let dw = ui::DeviceWindow::new_for_device(&app, rt.clone(), Rc::clone(&show_devices), spec);
+                let dw = ui::DeviceWindow::new_for_device(
+                    &app, device_manager.clone(), Rc::clone(&show_devices), Rc::clone(&open_settings), spec,
+                );
                 // Mark window open in config.
                 if !entry.uuid.is_empty() {
                     let mut cfg = config::Config::load();
@@ -210,7 +224,9 @@ fn main() -> glib::ExitCode {
                 uuid:     uuid.clone(),
                 tls_mode: device::api::TlsMode::HttpsWiiM,
             };
-            let dw = ui::DeviceWindow::new_for_device(app, rt.clone(), Rc::clone(&show_devices), spec);
+            let dw = ui::DeviceWindow::new_for_device(
+                app, device_manager.clone(), Rc::clone(&show_devices), Rc::clone(&open_settings), spec,
+            );
             let gtk_win = dw.window.clone();
             dw.present();
             registry.borrow_mut().push(dw);

@@ -24,6 +24,7 @@ use crate::config::Config;
 use crate::device::api::{TlsMode, WiimClient};
 use crate::device::capabilities::DeviceCapabilities;
 use crate::device::discovery::{DiscoveredDevice, DiscoveryService};
+use crate::device::state::DeviceState;
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -361,9 +362,10 @@ pub struct DiscoveryWindow {
 
 impl DiscoveryWindow {
     pub fn new(
-        app:         &adw::Application,
-        manager:     &DiscoveryManager,
-        open_device: Rc<dyn Fn(&ManagedEntry)>,
+        app:           &adw::Application,
+        manager:       &DiscoveryManager,
+        open_device:   Rc<dyn Fn(&ManagedEntry)>,
+        open_settings: Rc<dyn Fn(Option<DeviceState>)>,
     ) -> Self {
         let saved_cfg = Config::load();
         let init_w = if saved_cfg.discovery_window_width  > 0 { saved_cfg.discovery_window_width  } else { 500 };
@@ -389,7 +391,7 @@ impl DiscoveryWindow {
             .build();
         header.pack_end(&add_btn);
         header.pack_end(&super::menu::build_menu_button(false));
-        super::wire_window_actions(&window, None);
+        super::wire_window_actions(&window, None, open_settings);
 
         // Device list
         let list_box = gtk::ListBox::builder()

@@ -13,7 +13,6 @@ use widgets::*;
 
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::sync::Arc;
 
 use adw::prelude::*;
 use glib::clone;
@@ -23,14 +22,60 @@ use gtk::{Align, Box as GtkBox, CssProvider, Label, Orientation, Scale};
 use crate::device::api::TlsMode;
 use crate::config::Config;
 use crate::config::ThemeMode;
+use crate::device::manager::DeviceManager;
 use crate::device::state::{ConnectionState, DeviceState};
 
 // ── Shared window actions ─────────────────────────────────────────────────────
 
+/// Build the app-level callback that opens (or re-presents) settings windows.
+/// The returned closure is the single source of truth for settings window lifecycle:
+/// it deduplicates by device UUID, creates windows without a transient parent so
+/// they are independent of whichever window triggered them, and removes closed
+/// entries from its internal registry automatically.
+pub fn build_open_settings_fn() -> Rc<dyn Fn(Option<DeviceState>)> {
+    let registry: Rc<RefCell<Vec<settings::SettingsWindow>>> = Rc::new(RefCell::new(Vec::new()));
+    Rc::new(move |ds: Option<DeviceState>| {
+        let ds_uuid = ds.as_ref()
+            .and_then(|d| d.device_info())
+            .map(|i| i.uuid.clone())
+            .filter(|u| !u.is_empty());
+        // Present an existing window for the same device (or same global slot).
+        {
+            let reg = registry.borrow();
+            for sw in reg.iter() {
+                if sw.device_uuid() == ds_uuid {
+                    sw.present();
+                    return;
+                }
+            }
+        }
+        let s = settings::SettingsWindow::new(ds);
+        // Use connect_close_request (fires before destruction) so the registry
+        // cleanup runs while we still hold the GObject alive — connect_destroy
+        // (g_object_weak_ref) only fires at finalization, but the registry's own
+        // strong ref prevents finalization, causing a deadlock where the cleanup
+        // never runs and present() is later called on a destroyed window.
+        let win_clone = s.window_ref().clone();
+        let weak_reg = Rc::downgrade(&registry);
+        s.window_ref().connect_close_request(move |_| {
+            if let Some(reg) = weak_reg.upgrade() {
+                reg.borrow_mut().retain(|w| w.window_ref() != &win_clone);
+            }
+            glib::Propagation::Proceed
+        });
+        s.present();
+        registry.borrow_mut().push(s);
+    })
+}
+
 /// Register `win.about` and `win.settings` on any ApplicationWindow.
 /// Both the device window and the discovery window share these actions.
 /// `ds` is `None` for the discovery window (settings window title has no device name).
-pub(crate) fn wire_window_actions(window: &adw::ApplicationWindow, ds: Option<DeviceState>) {
+pub(crate) fn wire_window_actions(
+    window:        &adw::ApplicationWindow,
+    ds:            Option<DeviceState>,
+    open_settings: Rc<dyn Fn(Option<DeviceState>)>,
+) {
     let about_action = gio::SimpleAction::new("about", None);
     about_action.connect_activate(clone!(@strong window => move |_, _| {
         adw::AboutDialog::builder()
@@ -46,24 +91,9 @@ pub(crate) fn wire_window_actions(window: &adw::ApplicationWindow, ds: Option<De
     }));
     window.add_action(&about_action);
 
-    let settings_win: Rc<RefCell<Option<settings::SettingsWindow>>> =
-        Rc::new(RefCell::new(None));
     let settings_action = gio::SimpleAction::new("settings", None);
-    settings_action.connect_activate(clone!(@strong window, @strong settings_win => move |_, _| {
-        let mut sw = settings_win.borrow_mut();
-        if sw.is_none() {
-            let s = settings::SettingsWindow::new(ds.clone(), &window);
-            // Clear the cached reference when the window is closed so the next
-            // open creates a fresh window rather than re-presenting a destroyed one.
-            let weak = Rc::downgrade(&settings_win);
-            s.connect_closed(move || {
-                if let Some(sw) = weak.upgrade() {
-                    *sw.borrow_mut() = None;
-                }
-            });
-            *sw = Some(s);
-        }
-        sw.as_ref().unwrap().present();
+    settings_action.connect_activate(clone!(@strong open_settings => move |_, _| {
+        open_settings(ds.clone());
     }));
     window.add_action(&settings_action);
 }
@@ -191,18 +221,20 @@ impl DeviceWindow {
 
     /// Build a device window connected to a specific device.
     pub fn new_for_device(
-        app:             &adw::Application,
-        rt:              Arc<tokio::runtime::Runtime>,
+        app:            &adw::Application,
+        device_manager: DeviceManager,
         show_devices_fn: Rc<dyn Fn()>,
-        spec:            DeviceSpec,
+        open_settings:  Rc<dyn Fn(Option<DeviceState>)>,
+        spec:           DeviceSpec,
     ) -> Self {
-        Self::new_inner(app, rt, show_devices_fn, Some(spec))
+        Self::new_inner(app, device_manager, show_devices_fn, open_settings, Some(spec))
     }
 
     fn new_inner(
         app:             &adw::Application,
-        rt:              Arc<tokio::runtime::Runtime>,
+        device_manager:  DeviceManager,
         show_devices_fn: Rc<dyn Fn()>,
+        open_settings:   Rc<dyn Fn(Option<DeviceState>)>,
         device_spec:     Option<DeviceSpec>,
     ) -> Self {
         let cfg = Config::load();
@@ -219,11 +251,16 @@ impl DeviceWindow {
 
         let init_dev_cfg = cfg.device(&cfg_uuid);
 
-        let ds = DeviceState::new(rt);
-        if let Some(ref spec) = device_spec {
-            ds.set_device(&spec.ip, spec.tls_mode, None);
-        }
-        ds.start_polling();
+        let ds = match device_spec.as_ref() {
+            Some(spec) => device_manager.get(&spec.uuid, &spec.ip, spec.tls_mode),
+            None => {
+                // No device spec: create a standalone state that isn't wired to
+                // any device yet; polling still starts so the UI can be shown.
+                let ds = DeviceState::new(device_manager.rt());
+                ds.start_polling();
+                ds
+            }
+        };
 
         let (header, sidebar_btn, mini_btn) = build_header(init_dev_cfg.panel_visible);
         let (pp, presets_scroll) = build_presets_panel();
@@ -694,7 +731,7 @@ impl DeviceWindow {
         }));
         window.add_action(&devices_action);
 
-        wire_window_actions(&window, Some(ds.clone()));
+        wire_window_actions(&window, Some(ds.clone()), open_settings);
 
         // mini_win is a plain gtk::Window (not ApplicationWindow) so it has no
         // action map and is not connected to the application's action group.
