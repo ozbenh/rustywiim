@@ -13,6 +13,8 @@ use widgets::*;
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use adw::prelude::*;
 use glib::clone;
@@ -22,21 +24,24 @@ use gtk::{Align, Box as GtkBox, CssProvider, Label, Orientation, Scale};
 use crate::device::api::TlsMode;
 use crate::config::Config;
 use crate::config::ThemeMode;
+use crate::device::discovery::DiscoveryService;
 use crate::device::manager::DeviceManager;
-use crate::device::state::{ConnectionState, DeviceState};
+use crate::device::state::{ConnectionState, DeviceState, DEBUG_STATE};
 
 // ── Shared window actions ─────────────────────────────────────────────────────
 
 /// Register `win.about` and `win.settings` on any ApplicationWindow.
-/// Both the device window and the discovery window share these actions.
+/// Both the device window, discovery window, and mini window share these actions.
 /// `ds` is `None` for the discovery window (settings window title has no device name).
 pub(crate) fn wire_window_actions(
-    window:        &adw::ApplicationWindow,
+    window:        &impl glib::object::IsA<gtk::ApplicationWindow>,
     ds:            Option<DeviceState>,
     open_settings: Rc<dyn Fn(Option<DeviceState>)>,
 ) {
+    let window = window.upcast_ref::<gtk::ApplicationWindow>().clone();
     let about_action = gio::SimpleAction::new("about", None);
-    about_action.connect_activate(clone!(@strong window => move |_, _| {
+    let win = window.clone();
+    about_action.connect_activate(move |_, _| {
         adw::AboutDialog::builder()
             .application_name("RustyWiiM")
             .application_icon("audio-x-generic")
@@ -46,14 +51,12 @@ pub(crate) fn wire_window_actions(
             .license_type(gtk::License::MitX11)
             .website("https://github.com/ozbenh/rustywiim")
             .build()
-            .present(Some(&window));
-    }));
+            .present(Some(&win));
+    });
     window.add_action(&about_action);
 
     let settings_action = gio::SimpleAction::new("settings", None);
-    settings_action.connect_activate(clone!(@strong open_settings => move |_, _| {
-        open_settings(ds.clone());
-    }));
+    settings_action.connect_activate(move |_, _| { open_settings(ds.clone()); });
     window.add_action(&settings_action);
 }
 
@@ -154,7 +157,7 @@ struct DeviceWindowInner {
     mini_toggling:     RefCell<bool>,
     pre_mini_size:     RefCell<(i32, i32)>,
     mini_btn:          gtk::ToggleButton,
-    mini_win:          gtk::Window,
+    mini_win:          gtk::ApplicationWindow,
 }
 
 // ── DeviceWindow ──────────────────────────────────────────────────────────────
@@ -228,13 +231,7 @@ impl DeviceWindow {
         let left_pane = build_left_pane(&sw, &ow, &presets_scroll);
         let (pw, vol_scale) = build_playback_widgets();
         let right_pane = build_right_pane(&pw);
-        let (mini, mini_win) = build_mini_window();
-        // Register mini_win with the application so app.windows() includes it.
-        // Without this, the discovery-window close handler and the
-        // connect_window_removed quit-guard both fail to see the mini window as
-        // "a visible window", causing premature quit when the device list is
-        // closed while a device is in mini mode.
-        app.add_window(&mini_win);
+        let (mini, mini_win) = build_mini_window(app);
 
         // ── Paned split + sidebar logic ───────────────────────────────────────────
         let paned = gtk::Paned::new(Orientation::Horizontal);
@@ -668,79 +665,38 @@ impl DeviceWindow {
             }
         });
 
-        // Ctrl+Q / Ctrl+W while the mini window is focused.
-        {
-            let key_ctrl = gtk::EventControllerKey::new();
-            key_ctrl.connect_key_pressed(clone!(@strong window => move |_, key, _, mods| {
-                if mods.contains(gtk::gdk::ModifierType::CONTROL_MASK) {
-                    match key {
-                        gtk::gdk::Key::q => {
-                            if let Some(a) = window.application() { a.quit(); }
-                            return glib::Propagation::Stop;
-                        }
-                        gtk::gdk::Key::w => {
-                            gtk::prelude::WidgetExt::realize(&window); // close() is a no-op on an unrealized window
-                            window.close();
-                            return glib::Propagation::Stop;
-                        }
-                        _ => {}
-                    }
-                }
-                glib::Propagation::Proceed
-            }));
-            inner.mini_win.add_controller(key_ctrl);
-        }
-
         // ── Window actions ────────────────────────────────────────────────────────
-        // win.close → close this window (Ctrl-W set app-wide in main.rs)
+        // Main window: win.close (Ctrl-W), win.devices, win.about, win.settings.
         let close_action = gio::SimpleAction::new("close", None);
-        close_action.connect_activate(clone!(@strong window => move |_, _| { window.close(); }));
+        let win_for_close = window.clone();
+        close_action.connect_activate(move |_, _| { win_for_close.close(); });
         window.add_action(&close_action);
 
         let devices_action = gio::SimpleAction::new("devices", None);
-        devices_action.connect_activate(clone!(@strong inner => move |_, _| {
-            (inner.show_devices_fn)();
-        }));
+        let i_for_dev = Rc::clone(&inner);
+        devices_action.connect_activate(move |_, _| { (i_for_dev.show_devices_fn)(); });
         window.add_action(&devices_action);
 
-        wire_window_actions(&window, Some(ds.clone()), open_settings);
+        wire_window_actions(&window, Some(ds.clone()), Rc::clone(&open_settings));
 
-        // mini_win is a plain gtk::Window (not ApplicationWindow) so it has no
-        // action map and is not connected to the application's action group.
-        // Insert synthetic "win" and "app" groups that delegate to the real targets.
+        // Mini window is a gtk::ApplicationWindow, so app.* actions (Ctrl-Q) work
+        // automatically.  Wire win.close and win.devices directly; win.about and
+        // win.settings come from wire_window_actions.
         {
-            let win_actions = gio::SimpleActionGroup::new();
+            let mini_close = gio::SimpleAction::new("close", None);
+            let win = window.clone();
+            mini_close.connect_activate(move |_, _| {
+                gtk::prelude::WidgetExt::realize(&win);
+                win.close();
+            });
+            mini_win.add_action(&mini_close);
 
-            let fwd_devices = gio::SimpleAction::new("devices", None);
-            fwd_devices.connect_activate(clone!(@strong inner => move |_, _| {
-                (inner.show_devices_fn)();
-            }));
-            win_actions.add_action(&fwd_devices);
-
-            let fwd_settings = gio::SimpleAction::new("settings", None);
-            fwd_settings.connect_activate(clone!(@strong window => move |_, _| {
-                gtk::prelude::WidgetExt::activate_action(&window, "win.settings", None).ok();
-            }));
-            win_actions.add_action(&fwd_settings);
-
-            let fwd_about = gio::SimpleAction::new("about", None);
-            fwd_about.connect_activate(clone!(@strong window => move |_, _| {
-                gtk::prelude::WidgetExt::activate_action(&window, "win.about", None).ok();
-            }));
-            win_actions.add_action(&fwd_about);
-
-            mini_win.insert_action_group("win", Some(&win_actions));
-
-            // app.quit: mini_win is not registered with the application, so the
-            // app.* group is unreachable from it.  Bridge it explicitly.
-            let app_actions = gio::SimpleActionGroup::new();
-            let fwd_quit = gio::SimpleAction::new("quit", None);
-            fwd_quit.connect_activate(clone!(@strong window => move |_, _| {
-                if let Some(app) = window.application() { app.quit(); }
-            }));
-            app_actions.add_action(&fwd_quit);
-            mini_win.insert_action_group("app", Some(&app_actions));
+            let mini_devices = gio::SimpleAction::new("devices", None);
+            let i = Rc::clone(&inner);
+            mini_devices.connect_activate(move |_, _| { (i.show_devices_fn)(); });
+            mini_win.add_action(&mini_devices);
         }
+        wire_window_actions(&mini_win, Some(ds.clone()), open_settings);
 
         // ── Save window state ─────────────────────────────────────────────────────
         window.connect_close_request({
@@ -785,6 +741,199 @@ impl DeviceWindow {
             self.inner.mini_win.present();
         } else {
             self.window.present();
+        }
+    }
+}
+
+// ── AppState ──────────────────────────────────────────────────────────────────
+// Owns all top-level window state.  Every signal-handler closure captures
+// either a strong Rc<AppState> or a Weak clone for the close-request handlers.
+
+fn dbg_state(msg: &str) {
+    if DEBUG_STATE.load(Ordering::Relaxed) {
+        println!("[app] {msg}");
+    }
+}
+
+pub(crate) struct AppState {
+    app:            adw::Application,
+    disc_mgr:       devlist::DiscoveryManager,
+    device_manager: DeviceManager,
+    registry:       RefCell<Vec<DeviceWindow>>,
+    settings_reg:   RefCell<Vec<settings::SettingsWindow>>,
+    disc_win:       RefCell<Option<devlist::DiscoveryWindow>>,
+}
+
+impl AppState {
+    // `disc_svc.start()` must run inside `connect_activate` so that
+    // `glib::spawn_future_local` has an active main context.
+    pub(crate) fn new(app: &adw::Application, rt: Arc<tokio::runtime::Runtime>) -> Rc<Self> {
+        let disc_svc = DiscoveryService::new(rt.clone());
+        disc_svc.start();
+        let disc_mgr = devlist::DiscoveryManager::new(rt.clone(), disc_svc.clone());
+
+        Rc::new(Self {
+            app:            app.clone(),
+            disc_mgr,
+            device_manager: DeviceManager::new(rt),
+            registry:       RefCell::new(Vec::new()),
+            settings_reg:   RefCell::new(Vec::new()),
+            disc_win:       RefCell::new(None),
+        })
+    }
+
+    /// Open (or re-present) the settings window for `ds`, deduplicating by UUID.
+    fn open_settings(self_rc: &Rc<Self>, ds: Option<DeviceState>) {
+        let ds_uuid = ds.as_ref()
+            .and_then(|d| d.device_info())
+            .map(|i| i.uuid.clone())
+            .filter(|u| !u.is_empty());
+        {
+            let reg = self_rc.settings_reg.borrow();
+            for sw in reg.iter() {
+                if sw.device_uuid() == ds_uuid {
+                    dbg_state(&format!("settings: presenting existing for {:?}", ds_uuid));
+                    sw.present();
+                    return;
+                }
+            }
+        }
+        dbg_state(&format!("settings: opening new for {:?}", ds_uuid));
+        let s = settings::SettingsWindow::new(ds);
+        let win_clone  = s.window_ref().clone();
+        let weak_self  = Rc::downgrade(self_rc);
+        let close_uuid = ds_uuid.clone();
+        s.window_ref().connect_close_request(move |_| {
+            dbg_state(&format!("settings: closed for {:?}", close_uuid));
+            if let Some(state) = weak_self.upgrade() {
+                state.settings_reg.borrow_mut().retain(|w| w.window_ref() != &win_clone);
+            }
+            glib::Propagation::Proceed
+        });
+        s.present();
+        self_rc.settings_reg.borrow_mut().push(s);
+    }
+
+    /// Show (or lazily create) the device-list window.
+    fn show_devices(self_rc: &Rc<Self>) {
+        let mut dw = self_rc.disc_win.borrow_mut();
+        if dw.is_none() {
+            dbg_state("device list: creating window");
+            let open_device_fn = {
+                let state = Rc::clone(self_rc);
+                Rc::new(move |entry: &devlist::ManagedEntry| Self::open_device(&state, entry))
+                    as Rc<dyn Fn(&devlist::ManagedEntry)>
+            };
+            let open_settings_fn = {
+                let state = Rc::clone(self_rc);
+                Rc::new(move |ds| Self::open_settings(&state, ds))
+                    as Rc<dyn Fn(Option<DeviceState>)>
+            };
+            *dw = Some(devlist::DiscoveryWindow::new(
+                &self_rc.app,
+                &self_rc.disc_mgr,
+                open_device_fn,
+                open_settings_fn,
+            ));
+        }
+        dbg_state("device list: presenting");
+        dw.as_ref().unwrap().present();
+    }
+
+    /// Present the existing device window for `entry`, or open a new one.
+    fn open_device(self_rc: &Rc<Self>, entry: &devlist::ManagedEntry) {
+        {
+            let reg = self_rc.registry.borrow();
+            for w in reg.iter() {
+                if w.uuid().map_or(false, |u| u == entry.uuid) {
+                    dbg_state(&format!("device window: presenting existing for {} ({})", entry.name, entry.uuid));
+                    w.present();
+                    return;
+                }
+            }
+        }
+        dbg_state(&format!("device window: opening {} ({}) @ {}", entry.name, entry.uuid, entry.ip));
+        if !entry.uuid.is_empty() {
+            let mut cfg = Config::load();
+            cfg.device_mut(&entry.uuid).window_open = true;
+            cfg.save();
+        }
+        Self::open_device_spec(self_rc, DeviceSpec {
+            ip:       entry.ip.clone(),
+            uuid:     entry.uuid.clone(),
+            tls_mode: entry.tls_mode,
+        });
+    }
+
+    /// Create a device window for `spec`, register it, and present it.
+    fn open_device_spec(self_rc: &Rc<Self>, spec: DeviceSpec) {
+        let log_uuid = spec.uuid.clone();
+        let log_ip   = spec.ip.clone();
+        dbg_state(&format!("device window: creating uuid={log_uuid} @ {log_ip}"));
+        let show_fn = {
+            let state = Rc::clone(self_rc);
+            Rc::new(move || Self::show_devices(&state)) as Rc<dyn Fn()>
+        };
+        let open_settings_fn = {
+            let state = Rc::clone(self_rc);
+            Rc::new(move |ds| Self::open_settings(&state, ds)) as Rc<dyn Fn(Option<DeviceState>)>
+        };
+        let dw = DeviceWindow::new_for_device(
+            &self_rc.app,
+            self_rc.device_manager.clone(),
+            show_fn,
+            open_settings_fn,
+            spec,
+        );
+        let gtk_win   = dw.window.clone();
+        dw.present();
+        self_rc.registry.borrow_mut().push(dw);
+        let win_key   = gtk_win.clone();
+        let weak_self = Rc::downgrade(self_rc);
+        gtk_win.connect_close_request(move |_| {
+            dbg_state(&format!("device window: closed uuid={log_uuid}"));
+            if let Some(s) = weak_self.upgrade() {
+                s.registry.borrow_mut().retain(|w| w.window != win_key);
+            }
+            glib::Propagation::Proceed
+        });
+    }
+
+    /// Restore device windows that were open at last exit. Returns count opened.
+    fn restore_windows(self_rc: &Rc<Self>) -> usize {
+        let cfg = Config::load();
+        let mut count = 0;
+        for (uuid, dev_cfg) in &cfg.devices {
+            if !dev_cfg.window_open { continue; }
+            let Some(ref ip) = dev_cfg.last_ip else { continue };
+            if ip.is_empty() { continue; }
+            dbg_state(&format!("restore: window for uuid={uuid} @ {ip}"));
+            Self::open_device_spec(self_rc, DeviceSpec {
+                ip:       ip.clone(),
+                uuid:     uuid.clone(),
+                tls_mode: TlsMode::HttpsWiiM,
+            });
+            count += 1;
+        }
+        count
+    }
+
+    /// Called once from `app.connect_activate`.
+    pub(crate) fn activate(self_rc: &Rc<Self>) {
+        self_rc.disc_mgr.start();
+
+        {
+            let mut cfg = Config::load();
+            if cfg.migrate() { cfg.save(); }
+        }
+
+        let restored = Self::restore_windows(self_rc);
+        dbg_state(&format!("activate: restored {restored} device window(s)"));
+
+        let cfg = Config::load();
+        if cfg.discovery_open || restored == 0 {
+            dbg_state("activate: showing device list");
+            Self::show_devices(self_rc);
         }
     }
 }

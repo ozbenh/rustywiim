@@ -570,7 +570,7 @@ fn build_mini_transport() -> (Label, Button, Button, Button, Button, Scale, Butt
      mini_vol_btn, mini_vol_scale, mini_mute_btn, mini_vol_popover, mini_transport)
 }
 
-pub(super) fn build_mini_window() -> (MiniWidgets, gtk::Window) {
+pub(super) fn build_mini_window(app: &adw::Application) -> (MiniWidgets, gtk::ApplicationWindow) {
     let (mini_artwork, mini_input_icon, mini_art_stack) = build_mini_art_stack();
     let (mini_device_label, mini_menu_btn, mini_restore_btn, mini_close_btn, mini_top_bar) = build_mini_top_bar();
     let (mini_status_label, mini_btn_prev, mini_btn_play, mini_btn_next,
@@ -611,7 +611,8 @@ pub(super) fn build_mini_window() -> (MiniWidgets, gtk::Window) {
     let mini_root = gtk::WindowHandle::new();
     mini_root.set_child(Some(&mini_outer));
 
-    let mini_win = gtk::Window::builder()
+    let mini_win = gtk::ApplicationWindow::builder()
+        .application(app)
         .decorated(false)
         .resizable(false)
         .default_width(360)
