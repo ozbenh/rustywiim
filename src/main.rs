@@ -7,6 +7,12 @@ use std::sync::atomic::Ordering;
 
 use device::state::DeviceState;
 
+fn dbg_state(msg: &str) {
+    if device::state::DEBUG_STATE.load(Ordering::Relaxed) {
+        println!("[app] {msg}");
+    }
+}
+
 mod config;
 mod device;
 mod ui;
@@ -56,15 +62,19 @@ impl AppState {
             let reg = self_rc.settings_reg.borrow();
             for sw in reg.iter() {
                 if sw.device_uuid() == ds_uuid {
+                    dbg_state(&format!("settings: presenting existing for {:?}", ds_uuid));
                     sw.present();
                     return;
                 }
             }
         }
+        dbg_state(&format!("settings: opening new for {:?}", ds_uuid));
         let s = ui::settings::SettingsWindow::new(ds);
-        let win_clone = s.window_ref().clone();
-        let weak_self = Rc::downgrade(self_rc);
+        let win_clone  = s.window_ref().clone();
+        let weak_self  = Rc::downgrade(self_rc);
+        let close_uuid = ds_uuid.clone();
         s.window_ref().connect_close_request(move |_| {
+            dbg_state(&format!("settings: closed for {:?}", close_uuid));
             if let Some(state) = weak_self.upgrade() {
                 state.settings_reg.borrow_mut().retain(|w| w.window_ref() != &win_clone);
             }
@@ -78,6 +88,7 @@ impl AppState {
     fn show_devices(self_rc: &Rc<Self>) {
         let mut dw = self_rc.disc_win.borrow_mut();
         if dw.is_none() {
+            dbg_state("device list: creating window");
             let open_device_fn = {
                 let state = Rc::clone(self_rc);
                 Rc::new(move |entry: &ui::devlist::ManagedEntry| Self::open_device(&state, entry))
@@ -95,6 +106,7 @@ impl AppState {
                 open_settings_fn,
             ));
         }
+        dbg_state("device list: presenting");
         dw.as_ref().unwrap().present();
     }
 
@@ -104,11 +116,13 @@ impl AppState {
             let reg = self_rc.registry.borrow();
             for w in reg.iter() {
                 if w.uuid().map_or(false, |u| u == entry.uuid) {
+                    dbg_state(&format!("device window: presenting existing for {} ({})", entry.name, entry.uuid));
                     w.present();
                     return;
                 }
             }
         }
+        dbg_state(&format!("device window: opening {} ({}) @ {}", entry.name, entry.uuid, entry.ip));
         if !entry.uuid.is_empty() {
             let mut cfg = config::Config::load();
             cfg.device_mut(&entry.uuid).window_open = true;
@@ -124,6 +138,9 @@ impl AppState {
     /// Create a device window for `spec`, register it, and present it.
     /// Shared by the device-list open callback and the startup restore path.
     fn open_device_spec(self_rc: &Rc<Self>, spec: ui::DeviceSpec) {
+        let log_uuid = spec.uuid.clone();
+        let log_ip   = spec.ip.clone();
+        dbg_state(&format!("device window: creating uuid={log_uuid} @ {log_ip}"));
         let show_fn = {
             let state = Rc::clone(self_rc);
             Rc::new(move || Self::show_devices(&state)) as Rc<dyn Fn()>
@@ -145,6 +162,7 @@ impl AppState {
         let win_key   = gtk_win.clone();
         let weak_self = Rc::downgrade(self_rc);
         gtk_win.connect_close_request(move |_| {
+            dbg_state(&format!("device window: closed uuid={log_uuid}"));
             if let Some(s) = weak_self.upgrade() {
                 s.registry.borrow_mut().retain(|w| w.window != win_key);
             }
@@ -160,6 +178,7 @@ impl AppState {
             if !dev_cfg.window_open { continue; }
             let Some(ref ip) = dev_cfg.last_ip else { continue };
             if ip.is_empty() { continue; }
+            dbg_state(&format!("restore: window for uuid={uuid} @ {ip}"));
             Self::open_device_spec(self_rc, ui::DeviceSpec {
                 ip:       ip.clone(),
                 uuid:     uuid.clone(),
@@ -180,9 +199,11 @@ impl AppState {
         }
 
         let restored = Self::restore_windows(self_rc);
+        dbg_state(&format!("activate: restored {restored} device window(s)"));
 
         let cfg = config::Config::load();
         if cfg.discovery_open || restored == 0 {
+            dbg_state("activate: showing device list");
             Self::show_devices(self_rc);
         }
     }

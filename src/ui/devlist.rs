@@ -23,8 +23,14 @@ use gtk::{glib, Orientation};
 use crate::config::Config;
 use crate::device::api::{TlsMode, WiimClient};
 use crate::device::capabilities::DeviceCapabilities;
-use crate::device::discovery::{DiscoveredDevice, DiscoveryService};
+use crate::device::discovery::{DEBUG_DISCOVERY, DiscoveredDevice, DiscoveryService};
 use crate::device::state::DeviceState;
+
+fn dbg(msg: &str) {
+    if DEBUG_DISCOVERY.load(std::sync::atomic::Ordering::Relaxed) {
+        println!("[devlist] {msg}");
+    }
+}
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -168,14 +174,10 @@ impl DiscoveryManager {
             } else { false }
         };
         if changed {
+            dbg(&format!("pin: {uuid} → {pinned}"));
             self.persist_pinned();
-            let pruned = self.do_prune();
-            if pruned {
-                self.emit_by_name::<()>("list-changed", &[]);
-            } else {
-                // Emit anyway so the UI reflects the pin change.
-                self.emit_by_name::<()>("list-changed", &[]);
-            }
+            self.do_prune();
+            self.emit_by_name::<()>("list-changed", &[]);
         }
     }
 
@@ -184,7 +186,10 @@ impl DiscoveryManager {
         let key = device_key(&uuid, &ip);
         {
             let mut inner = self.imp().inner.borrow_mut();
-            if inner.devices.contains_key(&key) { return; }
+            if inner.devices.contains_key(&key) {
+                dbg(&format!("add manual: already known {name} ({ip}) uuid={uuid:?}"));
+                return;
+            }
             let entry = ManagedEntry {
                 uuid: uuid.clone(), name: name.clone(), model: String::new(),
                 ip: ip.clone(), tls_mode, pinned: true, presence: DevicePresence::Active,
@@ -193,6 +198,7 @@ impl DiscoveryManager {
                 entry, in_discovery: false, client: WiimClient::new(&ip, tls_mode),
             });
         }
+        dbg(&format!("add manual: {name} ({ip}) uuid={uuid:?}"));
         self.persist_pinned();
         self.emit_by_name::<()>("list-changed", &[]);
         // Fetch model (and confirm liveness) immediately rather than waiting for
@@ -222,11 +228,16 @@ impl DiscoveryManager {
             let mut inner = self.imp().inner.borrow_mut();
             for rec in inner.devices.values_mut() {
                 let k = device_key(&rec.entry.uuid, &rec.entry.ip);
+                let was = rec.in_discovery;
                 rec.in_discovery = disc_keys.contains(&k);
+                if was && !rec.in_discovery {
+                    dbg(&format!("discovery: {} ({}) left SSDP scope", rec.entry.name, rec.entry.ip));
+                }
             }
             for dev in &discovered {
                 let key = device_key(&dev.uuid, &dev.ip);
                 if !inner.devices.contains_key(&key) {
+                    dbg(&format!("discovery: new device {} ({}) uuid={:?}", dev.name, dev.ip, dev.uuid));
                     let entry = ManagedEntry {
                         uuid:     dev.uuid.clone(),
                         name:     dev.name.clone(),
@@ -255,6 +266,7 @@ impl DiscoveryManager {
             .devices.iter()
             .map(|(k, r)| (k.clone(), r.client.clone()))
             .collect();
+        dbg(&format!("health check: cycle starting for {} device(s)", keys.len()));
         for (key, _) in keys {
             self.trigger_health_check_for(&key);
         }
@@ -262,8 +274,10 @@ impl DiscoveryManager {
 
     fn trigger_health_check_for(&self, key: &str) {
         let Some(tx) = self.imp().health_tx.borrow().clone() else { return };
-        let Some(client) = self.imp().inner.borrow()
-            .devices.get(key).map(|r| r.client.clone()) else { return };
+        let Some((client, name)) = self.imp().inner.borrow()
+            .devices.get(key).map(|r| (r.client.clone(), r.entry.name.clone()))
+            else { return };
+        dbg(&format!("health check: pinging {name} ({key})"));
         let key = key.to_string();
         self.rt().spawn(async move {
             let (alive, model) = match client.get_device_info().await {
@@ -278,18 +292,29 @@ impl DiscoveryManager {
         {
             let mut inner = self.imp().inner.borrow_mut();
             if let Some(rec) = inner.devices.get_mut(&result.key) {
-                rec.entry.presence = if result.alive {
+                let new_presence = if result.alive {
                     DevicePresence::Active
                 } else if rec.entry.pinned {
                     DevicePresence::Ghost
                 } else {
                     DevicePresence::Dead
                 };
+                if new_presence != rec.entry.presence {
+                    dbg(&format!("health result: {} ({}) {:?} → {:?}",
+                        rec.entry.name, rec.entry.ip, rec.entry.presence, new_presence));
+                } else {
+                    dbg(&format!("health result: {} ({}) {:?} (unchanged)",
+                        rec.entry.name, rec.entry.ip, new_presence));
+                }
+                rec.entry.presence = new_presence;
                 if let Some(model) = result.model {
                     if rec.entry.model.is_empty() {
+                        dbg(&format!("health result: {} model = {:?}", rec.entry.name, model));
                         rec.entry.model = model;
                     }
                 }
+            } else {
+                dbg(&format!("health result: unknown key {}", result.key));
             }
         }
         self.do_prune();
@@ -302,10 +327,14 @@ impl DiscoveryManager {
     fn do_prune(&self) -> bool {
         let mut inner = self.imp().inner.borrow_mut();
         let before = inner.devices.len();
-        inner.devices.retain(|_, rec| {
-            rec.entry.pinned
+        inner.devices.retain(|key, rec| {
+            let keep = rec.entry.pinned
                 || rec.entry.presence == DevicePresence::Active
-                || rec.in_discovery
+                || rec.in_discovery;
+            if !keep {
+                dbg(&format!("prune: removing {} ({key})", rec.entry.name));
+            }
+            keep
         });
         inner.devices.len() < before
     }
@@ -323,6 +352,7 @@ impl DiscoveryManager {
             let name   = dev_cfg.name.clone().unwrap_or_else(|| format!("Device @ {ip}"));
             let model  = dev_cfg.model.clone().unwrap_or_default();
             let pinned = dev_cfg.pinned == Some(true);
+            dbg(&format!("load pinned: {name} ({ip}) uuid={uuid}"));
             let entry  = ManagedEntry {
                 uuid: uuid.clone(), name, model, ip: ip.clone(),
                 // Start Active (optimistic); health check will demote to Ghost if offline.
