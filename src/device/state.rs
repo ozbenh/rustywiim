@@ -6,12 +6,25 @@
 /// Signals
 /// -------
 /// * `device-changed`   — device info (re)loaded or cleared (UI should rebuild)
-/// * `playback-changed` — player status / metadata / artwork updated
+/// * `playback-changed(u32)` — player status / metadata / artwork updated;
+///                             the `u32` is a `PlaybackChanged` bitmask
 /// * `input-changed`    — current input mode changed
 /// * `output-changed`   — audio output selection changed
 /// * `outputs-changed`  — supported output list updated (rebuild menu)
 /// * `network-changed`  — netstat or RSSI changed
 /// * `presets-changed`  — preset list (re)loaded; UI should re-read `presets()`
+
+/// Bitmask values for the `playback-changed` signal parameter.
+pub mod playback_changed {
+    pub const ARTWORK: u32 = 0x01;
+    pub const TITLE:   u32 = 0x02;
+    pub const ARTIST:  u32 = 0x04;
+    pub const ALBUM:   u32 = 0x08;
+    pub const TIME:    u32 = 0x10; // curpos + totlen
+    pub const VOLUME:  u32 = 0x20; // vol + mute
+    pub const OTHER:   u32 = 0x40; // status, loop mode, quality, etc.
+    pub const ALL:     u32 = 0x7F;
+}
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -204,7 +217,9 @@ mod imp {
             SIGNALS.get_or_init(|| {
                 vec![
                     Signal::builder("device-changed").build(),
-                    Signal::builder("playback-changed").build(),
+                    Signal::builder("playback-changed")
+                        .param_types([u32::static_type()])
+                        .build(),
                     Signal::builder("input-changed").build(),
                     Signal::builder("output-changed").build(),
                     Signal::builder("outputs-changed").build(),
@@ -527,7 +542,7 @@ impl DeviceState {
                 dbg(&format!("artwork loaded: {} bytes", bytes.len()));
                 ds.imp().inner.borrow_mut().art_bytes = Some(bytes);
                 dbg("signal: playback-changed (artwork)");
-                ds.emit_by_name::<()>("playback-changed", &[]);
+                ds.emit_by_name::<()>("playback-changed", &[&playback_changed::ARTWORK]);
             }
         });
     }
@@ -653,9 +668,25 @@ impl DeviceState {
 
     fn process_poll(&self, data: PollData, art_tx: &async_channel::Sender<Vec<u8>>) {
         let PollData { status, meta, output } = data;
-        let mut emit_playback = false;
+        let mut playback_mask: u32 = 0;
 
         if let Some(st) = status {
+            // Diff against previous status before overwriting.
+            {
+                let inner = self.imp().inner.borrow();
+                let prev = inner.player_status.as_ref();
+                if prev.map_or(true, |p| p.vol != st.vol || p.mute != st.mute) {
+                    playback_mask |= playback_changed::VOLUME;
+                }
+                if prev.map_or(true, |p| p.curpos != st.curpos || p.totlen != st.totlen) {
+                    playback_mask |= playback_changed::TIME;
+                }
+                if prev.map_or(true, |p| {
+                    p.status != st.status || p.loop_mode != st.loop_mode || p.vendor != st.vendor
+                }) {
+                    playback_mask |= playback_changed::OTHER;
+                }
+            }
             let prev_mode = self.imp().inner.borrow().current_mode.clone();
             let mode_changed = st.mode != prev_mode;
             if mode_changed {
@@ -673,7 +704,6 @@ impl DeviceState {
                 dbg("signal: input-changed");
                 self.emit_by_name::<()>("input-changed", &[]);
             }
-            emit_playback = true;
         }
 
         if let Some(out) = output {
@@ -695,6 +725,25 @@ impl DeviceState {
         }
 
         if let Some(m) = meta {
+            // Diff against previous metadata before overwriting.
+            {
+                let inner = self.imp().inner.borrow();
+                let prev = inner.metadata.as_ref();
+                if prev.map_or(true, |p| p.title != m.title) {
+                    playback_mask |= playback_changed::TITLE;
+                }
+                if prev.map_or(true, |p| p.artist != m.artist) {
+                    playback_mask |= playback_changed::ARTIST;
+                }
+                if prev.map_or(true, |p| p.album != m.album) {
+                    playback_mask |= playback_changed::ALBUM;
+                }
+                if prev.map_or(true, |p| {
+                    p.bit_rate != m.bit_rate || p.sample_rate != m.sample_rate || p.bit_depth != m.bit_depth
+                }) {
+                    playback_mask |= playback_changed::OTHER;
+                }
+            }
             let art_url = m.art_uri().to_string();
             let url_changed = art_url != self.imp().inner.borrow().current_art_url;
             self.imp().inner.borrow_mut().metadata = Some(m);
@@ -704,12 +753,11 @@ impl DeviceState {
                 self.imp().inner.borrow_mut().art_bytes = None;
                 self.fetch_art(art_url, art_tx);
             }
-            emit_playback = true;
         }
 
-        if emit_playback {
-            dbg("signal: playback-changed");
-            self.emit_by_name::<()>("playback-changed", &[]);
+        if playback_mask != 0 {
+            dbg(&format!("signal: playback-changed mask={:#x}", playback_mask));
+            self.emit_by_name::<()>("playback-changed", &[&playback_mask]);
         }
     }
 
@@ -765,7 +813,7 @@ impl DeviceState {
         if let Some(ref mut st) = self.imp().inner.borrow_mut().player_status {
             st.mute = if muted { "1" } else { "0" }.to_string();
         }
-        self.emit_by_name::<()>("playback-changed", &[]);
+        self.emit_by_name::<()>("playback-changed", &[&playback_changed::VOLUME]);
         self.rt().spawn(async move { let _ = client.set_mute(muted).await; });
     }
 
@@ -911,9 +959,11 @@ impl DeviceState {
         })
     }
 
-    pub fn connect_playback_changed<F: Fn(&Self) + 'static>(&self, f: F) -> glib::SignalHandlerId {
+    pub fn connect_playback_changed<F: Fn(&Self, u32) + 'static>(&self, f: F) -> glib::SignalHandlerId {
         self.connect_local("playback-changed", false, move |args| {
-            f(&args[0].get::<Self>().unwrap());
+            let ds   = args[0].get::<Self>().unwrap();
+            let mask = args[1].get::<u32>().unwrap();
+            f(&ds, mask);
             None
         })
     }

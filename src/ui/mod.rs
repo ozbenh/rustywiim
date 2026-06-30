@@ -402,15 +402,15 @@ impl DeviceWindow {
 
         ds.connect_playback_changed({
             let i = Rc::clone(&inner);
-            move |_| {
-                if *i.mini_mode.borrow() { i.update_mini_playback(); } else { i.update_playback_ui(); }
+            move |_, mask| {
+                if *i.mini_mode.borrow() { i.update_mini_playback(mask); } else { i.update_playback_ui(mask); }
             }
         });
 
         ds.connect_input_changed({
             let i = Rc::clone(&inner);
             move |_| {
-                if *i.mini_mode.borrow() { i.update_mini_playback(); } else { i.update_input_display(); }
+                if *i.mini_mode.borrow() { i.update_mini_playback(crate::device::state::playback_changed::ALL); } else { i.update_input_display(); }
             }
         });
 

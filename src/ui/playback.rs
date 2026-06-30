@@ -360,48 +360,64 @@ impl DeviceWindowInner {
 
     // ── Playback ──────────────────────────────────────────────────────────────
 
-    pub(super) fn update_playback_ui(&self) {
-        if let Some(st) = self.ds.player_status() {
-            let muted = st.mute == "1";
-            self.sync_vol_display(&self.vol_scale.clone(), &self.pw.vol_icon_img, &self.pw.vol_label, &self.pw.mute_btn, muted);
+    pub(super) fn update_playback_ui(&self, mask: u32) {
+        use crate::device::state::playback_changed as PC;
 
-            let cur_s = st.curpos.parse::<u64>().unwrap_or(0) / 1000;
-            let tot_s = st.totlen.parse::<u64>().unwrap_or(0) / 1000;
-            if tot_s > 0 {
-                self.pw.seek.set_range(0.0, tot_s as f64);
-                self.pw.seek.set_value(cur_s as f64);
-            }
-
-            let playing = st.status == "play";
-            *self.ui_state.is_playing.borrow_mut() = playing;
-            self.pw.btn_play.set_icon_name(if playing {
-                "media-playback-pause-symbolic"
-            } else {
-                "media-playback-start-symbolic"
-            });
-
-            self.pw.status.set_label(&format_status(&st.status, &st.mode, &st.vendor));
-
-            let (dev_shuf, dev_rep) = decode_loop_mode(&st.loop_mode);
-            apply_shuffle_ui(&self.pw.shuffle, dev_shuf);
-            apply_repeat_ui(&self.pw.repeat, dev_rep);
-
-            self.pw.pos.set_label(&format!("{}:{:02}", cur_s / 60, cur_s % 60));
-            self.pw.dur.set_label(&format!("{}:{:02}", tot_s / 60, tot_s % 60));
-        }
-
-        if let Some(m) = self.ds.metadata() {
-            self.pw.title.set_text(if is_unknown(&m.title) { "" } else { &m.title });
-            self.pw.artist.set_text(if is_unknown(&m.artist) { "" } else { &m.artist });
-            self.pw.album.set_text(if is_unknown(&m.album)  { "" } else { &m.album });
-
-            match format_quality(&m.bit_rate, &m.sample_rate, &m.bit_depth) {
-                Some(q) => { self.pw.quality.set_label(&q); self.pw.quality.set_visible(true); }
-                None    => self.pw.quality.set_visible(false),
+        if mask & (PC::VOLUME | PC::TIME | PC::OTHER) != 0 {
+            if let Some(st) = self.ds.player_status() {
+                if mask & PC::VOLUME != 0 {
+                    let muted = st.mute == "1";
+                    self.sync_vol_display(&self.vol_scale.clone(), &self.pw.vol_icon_img, &self.pw.vol_label, &self.pw.mute_btn, muted);
+                }
+                if mask & PC::TIME != 0 {
+                    let cur_s = st.curpos.parse::<u64>().unwrap_or(0) / 1000;
+                    let tot_s = st.totlen.parse::<u64>().unwrap_or(0) / 1000;
+                    if tot_s > 0 {
+                        self.pw.seek.set_range(0.0, tot_s as f64);
+                        self.pw.seek.set_value(cur_s as f64);
+                    }
+                    self.pw.pos.set_label(&format!("{}:{:02}", cur_s / 60, cur_s % 60));
+                    self.pw.dur.set_label(&format!("{}:{:02}", tot_s / 60, tot_s % 60));
+                }
+                if mask & PC::OTHER != 0 {
+                    let playing = st.status == "play";
+                    *self.ui_state.is_playing.borrow_mut() = playing;
+                    self.pw.btn_play.set_icon_name(if playing {
+                        "media-playback-pause-symbolic"
+                    } else {
+                        "media-playback-start-symbolic"
+                    });
+                    self.pw.status.set_label(&format_status(&st.status, &st.mode, &st.vendor));
+                    let (dev_shuf, dev_rep) = decode_loop_mode(&st.loop_mode);
+                    apply_shuffle_ui(&self.pw.shuffle, dev_shuf);
+                    apply_repeat_ui(&self.pw.repeat, dev_rep);
+                }
             }
         }
 
-        self.update_artwork();
+        if mask & (PC::TITLE | PC::ARTIST | PC::ALBUM | PC::OTHER) != 0 {
+            if let Some(m) = self.ds.metadata() {
+                if mask & PC::TITLE != 0 {
+                    self.pw.title.set_text(if is_unknown(&m.title) { "" } else { &m.title });
+                }
+                if mask & PC::ARTIST != 0 {
+                    self.pw.artist.set_text(if is_unknown(&m.artist) { "" } else { &m.artist });
+                }
+                if mask & PC::ALBUM != 0 {
+                    self.pw.album.set_text(if is_unknown(&m.album) { "" } else { &m.album });
+                }
+                if mask & PC::OTHER != 0 {
+                    match format_quality(&m.bit_rate, &m.sample_rate, &m.bit_depth) {
+                        Some(q) => { self.pw.quality.set_label(&q); self.pw.quality.set_visible(true); }
+                        None    => self.pw.quality.set_visible(false),
+                    }
+                }
+            }
+        }
+
+        if mask & PC::ARTWORK != 0 {
+            self.update_artwork();
+        }
     }
 
     // ── Artwork ───────────────────────────────────────────────────────────────
@@ -600,40 +616,62 @@ impl DeviceWindowInner {
 
     // ── Mini player ───────────────────────────────────────────────────────────
 
-    pub(super) fn update_mini_playback(&self) {
-        if let Some(di) = self.ds.device_info() {
-            self.mini.device_label.set_label(&di.device_name);
+    pub(super) fn update_mini_playback(&self, mask: u32) {
+        use crate::device::state::playback_changed as PC;
+
+        if mask & PC::OTHER != 0 {
+            if let Some(di) = self.ds.device_info() {
+                self.mini.device_label.set_label(&di.device_name);
+            }
         }
-        if let Some(st) = self.ds.player_status() {
-            let muted = st.mute == "1";
-            self.sync_vol_display(&self.mini.vol_scale.clone(), &self.mini.vol_icon_img, &self.mini.vol_label, &self.mini.mute_btn, muted);
-            self.mini.btn_play.set_icon_name(if st.status == "play" {
-                "media-playback-pause-symbolic"
-            } else {
-                "media-playback-start-symbolic"
-            });
-            self.mini.status_label.set_label(
-                &format_status(&st.status, &st.mode, &st.vendor));
+
+        if mask & (PC::VOLUME | PC::OTHER) != 0 {
+            if let Some(st) = self.ds.player_status() {
+                if mask & PC::VOLUME != 0 {
+                    let muted = st.mute == "1";
+                    self.sync_vol_display(&self.mini.vol_scale.clone(), &self.mini.vol_icon_img, &self.mini.vol_label, &self.mini.mute_btn, muted);
+                }
+                if mask & PC::OTHER != 0 {
+                    self.mini.btn_play.set_icon_name(if st.status == "play" {
+                        "media-playback-pause-symbolic"
+                    } else {
+                        "media-playback-start-symbolic"
+                    });
+                    self.mini.status_label.set_label(
+                        &format_status(&st.status, &st.mode, &st.vendor));
+                }
+            }
         }
-        if let Some(m) = self.ds.metadata() {
-            self.mini.title_label.set_text(if is_unknown(&m.title) { "" } else { &m.title });
-            let artist = if is_unknown(&m.artist) { "" } else { m.artist.as_str() };
-            let album  = if is_unknown(&m.album)  { "" } else { m.album.as_str() };
-            let artist_line = match (artist.is_empty(), album.is_empty()) {
-                (true,  true)  => String::new(),
-                (true,  false) => album.to_owned(),
-                (false, true)  => artist.to_owned(),
-                (false, false) => format!("{artist} \u{00b7} {album}"),
-            };
-            self.mini.artist_label.set_text(&artist_line);
+
+        if mask & (PC::TITLE | PC::ARTIST | PC::ALBUM) != 0 {
+            if let Some(m) = self.ds.metadata() {
+                // artist_label combines artist + album; recompute if either changed.
+                if mask & (PC::ARTIST | PC::ALBUM) != 0 {
+                    let artist = if is_unknown(&m.artist) { "" } else { m.artist.as_str() };
+                    let album  = if is_unknown(&m.album)  { "" } else { m.album.as_str() };
+                    let artist_line = match (artist.is_empty(), album.is_empty()) {
+                        (true,  true)  => String::new(),
+                        (true,  false) => album.to_owned(),
+                        (false, true)  => artist.to_owned(),
+                        (false, false) => format!("{artist} \u{00b7} {album}"),
+                    };
+                    self.mini.artist_label.set_text(&artist_line);
+                }
+                if mask & PC::TITLE != 0 {
+                    self.mini.title_label.set_text(if is_unknown(&m.title) { "" } else { &m.title });
+                }
+            }
         }
-        self.update_artwork();
+
+        if mask & PC::ARTWORK != 0 {
+            self.update_artwork();
+        }
     }
 
     pub(super) fn enter_mini_mode(&self) {
         if *self.mini_mode.borrow() { return; }
         *self.pre_mini_size.borrow_mut() = (self.window.width(), self.window.height());
-        self.update_mini_playback();
+        self.update_mini_playback(crate::device::state::playback_changed::ALL);
         *self.mini_mode.borrow_mut() = true;
         *self.mini_toggling.borrow_mut() = true;
         self.mini_btn.set_active(true);
@@ -650,7 +688,7 @@ impl DeviceWindowInner {
         *self.mini_toggling.borrow_mut() = false;
         self.mini_win.set_visible(false);
         self.window.present();
-        self.update_playback_ui();
+        self.update_playback_ui(crate::device::state::playback_changed::ALL);
         self.update_input_display();
     }
 } // impl DeviceWindowInner
