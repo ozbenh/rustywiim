@@ -937,6 +937,26 @@ impl AppState {
             if cfg.migrate() { cfg.save(); }
         }
 
+        // Replace the app.quit action (set up in main.rs) with one that saves
+        // every device window's config before quitting.  app.quit() destroys
+        // windows via gtk_window_destroy(), which never fires close-request, so
+        // save_config_now() would never be called otherwise.  We save here while
+        // the windows are still alive and their sizes are still readable.
+        {
+            let s = Rc::downgrade(self_rc);
+            let app = self_rc.app.clone();
+            let quit_action = gio::SimpleAction::new("quit", None);
+            quit_action.connect_activate(move |_, _| {
+                if let Some(s) = s.upgrade() {
+                    for dw in s.registry.borrow().iter() {
+                        dw.inner.save_config_now();
+                    }
+                }
+                app.quit();
+            });
+            self_rc.app.add_action(&quit_action);
+        }
+
         let restored = Self::restore_windows(self_rc);
         dbg_state(&format!("activate: restored {restored} device window(s)"));
 
