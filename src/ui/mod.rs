@@ -212,12 +212,18 @@ impl DeviceWindow {
     #[allow(dead_code)]
     pub fn ds(&self) -> &DeviceState { &self.inner.ds }
 
-    /// UUID of the currently connected device, or `None` if not yet connected
-    /// or the UUID is empty.
+    /// UUID of the device this window was created for.  Returns the live UUID
+    /// from the connected device if available, otherwise falls back to the UUID
+    /// recorded at creation time (applied_window_key) so dedup works even before
+    /// the device has responded to its first API call.
     pub fn uuid(&self) -> Option<String> {
         self.inner.ds.device_info()
             .map(|i| i.uuid)
             .filter(|u| !u.is_empty())
+            .or_else(|| {
+                let k = self.inner.applied_window_key.borrow().clone();
+                if k.is_empty() { None } else { Some(k) }
+            })
     }
 
     /// Build a device window connected to a specific device.
@@ -937,29 +943,8 @@ impl AppState {
         });
     }
 
-    /// Restore device windows that were open at last exit. Returns count opened.
-    fn restore_windows(self_rc: &Rc<Self>) -> usize {
-        let cfg = Config::load();
-        let mut count = 0;
-        for (uuid, dev_cfg) in &cfg.devices {
-            if !dev_cfg.window_open { continue; }
-            let Some(ref ip) = dev_cfg.last_ip else { continue };
-            if ip.is_empty() { continue; }
-            dbg_state(&format!("restore: window for uuid={uuid} @ {ip}"));
-            Self::open_device_spec(self_rc, DeviceSpec {
-                ip:       ip.clone(),
-                uuid:     uuid.clone(),
-                tls_mode: TlsMode::HttpsWiiM,
-            });
-            count += 1;
-        }
-        count
-    }
-
     /// Called once from `app.connect_activate`.
     pub(crate) fn activate(self_rc: &Rc<Self>) {
-        self_rc.disc_mgr.start();
-
         {
             let mut cfg = Config::load();
             if cfg.migrate() { cfg.save(); }
@@ -986,11 +971,39 @@ impl AppState {
             self_rc.app.add_action(&quit_action);
         }
 
-        let restored = Self::restore_windows(self_rc);
-        dbg_state(&format!("activate: restored {restored} device window(s)"));
+        // Keep last_ip current for every discovered device that has a config entry,
+        // and open any window that config says should be open.  This handler runs
+        // on every list-changed; open_device() deduplicates so repeat firings are
+        // harmless.  Must be connected before disc_mgr.start() so we catch the
+        // synchronous list-changed emitted right after the initial config load.
+        {
+            let s = Rc::downgrade(self_rc);
+            self_rc.disc_mgr.connect_list_changed(move |mgr| {
+                let Some(self_rc) = s.upgrade() else { return };
+                let mut cfg = Config::load();
+                let mut dirty = false;
+                for entry in mgr.entries() {
+                    if entry.uuid.is_empty() { continue; }
+                    let Some(dev) = cfg.devices.get_mut(&entry.uuid) else { continue };
+                    if dev.last_ip.as_deref() != Some(entry.ip.as_str()) {
+                        dev.last_ip = Some(entry.ip.clone());
+                        dirty = true;
+                    }
+                    if dev.window_open {
+                        Self::open_device(&self_rc, &entry);
+                    }
+                }
+                if dirty { cfg.save(); }
+            });
+        }
+
+        // start() loads devices from config and emits list-changed synchronously,
+        // which opens windows for any device that has window_open=true in config.
+        self_rc.disc_mgr.start();
 
         let cfg = Config::load();
-        if cfg.discovery_open || restored == 0 {
+        let has_pending_windows = cfg.devices.values().any(|d| d.window_open);
+        if cfg.discovery_open || !has_pending_windows {
             dbg_state("activate: showing device list");
             Self::show_devices(self_rc);
         }

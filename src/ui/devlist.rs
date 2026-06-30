@@ -138,7 +138,10 @@ impl DiscoveryManager {
             }
         });
 
-        self.load_pinned_from_config();
+        self.load_known_devices_from_config();
+        // Fire synchronously so callers that connected list-changed before start()
+        // can open restored windows before any async discovery results arrive.
+        self.emit_by_name::<()>("list-changed", &[]);
 
         let weak2 = self.downgrade();
         self.imp().discovery.get().unwrap()
@@ -351,21 +354,23 @@ impl DiscoveryManager {
         inner.devices.len() < before
     }
 
-    fn load_pinned_from_config(&self) {
+    fn load_known_devices_from_config(&self) {
         let cfg = Config::load();
         let mut inner = self.imp().inner.borrow_mut();
         for (uuid, dev_cfg) in &cfg.devices {
-            // Only load explicitly pinned devices.  Legacy entries (None) and
-            // explicitly unpinned entries (Some(false)) are both skipped.
-            if dev_cfg.pinned != Some(true) { continue; }
+            let pinned = dev_cfg.pinned == Some(true);
+            // Load pinned devices always.  Also pre-load non-pinned devices whose
+            // window should reopen: the list-changed handler will open the window,
+            // and if SSDP later confirms the device it stays; if not, do_prune
+            // removes it (the window stays open independently).
+            if !pinned && !dev_cfg.window_open { continue; }
             let Some(ref ip) = dev_cfg.last_ip else { continue };
             if inner.devices.contains_key(uuid) { continue; }
-            let tls    = TlsMode::HttpsWiiM;
-            let name   = dev_cfg.name.clone().unwrap_or_else(|| format!("Device @ {ip}"));
-            let model  = dev_cfg.model.clone().unwrap_or_default();
-            let pinned = dev_cfg.pinned == Some(true);
-            dbg(&format!("load pinned: {name} ({ip}) uuid={uuid}"));
-            let entry  = ManagedEntry {
+            let tls   = TlsMode::HttpsWiiM;
+            let name  = dev_cfg.name.clone().unwrap_or_else(|| format!("Device @ {ip}"));
+            let model = dev_cfg.model.clone().unwrap_or_default();
+            dbg(&format!("load from config: {name} ({ip}) uuid={uuid} pinned={pinned}"));
+            let entry = ManagedEntry {
                 uuid: uuid.clone(), name, model, ip: ip.clone(),
                 // Start Active (optimistic); health check will demote to Ghost if offline.
                 tls_mode: tls, pinned, presence: DevicePresence::Active,
