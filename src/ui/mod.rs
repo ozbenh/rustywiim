@@ -239,8 +239,6 @@ impl DeviceWindow {
         device_spec:     Option<DeviceSpec>,
     ) -> Self {
         let cfg = Config::load();
-        init_css(cfg.theme);
-
         let icons = Rc::new(icons::IconSet::load());
 
         // Pick the device UUID to use for loading per-device window config.
@@ -965,6 +963,7 @@ impl AppState {
         {
             let mut cfg = Config::load();
             if cfg.migrate() { cfg.save(); }
+            init_css(cfg.theme);
         }
 
         // Replace the app.quit action (set up in main.rs) with one that saves
