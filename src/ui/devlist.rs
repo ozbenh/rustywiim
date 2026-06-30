@@ -213,6 +213,18 @@ impl DiscoveryManager {
         })
     }
 
+    /// Fires once when the underlying SSDP scan cycle completes (or the 4-second
+    /// initial timeout expires with no devices found).  Use this — not
+    /// `connect_list_changed` — to clear a "Scanning…" indicator, because
+    /// health-check results arrive much earlier and would clear it prematurely.
+    pub fn connect_scan_complete<F: Fn() + 'static>(&self, f: F) {
+        let weak = self.downgrade();
+        self.imp().discovery.get().unwrap()
+            .connect_discovery_updated(move |_| {
+                if weak.upgrade().is_some() { f(); }
+            });
+    }
+
     pub fn rt(&self) -> Arc<tokio::runtime::Runtime> {
         self.imp().rt.get().unwrap().clone()
     }
@@ -409,11 +421,40 @@ impl DiscoveryWindow {
 
         let header = adw::HeaderBar::new();
 
-        let window_title = adw::WindowTitle::builder()
-            .title("RustyWiiM")
-            .subtitle("Scanning\u{2026}")
+        // Custom title widget so the spinner can sit immediately to the right
+        // of the "Scanning…" subtitle text.  adw::WindowTitle has no widget
+        // slot in its subtitle row so we build the layout by hand.
+        let title_label = gtk::Label::builder()
+            .label("RustyWiiM")
+            .css_classes(["title"])
             .build();
-        header.set_title_widget(Some(&window_title));
+
+        let subtitle_label = gtk::Label::builder()
+            .label("Scanning\u{2026}")
+            .css_classes(["subtitle"])
+            .build();
+
+        let spinner = gtk::Spinner::builder()
+            .spinning(true)
+            .build();
+        spinner.set_size_request(12, 12);
+
+        let subtitle_row = gtk::Box::builder()
+            .orientation(Orientation::Horizontal)
+            .spacing(4)
+            .halign(gtk::Align::Center)
+            .build();
+        subtitle_row.append(&subtitle_label);
+        subtitle_row.append(&spinner);
+
+        let title_box = gtk::Box::builder()
+            .orientation(Orientation::Vertical)
+            .valign(gtk::Align::Center)
+            .build();
+        title_box.append(&title_label);
+        title_box.append(&subtitle_row);
+
+        header.set_title_widget(Some(&title_box));
 
         let add_btn = gtk::Button::builder()
             .icon_name("list-add-symbolic")
@@ -450,14 +491,25 @@ impl DiscoveryWindow {
         // Populate list and subscribe to manager changes.
         Self::rebuild_list(&list_box, &manager.entries(), &open_device, manager);
 
-        let scanning = Rc::new(std::cell::Cell::new(true));
+        // List rebuild: fires on every health-check cycle or discovery event.
         manager.connect_list_changed(clone!(
-            @strong list_box, @strong open_device, @strong window_title, @strong scanning
+            @strong list_box, @strong open_device
                 => move |mgr| {
-                    if scanning.replace(false) {
-                        window_title.set_subtitle("");
-                    }
                     Self::rebuild_list(&list_box, &mgr.entries(), &open_device, mgr);
+                }
+        ));
+
+        // Scanning indicator: clear only when the SSDP scan cycle reports in.
+        // health-check results (list-changed) arrive much faster and would
+        // dismiss the indicator before the first frame is even rendered.
+        let scanning = Rc::new(std::cell::Cell::new(true));
+        manager.connect_scan_complete(clone!(
+            @strong subtitle_row, @strong scanning, @strong spinner
+                => move || {
+                    if scanning.replace(false) {
+                        spinner.set_spinning(false);
+                        subtitle_row.set_visible(false);
+                    }
                 }
         ));
 
