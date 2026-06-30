@@ -5,7 +5,7 @@ mod icons;
 pub(crate) mod menu;
 mod scroll_fade_label;
 mod playback;
-mod settings;
+pub(crate) mod settings;
 mod widgets;
 
 use playback::decode_loop_mode;
@@ -26,47 +26,6 @@ use crate::device::manager::DeviceManager;
 use crate::device::state::{ConnectionState, DeviceState};
 
 // ── Shared window actions ─────────────────────────────────────────────────────
-
-/// Build the app-level callback that opens (or re-presents) settings windows.
-/// The returned closure is the single source of truth for settings window lifecycle:
-/// it deduplicates by device UUID, creates windows without a transient parent so
-/// they are independent of whichever window triggered them, and removes closed
-/// entries from its internal registry automatically.
-pub fn build_open_settings_fn() -> Rc<dyn Fn(Option<DeviceState>)> {
-    let registry: Rc<RefCell<Vec<settings::SettingsWindow>>> = Rc::new(RefCell::new(Vec::new()));
-    Rc::new(move |ds: Option<DeviceState>| {
-        let ds_uuid = ds.as_ref()
-            .and_then(|d| d.device_info())
-            .map(|i| i.uuid.clone())
-            .filter(|u| !u.is_empty());
-        // Present an existing window for the same device (or same global slot).
-        {
-            let reg = registry.borrow();
-            for sw in reg.iter() {
-                if sw.device_uuid() == ds_uuid {
-                    sw.present();
-                    return;
-                }
-            }
-        }
-        let s = settings::SettingsWindow::new(ds);
-        // Use connect_close_request (fires before destruction) so the registry
-        // cleanup runs while we still hold the GObject alive — connect_destroy
-        // (g_object_weak_ref) only fires at finalization, but the registry's own
-        // strong ref prevents finalization, causing a deadlock where the cleanup
-        // never runs and present() is later called on a destroyed window.
-        let win_clone = s.window_ref().clone();
-        let weak_reg = Rc::downgrade(&registry);
-        s.window_ref().connect_close_request(move |_| {
-            if let Some(reg) = weak_reg.upgrade() {
-                reg.borrow_mut().retain(|w| w.window_ref() != &win_clone);
-            }
-            glib::Propagation::Proceed
-        });
-        s.present();
-        registry.borrow_mut().push(s);
-    })
-}
 
 /// Register `win.about` and `win.settings` on any ApplicationWindow.
 /// Both the device window and the discovery window share these actions.

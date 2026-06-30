@@ -5,11 +5,190 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
+use device::state::DeviceState;
+
 mod config;
 mod device;
-
-
 mod ui;
+
+// ── Application state ─────────────────────────────────────────────────────────
+//
+// All shared mutable state lives here as an `Rc<AppState>`.  Signal-handler
+// closures capture either a strong clone (for the device-window registry) or a
+// `Weak` clone (for the window close-request handlers).  This replaces the
+// previous pile of individual `Rc<RefCell<...>>` captures and the
+// `open_device: Rc<RefCell<Option<...>>>` deferred-initialisation hack.
+
+struct AppState {
+    app:            adw::Application,
+    disc_mgr:       ui::devlist::DiscoveryManager,
+    device_manager: device::manager::DeviceManager,
+    registry:       RefCell<Vec<ui::DeviceWindow>>,
+    settings_reg:   RefCell<Vec<ui::settings::SettingsWindow>>,
+    disc_win:       RefCell<Option<ui::devlist::DiscoveryWindow>>,
+}
+
+impl AppState {
+    // `disc_svc.start()` must run inside `connect_activate` so that
+    // `glib::spawn_future_local` has an active main context.
+    fn new(app: &adw::Application, rt: Arc<tokio::runtime::Runtime>) -> Rc<Self> {
+        let disc_svc = device::discovery::DiscoveryService::new(rt.clone());
+        disc_svc.start();
+        let disc_mgr = ui::devlist::DiscoveryManager::new(rt.clone(), disc_svc.clone());
+
+        Rc::new(Self {
+            app:            app.clone(),
+            disc_mgr,
+            device_manager: device::manager::DeviceManager::new(rt),
+            registry:       RefCell::new(Vec::new()),
+            settings_reg:   RefCell::new(Vec::new()),
+            disc_win:       RefCell::new(None),
+        })
+    }
+
+    /// Open (or re-present) the settings window for `ds`, deduplicating by UUID.
+    fn open_settings(self_rc: &Rc<Self>, ds: Option<DeviceState>) {
+        let ds_uuid = ds.as_ref()
+            .and_then(|d| d.device_info())
+            .map(|i| i.uuid.clone())
+            .filter(|u| !u.is_empty());
+        {
+            let reg = self_rc.settings_reg.borrow();
+            for sw in reg.iter() {
+                if sw.device_uuid() == ds_uuid {
+                    sw.present();
+                    return;
+                }
+            }
+        }
+        let s = ui::settings::SettingsWindow::new(ds);
+        let win_clone = s.window_ref().clone();
+        let weak_self = Rc::downgrade(self_rc);
+        s.window_ref().connect_close_request(move |_| {
+            if let Some(state) = weak_self.upgrade() {
+                state.settings_reg.borrow_mut().retain(|w| w.window_ref() != &win_clone);
+            }
+            glib::Propagation::Proceed
+        });
+        s.present();
+        self_rc.settings_reg.borrow_mut().push(s);
+    }
+
+    /// Show (or lazily create) the device-list window.
+    fn show_devices(self_rc: &Rc<Self>) {
+        let mut dw = self_rc.disc_win.borrow_mut();
+        if dw.is_none() {
+            let open_device_fn = {
+                let state = Rc::clone(self_rc);
+                Rc::new(move |entry: &ui::devlist::ManagedEntry| Self::open_device(&state, entry))
+                    as Rc<dyn Fn(&ui::devlist::ManagedEntry)>
+            };
+            let open_settings_fn = {
+                let state = Rc::clone(self_rc);
+                Rc::new(move |ds| Self::open_settings(&state, ds))
+                    as Rc<dyn Fn(Option<DeviceState>)>
+            };
+            *dw = Some(ui::devlist::DiscoveryWindow::new(
+                &self_rc.app,
+                &self_rc.disc_mgr,
+                open_device_fn,
+                open_settings_fn,
+            ));
+        }
+        dw.as_ref().unwrap().present();
+    }
+
+    /// Present the existing device window for `entry`, or open a new one.
+    fn open_device(self_rc: &Rc<Self>, entry: &ui::devlist::ManagedEntry) {
+        {
+            let reg = self_rc.registry.borrow();
+            for w in reg.iter() {
+                if w.uuid().map_or(false, |u| u == entry.uuid) {
+                    w.present();
+                    return;
+                }
+            }
+        }
+        if !entry.uuid.is_empty() {
+            let mut cfg = config::Config::load();
+            cfg.device_mut(&entry.uuid).window_open = true;
+            cfg.save();
+        }
+        Self::open_device_spec(self_rc, ui::DeviceSpec {
+            ip:       entry.ip.clone(),
+            uuid:     entry.uuid.clone(),
+            tls_mode: entry.tls_mode,
+        });
+    }
+
+    /// Create a device window for `spec`, register it, and present it.
+    /// Shared by the device-list open callback and the startup restore path.
+    fn open_device_spec(self_rc: &Rc<Self>, spec: ui::DeviceSpec) {
+        let show_fn = {
+            let state = Rc::clone(self_rc);
+            Rc::new(move || Self::show_devices(&state)) as Rc<dyn Fn()>
+        };
+        let open_settings_fn = {
+            let state = Rc::clone(self_rc);
+            Rc::new(move |ds| Self::open_settings(&state, ds)) as Rc<dyn Fn(Option<DeviceState>)>
+        };
+        let dw = ui::DeviceWindow::new_for_device(
+            &self_rc.app,
+            self_rc.device_manager.clone(),
+            show_fn,
+            open_settings_fn,
+            spec,
+        );
+        let gtk_win   = dw.window.clone();
+        dw.present();
+        self_rc.registry.borrow_mut().push(dw);
+        let win_key   = gtk_win.clone();
+        let weak_self = Rc::downgrade(self_rc);
+        gtk_win.connect_close_request(move |_| {
+            if let Some(s) = weak_self.upgrade() {
+                s.registry.borrow_mut().retain(|w| w.window != win_key);
+            }
+            glib::Propagation::Proceed
+        });
+    }
+
+    /// Restore device windows that were open at last exit. Returns count opened.
+    fn restore_windows(self_rc: &Rc<Self>) -> usize {
+        let cfg = config::Config::load();
+        let mut count = 0;
+        for (uuid, dev_cfg) in &cfg.devices {
+            if !dev_cfg.window_open { continue; }
+            let Some(ref ip) = dev_cfg.last_ip else { continue };
+            if ip.is_empty() { continue; }
+            Self::open_device_spec(self_rc, ui::DeviceSpec {
+                ip:       ip.clone(),
+                uuid:     uuid.clone(),
+                tls_mode: device::api::TlsMode::HttpsWiiM,
+            });
+            count += 1;
+        }
+        count
+    }
+
+    /// Called once from `app.connect_activate`.
+    fn activate(self_rc: &Rc<Self>) {
+        self_rc.disc_mgr.start();
+
+        {
+            let mut cfg = config::Config::load();
+            if cfg.migrate() { cfg.save(); }
+        }
+
+        let restored = Self::restore_windows(self_rc);
+
+        let cfg = config::Config::load();
+        if cfg.discovery_open || restored == 0 {
+            Self::show_devices(self_rc);
+        }
+    }
+}
+
+// ── Entry point ───────────────────────────────────────────────────────────────
 
 fn main() -> glib::ExitCode {
     let app = adw::Application::builder()
@@ -96,7 +275,7 @@ fn main() -> glib::ExitCode {
         app.set_accels_for_action("app.quit", &["<Ctrl>Q"]);
     }
 
-    // Ctrl-W closes the focused window (action defined per-window below).
+    // Ctrl-W closes the focused window (action defined per-window in ui/).
     app.set_accels_for_action("win.close", &["<Ctrl>W"]);
 
     // Quit automatically when no visible window remains (handles the case
@@ -108,142 +287,9 @@ fn main() -> glib::ExitCode {
     });
 
     app.connect_activate(move |app| {
-        // Create the discovery service here so it runs on the GTK main thread
-        // (glib::spawn_future_local requires the main context to be active).
-        let disc_svc = device::discovery::DiscoveryService::new(rt.clone());
-        disc_svc.start();
-        let disc_mgr = ui::devlist::DiscoveryManager::new(rt.clone(), disc_svc.clone());
-
-        // Single device-state registry: deduplicates DeviceState objects by UUID
-        // so device windows and settings windows for the same device share one state.
-        let device_manager = device::manager::DeviceManager::new(rt.clone());
-
-        // Registry of open device windows — used to present existing windows
-        // instead of creating duplicates when activating a device from the list.
-        let registry: Rc<RefCell<Vec<ui::DeviceWindow>>> = Rc::new(RefCell::new(Vec::new()));
-
-        // Lazy discovery window — created on first open, hidden on close.
-        let disc_win: Rc<RefCell<Option<ui::devlist::DiscoveryWindow>>> =
-            Rc::new(RefCell::new(None));
-
-        // open_device is populated after show_devices is created (both close a
-        // reference cycle that is intentional: both live for the app's lifetime).
-        let open_device: Rc<RefCell<Option<Rc<dyn Fn(&ui::devlist::ManagedEntry)>>>> =
-            Rc::new(RefCell::new(None));
-
-        // App-level settings window registry: deduplicates by device UUID and
-        // keeps settings windows alive independently of whichever window opened them.
-        let open_settings = ui::build_open_settings_fn();
-
-        let show_devices: Rc<dyn Fn()> = {
-            let disc_win      = Rc::clone(&disc_win);
-            let open_device   = Rc::clone(&open_device);
-            let disc_mgr      = disc_mgr.clone();
-            let app           = app.clone();
-            let open_settings = Rc::clone(&open_settings);
-            Rc::new(move || {
-                let mut dw = disc_win.borrow_mut();
-                if dw.is_none() {
-                    let open_fn = open_device.borrow()
-                        .as_ref()
-                        .expect("open_device not yet initialised")
-                        .clone();
-                    *dw = Some(ui::devlist::DiscoveryWindow::new(
-                        &app, &disc_mgr, open_fn, Rc::clone(&open_settings),
-                    ));
-                }
-                dw.as_ref().unwrap().present();
-            })
-        };
-
-        // Build the open_device callback now that show_devices is available.
-        *open_device.borrow_mut() = Some({
-            let app            = app.clone();
-            let device_manager = device_manager.clone();
-            let show_devices   = Rc::clone(&show_devices);
-            let registry       = Rc::clone(&registry);
-            let open_settings  = Rc::clone(&open_settings);
-            Rc::new(move |entry: &ui::devlist::ManagedEntry| {
-                // If a window already exists for this UUID, bring it to front.
-                {
-                    let reg = registry.borrow();
-                    for w in reg.iter() {
-                        if w.uuid().map_or(false, |u| u == entry.uuid) {
-                            w.present();
-                            return;
-                        }
-                    }
-                }
-                let spec = ui::DeviceSpec {
-                    ip:       entry.ip.clone(),
-                    uuid:     entry.uuid.clone(),
-                    tls_mode: entry.tls_mode,
-                };
-                let dw = ui::DeviceWindow::new_for_device(
-                    &app, device_manager.clone(), Rc::clone(&show_devices), Rc::clone(&open_settings), spec,
-                );
-                // Mark window open in config.
-                if !entry.uuid.is_empty() {
-                    let mut cfg = config::Config::load();
-                    cfg.device_mut(&entry.uuid).window_open = true;
-                    cfg.save();
-                }
-                let gtk_win = dw.window.clone();
-                dw.present();
-                registry.borrow_mut().push(dw);
-                let win_key  = gtk_win.clone();
-                let reg_weak = Rc::clone(&registry);
-                gtk_win.connect_close_request(move |_| {
-                    reg_weak.borrow_mut().retain(|w| w.window != win_key);
-                    glib::Propagation::Proceed
-                });
-            })
-        });
-
-        // ── One-time migration: move legacy last_ip/last_uuid into per-device entry.
-        {
-            let mut cfg = config::Config::load();
-            if cfg.migrate() {
-                cfg.save();
-            }
-        }
-
-        disc_mgr.start();
-
-        // ── Restore open windows from config ─────────────────────────────────────
-        let cfg = config::Config::load();
-        let mut device_windows_opened = 0usize;
-
-        // Open a window for every device that was open when the app last exited.
-        for (uuid, dev_cfg) in &cfg.devices {
-            if !dev_cfg.window_open { continue; }
-            let Some(ref ip) = dev_cfg.last_ip else { continue };
-            if ip.is_empty() { continue; }
-            let spec = ui::DeviceSpec {
-                ip:       ip.clone(),
-                uuid:     uuid.clone(),
-                tls_mode: device::api::TlsMode::HttpsWiiM,
-            };
-            let dw = ui::DeviceWindow::new_for_device(
-                app, device_manager.clone(), Rc::clone(&show_devices), Rc::clone(&open_settings), spec,
-            );
-            let gtk_win = dw.window.clone();
-            dw.present();
-            registry.borrow_mut().push(dw);
-            let win_key  = gtk_win.clone();
-            let reg_weak = Rc::clone(&registry);
-            gtk_win.connect_close_request(move |_| {
-                reg_weak.borrow_mut().retain(|w| w.window != win_key);
-                glib::Propagation::Proceed
-            });
-            device_windows_opened += 1;
-        }
-
-        // Open the discovery window if it was open before, or if there are no
-        // device windows to show (including first run with an empty config).
-        if cfg.discovery_open || device_windows_opened == 0 {
-            (show_devices)();
-        }
+        let state = AppState::new(app, rt.clone());
+        AppState::activate(&state);
     });
+
     app.run()
 }
