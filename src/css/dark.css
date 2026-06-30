@@ -78,6 +78,7 @@ menubutton.mini-restore-btn > button:hover { color: #ffffff; background-color: #
 .mini-transport-btn:hover { background-color: #2a2a2a; }
 .mini-vol-btn { background-color: transparent; color: #cccccc; border-radius: 4px; padding: 0 4px; min-width: 0; }
 .mini-vol-btn:hover { background-color: #2a2a2a; }
+.mini-vol-label { font-size: 10px; }
 .mini-play-btn {
     min-width: 26px; min-height: 26px;
     padding: 0; -gtk-icon-size: 12px;

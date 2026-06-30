@@ -547,6 +547,7 @@ fn build_mini_transport() -> (Label, Button, Button, Button, Button, gtk::Image,
         .label("—")
         .width_chars(3)
         .xalign(1.0)
+        .css_classes(["mini-vol-label"])
         .build();
     let mini_btn_box = GtkBox::builder()
         .orientation(Orientation::Horizontal)
