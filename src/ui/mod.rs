@@ -116,14 +116,19 @@ pub(crate) fn apply_theme(theme: ThemeMode) {
             provider.load_from_string(theme_css(theme));
         }
     });
-    // Defer the repaint to an idle callback so it fires after adw::StyleManager
-    // has finished applying the new colour scheme (set_color_scheme is async).
-    // gtk::Window::list_toplevels() covers all windows in the process —
-    // including adw::Window (settings) which is not tracked by the app object.
-    glib::idle_add_local_once(|| {
+    // Two-pass repaint:
+    // Pass 1 — immediate: covers the common case where CSS updates are sync.
+    for win in gtk::Window::list_toplevels() {
+        win.queue_draw();
+    }
+    // Pass 2 — Priority::LOW idle: adw::StyleManager may defer some CSS cascade
+    // work at DEFAULT_IDLE priority (200); firing at LOW (300) guarantees we run
+    // after all of that has settled, catching any widgets still stale after pass 1.
+    glib::idle_add_local_full(glib::Priority::LOW, || {
         for win in gtk::Window::list_toplevels() {
             win.queue_draw();
         }
+        glib::ControlFlow::Break
     });
 }
 

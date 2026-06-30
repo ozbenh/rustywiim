@@ -75,6 +75,9 @@ For now just this one:
     * Note: There have been significant changes to the config file format, it's unlikely
 	  that previous settings will be preserved.
 
+  * 0.4.1 - 2026-06-30
+    * Fix (again, maybe for real now ?) refresh of all windows when changing theme
+
 ## Screenshots ##
 
 ![Screenshot](screenshot1.png)
