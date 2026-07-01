@@ -517,6 +517,11 @@ impl DeviceState {
 
             // Slow poll — only when SLOW_POLL_INTERVAL has elapsed.
             if do_slow {
+                let device_id = ds.imp().inner.borrow()
+                    .device_info.as_ref()
+                    .map(|d| format!("{} ({})", d.device_name, d.ip_addr()))
+                    .unwrap_or_else(|| "unknown".to_string());
+                println!("[state] refcount={} device={}", ds.ref_count(), device_id);
                 let tx = slow_tx.clone();
                 rt.spawn(async move {
                     let result = run_slow_poll(c, probe_outputs, probe_presets, preset_fp).await;
