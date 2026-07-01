@@ -223,7 +223,7 @@ mod imp {
             let id = inner.device_info.as_ref()
                 .map(|d| format!("{} ({})", d.device_name, d.ip_addr()))
                 .unwrap_or_else(|| "unknown".to_string());
-            println!("[state] DeviceState dropped: {}", id);
+            dbg(&format!("DeviceState dropped: {}", id));
         }
 
         fn signals() -> &'static [Signal] {
@@ -528,7 +528,7 @@ impl DeviceState {
                     .device_info.as_ref()
                     .map(|d| format!("{} ({})", d.device_name, d.ip_addr()))
                     .unwrap_or_else(|| "unknown".to_string());
-                println!("[state] refcount={} device={}", ds.ref_count(), device_id);
+                dbg(&format!("refcount={} device={}", ds.ref_count(), device_id));
                 let tx = slow_tx.clone();
                 rt.spawn(async move {
                     let result = run_slow_poll(c, probe_outputs, probe_presets, preset_fp).await;

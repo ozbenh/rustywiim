@@ -1057,15 +1057,14 @@ impl AppState {
             let app = self_rc.app.clone();
             let quit_action = gio::SimpleAction::new("quit", None);
             quit_action.connect_activate(move |_, _| {
-                eprintln!("[quit] action fired");
-                dbg_ui("app quit action");
+                dbg_ui("quit action fired");
                 if let Some(s) = s.upgrade() {
                     // Collect first so connect_destroy (which mutates registry) doesn't
                     // invalidate the iterator.
                     let wins: Vec<_> = s.registry.borrow().iter()
                         .map(|dw| dw.window.clone())
                         .collect();
-                    eprintln!("[quit] closing {} window(s)", wins.len());
+                    dbg_ui(&format!("quit: closing {} window(s)", wins.len()));
                     for win in wins {
                         // realize() first: close() is a no-op on unrealized windows
                         // (e.g. main window never shown when starting in mini mode).
@@ -1073,7 +1072,7 @@ impl AppState {
                         win.close();
                     }
                 } else {
-                    eprintln!("[quit] AppState already freed");
+                    dbg_ui("quit: AppState already freed");
                 }
                 app.quit();
             });
