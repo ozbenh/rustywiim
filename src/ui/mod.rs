@@ -22,7 +22,7 @@ use gtk::gio;
 use gtk::{Align, Box as GtkBox, CssProvider, Label, Orientation, Scale};
 
 use crate::device::api::TlsMode;
-use crate::config::Config;
+use crate::config;
 use crate::config::ThemeMode;
 use crate::device::discovery::DiscoveryService;
 use crate::device::manager::DeviceManager;
@@ -237,9 +237,7 @@ impl DeviceWindowInner {
         if let Some(id) = self.config_save_timer.borrow_mut().take() { id.remove(); }
         self.save_config_now();
         if !uuid.is_empty() {
-            let mut cfg = Config::load();
-            cfg.device_mut(&uuid).window_open = false;
-            cfg.save();
+            config::update(|cfg| cfg.device_mut(&uuid).window_open = false);
         }
         self.mini_win.destroy();
     }
@@ -290,7 +288,6 @@ impl DeviceWindow {
         open_settings:   Rc<dyn Fn(Option<DeviceState>)>,
         device_spec:     Option<DeviceSpec>,
     ) -> Self {
-        let cfg = Config::load();
         let icons = Rc::new(icons::IconSet::load());
 
         // Pick the device UUID to use for loading per-device window config.
@@ -300,7 +297,7 @@ impl DeviceWindow {
             .filter(|u| !u.is_empty())
             .unwrap_or_default();
 
-        let init_dev_cfg = cfg.device(&cfg_uuid);
+        let init_dev_cfg = config::with(|cfg| cfg.device(&cfg_uuid));
 
         let ds = match device_spec.as_ref() {
             Some(spec) => device_manager.get(&spec.uuid, &spec.ip, spec.tls_mode),
@@ -981,9 +978,7 @@ impl AppState {
         }
         dbg_state(&format!("device window: opening {} ({}) @ {}", entry.name, entry.uuid, entry.ip));
         if !entry.uuid.is_empty() {
-            let mut cfg = Config::load();
-            cfg.device_mut(&entry.uuid).window_open = true;
-            cfg.save();
+            config::update(|cfg| cfg.device_mut(&entry.uuid).window_open = true);
         }
         Self::open_device_spec(self_rc, DeviceSpec {
             ip:       entry.ip.clone(),
@@ -1042,9 +1037,11 @@ impl AppState {
     /// Called once from `app.connect_activate`.
     pub(crate) fn activate(self_rc: &Rc<Self>) {
         {
-            let mut cfg = Config::load();
-            if cfg.migrate() { cfg.save(); }
-            init_css(cfg.theme);
+            // update() only writes to disk if migrate() actually changed
+            // something, so no need to check its return value here.
+            config::update(|cfg| { cfg.migrate(); });
+            let theme = config::with(|cfg| cfg.theme);
+            init_css(theme);
         }
 
         // Replace the app.quit action (set up in main.rs) with one that explicitly
@@ -1087,9 +1084,8 @@ impl AppState {
             let s = Rc::downgrade(self_rc);
             self_rc.disc_mgr.connect_list_changed(move |mgr| {
                 let Some(self_rc) = s.upgrade() else { return };
-                let mut cfg = Config::load();
-                let mut dirty = false;
-                for entry in mgr.entries() {
+                let entries = mgr.entries();
+                for entry in &entries {
                     if entry.uuid.is_empty() { continue; }
                     // No-op if a live DeviceState for this UUID is already
                     // using this IP; otherwise reconnects it (see
@@ -1097,13 +1093,18 @@ impl AppState {
                     // rediscovery, this pushes the correction into any open
                     // window instead of it retrying the old dead IP forever).
                     self_rc.device_manager.update_ip(&entry.uuid, &entry.ip, entry.tls_mode);
-                    let Some(dev) = cfg.devices.get_mut(&entry.uuid) else { continue };
-                    if dev.last_ip.as_deref() != Some(entry.ip.as_str()) {
-                        dev.last_ip = Some(entry.ip.clone());
-                        dirty = true;
-                    }
                 }
-                if dirty { cfg.save(); }
+                // update() only saves if something actually changed, so no
+                // need to track a separate "dirty" flag here.
+                config::update(|cfg| {
+                    for entry in &entries {
+                        if entry.uuid.is_empty() { continue; }
+                        let Some(dev) = cfg.devices.get_mut(&entry.uuid) else { continue };
+                        if dev.last_ip.as_deref() != Some(entry.ip.as_str()) {
+                            dev.last_ip = Some(entry.ip.clone());
+                        }
+                    }
+                });
             });
         }
 
@@ -1114,21 +1115,26 @@ impl AppState {
             let s = Rc::downgrade(self_rc);
             self_rc.disc_mgr.connect_initial_load(move |mgr| {
                 let Some(self_rc) = s.upgrade() else { return };
-                let cfg = Config::load();
-                for entry in mgr.entries() {
-                    if entry.uuid.is_empty() { continue; }
-                    if cfg.devices.get(&entry.uuid).map_or(false, |d| d.window_open) {
-                        Self::open_device(&self_rc, &entry);
-                    }
+                let entries = mgr.entries();
+                let to_open: Vec<_> = config::with(|cfg| {
+                    entries.into_iter()
+                        .filter(|entry| !entry.uuid.is_empty()
+                            && cfg.devices.get(&entry.uuid).map_or(false, |d| d.window_open))
+                        .collect()
+                });
+                for entry in &to_open {
+                    Self::open_device(&self_rc, entry);
                 }
             });
         }
 
         self_rc.disc_mgr.start();
 
-        let cfg = Config::load();
-        let has_pending_windows = cfg.devices.values().any(|d| d.window_open);
-        if cfg.discovery_open || !has_pending_windows {
+        let (discovery_open, has_pending_windows) = config::with(|cfg| (
+            cfg.discovery_open,
+            cfg.devices.values().any(|d| d.window_open),
+        ));
+        if discovery_open || !has_pending_windows {
             dbg_state("activate: showing device list");
             Self::show_devices(self_rc);
         }

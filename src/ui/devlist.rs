@@ -20,7 +20,7 @@ use glib::clone;
 use glib::subclass::prelude::*;
 use gtk::{glib, Orientation};
 
-use crate::config::Config;
+use crate::config;
 use crate::device::api::{TlsMode, WiimClient};
 use crate::device::capabilities::DeviceCapabilities;
 use crate::device::discovery::{DEBUG_DISCOVERY, DiscoveredDevice, DiscoveryService};
@@ -270,14 +270,14 @@ impl DiscoveryManager {
                     dbg(&format!("discovery: {} ({}) left SSDP scope", rec.entry.name, rec.entry.ip));
                 }
             }
-            let cfg = Config::load();
+            let known_devices = config::with(|c| c.devices.clone());
             for dev in &discovered {
                 let key = device_key(&dev.uuid, &dev.ip);
                 match inner.devices.get_mut(&key) {
                     None => {
                         // Use cached name/model from config so the list shows
                         // correct values immediately, before the health check returns.
-                        let cached = cfg.devices.get(&dev.uuid);
+                        let cached = known_devices.get(&dev.uuid);
                         let name  = cached.and_then(|c| c.name.clone())
                             .filter(|n| !n.is_empty())
                             .unwrap_or_else(|| dev.name.clone());
@@ -422,45 +422,46 @@ impl DiscoveryManager {
     }
 
     fn load_known_devices_from_config(&self) {
-        let cfg = Config::load();
-        let mut inner = self.imp().inner.borrow_mut();
-        for (uuid, dev_cfg) in &cfg.devices {
-            let pinned = dev_cfg.pinned == Some(true);
-            // Load pinned devices always.  Also pre-load non-pinned devices whose
-            // window should reopen: the list-changed handler will open the window,
-            // and if SSDP later confirms the device it stays; if not, do_prune
-            // removes it (the window stays open independently).
-            if !pinned && !dev_cfg.window_open { continue; }
-            let Some(ref ip) = dev_cfg.last_ip else { continue };
-            if inner.devices.contains_key(uuid) { continue; }
-            let tls   = TlsMode::HttpsWiiM;
-            let name  = dev_cfg.name.clone().unwrap_or_else(|| format!("Device @ {ip}"));
-            let model = dev_cfg.model.clone().unwrap_or_default();
-            dbg(&format!("load from config: {name} ({ip}) uuid={uuid} pinned={pinned}"));
-            let entry = ManagedEntry {
-                uuid: uuid.clone(), name, model, ip: ip.clone(),
-                // Start Active (optimistic); health check will demote to Ghost if offline.
-                tls_mode: tls, pinned, presence: DevicePresence::Active,
-            };
-            inner.devices.insert(uuid.clone(), DeviceRecord {
-                entry, in_discovery: false, client: WiimClient::new(ip, tls),
-            });
-        }
+        config::with(|cfg| {
+            let mut inner = self.imp().inner.borrow_mut();
+            for (uuid, dev_cfg) in &cfg.devices {
+                let pinned = dev_cfg.pinned == Some(true);
+                // Load pinned devices always.  Also pre-load non-pinned devices whose
+                // window should reopen: the list-changed handler will open the window,
+                // and if SSDP later confirms the device it stays; if not, do_prune
+                // removes it (the window stays open independently).
+                if !pinned && !dev_cfg.window_open { continue; }
+                let Some(ref ip) = dev_cfg.last_ip else { continue };
+                if inner.devices.contains_key(uuid) { continue; }
+                let tls   = TlsMode::HttpsWiiM;
+                let name  = dev_cfg.name.clone().unwrap_or_else(|| format!("Device @ {ip}"));
+                let model = dev_cfg.model.clone().unwrap_or_default();
+                dbg(&format!("load from config: {name} ({ip}) uuid={uuid} pinned={pinned}"));
+                let entry = ManagedEntry {
+                    uuid: uuid.clone(), name, model, ip: ip.clone(),
+                    // Start Active (optimistic); health check will demote to Ghost if offline.
+                    tls_mode: tls, pinned, presence: DevicePresence::Active,
+                };
+                inner.devices.insert(uuid.clone(), DeviceRecord {
+                    entry, in_discovery: false, client: WiimClient::new(ip, tls),
+                });
+            }
+        });
     }
 
     fn persist_pinned(&self) {
         let inner = self.imp().inner.borrow();
-        let mut cfg = Config::load();
-        for rec in inner.devices.values() {
-            let dev     = cfg.device_mut(&rec.entry.uuid);
-            dev.pinned  = Some(rec.entry.pinned); // Explicit Some(true/false) ends legacy treatment.
-            dev.last_ip = Some(rec.entry.ip.clone());
-            dev.name    = Some(rec.entry.name.clone());
-            if !rec.entry.model.is_empty() {
-                dev.model = Some(rec.entry.model.clone());
+        config::update(|cfg| {
+            for rec in inner.devices.values() {
+                let dev     = cfg.device_mut(&rec.entry.uuid);
+                dev.pinned  = Some(rec.entry.pinned); // Explicit Some(true/false) ends legacy treatment.
+                dev.last_ip = Some(rec.entry.ip.clone());
+                dev.name    = Some(rec.entry.name.clone());
+                if !rec.entry.model.is_empty() {
+                    dev.model = Some(rec.entry.model.clone());
+                }
             }
-        }
-        cfg.save();
+        });
     }
 }
 
@@ -481,9 +482,10 @@ impl DiscoveryWindow {
         open_device:   Rc<dyn Fn(&ManagedEntry)>,
         open_settings: Rc<dyn Fn(Option<DeviceState>)>,
     ) -> Self {
-        let saved_cfg = Config::load();
-        let init_w = if saved_cfg.discovery_window_width  > 0 { saved_cfg.discovery_window_width  } else { 500 };
-        let init_h = if saved_cfg.discovery_window_height > 0 { saved_cfg.discovery_window_height } else { 440 };
+        let (init_w, init_h) = config::with(|cfg| (
+            if cfg.discovery_window_width  > 0 { cfg.discovery_window_width  } else { 500 },
+            if cfg.discovery_window_height > 0 { cfg.discovery_window_height } else { 440 },
+        ));
         let window = adw::ApplicationWindow::builder()
             .application(app)
             .title("RustyWiiM")
@@ -599,12 +601,12 @@ impl DiscoveryWindow {
 
         // Hide when other windows are visible; quit (propagate) when last.
         window.connect_close_request(clone!(@strong window => move |w| {
-            let mut cfg = Config::load();
-            cfg.discovery_open = false;
             let (ww, wh) = (w.width(), w.height());
-            if ww > 0 { cfg.discovery_window_width  = ww; }
-            if wh > 0 { cfg.discovery_window_height = wh; }
-            cfg.save();
+            config::update(|cfg| {
+                cfg.discovery_open = false;
+                if ww > 0 { cfg.discovery_window_width  = ww; }
+                if wh > 0 { cfg.discovery_window_height = wh; }
+            });
 
             let others_visible = w.application().map_or(false, |app| {
                 app.windows().iter().any(|other| {
@@ -624,9 +626,7 @@ impl DiscoveryWindow {
     }
 
     pub fn present(&self) {
-        let mut cfg = Config::load();
-        cfg.discovery_open = true;
-        cfg.save();
+        config::update(|cfg| cfg.discovery_open = true);
         self.window.present();
     }
 

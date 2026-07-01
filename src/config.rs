@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
@@ -24,7 +25,7 @@ pub enum ThemeMode {
 /// Per-device window state, keyed on the device UUID from `getStatusEx`.
 /// The UUID is a stable hardware-level identifier that does not change when
 /// the device is renamed or moved to a different network.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DeviceConfig {
     #[serde(default)]
     pub window_width: i32,
@@ -77,7 +78,7 @@ impl Default for DeviceConfig {
 }
 
 /// Top-level application config.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct Config {
     /// IP of the last connected device.  Legacy field: read from old configs
     /// but not written back once cleared.  Per-device `DeviceConfig::last_ip`
@@ -150,7 +151,7 @@ fn config_path() -> PathBuf {
 }
 
 impl Config {
-    pub fn load() -> Self {
+    fn load_from_disk() -> Self {
         let path = config_path();
         let text = match fs::read_to_string(&path) {
             Ok(s) => s,
@@ -173,7 +174,7 @@ impl Config {
         }
     }
 
-    pub fn save(&self) {
+    fn write_to_disk(&self) {
         if let Ok(json) = serde_json::to_string_pretty(self) {
             let _ = fs::write(config_path(), json);
         }
@@ -214,4 +215,45 @@ impl Config {
         }
         true
     }
+}
+
+// ── Live singleton ────────────────────────────────────────────────────────────
+//
+// All call sites (signal handlers, timer callbacks) run on the single GTK
+// main-loop thread, so a thread_local is sufficient without needing Sync.
+// The config is read from disk once, on first access, and kept live in
+// memory after that — `with`/`update` read/mutate it directly instead of
+// every call site doing its own load-mutate-save dance. This does mean
+// hand-edits to config.json made while the app is already running are no
+// longer picked up until restart, which matches the app's role as the sole
+// writer once started.
+thread_local! {
+    static CONFIG: RefCell<Config> = RefCell::new(Config::load_from_disk());
+}
+
+/// Read-only access to the live config.
+pub fn with<R>(f: impl FnOnce(&Config) -> R) -> R {
+    CONFIG.with(|c| f(&c.borrow()))
+}
+
+/// Mutate the live config via `f`, then persist to disk — but only if `f`
+/// actually changed something. Comparison is whole-`Config` equality rather
+/// than tracking individual field writes, so a closure that touches several
+/// fields (or several devices' entries) at once still costs exactly one
+/// comparison and, if needed, one save — not one per field.
+pub fn update<R>(f: impl FnOnce(&mut Config) -> R) -> R {
+    let (result, changed) = CONFIG.with(|c| {
+        let before = c.borrow().clone();
+        let result = f(&mut c.borrow_mut());
+        (result, *c.borrow() != before)
+    });
+    if changed { save(); }
+    result
+}
+
+/// Write the current in-memory config to disk. `update()` already calls this
+/// for you — exposed separately in case a caller ever wants to decouple
+/// mutation from persistence (e.g. to batch or delay saves).
+pub fn save() {
+    CONFIG.with(|c| c.borrow().write_to_disk());
 }

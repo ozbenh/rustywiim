@@ -4,7 +4,7 @@ use std::rc::Rc;
 
 use adw::prelude::*;
 
-use crate::{device::{api, capabilities}, config::Config};
+use crate::{device::{api, capabilities}, config};
 
 
 use super::*;
@@ -565,20 +565,20 @@ impl DeviceWindowInner {
         // to the new device.
         if !prev_uuid.is_empty() {
             let maximized = self.window.is_maximized();
-            let mut cfg  = Config::load();
-            let dev      = cfg.device_mut(&prev_uuid);
-            dev.window_maximized = maximized;
-            dev.window_width     = if maximized { 0 } else { self.window.width() };
-            dev.window_height    = if maximized { 0 } else { self.window.height() };
-            dev.panel_visible    = self.sidebar_btn.is_active();
-            dev.paned_position   = *self.saved_panel_width.borrow();
-            dev.mini_mode        = *self.mini_mode.borrow();
-            cfg.save();
+            config::update(|cfg| {
+                let dev = cfg.device_mut(&prev_uuid);
+                dev.window_maximized = maximized;
+                dev.window_width     = if maximized { 0 } else { self.window.width() };
+                dev.window_height    = if maximized { 0 } else { self.window.height() };
+                dev.panel_visible    = self.sidebar_btn.is_active();
+                dev.paned_position   = *self.saved_panel_width.borrow();
+                dev.mini_mode        = *self.mini_mode.borrow();
+            });
         }
 
         *self.applied_window_key.borrow_mut() = uuid.to_string();
 
-        let dev_cfg = Config::load().device(uuid);
+        let dev_cfg = config::with(|cfg| cfg.device(uuid));
 
         let panel_width = if dev_cfg.paned_position > 0 { dev_cfg.paned_position } else { 200 };
         *self.saved_panel_width.borrow_mut() = panel_width;
@@ -623,17 +623,17 @@ impl DeviceWindowInner {
         } else {
             (self.window.width(), self.window.height())
         };
-        let mut cfg = Config::load();
-        cfg.last_uuid = uuid.clone();
-        // Update only the window-related fields; preserve pinned / window_open / etc.
-        let dev = cfg.device_mut(&uuid);
-        dev.window_maximized = maximized;
-        dev.window_width     = if maximized { 0 } else { w };
-        dev.window_height    = if maximized { 0 } else { h };
-        dev.panel_visible    = self.sidebar_btn.is_active();
-        dev.paned_position   = *self.saved_panel_width.borrow();
-        dev.mini_mode        = *self.mini_mode.borrow();
-        cfg.save();
+        config::update(|cfg| {
+            cfg.last_uuid = uuid.clone();
+            // Update only the window-related fields; preserve pinned / window_open / etc.
+            let dev = cfg.device_mut(&uuid);
+            dev.window_maximized = maximized;
+            dev.window_width     = if maximized { 0 } else { w };
+            dev.window_height    = if maximized { 0 } else { h };
+            dev.panel_visible    = self.sidebar_btn.is_active();
+            dev.paned_position   = *self.saved_panel_width.borrow();
+            dev.mini_mode        = *self.mini_mode.borrow();
+        });
     }
 
     // ── Mini player ───────────────────────────────────────────────────────────

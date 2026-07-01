@@ -14,7 +14,7 @@ use adw::prelude::*;
 use gtk::glib;
 use gtk::Orientation;
 
-use crate::config::{Config, ThemeMode};
+use crate::config::{self, ThemeMode};
 use crate::device::state::DeviceState;
 use crate::ui::DEBUG_UI;
 use std::sync::atomic::Ordering;
@@ -159,7 +159,7 @@ impl SettingsWindow {
 // ── Per-page builders ─────────────────────────────────────────────────────────
 
 fn build_appearance_page() -> adw::PreferencesPage {
-    let cfg = Config::load();
+    let theme = config::with(|cfg| cfg.theme);
 
     let theme_list = gtk::StringList::new(&["System", "System Light", "System Dark", "RustyWiiM"]);
     let theme_row = adw::ComboRow::builder()
@@ -167,7 +167,7 @@ fn build_appearance_page() -> adw::PreferencesPage {
         .subtitle("Application colour scheme")
         .model(&theme_list)
         .build();
-    theme_row.set_selected(match cfg.theme {
+    theme_row.set_selected(match theme {
         ThemeMode::System      => 0,
         ThemeMode::SystemLight => 1,
         ThemeMode::SystemDark  => 2,
@@ -181,9 +181,7 @@ fn build_appearance_page() -> adw::PreferencesPage {
             _ => ThemeMode::RustyWiiM,
         };
         crate::ui::apply_theme(theme);
-        let mut cfg = Config::load();
-        cfg.theme = theme;
-        cfg.save();
+        config::update(|cfg| cfg.theme = theme);
     });
 
     let group = adw::PreferencesGroup::builder()
