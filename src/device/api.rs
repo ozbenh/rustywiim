@@ -2,8 +2,9 @@
 
 use reqwest::Client;
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 pub static DEBUG: AtomicBool = AtomicBool::new(false);
@@ -71,7 +72,7 @@ impl TlsMode {
     }
 }
 
-/// Build a reqwest `Client` for the given TLS mode.
+/// Build (or reuse a cached) reqwest `Client` for the given TLS mode.
 ///
 /// All HTTPS modes:
 ///   - Disable server certificate verification (`danger_accept_invalid_certs`).
@@ -81,13 +82,36 @@ impl TlsMode {
 ///     some regular WiiM units and all AudioPro units) will accept it.
 ///
 /// The only difference between `HttpsWiiM` and `HttpsAudioPro` is the port used in
-/// the URL (443 vs 4443); the TLS configuration is identical.
+/// the URL (443 vs 4443); the TLS configuration is identical, so they (and
+/// `HttpsAny`) share a single cached client.
 ///
 /// Uses OpenSSL (native-tls) which accepts CA-as-end-entity server certificates
 /// that rustls rejects with `CaUsedAsEndEntity`.
+///
+/// Building a `Client` loads and parses the system CA store plus the WiiM
+/// CA/identity PEMs — ~250M instructions per call (see ANALYSIS.md). Every
+/// `WiimClient::new()`, health check, and discovery probe used to pay that
+/// cost from scratch; a `reqwest::Client` is cheap to clone (internally
+/// `Arc`-based) and every device shares identical TLS config, so it's cached
+/// per (TLS family, timeout) pair and cloned on every call after the first.
 pub fn build_reqwest_client(tls: TlsMode, timeout: Duration) -> Client {
-    match tls {
+    fn cache() -> &'static Mutex<HashMap<(u8, u64), Client>> {
+        static CACHE: OnceLock<Mutex<HashMap<(u8, u64), Client>>> = OnceLock::new();
+        CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+    }
+
+    let family: u8 = match tls {
         TlsMode::Auto => panic!("build_reqwest_client: Auto must be resolved by the caller"),
+        TlsMode::Http => 0,
+        TlsMode::HttpsAny | TlsMode::HttpsWiiM | TlsMode::HttpsAudioPro => 1,
+    };
+    let key = (family, timeout.as_millis() as u64);
+    if let Some(client) = cache().lock().unwrap().get(&key) {
+        return client.clone();
+    }
+
+    let client = match tls {
+        TlsMode::Auto => unreachable!("handled above"),
 
         TlsMode::Http => Client::builder()
             .timeout(timeout)
@@ -106,7 +130,9 @@ pub fn build_reqwest_client(tls: TlsMode, timeout: Duration) -> Client {
                 .build()
                 .expect("https client")
         }
-    }
+    };
+    cache().lock().unwrap().insert(key, client.clone());
+    client
 }
 
 /// Log a reqwest error for `context` (e.g. an API command or a discovery probe).
