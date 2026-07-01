@@ -212,6 +212,14 @@ mod imp {
     }
 
     impl ObjectImpl for DeviceState {
+        fn dispose(&self) {
+            let inner = self.inner.borrow();
+            let id = inner.device_info.as_ref()
+                .map(|d| format!("{} ({})", d.device_name, d.ip_addr()))
+                .unwrap_or_else(|| "unknown".to_string());
+            println!("[state] DeviceState dropped: {}", id);
+        }
+
         fn signals() -> &'static [Signal] {
             static SIGNALS: OnceLock<Vec<Signal>> = OnceLock::new();
             SIGNALS.get_or_init(|| {

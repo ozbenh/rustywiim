@@ -1,28 +1,28 @@
 // Device-state manager — single source of truth for live DeviceState objects.
 //
-// `DeviceState` is a GObject, so it is already internally reference-counted.
-// `DeviceManager` keeps a `WeakRef<DeviceState>` per UUID.  Callers that need
-// a device state call `get(uuid, ip, tls)` and receive a strong (owned) ref.
-// When every caller drops its ref the GObject is destroyed and the weak entry
-// becomes stale; stale entries are pruned lazily on the next `get()` call.
+// `DeviceManager` holds a strong ref to each known DeviceState so polling
+// continues and state is preserved regardless of how many windows are open.
+// Multiple consumers (device windows, settings, device list) can all hold
+// their own clone of the same DeviceState GObject.
 //
-// An empty UUID cannot be deduplicated (the device isn't identified yet); in
-// that case `get()` returns a fresh, uncached `DeviceState` every time.
+// An empty UUID cannot be deduplicated; `get()` returns a fresh uncached
+// DeviceState every time for those.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use glib::clone::Downgrade;
-use gtk::glib;
-
 use crate::device::api::TlsMode;
 use crate::device::state::DeviceState;
 
 struct Inner {
     rt:     Arc<tokio::runtime::Runtime>,
-    states: RefCell<HashMap<String, glib::WeakRef<DeviceState>>>,
+    // Strong refs: DeviceState stays alive (and keeps polling) as long as the
+    // DeviceManager exists, regardless of how many windows are open.  This
+    // lets multiple consumers (device windows, settings, future device list)
+    // share the same live state without any one of them being the sole owner.
+    states: RefCell<HashMap<String, DeviceState>>,
 }
 
 /// Cheap-to-clone handle to the device-state registry.
@@ -37,23 +37,19 @@ impl DeviceManager {
         }))
     }
 
-    /// Return a live `DeviceState` for `uuid` + `ip` + `tls`.
+    /// Return a `DeviceState` for `uuid` + `ip` + `tls`.
     ///
-    /// * **Existing entry**: if a live `DeviceState` for this UUID is already
-    ///   held by someone else, that same object is returned.  The `ip`/`tls`
-    ///   arguments are ignored (the device is already connected).
-    /// * **New entry**: a fresh `DeviceState` is created, connected to the
-    ///   device, polling is started, and a weak reference is stored.
-    /// * **Empty UUID**: the device is not yet identified; a standalone
-    ///   `DeviceState` is created without caching it.
+    /// * **Existing entry**: returns the already-running `DeviceState` for
+    ///   this UUID.  The `ip`/`tls` arguments are ignored.
+    /// * **New entry**: creates a fresh `DeviceState`, starts polling, and
+    ///   stores a strong reference so the state outlives any single window.
+    /// * **Empty UUID**: creates an uncached standalone `DeviceState`.
     pub fn get(&self, uuid: &str, ip: &str, tls: TlsMode) -> DeviceState {
         let mut states = self.0.states.borrow_mut();
-        // Prune stale entries lazily so the map doesn't grow unboundedly.
-        states.retain(|_, w| w.upgrade().is_some());
 
         if !uuid.is_empty() {
-            if let Some(ds) = states.get(uuid).and_then(|w| w.upgrade()) {
-                return ds;
+            if let Some(ds) = states.get(uuid) {
+                return ds.clone();
             }
         }
 
@@ -62,7 +58,7 @@ impl DeviceManager {
         ds.start_polling();
 
         if !uuid.is_empty() {
-            states.insert(uuid.to_string(), ds.downgrade());
+            states.insert(uuid.to_string(), ds.clone());
         }
         ds
     }

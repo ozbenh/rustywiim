@@ -181,6 +181,28 @@ impl DeviceWindowInner {
         *self.ow.updating.borrow_mut()    = false;
     }
 
+    /// Populate the entire UI from whatever the DeviceState currently has cached.
+    /// Called on initial window creation and on every `device-changed` signal.
+    /// Safe to call redundantly — all underlying setters are idempotent.
+    pub(super) fn populate_all(&self) {
+        use crate::device::state::playback_changed;
+        self.update_network_icon();
+        if self.ds.device_info().is_some() {
+            self.apply_device_info();
+            self.on_presets_changed();
+        } else {
+            let title = match self.ds.connection_state() {
+                ConnectionState::Connecting => "Connecting…",
+                ConnectionState::Failed     => "Disconnected",
+                _                           => "",
+            };
+            self.reset_device_ui(title);
+        }
+        self.update_playback_ui(playback_changed::ALL);
+        self.update_input_display();
+        self.update_output_display();
+    }
+
     // ── Source / Output / Network ─────────────────────────────────────────────
 
     pub(super) fn populate_source(&self) {

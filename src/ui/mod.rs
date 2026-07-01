@@ -377,57 +377,55 @@ impl DeviceWindow {
         });
 
         // ── DeviceState signal connections ────────────────────────────────────────
+        // Use Rc::downgrade so the closures don't keep DeviceWindowInner alive
+        // after the window is closed — broken upgrade() calls become no-ops.
         ds.connect_device_changed({
-            let i = Rc::clone(&inner);
-            move |_| {
-                i.update_network_icon();
-                if i.ds.device_info().is_none() {
-                    let title = match i.ds.connection_state() {
-                        ConnectionState::Connecting   => "Connecting…",
-                        ConnectionState::Failed       => "Disconnected",
-                        _                             => "",
-                    };
-                    i.reset_device_ui(title);
-                } else {
-                    i.apply_device_info();
-                    i.on_presets_changed();
-                }
-            }
+            let i = Rc::downgrade(&inner);
+            move |_| { if let Some(i) = i.upgrade() { i.populate_all(); } }
         });
 
         ds.connect_network_changed({
-            let i = Rc::clone(&inner);
-            move |_| { i.update_network_icon(); }
+            let i = Rc::downgrade(&inner);
+            move |_| { if let Some(i) = i.upgrade() { i.update_network_icon(); } }
         });
 
         ds.connect_playback_changed({
-            let i = Rc::clone(&inner);
+            let i = Rc::downgrade(&inner);
             move |_, mask| {
+                let Some(i) = i.upgrade() else { return };
                 if *i.mini_mode.borrow() { i.update_mini_playback(mask); } else { i.update_playback_ui(mask); }
             }
         });
 
         ds.connect_input_changed({
-            let i = Rc::clone(&inner);
+            let i = Rc::downgrade(&inner);
             move |_| {
+                let Some(i) = i.upgrade() else { return };
                 if *i.mini_mode.borrow() { i.update_mini_playback(crate::device::state::playback_changed::ALL); } else { i.update_input_display(); }
             }
         });
 
         ds.connect_output_changed({
-            let i = Rc::clone(&inner);
-            move |_| { i.update_output_display(); }
+            let i = Rc::downgrade(&inner);
+            move |_| { if let Some(i) = i.upgrade() { i.update_output_display(); } }
         });
 
         ds.connect_outputs_changed({
-            let i = Rc::clone(&inner);
-            move |_| { i.populate_output(); i.update_output_display(); }
+            let i = Rc::downgrade(&inner);
+            move |_| {
+                let Some(i) = i.upgrade() else { return };
+                i.populate_output();
+                i.update_output_display();
+            }
         });
 
         ds.connect_presets_changed({
-            let i = Rc::clone(&inner);
-            move |_| { i.on_presets_changed(); }
+            let i = Rc::downgrade(&inner);
+            move |_| { if let Some(i) = i.upgrade() { i.on_presets_changed(); } }
         });
+
+        // Populate immediately from whatever the DeviceState already has cached.
+        inner.populate_all();
 
         // ── Sidebar toggle ────────────────────────────────────────────────────────
         let paned_btn_held = Rc::new(RefCell::new(false));
