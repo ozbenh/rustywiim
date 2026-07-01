@@ -28,6 +28,14 @@ use crate::device::discovery::DiscoveryService;
 use crate::device::manager::DeviceManager;
 use crate::device::state::{ConnectionState, DeviceState, DEBUG_STATE};
 
+pub static DEBUG_UI: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn dbg_ui(msg: &str) {
+    if DEBUG_UI.load(Ordering::Relaxed) {
+        println!("[ui] {msg}");
+    }
+}
+
 // ── Shared window actions ─────────────────────────────────────────────────────
 
 /// Register `win.about` and `win.settings` on any ApplicationWindow.
@@ -199,6 +207,15 @@ struct DeviceWindowInner {
     mini_win:          gtk::ApplicationWindow,
 }
 
+impl Drop for DeviceWindowInner {
+    fn drop(&mut self) {
+        dbg_ui(&format!(
+            "DeviceWindowInner dropped (uuid={})",
+            self.applied_window_key.borrow()
+        ));
+    }
+}
+
 // ── DeviceWindow ──────────────────────────────────────────────────────────────
 
 /// One device window.  Owns the GTK window and all content widgets.
@@ -266,6 +283,8 @@ impl DeviceWindow {
                 ds
             }
         };
+
+        dbg_ui(&format!("DeviceWindow creating (uuid={})", cfg_uuid));
 
         let (header, sidebar_btn, mini_btn) = build_header(init_dev_cfg.panel_visible);
         let (pp, presets_scroll) = build_presets_panel();
@@ -744,6 +763,7 @@ impl DeviceWindow {
         window.connect_close_request({
             let i = Rc::clone(&inner);
             move |_win| {
+                dbg_ui("main window close-request");
                 if let Some(id) = i.settle_timer.borrow_mut().take() { id.remove(); }
                 if let Some(id) = i.config_save_timer.borrow_mut().take() { id.remove(); }
                 i.save_config_now();

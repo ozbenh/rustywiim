@@ -16,6 +16,7 @@ use gtk::Orientation;
 
 use crate::config::{Config, ThemeMode};
 use crate::device::state::DeviceState;
+use crate::ui::DEBUG_UI;
 
 // ── Public handle ─────────────────────────────────────────────────────────────
 

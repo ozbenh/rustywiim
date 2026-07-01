@@ -692,6 +692,7 @@ impl DeviceWindowInner {
 
     pub(super) fn enter_mini_mode(&self) {
         if *self.mini_mode.borrow() { return; }
+        super::dbg_ui(&format!("enter mini mode (uuid={})", self.applied_window_key.borrow()));
         *self.pre_mini_size.borrow_mut() = (self.window.width(), self.window.height());
         *self.mini_mode.borrow_mut() = true;
         self.update_mini_playback(crate::device::state::playback_changed::ALL);
@@ -704,6 +705,7 @@ impl DeviceWindowInner {
 
     pub(super) fn exit_mini_mode(&self) {
         if !*self.mini_mode.borrow() { return; }
+        super::dbg_ui(&format!("exit mini mode (uuid={})", self.applied_window_key.borrow()));
         *self.mini_mode.borrow_mut() = false;
         *self.mini_toggling.borrow_mut() = true;
         self.mini_btn.set_active(false);

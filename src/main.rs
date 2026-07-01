@@ -17,7 +17,7 @@ fn main() -> glib::ExitCode {
         glib::Char(0),
         glib::OptionFlags::NONE,
         glib::OptionArg::String,
-        "Enable debug output: comma-separated list of api, state, device, discovery, or all",
+        "Enable debug output: comma-separated list of api, state, device, discovery, ui, or all",
         Some("LIST"),
     );
     app.add_main_option(
@@ -37,14 +37,16 @@ fn main() -> glib::ExitCode {
                     "state"     => { device::state::DEBUG_STATE.store(true, Ordering::Relaxed); }
                     "device"    => { device::capabilities::DEBUG_DEVICE.store(true, Ordering::Relaxed); }
                     "discovery" => { device::discovery::DEBUG_DISCOVERY.store(true, Ordering::Relaxed); }
+                    "ui"        => { ui::DEBUG_UI.store(true, Ordering::Relaxed); }
                     "all"       => {
                         device::api::DEBUG.store(true, Ordering::Relaxed);
                         device::state::DEBUG_STATE.store(true, Ordering::Relaxed);
                         device::capabilities::DEBUG_DEVICE.store(true, Ordering::Relaxed);
                         device::discovery::DEBUG_DISCOVERY.store(true, Ordering::Relaxed);
+                        ui::DEBUG_UI.store(true, Ordering::Relaxed);
                     }
                     other => {
-                        eprintln!("rustywiim: unknown debug token {:?} (valid: api, state, device, discovery, all)", other);
+                        eprintln!("rustywiim: unknown debug token {:?} (valid: api, state, device, discovery, ui, all)", other);
                     }
                 }
             }
