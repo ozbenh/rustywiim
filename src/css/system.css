@@ -21,9 +21,10 @@
 }
 .loop-btn { min-width: 36px; min-height: 36px; padding: 0; -gtk-icon-size: 16px; opacity: 0.55; }
 .loop-btn:hover { opacity: 1.0; }
+.loop-active  { color: @accent_color; }
+.vol-btn     { border-radius: 6px; padding: 0 8px; min-width: 0; }
 .vol-pop trough   { min-width: 3px; border-radius: 2px; }
 .vol-pop slider   { min-width: 8px; min-height: 8px; margin: -3px; border-radius: 50%; border: none; box-shadow: none; }
-.vol-btn     { border-radius: 6px; padding: 0 8px; min-width: 0; }
 .mini-vol-pop trough { min-width: 3px; border-radius: 2px; }
 .mini-vol-pop slider { min-width: 6px; min-height: 6px; margin: -2px; border-radius: 50%; border: none; box-shadow: none; }
 .mini-vol-popover > contents { min-width: 0; padding: 0; }
@@ -34,7 +35,6 @@
 .preset-art-small { min-width: 26px; min-height: 26px; padding: 7px; }
 .preset-name  { font-size: 12px; }
 .preset-badge { font-size: 9px; font-weight: 700; border-radius: 50%; min-width: 16px; min-height: 16px; padding: 1px; }
-.loop-active  { color: @accent_color; }
 /* Transparent window surface so Wayland composites corners correctly on GTK ≤4.15
    (NGL renderer fails to update opaque region on window move — GTK#6164).
    Background and rounding live on the content widget instead. */
