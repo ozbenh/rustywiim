@@ -273,31 +273,50 @@ impl DiscoveryManager {
             let cfg = Config::load();
             for dev in &discovered {
                 let key = device_key(&dev.uuid, &dev.ip);
-                if !inner.devices.contains_key(&key) {
-                    // Use cached name/model from config so the list shows
-                    // correct values immediately, before the health check returns.
-                    let cached = cfg.devices.get(&dev.uuid);
-                    let name  = cached.and_then(|c| c.name.clone())
-                        .filter(|n| !n.is_empty())
-                        .unwrap_or_else(|| dev.name.clone());
-                    let model = cached.and_then(|c| c.model.clone())
-                        .unwrap_or_default();
-                    dbg(&format!("discovery: new device {} ({}) uuid={:?}", name, dev.ip, dev.uuid));
-                    let entry = ManagedEntry {
-                        uuid:     dev.uuid.clone(),
-                        name,
-                        model,
-                        ip:       dev.ip.clone(),
-                        tls_mode: dev.tls_mode,
-                        pinned:   false,
-                        presence: DevicePresence::Active,
-                    };
-                    inner.devices.insert(key.clone(), DeviceRecord {
-                        entry, in_discovery: true,
-                        client: WiimClient::new(&dev.ip, dev.tls_mode),
-                    });
-                    new_keys.push(key);
-                    changed = true;
+                match inner.devices.get_mut(&key) {
+                    None => {
+                        // Use cached name/model from config so the list shows
+                        // correct values immediately, before the health check returns.
+                        let cached = cfg.devices.get(&dev.uuid);
+                        let name  = cached.and_then(|c| c.name.clone())
+                            .filter(|n| !n.is_empty())
+                            .unwrap_or_else(|| dev.name.clone());
+                        let model = cached.and_then(|c| c.model.clone())
+                            .unwrap_or_default();
+                        dbg(&format!("discovery: new device {} ({}) uuid={:?}", name, dev.ip, dev.uuid));
+                        let entry = ManagedEntry {
+                            uuid:     dev.uuid.clone(),
+                            name,
+                            model,
+                            ip:       dev.ip.clone(),
+                            tls_mode: dev.tls_mode,
+                            pinned:   false,
+                            presence: DevicePresence::Active,
+                        };
+                        inner.devices.insert(key.clone(), DeviceRecord {
+                            entry, in_discovery: true,
+                            client: WiimClient::new(&dev.ip, dev.tls_mode),
+                        });
+                        new_keys.push(key);
+                        changed = true;
+                    }
+                    // Known UUID reappeared at a different IP (e.g. DHCP lease
+                    // renewal) or TLS mode.  Refresh the entry and rebuild the
+                    // client so health checks target the live endpoint instead
+                    // of pinging the old, now-dead IP forever — this is what
+                    // lets a pinned "Ghost" device recover automatically.
+                    Some(rec) if rec.entry.ip != dev.ip || rec.entry.tls_mode != dev.tls_mode => {
+                        dbg(&format!(
+                            "discovery: {} moved {} → {} uuid={:?}",
+                            rec.entry.name, rec.entry.ip, dev.ip, dev.uuid,
+                        ));
+                        rec.entry.ip       = dev.ip.clone();
+                        rec.entry.tls_mode = dev.tls_mode;
+                        rec.client         = WiimClient::new(&dev.ip, dev.tls_mode);
+                        new_keys.push(key);
+                        changed = true;
+                    }
+                    Some(_) => {}
                 }
             }
         }
@@ -305,8 +324,8 @@ impl DiscoveryManager {
         if changed || pruned {
             self.emit_by_name::<()>("list-changed", &[]);
         }
-        // Immediately fetch name/model for newly discovered devices rather than
-        // waiting for the 30-second health-check cycle.
+        // Immediately health-check newly discovered or IP-changed devices
+        // rather than waiting for the 30-second health-check cycle.
         for key in new_keys {
             self.trigger_health_check_for(&key);
         }
