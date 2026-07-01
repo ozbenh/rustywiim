@@ -63,8 +63,14 @@ pub(crate) fn wire_window_actions(
     });
     window.add_action(&about_action);
 
+    // Use a WeakRef so the closure does not keep the DeviceState alive after the
+    // device window closes.  Upgrading on activation gives the same device (or
+    // None if it has already been freed, which opens global settings — harmless).
+    let ds_weak: Option<glib::WeakRef<DeviceState>> = ds.as_ref().map(|d| d.downgrade());
     let settings_action = gio::SimpleAction::new("settings", None);
-    settings_action.connect_activate(move |_, _| { open_settings(ds.clone()); });
+    settings_action.connect_activate(move |_, _| {
+        open_settings(ds_weak.as_ref().and_then(|w| w.upgrade()));
+    });
     window.add_action(&settings_action);
 }
 
@@ -451,9 +457,10 @@ impl DeviceWindow {
         const SNAP_PX: i32 = 30;
 
         inner.paned.connect_position_notify({
-            let i    = Rc::clone(&inner);
+            let i    = Rc::downgrade(&inner);
             let held = Rc::clone(&paned_btn_held);
             move |p| {
+                let Some(i) = i.upgrade() else { return };
                 if *i.panel_collapsing.borrow() { return; }
                 let pos = p.position();
                 if pos >= SNAP_PX {
@@ -496,9 +503,10 @@ impl DeviceWindow {
         {
             let drag_ctrl = gtk::EventControllerLegacy::new();
             drag_ctrl.connect_event({
-                let i    = Rc::clone(&inner);
+                let i    = Rc::downgrade(&inner);
                 let held = Rc::clone(&paned_btn_held);
                 move |_, event| {
+                    let Some(i) = i.upgrade() else { return glib::Propagation::Proceed };
                     match event.event_type() {
                         gtk::gdk::EventType::ButtonPress => {
                             *held.borrow_mut() = true;
@@ -527,8 +535,9 @@ impl DeviceWindow {
         }
 
         inner.sidebar_btn.connect_toggled({
-            let i = Rc::clone(&inner);
+            let i = Rc::downgrade(&inner);
             move |btn| {
+                let Some(i) = i.upgrade() else { return };
                 if *i.panel_collapsing.borrow() { return; }
                 if let Some(id) = i.settle_timer.borrow_mut().take() { id.remove(); }
                 if btn.is_active() {
@@ -549,23 +558,24 @@ impl DeviceWindow {
 
         // ── Transport / control signal handlers ───────────────────────────────────
         inner.pw.btn_play.connect_clicked({
-            let i = Rc::clone(&inner);
-            move |_| { i.ds.do_play_pause(); }
+            let i = Rc::downgrade(&inner);
+            move |_| { if let Some(i) = i.upgrade() { i.ds.do_play_pause(); } }
         });
 
         inner.pw.btn_prev.connect_clicked({
-            let i = Rc::clone(&inner);
-            move |_| { i.ds.do_prev(); }
+            let i = Rc::downgrade(&inner);
+            move |_| { if let Some(i) = i.upgrade() { i.ds.do_prev(); } }
         });
 
         inner.pw.btn_next.connect_clicked({
-            let i = Rc::clone(&inner);
-            move |_| { i.ds.do_next(); }
+            let i = Rc::downgrade(&inner);
+            move |_| { if let Some(i) = i.upgrade() { i.ds.do_next(); } }
         });
 
         inner.pw.shuffle.connect_clicked({
-            let i = Rc::clone(&inner);
+            let i = Rc::downgrade(&inner);
             move |_| {
+                let Some(i) = i.upgrade() else { return };
                 let (shuf, rep) = i.ds.player_status()
                     .map(|s| decode_loop_mode(&s.loop_mode))
                     .unwrap_or((false, 0));
@@ -574,8 +584,9 @@ impl DeviceWindow {
         });
 
         inner.pw.repeat.connect_clicked({
-            let i = Rc::clone(&inner);
+            let i = Rc::downgrade(&inner);
             move |_| {
+                let Some(i) = i.upgrade() else { return };
                 let (shuf, rep) = i.ds.player_status()
                     .map(|s| decode_loop_mode(&s.loop_mode))
                     .unwrap_or((false, 0));
@@ -584,36 +595,43 @@ impl DeviceWindow {
         });
 
         inner.pw.vol_btn.connect_clicked({
-            let i = Rc::clone(&inner);
+            let i = Rc::downgrade(&inner);
             move |_| {
+                let Some(i) = i.upgrade() else { return };
                 if i.pw.vol_popover.is_visible() { i.pw.vol_popover.popdown(); }
                 else { i.pw.vol_popover.popup(); }
             }
         });
 
         inner.pw.mute_btn.connect_clicked({
-            let i = Rc::clone(&inner);
-            move |_| { i.ds.do_set_mute(!i.ds.muted()); }
+            let i = Rc::downgrade(&inner);
+            move |_| { if let Some(i) = i.upgrade() { i.ds.do_set_mute(!i.ds.muted()); } }
         });
 
         inner.vol_scale.connect_change_value({
-            let i = Rc::clone(&inner);
-            move |_, _, vol| { i.on_vol_changed(vol); glib::Propagation::Proceed }
+            let i = Rc::downgrade(&inner);
+            move |_, _, vol| {
+                if let Some(i) = i.upgrade() { i.on_vol_changed(vol); }
+                glib::Propagation::Proceed
+            }
         });
 
         inner.pw.seek.connect_change_value({
-            let i = Rc::clone(&inner);
+            let i = Rc::downgrade(&inner);
             move |_, _, value| {
-                if let Some(c) = i.ds.client() {
-                    i.ds.rt().spawn(async move { let _ = c.seek(value as u32).await; });
+                if let Some(i) = i.upgrade() {
+                    if let Some(c) = i.ds.client() {
+                        i.ds.rt().spawn(async move { let _ = c.seek(value as u32).await; });
+                    }
                 }
                 glib::Propagation::Proceed
             }
         });
 
         inner.sw.dropdown.connect_selected_notify({
-            let i = Rc::clone(&inner);
+            let i = Rc::downgrade(&inner);
             move |dd| {
+                let Some(i) = i.upgrade() else { return };
                 if *i.sw.updating.borrow() { return; }
                 let idx = dd.selected() as usize;
                 let ids = i.sw.ids.borrow();
@@ -624,8 +642,9 @@ impl DeviceWindow {
         });
 
         inner.ow.dropdown.connect_selected_notify({
-            let i = Rc::clone(&inner);
+            let i = Rc::downgrade(&inner);
             move |dd| {
+                let Some(i) = i.upgrade() else { return };
                 if *i.ow.updating.borrow() { return; }
                 let idx = dd.selected() as usize;
                 let modes = i.ow.modes.borrow();
@@ -637,8 +656,9 @@ impl DeviceWindow {
 
         for (idx, btn) in inner.pp.btns.iter().enumerate() {
             let num = (idx + 1) as u32;
-            let i = Rc::clone(&inner);
+            let i = Rc::downgrade(&inner);
             btn.connect_clicked(move |_| {
+                let Some(i) = i.upgrade() else { return };
                 if let Some(c) = i.ds.client() {
                     i.ds.rt().spawn(async move { let _ = c.play_preset(num).await; });
                 }
@@ -647,8 +667,9 @@ impl DeviceWindow {
 
         // ── Mini player signals ───────────────────────────────────────────────────
         inner.mini_btn.connect_toggled({
-            let i = Rc::clone(&inner);
+            let i = Rc::downgrade(&inner);
             move |btn| {
+                let Some(i) = i.upgrade() else { return };
                 if *i.mini_toggling.borrow() { return; }
                 if btn.is_active() { i.enter_mini_mode(); } else { i.exit_mini_mode(); }
                 playback::schedule_config_save(&i);
@@ -656,8 +677,9 @@ impl DeviceWindow {
         });
 
         inner.mini.restore_btn.connect_clicked({
-            let i = Rc::clone(&inner);
+            let i = Rc::downgrade(&inner);
             move |_| {
+                let Some(i) = i.upgrade() else { return };
                 i.exit_mini_mode();
                 playback::schedule_config_save(&i);
             }
@@ -671,8 +693,9 @@ impl DeviceWindow {
         {
             let gesture = gtk::GestureClick::builder().button(1).build();
             gesture.connect_pressed({
-                let i = Rc::clone(&inner);
+                let i = Rc::downgrade(&inner);
                 move |_, n_press, _, _| {
+                    let Some(i) = i.upgrade() else { return };
                     if n_press >= 2 {
                         i.exit_mini_mode();
                         playback::schedule_config_save(&i);
@@ -683,45 +706,51 @@ impl DeviceWindow {
         }
 
         inner.mini.btn_play.connect_clicked({
-            let i = Rc::clone(&inner);
-            move |_| { i.ds.do_play_pause(); }
+            let i = Rc::downgrade(&inner);
+            move |_| { if let Some(i) = i.upgrade() { i.ds.do_play_pause(); } }
         });
 
         inner.mini.btn_prev.connect_clicked({
-            let i = Rc::clone(&inner);
-            move |_| { i.ds.do_prev(); }
+            let i = Rc::downgrade(&inner);
+            move |_| { if let Some(i) = i.upgrade() { i.ds.do_prev(); } }
         });
 
         inner.mini.btn_next.connect_clicked({
-            let i = Rc::clone(&inner);
-            move |_| { i.ds.do_next(); }
+            let i = Rc::downgrade(&inner);
+            move |_| { if let Some(i) = i.upgrade() { i.ds.do_next(); } }
         });
 
         inner.mini.vol_btn.connect_clicked({
-            let i = Rc::clone(&inner);
+            let i = Rc::downgrade(&inner);
             move |_| {
+                let Some(i) = i.upgrade() else { return };
                 if i.mini.vol_popover.is_visible() { i.mini.vol_popover.popdown(); }
                 else { i.mini.vol_popover.popup(); }
             }
         });
 
         inner.mini.mute_btn.connect_clicked({
-            let i = Rc::clone(&inner);
-            move |_| { i.ds.do_set_mute(!i.ds.muted()); }
+            let i = Rc::downgrade(&inner);
+            move |_| { if let Some(i) = i.upgrade() { i.ds.do_set_mute(!i.ds.muted()); } }
         });
 
         inner.mini.vol_scale.connect_change_value({
-            let i = Rc::clone(&inner);
-            move |_, _, vol| { i.on_vol_changed(vol); glib::Propagation::Proceed }
+            let i = Rc::downgrade(&inner);
+            move |_, _, vol| {
+                if let Some(i) = i.upgrade() { i.on_vol_changed(vol); }
+                glib::Propagation::Proceed
+            }
         });
 
         // ── Mini window signals ───────────────────────────────────────────────────
         // X / Alt+F4 on the mini window → exit mini mode (don't destroy the window).
         inner.mini_win.connect_close_request({
-            let i = Rc::clone(&inner);
+            let i = Rc::downgrade(&inner);
             move |_win| {
-                i.exit_mini_mode();
-                playback::schedule_config_save(&i);
+                if let Some(i) = i.upgrade() {
+                    i.exit_mini_mode();
+                    playback::schedule_config_save(&i);
+                }
                 glib::Propagation::Stop
             }
         });
@@ -734,8 +763,12 @@ impl DeviceWindow {
         window.add_action(&close_action);
 
         let devices_action = gio::SimpleAction::new("devices", None);
-        let i_for_dev = Rc::clone(&inner);
-        devices_action.connect_activate(move |_, _| { (i_for_dev.show_devices_fn)(); });
+        {
+            let i = Rc::downgrade(&inner);
+            devices_action.connect_activate(move |_, _| {
+                if let Some(i) = i.upgrade() { (i.show_devices_fn)(); }
+            });
+        }
         window.add_action(&devices_action);
 
         wire_window_actions(&window, Some(ds.clone()), Rc::clone(&open_settings));
@@ -753,32 +786,53 @@ impl DeviceWindow {
             mini_win.add_action(&mini_close);
 
             let mini_devices = gio::SimpleAction::new("devices", None);
-            let i = Rc::clone(&inner);
-            mini_devices.connect_activate(move |_, _| { (i.show_devices_fn)(); });
+            {
+                let i = Rc::downgrade(&inner);
+                mini_devices.connect_activate(move |_, _| {
+                    if let Some(i) = i.upgrade() { (i.show_devices_fn)(); }
+                });
+            }
             mini_win.add_action(&mini_devices);
         }
         wire_window_actions(&mini_win, Some(ds.clone()), open_settings);
 
         // ── Save window state ─────────────────────────────────────────────────────
+        // close-request: user-initiated close — save config while window size is readable.
         window.connect_close_request({
-            let i = Rc::clone(&inner);
+            let i = Rc::downgrade(&inner);
             move |_win| {
                 dbg_ui("main window close-request");
-                if let Some(id) = i.settle_timer.borrow_mut().take() { id.remove(); }
-                if let Some(id) = i.config_save_timer.borrow_mut().take() { id.remove(); }
-                i.save_config_now();
-                // Mark window as closed so it is not reopened on next launch.
-                let uuid = i.ds.device_info()
-                    .map(|di| di.uuid)
-                    .filter(|u| !u.is_empty())
-                    .unwrap_or_else(|| i.applied_window_key.borrow().clone());
-                if !uuid.is_empty() {
-                    let mut cfg = Config::load();
-                    cfg.device_mut(&uuid).window_open = false;
-                    cfg.save();
+                if let Some(i) = i.upgrade() {
+                    if let Some(id) = i.settle_timer.borrow_mut().take() { id.remove(); }
+                    if let Some(id) = i.config_save_timer.borrow_mut().take() { id.remove(); }
+                    i.save_config_now();
+                    let uuid = i.ds.device_info()
+                        .map(|di| di.uuid)
+                        .filter(|u| !u.is_empty())
+                        .unwrap_or_else(|| i.applied_window_key.borrow().clone());
+                    if !uuid.is_empty() {
+                        let mut cfg = Config::load();
+                        cfg.device_mut(&uuid).window_open = false;
+                        cfg.save();
+                    }
+                    i.mini_win.destroy();
                 }
-                i.mini_win.destroy();
                 glib::Propagation::Proceed
+            }
+        });
+
+        // destroy: also fires when app.quit() destroys the window without close-request.
+        // All operations are idempotent: take() returns None if already cancelled, destroy() on
+        // an already-destroyed window is a no-op.
+        window.connect_destroy({
+            let i = Rc::downgrade(&inner);
+            move |_win| {
+                dbg_ui("main window destroyed");
+                if let Some(i) = i.upgrade() {
+                    if let Some(id) = i.settle_timer.borrow_mut().take() { id.remove(); }
+                    if let Some(id) = i.config_save_timer.borrow_mut().take() { id.remove(); }
+                    i.mini_win.destroy();
+                }
             }
         });
 
@@ -969,19 +1023,24 @@ impl AppState {
             init_css(cfg.theme);
         }
 
-        // Replace the app.quit action (set up in main.rs) with one that saves
-        // every device window's config before quitting.  app.quit() destroys
-        // windows via gtk_window_destroy(), which never fires close-request, so
-        // save_config_now() would never be called otherwise.  We save here while
-        // the windows are still alive and their sizes are still readable.
+        // Replace the app.quit action (set up in main.rs) with one that explicitly
+        // closes every device window first so close-request fires (saving config,
+        // cancelling timers, destroying mini_win).  app.quit() on its own bypasses
+        // close-request via gtk_window_destroy(), so cleanup would not run.
         {
             let s = Rc::downgrade(self_rc);
             let app = self_rc.app.clone();
             let quit_action = gio::SimpleAction::new("quit", None);
             quit_action.connect_activate(move |_, _| {
+                dbg_ui("app quit action");
                 if let Some(s) = s.upgrade() {
-                    for dw in s.registry.borrow().iter() {
-                        dw.inner.save_config_now();
+                    // Collect first so close-request (which mutates registry) doesn't
+                    // invalidate the iterator.
+                    let wins: Vec<_> = s.registry.borrow().iter()
+                        .map(|dw| dw.window.clone())
+                        .collect();
+                    for win in wins {
+                        win.close(); // fires close-request → cleanup → destroy
                     }
                 }
                 app.quit();

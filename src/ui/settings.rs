@@ -17,6 +17,7 @@ use gtk::Orientation;
 use crate::config::{Config, ThemeMode};
 use crate::device::state::DeviceState;
 use crate::ui::DEBUG_UI;
+use std::sync::atomic::Ordering;
 
 // ── Public handle ─────────────────────────────────────────────────────────────
 
@@ -125,6 +126,15 @@ impl SettingsWindow {
                 };
                 window.set_title(Some(&title));
             }));
+        }
+
+        if DEBUG_UI.load(Ordering::Relaxed) {
+            let uuid = ds.as_ref().and_then(|d| d.device_info()).map(|i| i.uuid)
+                .unwrap_or_else(|| "global".to_string());
+            println!("[ui] SettingsWindow created (uuid={uuid})");
+            window.connect_destroy(move |_| {
+                println!("[ui] SettingsWindow destroyed (uuid={uuid})");
+            });
         }
 
         Self { window, ds }
