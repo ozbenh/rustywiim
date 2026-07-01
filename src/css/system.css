@@ -1,13 +1,13 @@
 
 .track-title  { font-size: 20px; font-weight: 800; }
 .track-artist { font-size: 14px; font-weight: 600; opacity: 0.75; }
-.track-album  { font-size: 12px; opacity: 0.55; }
-.status-badge { font-size: 11px; font-weight: 600; opacity: 0.6; }
-.quality-label { font-size: 11px; opacity: 0.55; }
-.dim-label    { font-size: 11px; }
-.section-label { font-size: 11px; font-weight: 700; letter-spacing: 1px; }
-.panel-dropdown { font-size: 11px; min-width: 0; }
-.device-info  { font-size: 10px; }
+.track-album  { font-size: 13px; opacity: 0.55; }
+.status-badge { font-size: 12px; font-weight: 600; opacity: 0.6; }
+.quality-label { font-size: 12px; opacity: 0.55; }
+.dim-label    { font-size: 12px; }
+.section-label { font-size: 12px; font-weight: 700; letter-spacing: 1px; }
+.panel-dropdown { font-size: 12px; min-width: 0; }
+.device-info  { font-size: 11px; }
 .net-icon { opacity: 0.5; }
 .transport-btn {
     min-width: 36px; min-height: 36px;
@@ -32,7 +32,7 @@
 .preset-tile  { border-radius: 8px; padding: 4px; }
 .preset-art   { border-radius: 5px; min-width: 40px; min-height: 40px; }
 .preset-art-small { min-width: 26px; min-height: 26px; padding: 7px; }
-.preset-name  { font-size: 11px; }
+.preset-name  { font-size: 12px; }
 .preset-badge { font-size: 9px; font-weight: 700; border-radius: 50%; min-width: 16px; min-height: 16px; padding: 1px; }
 .loop-active  { color: @accent_color; }
 /* Transparent window surface so Wayland composites corners correctly on GTK ≤4.15

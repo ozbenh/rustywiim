@@ -302,7 +302,7 @@ impl DeviceWindow {
             .margin_top(4).margin_bottom(4).build();
 
         let ip_label = Label::builder()
-            .css_classes(["ip-label", "dim-label"])
+            .css_classes(["dim-label"])
             .margin_end(6).margin_top(4).margin_bottom(4)
             .visible(false)
             .build();
