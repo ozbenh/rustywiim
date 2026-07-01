@@ -222,6 +222,29 @@ impl Drop for DeviceWindowInner {
     }
 }
 
+impl DeviceWindowInner {
+    fn cleanup(&self) {
+        let uuid = self.ds.device_info()
+            .map(|di| di.uuid)
+            .filter(|u| !u.is_empty())
+            .unwrap_or_else(|| self.applied_window_key.borrow().clone());
+        let settle_pending  = self.settle_timer.borrow().is_some();
+        let cfgsave_pending = self.config_save_timer.borrow().is_some();
+        dbg_ui(&format!(
+            "DeviceWindow cleanup uuid={uuid} settle_pending={settle_pending} cfgsave_pending={cfgsave_pending}"
+        ));
+        if let Some(id) = self.settle_timer.borrow_mut().take() { id.remove(); }
+        if let Some(id) = self.config_save_timer.borrow_mut().take() { id.remove(); }
+        self.save_config_now();
+        if !uuid.is_empty() {
+            let mut cfg = Config::load();
+            cfg.device_mut(&uuid).window_open = false;
+            cfg.save();
+        }
+        self.mini_win.destroy();
+    }
+}
+
 // ── DeviceWindow ──────────────────────────────────────────────────────────────
 
 /// One device window.  Owns the GTK window and all content widgets.
@@ -796,42 +819,30 @@ impl DeviceWindow {
         }
         wire_window_actions(&mini_win, Some(ds.clone()), open_settings);
 
-        // ── Save window state ─────────────────────────────────────────────────────
-        // close-request: user-initiated close — save config while window size is readable.
+        // close-request: fires on user close (X button, win.close()).
+        // cleanup() is idempotent so calling it here AND in connect_destroy is safe.
         window.connect_close_request({
             let i = Rc::downgrade(&inner);
             move |_win| {
                 dbg_ui("main window close-request");
-                if let Some(i) = i.upgrade() {
-                    if let Some(id) = i.settle_timer.borrow_mut().take() { id.remove(); }
-                    if let Some(id) = i.config_save_timer.borrow_mut().take() { id.remove(); }
-                    i.save_config_now();
-                    let uuid = i.ds.device_info()
-                        .map(|di| di.uuid)
-                        .filter(|u| !u.is_empty())
-                        .unwrap_or_else(|| i.applied_window_key.borrow().clone());
-                    if !uuid.is_empty() {
-                        let mut cfg = Config::load();
-                        cfg.device_mut(&uuid).window_open = false;
-                        cfg.save();
-                    }
-                    i.mini_win.destroy();
-                }
+                if let Some(i) = i.upgrade() { i.cleanup(); }
                 glib::Propagation::Proceed
             }
         });
 
-        // destroy: also fires when app.quit() destroys the window without close-request.
-        // All operations are idempotent: take() returns None if already cancelled, destroy() on
-        // an already-destroyed window is a no-op.
+        // destroy: single place for all cleanup.  Fires on every destruction path:
+        //   • user close  (close-request → Proceed → GTK destroys → destroy)
+        //   • win.destroy() from quit action (skips close-request, fires destroy directly)
+        //   • app.quit()   (GTK destroys all windows during shutdown → destroy)
+        // A second connect_destroy added later in open_device_spec clears the registry
+        // (fires after this one, in connection order), which drops the last Rc<Inner> → Drop.
         window.connect_destroy({
             let i = Rc::downgrade(&inner);
             move |_win| {
-                dbg_ui("main window destroyed");
                 if let Some(i) = i.upgrade() {
-                    if let Some(id) = i.settle_timer.borrow_mut().take() { id.remove(); }
-                    if let Some(id) = i.config_save_timer.borrow_mut().take() { id.remove(); }
-                    i.mini_win.destroy();
+                    i.cleanup();
+                } else {
+                    dbg_ui("main window destroyed (inner already freed)");
                 }
             }
         });
@@ -1006,12 +1017,25 @@ impl AppState {
         self_rc.registry.borrow_mut().push(dw);
         let win_key   = gtk_win.clone();
         let weak_self = Rc::downgrade(self_rc);
-        gtk_win.connect_close_request(move |_| {
-            dbg_state(&format!("device window: closed uuid={log_uuid}"));
+        gtk_win.connect_close_request({
+            let log_uuid = log_uuid.clone();
+            let win_key = win_key.clone();
+            let weak_self = weak_self.clone();
+            move |_| {
+                dbg_state(&format!("device window: close-request uuid={log_uuid}"));
+                if let Some(s) = weak_self.upgrade() {
+                    s.registry.borrow_mut().retain(|w| w.window != win_key);
+                }
+                glib::Propagation::Proceed
+            }
+        });
+        // Second connect_destroy: fires after new_inner's handler (connection order).
+        // Removing from registry drops the last Rc<DeviceWindowInner>, triggering Drop.
+        gtk_win.connect_destroy(move |_| {
+            dbg_state(&format!("device window: destroyed uuid={log_uuid}"));
             if let Some(s) = weak_self.upgrade() {
                 s.registry.borrow_mut().retain(|w| w.window != win_key);
             }
-            glib::Propagation::Proceed
         });
     }
 
@@ -1024,24 +1048,32 @@ impl AppState {
         }
 
         // Replace the app.quit action (set up in main.rs) with one that explicitly
-        // closes every device window first so close-request fires (saving config,
-        // cancelling timers, destroying mini_win).  app.quit() on its own bypasses
-        // close-request via gtk_window_destroy(), so cleanup would not run.
+        // destroys every device window first so connect_destroy fires (saving config,
+        // cancelling timers, destroying mini_win).  win.close() is a no-op on unrealized
+        // windows (e.g. main window never shown when starting in mini mode), and app.quit()
+        // on its own destroys windows after the main loop exits where cleanup is unreliable.
         {
             let s = Rc::downgrade(self_rc);
             let app = self_rc.app.clone();
             let quit_action = gio::SimpleAction::new("quit", None);
             quit_action.connect_activate(move |_, _| {
+                eprintln!("[quit] action fired");
                 dbg_ui("app quit action");
                 if let Some(s) = s.upgrade() {
-                    // Collect first so close-request (which mutates registry) doesn't
+                    // Collect first so connect_destroy (which mutates registry) doesn't
                     // invalidate the iterator.
                     let wins: Vec<_> = s.registry.borrow().iter()
                         .map(|dw| dw.window.clone())
                         .collect();
+                    eprintln!("[quit] closing {} window(s)", wins.len());
                     for win in wins {
-                        win.close(); // fires close-request → cleanup → destroy
+                        // realize() first: close() is a no-op on unrealized windows
+                        // (e.g. main window never shown when starting in mini mode).
+                        gtk::prelude::WidgetExt::realize(&win);
+                        win.close();
                     }
+                } else {
+                    eprintln!("[quit] AppState already freed");
                 }
                 app.quit();
             });
