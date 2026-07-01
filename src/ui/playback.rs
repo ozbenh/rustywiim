@@ -452,7 +452,7 @@ impl DeviceWindowInner {
         let input_icon = if mini { &self.mini.input_icon } else { &self.pw.input_icon };
 
         if let Some(bytes) = self.ds.art_bytes() {
-            let gbytes = glib::Bytes::from(&bytes);
+            let gbytes = glib::Bytes::from(bytes.as_ref());
             if let Ok(tex) = gtk::gdk::Texture::from_bytes(&gbytes) {
                 if mini { self.mini.artwork.set_paintable(Some(&tex)); }
                 else    { self.pw.artwork.set_paintable(Some(&tex)); }

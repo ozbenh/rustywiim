@@ -28,6 +28,7 @@ pub mod playback_changed {
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -123,7 +124,7 @@ struct Inner {
     mode_renames:    HashMap<String, String>,
     current_mode:    String,
     current_art_url: String,
-    art_bytes:       Option<Vec<u8>>,
+    art_bytes:       Option<Rc<Vec<u8>>>,
     /// Outputs currently supported by the device (canonical name + display label).
     /// Initialised from the static capability profile; replaced by
     /// `getSoundCardModeSupportList` results when the device supports that API.
@@ -560,7 +561,7 @@ impl DeviceState {
             while let Ok(bytes) = art_rx.recv().await {
                 let Some(ds) = ds.upgrade() else { break };
                 dbg(&format!("artwork loaded: {} bytes", bytes.len()));
-                ds.imp().inner.borrow_mut().art_bytes = Some(bytes);
+                ds.imp().inner.borrow_mut().art_bytes = Some(Rc::new(bytes));
                 dbg("signal: playback-changed (artwork)");
                 ds.emit_by_name::<()>("playback-changed", &[&playback_changed::ARTWORK]);
             }
@@ -975,7 +976,7 @@ impl DeviceState {
         self.imp().inner.borrow().current_mode.clone()
     }
 
-    pub fn art_bytes(&self) -> Option<Vec<u8>> {
+    pub fn art_bytes(&self) -> Option<Rc<Vec<u8>>> {
         self.imp().inner.borrow().art_bytes.clone()
     }
 
