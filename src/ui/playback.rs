@@ -671,8 +671,8 @@ impl DeviceWindowInner {
     pub(super) fn enter_mini_mode(&self) {
         if *self.mini_mode.borrow() { return; }
         *self.pre_mini_size.borrow_mut() = (self.window.width(), self.window.height());
-        self.update_mini_playback(crate::device::state::playback_changed::ALL);
         *self.mini_mode.borrow_mut() = true;
+        self.update_mini_playback(crate::device::state::playback_changed::ALL);
         *self.mini_toggling.borrow_mut() = true;
         self.mini_btn.set_active(true);
         *self.mini_toggling.borrow_mut() = false;
