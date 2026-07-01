@@ -555,13 +555,22 @@ impl DeviceState {
         });
     }
 
+    /// `bytes` is empty when `fetch_art()` failed (or the URL truly returned
+    /// nothing) — treated as "no artwork" rather than dropped silently, so a
+    /// failed download still clears the previous track's stale art instead of
+    /// leaving it on screen forever.
     fn start_art_loader(&self, art_rx: async_channel::Receiver<Vec<u8>>) {
         let ds = self.downgrade();
         glib::spawn_future_local(async move {
             while let Ok(bytes) = art_rx.recv().await {
                 let Some(ds) = ds.upgrade() else { break };
-                dbg(&format!("artwork loaded: {} bytes", bytes.len()));
-                ds.imp().inner.borrow_mut().art_bytes = Some(Rc::new(bytes));
+                if bytes.is_empty() {
+                    dbg("artwork fetch failed; clearing stale art");
+                    ds.imp().inner.borrow_mut().art_bytes = None;
+                } else {
+                    dbg(&format!("artwork loaded: {} bytes", bytes.len()));
+                    ds.imp().inner.borrow_mut().art_bytes = Some(Rc::new(bytes));
+                }
                 dbg("signal: playback-changed (artwork)");
                 ds.emit_by_name::<()>("playback-changed", &[&playback_changed::ARTWORK]);
             }
@@ -772,11 +781,23 @@ impl DeviceState {
             let art_url = m.art_uri().to_string();
             let url_changed = art_url != self.imp().inner.borrow().current_art_url;
             self.imp().inner.borrow_mut().metadata = Some(m);
-            if !art_url.is_empty() && url_changed {
-                dbg(&format!("art url changed: {art_url}"));
+            if url_changed {
                 self.imp().inner.borrow_mut().current_art_url = art_url.clone();
                 self.imp().inner.borrow_mut().art_bytes = None;
-                self.fetch_art(art_url, art_tx);
+                if art_url.is_empty() {
+                    // Current track has no artwork at all (was non-empty before,
+                    // or this is the first metadata) — clear immediately rather
+                    // than leaving the previous track's art on screen forever.
+                    dbg("art url cleared: current track has no artwork");
+                    playback_mask |= playback_changed::ARTWORK;
+                } else {
+                    dbg(&format!("art url changed: {art_url}"));
+                    // No immediate ARTWORK signal here: art_bytes is already
+                    // cleared, but we hold off telling the UI until fetch_art()
+                    // resolves (success or failure — see start_art_loader) so a
+                    // fast reload doesn't flash the fallback icon in between.
+                    self.fetch_art(art_url, art_tx);
+                }
             }
         }
 
@@ -793,9 +814,11 @@ impl DeviceState {
         };
         let art_tx = art_tx.clone();
         self.rt().spawn(async move {
-            if let Ok(bytes) = client.fetch_bytes(&url).await {
-                let _ = art_tx.send(bytes).await;
-            }
+            // Always send, even on failure (as an empty Vec) — start_art_loader
+            // treats that as "no artwork" and clears the stale texture instead
+            // of the UI never hearing about the failure at all.
+            let bytes = client.fetch_bytes(&url).await.unwrap_or_default();
+            let _ = art_tx.send(bytes).await;
         });
     }
 
