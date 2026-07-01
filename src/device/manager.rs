@@ -73,4 +73,27 @@ impl DeviceManager {
     pub fn rt(&self) -> Arc<tokio::runtime::Runtime> {
         self.0.rt.clone()
     }
+
+    /// Push a possibly-new `ip`/`tls` to the live `DeviceState` for `uuid`,
+    /// if one exists and it isn't already using this IP.
+    ///
+    /// `get()` only resolves `ip`/`tls` when creating a *new* `DeviceState`;
+    /// an already-open device window keeps polling whatever IP it connected
+    /// with, even after discovery learns the device moved (DHCP lease
+    /// change). Call this whenever discovery reports a device's current
+    /// address — e.g. from `DiscoveryManager`'s `list-changed` handler — so
+    /// an open window reconnects to the right IP instead of retrying a dead
+    /// one forever.
+    pub fn update_ip(&self, uuid: &str, ip: &str, tls: TlsMode) {
+        if uuid.is_empty() { return; }
+        let ds = {
+            let states = self.0.states.borrow();
+            states.get(uuid).and_then(|w| w.upgrade())
+        };
+        if let Some(ds) = ds {
+            if ds.ip() != ip {
+                ds.set_device(ip, tls, Some(uuid));
+            }
+        }
+    }
 }

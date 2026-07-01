@@ -109,6 +109,11 @@ async fn run_slow_poll(
 
 struct Inner {
     client:          Option<WiimClient>,
+    /// IP the current `client` was built for.  Used to detect when a fresh
+    /// IP (e.g. from a DHCP lease change) actually differs from the one
+    /// already connected, so `DeviceManager::update_ip()` can skip a no-op
+    /// reconnect.
+    ip:              String,
     device_info:     Option<DeviceInfo>,
     capabilities:    Option<DeviceCapabilities>,
     player_status:   Option<PlayerStatus>,
@@ -154,6 +159,7 @@ impl Default for Inner {
     fn default() -> Self {
         Self {
             client:          None,
+            ip:              String::new(),
             device_info:     None,
             capabilities:    None,
             player_status:   None,
@@ -274,6 +280,7 @@ impl DeviceState {
             let mut inner = self.imp().inner.borrow_mut();
             *inner = Inner::default();
             inner.client           = Some(WiimClient::new(ip, tls));
+            inner.ip                = ip.to_string();
             inner.connection_state = ConnectionState::Connecting;
             inner.expected_uuid    = expected_uuid.map(String::from);
         }
@@ -617,11 +624,15 @@ impl DeviceState {
                         "slow poll: UUID changed ({} → {}); resetting connection",
                         prev_uuid, new_info.uuid,
                     ));
-                    let client = ds.imp().inner.borrow().client.clone();
+                    let (client, ip) = {
+                        let inner = ds.imp().inner.borrow();
+                        (inner.client.clone(), inner.ip.clone())
+                    };
                     {
                         let mut inner = ds.imp().inner.borrow_mut();
                         *inner = Inner::default();
                         inner.client           = client;
+                        inner.ip                = ip;
                         inner.connection_state = ConnectionState::Connecting;
                     }
                     ds.emit_by_name::<()>("device-changed", &[]);
@@ -911,6 +922,11 @@ impl DeviceState {
 
     pub fn client(&self) -> Option<WiimClient> {
         self.imp().inner.borrow().client.clone()
+    }
+
+    /// IP the current connection is using (empty if never connected).
+    pub fn ip(&self) -> String {
+        self.imp().inner.borrow().ip.clone()
     }
 
     pub fn device_info(&self) -> Option<DeviceInfo> {

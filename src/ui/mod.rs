@@ -1080,17 +1080,24 @@ impl AppState {
             self_rc.app.add_action(&quit_action);
         }
 
-        // Keep last_ip current whenever the device list changes.  Must be
+        // Keep last_ip current, and reconnect any already-open device window
+        // to a corrected IP, whenever the device list changes.  Must be
         // connected before start() so we catch the synchronous emission after
         // the initial config load.
         {
             let s = Rc::downgrade(self_rc);
             self_rc.disc_mgr.connect_list_changed(move |mgr| {
-                let Some(_) = s.upgrade() else { return };
+                let Some(self_rc) = s.upgrade() else { return };
                 let mut cfg = Config::load();
                 let mut dirty = false;
                 for entry in mgr.entries() {
                     if entry.uuid.is_empty() { continue; }
+                    // No-op if a live DeviceState for this UUID is already
+                    // using this IP; otherwise reconnects it (see
+                    // ANALYSIS.md #1 — devlist.rs refreshes entry.ip on
+                    // rediscovery, this pushes the correction into any open
+                    // window instead of it retrying the old dead IP forever).
+                    self_rc.device_manager.update_ip(&entry.uuid, &entry.ip, entry.tls_mode);
                     let Some(dev) = cfg.devices.get_mut(&entry.uuid) else { continue };
                     if dev.last_ip.as_deref() != Some(entry.ip.as_str()) {
                         dev.last_ip = Some(entry.ip.clone());
