@@ -32,7 +32,7 @@ window { background-color: #0a0a0a; }
 .loop-btn     { min-width: 36px; min-height: 36px; padding: 0; -gtk-icon-size: 16px; background-color: transparent; color: #909090; }
 .loop-btn:hover { background-color: #2a2a2a; color: #ffffff; }
 .loop-active  { color: #4ecdc4; }
-.vol-btn { background-color: transparent; color: #ffffff; border-radius: 6px; padding: 0 8px; min-width: 0; }
+.vol-btn { background-color: transparent; color: #cccccc; border-radius: 6px; padding: 0 8px; min-width: 0; }
 .vol-btn:hover { background-color: #2a2a2a; }
 .vol-pop trough   { min-width: 3px; border-radius: 2px; background-color: #2a2a2a; }
 .vol-pop trough highlight { background-color: #4ecdc4; }
