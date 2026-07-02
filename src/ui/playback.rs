@@ -388,12 +388,12 @@ impl DeviceWindowInner {
         if mask & (PC::VOLUME | PC::TIME | PC::OTHER) != 0 {
             if let Some(st) = self.ds.player_status() {
                 if mask & PC::VOLUME != 0 {
-                    let muted = st.mute == "1";
+                    let muted = st.mute;
                     self.sync_vol_display(&self.vol_scale.clone(), &self.pw.vol_icon_img, &self.pw.vol_label, &self.pw.mute_btn, muted);
                 }
                 if mask & PC::TIME != 0 {
-                    let cur_s = st.curpos.parse::<u64>().unwrap_or(0) / 1000;
-                    let tot_s = st.totlen.parse::<u64>().unwrap_or(0) / 1000;
+                    let cur_s = st.curpos / 1000;
+                    let tot_s = st.totlen / 1000;
                     if tot_s > 0 {
                         self.pw.seek.set_range(0.0, tot_s as f64);
                         self.pw.seek.set_value(cur_s as f64);
@@ -650,7 +650,7 @@ impl DeviceWindowInner {
         if mask & (PC::VOLUME | PC::OTHER) != 0 {
             if let Some(st) = self.ds.player_status() {
                 if mask & PC::VOLUME != 0 {
-                    let muted = st.mute == "1";
+                    let muted = st.mute;
                     self.sync_vol_display(&self.mini.vol_scale.clone(), &self.mini.vol_icon_img, &self.mini.vol_label, &self.mini.mute_btn, muted);
                 }
                 if mask & PC::OTHER != 0 {

@@ -859,7 +859,7 @@ impl DeviceState {
     pub fn do_set_mute(&self, muted: bool) {
         let Some(client) = self.imp().inner.borrow().client.clone() else { return };
         if let Some(ref mut st) = self.imp().inner.borrow_mut().player_status {
-            st.mute = if muted { "1" } else { "0" }.to_string();
+            st.mute = muted;
         }
         self.emit_by_name::<()>("playback-changed", &[&playback_changed::VOLUME]);
         self.rt().spawn(async move { let _ = client.set_mute(muted).await; });
@@ -869,7 +869,7 @@ impl DeviceState {
         let mut inner = self.imp().inner.borrow_mut();
         // Optimistic cached update so the UI stays responsive.
         if let Some(ref mut st) = inner.player_status {
-            st.vol = vol.to_string();
+            st.vol = vol;
         }
         let now = Instant::now();
         let since_last = inner.last_volume_cmd
@@ -966,7 +966,7 @@ impl DeviceState {
     }
 
     pub fn muted(&self) -> bool {
-        self.imp().inner.borrow().player_status.as_ref().map(|s| s.mute == "1").unwrap_or(false)
+        self.imp().inner.borrow().player_status.as_ref().map(|s| s.mute).unwrap_or(false)
     }
 
     /// Return the effective volume: the pending target if a rate-limited command
@@ -976,7 +976,7 @@ impl DeviceState {
         if inner.target_volume >= 0 {
             return Some(inner.target_volume as u32);
         }
-        inner.player_status.as_ref()?.vol.parse().ok()
+        Some(inner.player_status.as_ref()?.vol)
     }
 
     pub fn metadata(&self) -> Option<MetaData> {

@@ -177,18 +177,39 @@ pub fn urlencode(s: &str) -> String {
 
 // ── Response types ────────────────────────────────────────────────────────────
 
+/// The WiiM/LinkPlay API reports numeric and boolean fields as JSON strings
+/// (e.g. `"vol": "45"`, `"mute": "1"`). These helpers parse them at the
+/// deserialization boundary so callers get real numbers/bools instead of
+/// re-parsing the same string at every call site.
+fn de_num_from_str<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: std::str::FromStr + Default,
+{
+    let s = String::deserialize(deserializer)?;
+    Ok(s.parse().unwrap_or_default())
+}
+
+fn de_bool_from_01<'de, D>(deserializer: D) -> Result<bool, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let s = String::deserialize(deserializer)?;
+    Ok(s == "1")
+}
+
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct PlayerStatus {
     #[serde(default)]
     pub status: String,
-    #[serde(default)]
-    pub vol: String,
-    #[serde(default)]
-    pub mute: String,
-    #[serde(default)]
-    pub curpos: String,
-    #[serde(default)]
-    pub totlen: String,
+    #[serde(default, deserialize_with = "de_num_from_str")]
+    pub vol: u32,
+    #[serde(default, deserialize_with = "de_bool_from_01")]
+    pub mute: bool,
+    #[serde(default, deserialize_with = "de_num_from_str")]
+    pub curpos: u64,
+    #[serde(default, deserialize_with = "de_num_from_str")]
+    pub totlen: u64,
     #[serde(default, rename = "loop")]
     pub loop_mode: String,
     #[serde(default)]
