@@ -136,6 +136,15 @@ pub struct Config {
     /// Adwaita's own accent colour instead.
     #[serde(default = "default_accent_color")]
     pub accent_color: String,
+    /// Hidden/debug-only: paint an explicit background behind the mini
+    /// window's artwork+info row, working around a stale-GPU-pixel
+    /// rendering glitch some users have seen there (NGL renderer). Off by
+    /// default — the glitch hasn't been reliably reproduced since
+    /// ScrollFadeLabel's rewrite, so this isn't worth another Settings row;
+    /// flip it by hand-editing config.json (`"mini_stale_pixel_workaround":
+    /// true`) if it turns up again.
+    #[serde(default)]
+    pub mini_stale_pixel_workaround: bool,
 }
 
 impl Default for Config {
@@ -151,6 +160,7 @@ impl Default for Config {
             animations: true,
             mini_modern: false,
             accent_color: default_accent_color(),
+            mini_stale_pixel_workaround: false,
         }
     }
 }

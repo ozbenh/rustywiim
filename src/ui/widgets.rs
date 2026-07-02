@@ -733,8 +733,15 @@ pub(super) fn build_mini_window(app: &adw::Application) -> (MiniWidgets, gtk::Ap
         .build();
     // Explicit background fills the vertical centering gap that appears above
     // mini_info_box (valign=Center, shorter than the art stack).  Without it
-    // the NGL renderer can leave stale GPU buffer pixels there.
-    mini_main_row.add_css_class("mini-main-row");
+    // the NGL renderer can leave stale GPU buffer pixels there. Not
+    // reliably reproducible since ScrollFadeLabel's rewrite to a
+    // single-pass GSK snapshot(), so it's off by default — hidden behind
+    // config.mini_stale_pixel_workaround (no Settings UI) rather than
+    // deleted outright, so it can be flipped back on by hand-editing
+    // config.json if the glitch turns up again, without a rebuild.
+    if crate::config::with(|cfg| cfg.mini_stale_pixel_workaround) {
+        mini_main_row.add_css_class("mini-main-row");
+    }
     mini_main_row.append(&mini_artwork);
     mini_main_row.append(&mini_info_box);
 
