@@ -180,23 +180,59 @@ impl SettingsWindow {
 
 // ── Per-page builders ─────────────────────────────────────────────────────────
 
+/// Theme dropdown entries: display name paired with the `ThemeMode` it
+/// selects, in display order. `None` marks a non-selectable visual divider —
+/// rendered as a `gtk::Separator` by `build_theme_list_factory` — used here
+/// to split "System …" themes from "RustyWiiM …" themes. Single source of
+/// truth for the dropdown's contents, so adding/reordering themes doesn't
+/// require touching index numbers anywhere else in this file.
+const THEMES: &[(&str, Option<ThemeMode>)] = &[
+    ("System", Some(ThemeMode::System)),
+    ("System Light", Some(ThemeMode::SystemLight)),
+    ("System Dark", Some(ThemeMode::SystemDark)),
+    ("", None),
+    ("RustyWiiM Dark", Some(ThemeMode::RustyWiiM)),
+    ("RustyWiiM Modern", Some(ThemeMode::RustyWiiMModern)),
+];
+
+fn theme_index(mode: ThemeMode) -> u32 {
+    THEMES.iter().position(|(_, m)| *m == Some(mode)).unwrap_or(0) as u32
+}
+
+/// Popup-list factory for `theme_row`. Rows whose `THEMES` entry is `None`
+/// render as a plain `gtk::Separator` and are made non-selectable; every
+/// other row renders exactly as AdwComboRow's own default (a plain label)
+/// would. Only affects the open popup — the closed row keeps the default
+/// expression-based display.
+fn build_theme_list_factory() -> gtk::SignalListItemFactory {
+    let factory = gtk::SignalListItemFactory::new();
+    factory.connect_bind(|_, list_item| {
+        // `list_item` is `&glib::Object` at this GTK API level (v4_8+); the
+        // concrete type is always `gtk::ListItem` for a list-view factory.
+        let list_item = list_item.downcast_ref::<gtk::ListItem>().unwrap();
+        let (name, mode) = THEMES[list_item.position() as usize];
+        if mode.is_none() {
+            list_item.set_child(Some(&gtk::Separator::new(Orientation::Horizontal)));
+            list_item.set_selectable(false);
+        } else {
+            list_item.set_child(Some(&gtk::Label::builder().label(name).halign(gtk::Align::Start).build()));
+        }
+    });
+    factory
+}
+
 fn build_appearance_page() -> (adw::PreferencesPage, gtk::Button) {
     let theme = config::with(|cfg| cfg.theme);
 
-    let theme_list = gtk::StringList::new(
-        &["System", "System Light", "System Dark", "RustyWiiM", "RustyWiiM Modern"]);
+    let theme_names: Vec<&str> = THEMES.iter().map(|(name, _)| *name).collect();
+    let theme_list = gtk::StringList::new(&theme_names);
     let theme_row = adw::ComboRow::builder()
         .title("Theme")
         .subtitle("Application colour scheme")
         .model(&theme_list)
+        .list_factory(&build_theme_list_factory())
         .build();
-    theme_row.set_selected(match theme {
-        ThemeMode::System         => 0,
-        ThemeMode::SystemLight    => 1,
-        ThemeMode::SystemDark     => 2,
-        ThemeMode::RustyWiiM      => 3,
-        ThemeMode::RustyWiiMModern => 4,
-    });
+    theme_row.set_selected(theme_index(theme));
 
     let mini_modern = config::with(|cfg| cfg.mini_modern);
     let mini_modern_row = adw::SwitchRow::builder()
@@ -211,13 +247,9 @@ fn build_appearance_page() -> (adw::PreferencesPage, gtk::Button) {
     });
 
     theme_row.connect_selected_notify(glib::clone!(@weak mini_modern_row => move |row| {
-            let theme = match row.selected() {
-                0 => ThemeMode::System,
-                1 => ThemeMode::SystemLight,
-                2 => ThemeMode::SystemDark,
-                3 => ThemeMode::RustyWiiM,
-                _ => ThemeMode::RustyWiiMModern,
-            };
+            // The separator's THEMES entry is None; it's non-selectable so this
+            // shouldn't fire for it, but bail rather than guess if it somehow does.
+            let Some(theme) = THEMES.get(row.selected() as usize).and_then(|(_, m)| *m) else { return };
             // Persist before apply_theme(): it calls update_art_background_visibility()
             // internally, which reads config.theme back — updating config first avoids
             // computing visibility off the theme that's about to be replaced.
@@ -245,7 +277,7 @@ fn build_appearance_page() -> (adw::PreferencesPage, gtk::Button) {
     }
     accent_button.set_valign(gtk::Align::Center);
     let accent_row = adw::ActionRow::builder()
-        .title("Highlight Color")
+        .title("Highlight color (RustyWiiM themes)")
         .subtitle("Song progress, playback status, play/pause and panel toggle")
         .sensitive(theme == ThemeMode::RustyWiiM || theme == ThemeMode::RustyWiiMModern)
         .build();
@@ -257,13 +289,7 @@ fn build_appearance_page() -> (adw::PreferencesPage, gtk::Button) {
     });
 
     theme_row.connect_selected_notify(glib::clone!(@weak accent_row => move |row| {
-            let theme = match row.selected() {
-                0 => ThemeMode::System,
-                1 => ThemeMode::SystemLight,
-                2 => ThemeMode::SystemDark,
-                3 => ThemeMode::RustyWiiM,
-                _ => ThemeMode::RustyWiiMModern,
-            };
+            let Some(theme) = THEMES.get(row.selected() as usize).and_then(|(_, m)| *m) else { return };
             accent_row.set_sensitive(theme == ThemeMode::RustyWiiM || theme == ThemeMode::RustyWiiMModern);
         }
     ));
@@ -282,7 +308,7 @@ fn build_appearance_page() -> (adw::PreferencesPage, gtk::Button) {
     reset_btn.connect_clicked(glib::clone!(
         @weak theme_row, @weak mini_modern_row, @weak animations_row, @weak accent_button
         => move |_| {
-            theme_row.set_selected(3); // RustyWiiM
+            theme_row.set_selected(theme_index(ThemeMode::RustyWiiM));
             mini_modern_row.set_active(false);
             animations_row.set_active(true);
             if let Ok(rgba) = gtk::gdk::RGBA::parse(&config::default_accent_color()) {
