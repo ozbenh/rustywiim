@@ -205,6 +205,9 @@ struct DeviceWindowInner {
     sidebar_btn:         gtk::ToggleButton,
     saved_panel_width:   Rc<RefCell<i32>>,
     panel_collapsing:    Rc<RefCell<bool>>,
+    /// In-flight sidebar-toggle slide animation, if any — cancelled/skipped
+    /// on the next toggle so rapid clicks don't pile up overlapping animations.
+    panel_anim:          RefCell<Option<adw::TimedAnimation>>,
     settle_timer:        Rc<RefCell<Option<glib::SourceId>>>,
     /// Deferred config-save timer: cancelled and rescheduled on every
     /// state change so only one disk write happens after a burst of events.
@@ -421,6 +424,7 @@ impl DeviceWindow {
             sidebar_btn: sidebar_btn.clone(),
             saved_panel_width,
             panel_collapsing,
+            panel_anim: RefCell::new(None),
             settle_timer,
             config_save_timer,
             applied_window_key: RefCell::new(cfg_uuid.clone()),
@@ -572,17 +576,11 @@ impl DeviceWindow {
                 if *i.panel_collapsing.borrow() { return; }
                 if let Some(id) = i.settle_timer.borrow_mut().take() { id.remove(); }
                 if btn.is_active() {
-                    *i.panel_collapsing.borrow_mut() = true;
-                    i.left_pane.set_visible(true);
                     let w = *i.saved_panel_width.borrow();
-                    i.paned.set_position(w);
-                    *i.panel_collapsing.borrow_mut() = false;
+                    playback::animate_panel_to(&i, w);
                 } else {
-                    *i.panel_collapsing.borrow_mut() = true;
-                    i.left_pane.set_visible(false);
-                    *i.panel_collapsing.borrow_mut() = false;
+                    playback::animate_panel_to(&i, 0);
                 }
-                playback::schedule_config_save(&i);
             }
         });
 

@@ -733,6 +733,62 @@ pub(super) fn schedule_config_save(i: &Rc<DeviceWindowInner>) {
     *i.config_save_timer.borrow_mut() = Some(id);
 }
 
+/// Slide the paned's divider to `target_pos` (0 = fully closed) instead of
+/// jumping instantly, so opening/closing the side panel reads as one motion.
+/// Falls back to an instant set when animations are off (config.animations,
+/// or GTK's reduce-motion). `panel_collapsing` is held for the animation's
+/// duration so `connect_position_notify`'s drag-detection logic ignores the
+/// frames this drives — same guard the instant path already relied on.
+pub(super) fn animate_panel_to(i: &Rc<DeviceWindowInner>, target_pos: i32) {
+    // Two statements, not `if let Some(a) = i.panel_anim.borrow_mut().take() { a.skip(); }`:
+    // the RefMut temporary from borrow_mut() stays alive for the whole if-let
+    // block (Rust's temporary lifetime rule for if-let scrutinees), so
+    // panel_anim would still be borrowed while skip() runs below — and
+    // skip() synchronously fires connect_done, which borrows panel_anim
+    // again and panics. (Same bug as FlipCover's set_content/dispose/clear.)
+    let old_anim = i.panel_anim.borrow_mut().take();
+    if let Some(a) = old_anim { a.skip(); }
+
+    if target_pos > 0 {
+        // Visible immediately so it's revealed as the panel slides open,
+        // rather than popping in once the animation finishes.
+        i.left_pane.set_visible(true);
+    }
+
+    let from = i.paned.position();
+    let animate = from != target_pos
+        && config::with(|cfg| cfg.animations)
+        && gtk::Settings::default().is_some_and(|s| s.is_gtk_enable_animations());
+
+    if !animate {
+        *i.panel_collapsing.borrow_mut() = true;
+        i.paned.set_position(target_pos);
+        *i.panel_collapsing.borrow_mut() = false;
+        if target_pos <= 0 { i.left_pane.set_visible(false); }
+        schedule_config_save(i);
+        return;
+    }
+
+    *i.panel_collapsing.borrow_mut() = true;
+
+    let weak  = Rc::downgrade(i);
+    let paned = i.paned.clone();
+    let anim_target = adw::CallbackAnimationTarget::new(move |v| {
+        paned.set_position(v.round() as i32);
+    });
+    let anim = adw::TimedAnimation::new(&i.paned, from as f64, target_pos as f64, 200, anim_target);
+    anim.set_easing(adw::Easing::EaseInOutCubic);
+    anim.connect_done(move |_| {
+        let Some(i) = weak.upgrade() else { return };
+        *i.panel_collapsing.borrow_mut() = false;
+        if target_pos <= 0 { i.left_pane.set_visible(false); }
+        *i.panel_anim.borrow_mut() = None;
+        schedule_config_save(&i);
+    });
+    anim.play();
+    *i.panel_anim.borrow_mut() = Some(anim);
+}
+
 pub(super) fn wifi_icon_for_rssi(rssi: i32) -> &'static str {
     match rssi {
         i32::MIN..=-85 | 0 => "network-wireless-offline-symbolic",
