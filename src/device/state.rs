@@ -79,38 +79,65 @@ pub enum ConnectionState {
 struct PollData {
     status: Option<PlayerStatus>,
     meta:   Option<MetaData>,
-    output: Option<AudioOutputStatus>,
 }
 
 // ── Slow poll ─────────────────────────────────────────────────────────────────
+//
+// The slow poll used to fire 3-4 sequential HTTP calls back to back every
+// SLOW_POLL_INTERVAL. These embedded HTTP servers handle that poorly (see
+// CLAUDE.md), so instead it's a rotation that dispatches exactly one call per
+// 1-second tick, spread across the first ~4 seconds of every ~10s cycle, then
+// idles until the next cycle starts. See start_unified_timer.
 
-struct SlowPollResult {
-    /// `Some(result)` when probe was attempted; `None` when skipped (probe_outputs=false).
-    outputs:     Option<Option<Vec<OutputEntry>>>,
-    device_info: Option<DeviceInfo>,
-    /// `Some((fp, entries))` when the fingerprint changed; `None` when
-    /// unchanged or when preset probing is disabled.
-    presets:     Option<(String, Vec<PresetEntry>)>,
+/// One phase of the slow-poll rotation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SlowPollPhase {
+    Presets,
+    Outputs,
+    OutputStatus,
+    DeviceInfo,
 }
 
-async fn run_slow_poll(
-    client:        WiimClient,
-    probe_outputs: bool,
-    probe_presets: bool,
-    preset_fp:     String,
+impl SlowPollPhase {
+    const FIRST: Self = Self::Presets;
+
+    /// The phase after this one; wraps back to `FIRST` after `DeviceInfo`,
+    /// which the caller uses as the "rotation complete" signal.
+    fn next(self) -> Self {
+        match self {
+            Self::Presets      => Self::Outputs,
+            Self::Outputs      => Self::OutputStatus,
+            Self::OutputStatus => Self::DeviceInfo,
+            Self::DeviceInfo   => Self::FIRST,
+        }
+    }
+}
+
+enum SlowPollResult {
+    /// `Some((fp, entries))` when the fingerprint changed; `None` when
+    /// unchanged.
+    Presets(Option<(String, Vec<PresetEntry>)>),
+    /// `None` when the response wasn't a JSON array (API unsupported).
+    Outputs(Option<Vec<OutputEntry>>),
+    OutputStatus(Option<AudioOutputStatus>),
+    DeviceInfo(Option<DeviceInfo>),
+}
+
+async fn run_slow_poll_phase(
+    client:    WiimClient,
+    phase:     SlowPollPhase,
+    preset_fp: String,
 ) -> SlowPollResult {
-    let outputs = if probe_outputs {
-        Some(client.get_sound_card_mode_support_list().await)
-    } else {
-        None
-    };
-    let device_info = client.get_device_info().await.ok();
-    let presets = if probe_presets {
-        client.fetch_presets(&preset_fp).await
-    } else {
-        None
-    };
-    SlowPollResult { outputs, device_info, presets }
+    match phase {
+        SlowPollPhase::Presets =>
+            SlowPollResult::Presets(client.fetch_presets(&preset_fp).await),
+        SlowPollPhase::Outputs =>
+            SlowPollResult::Outputs(client.get_sound_card_mode_support_list().await),
+        SlowPollPhase::OutputStatus =>
+            SlowPollResult::OutputStatus(client.get_audio_output().await.ok()),
+        SlowPollPhase::DeviceInfo =>
+            SlowPollResult::DeviceInfo(client.get_device_info().await.ok()),
+    }
 }
 
 // ── Cached device state ───────────────────────────────────────────────────────
@@ -159,8 +186,14 @@ struct Inner {
     target_volume:    i32,
     /// When the last volume API command was sent (None = never).
     last_volume_cmd:  Option<Instant>,
-    /// When the last slow poll completed (None = never; triggers immediately).
+    /// When the current/most recent slow-poll cycle started (None = never;
+    /// triggers a new cycle immediately).
     last_slow_poll:   Option<Instant>,
+    /// `true` while a slow-poll cycle is actively rotating through phases
+    /// (one per tick); `false` while idle between cycles.
+    slow_poll_active: bool,
+    /// The next phase to dispatch, while `slow_poll_active`.
+    slow_poll_phase:  SlowPollPhase,
     /// Consecutive getStatusEx failures during a slow poll while Connected.
     /// Reset to 0 on any successful getStatusEx. See SLOW_POLL_FAIL_THRESHOLD.
     slow_poll_failures: u32,
@@ -193,6 +226,8 @@ impl Default for Inner {
             target_volume:    -1,
             last_volume_cmd:  None,
             last_slow_poll:   None,
+            slow_poll_active: false,
+            slow_poll_phase:  SlowPollPhase::FIRST,
             slow_poll_failures: 0,
         }
     }
@@ -412,36 +447,31 @@ impl DeviceState {
             }
             dbg("signal: device-changed (ready)");
             ds.emit_by_name::<()>("device-changed", &[]);
-            // Immediately run one slow poll so presets and network status appear
-            // right after connection rather than waiting for the 5-second timer.
+            // Kick off the slow-poll rotation on the very next 1s tick,
+            // instead of waiting a full SLOW_POLL_INTERVAL, so presets/
+            // outputs/network status appear promptly after connecting.
             ds.fire_slow_poll();
         });
     }
 
-    /// Enqueue one slow-poll cycle (outputs + device_info + presets) for
-    /// immediate execution.  Safe to call from the GTK thread at any time;
-    /// does nothing when the slow-poll channel isn't set up yet.
+    /// Prime the slow-poll rotation (see `SlowPollPhase`) to start on the
+    /// very next 1-second tick, instead of waiting for `SLOW_POLL_INTERVAL`
+    /// to elapse. Only sets state; the unified timer does the actual
+    /// dispatching, one phase per tick, same as any other cycle.
     fn fire_slow_poll(&self) {
         let mut inner = self.imp().inner.borrow_mut();
-        let Some(client)  = inner.client.clone()   else { return };
-        let probe_outputs = inner.probe_outputs;
-        let probe_presets = inner.probe_presets;
-        let preset_fp     = inner.preset_fp.clone();
-        // Mark as just polled so the unified timer doesn't pile on immediately.
-        inner.last_slow_poll = Some(Instant::now());
-        drop(inner);
-        let Some(tx) = self.imp().slow_poll_tx.borrow().clone() else { return };
-        self.rt().spawn(async move {
-            let result = run_slow_poll(client, probe_outputs, probe_presets, preset_fp).await;
-            let _ = tx.send(result).await;
-        });
+        if inner.client.is_none() { return; }
+        inner.slow_poll_active = true;
+        inner.slow_poll_phase  = SlowPollPhase::FIRST;
+        inner.last_slow_poll   = Some(Instant::now());
     }
 
     // ── Polling ───────────────────────────────────────────────────────────────
 
     /// Start the unified 1-second timer plus background result processors.
-    /// The timer handles fast polls every tick, slow polls every
-    /// SLOW_POLL_INTERVAL, pending volume commands, and reconnection attempts.
+    /// The timer handles fast polls every tick, one slow-poll phase per tick
+    /// during a rotation started every SLOW_POLL_INTERVAL (see
+    /// `SlowPollPhase`), pending volume commands, and reconnection attempts.
     /// Call once after `new()`.
     pub fn start_polling(&self) {
         let (poll_tx, poll_rx) = async_channel::unbounded::<PollData>();
@@ -476,8 +506,8 @@ impl DeviceState {
 
             let now = Instant::now();
 
-            // Is it time for a slow poll / reconnect attempt?
-            let slow_due = inner.last_slow_poll
+            // Is it time to start a new slow-poll cycle / reconnect attempt?
+            let cycle_due = inner.last_slow_poll
                 .map_or(true, |t| now.duration_since(t) >= SLOW_POLL_INTERVAL);
 
             // Flush any pending volume command if the debounce window has elapsed.
@@ -494,9 +524,41 @@ impl DeviceState {
                 None
             };
 
-            let do_slow      = slow_due && state == ConnectionState::Connected;
-            let do_reconnect = slow_due && state == ConnectionState::Failed;
-            if slow_due { inner.last_slow_poll = Some(now); }
+            let do_reconnect = cycle_due && state == ConnectionState::Failed;
+
+            // Slow poll: dispatch at most one phase this tick. Starting a new
+            // cycle is gated by cycle_due; once started, every following tick
+            // runs the next phase unconditionally until the rotation wraps
+            // back to FIRST, which marks the cycle complete (idle until the
+            // next cycle_due).
+            let dispatch_phase = if state == ConnectionState::Connected {
+                if !inner.slow_poll_active && cycle_due {
+                    inner.slow_poll_active = true;
+                    inner.slow_poll_phase  = SlowPollPhase::FIRST;
+                    inner.last_slow_poll   = Some(now);
+                    let device_id = inner.device_info.as_ref()
+                        .map(|d| format!("{} ({})", d.device_name, d.ip_addr()))
+                        .unwrap_or_else(|| "unknown".to_string());
+                    dbg(&format!(
+                        "slow poll: starting new cycle (refcount={} device={device_id})",
+                        ds.ref_count(),
+                    ));
+                }
+                if inner.slow_poll_active {
+                    let phase = inner.slow_poll_phase;
+                    let next  = phase.next();
+                    inner.slow_poll_phase = next;
+                    if next == SlowPollPhase::FIRST {
+                        // Rotation complete; go idle until the next cycle_due.
+                        inner.slow_poll_active = false;
+                    }
+                    Some(phase)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
 
             let client        = inner.client.clone();
             let probe_outputs = inner.probe_outputs;
@@ -530,23 +592,29 @@ impl DeviceState {
                 rt.spawn(async move {
                     let status = cp.get_status().await.ok();
                     let meta   = cp.get_meta_info().await.ok();
-                    let output = cp.get_audio_output().await.ok();
-                    let _ = tx.send(PollData { status, meta, output }).await;
+                    let _ = tx.send(PollData { status, meta }).await;
                 });
             }
 
-            // Slow poll — only when SLOW_POLL_INTERVAL has elapsed.
-            if do_slow {
-                let device_id = ds.imp().inner.borrow()
-                    .device_info.as_ref()
-                    .map(|d| format!("{} ({})", d.device_name, d.ip_addr()))
-                    .unwrap_or_else(|| "unknown".to_string());
-                dbg(&format!("refcount={} device={}", ds.ref_count(), device_id));
-                let tx = slow_tx.clone();
-                rt.spawn(async move {
-                    let result = run_slow_poll(c, probe_outputs, probe_presets, preset_fp).await;
-                    let _ = tx.send(result).await;
-                });
+            // Slow poll — this tick's phase, if the rotation is active.
+            if let Some(phase) = dispatch_phase {
+                let enabled = match phase {
+                    SlowPollPhase::Outputs => probe_outputs,
+                    SlowPollPhase::Presets => probe_presets,
+                    SlowPollPhase::OutputStatus | SlowPollPhase::DeviceInfo => true,
+                };
+                if enabled {
+                    dbg(&format!("slow poll: phase {phase:?}"));
+                    let cp        = c.clone();
+                    let tx        = slow_tx.clone();
+                    let preset_fp = preset_fp.clone();
+                    rt.spawn(async move {
+                        let result = run_slow_poll_phase(cp, phase, preset_fp).await;
+                        let _ = tx.send(result).await;
+                    });
+                } else {
+                    dbg(&format!("slow poll: phase {phase:?} skipped (not supported)"));
+                }
             }
 
             glib::ControlFlow::Continue
@@ -594,152 +662,192 @@ impl DeviceState {
         glib::spawn_future_local(async move {
             while let Ok(result) = rx.recv().await {
                 let Some(ds) = ds_weak.upgrade() else { break };
-
-                // ── output list ───────────────────────────────────────────────
-                match result.outputs {
-                    Some(None) => {
-                        dbg("getSoundCardModeSupportList returned non-array; disabling");
-                        ds.imp().inner.borrow_mut().probe_outputs = false;
-                    }
-                    Some(Some(list)) => {
-                        let prev = ds.imp().inner.borrow().outputs.clone();
-                        if list != prev {
-                            dbg(&format!("outputs updated by poll: {:?}", list));
-                            ds.imp().inner.borrow_mut().outputs = list;
-                            ds.emit_by_name::<()>("outputs-changed", &[]);
-                        }
-                    }
-                    None => {} // probe skipped
-                }
-
-                // ── device info (getStatusEx) ─────────────────────────────────
-                let Some(new_info) = result.device_info else {
-                    // getStatusEx failed. Tolerate a few consecutive misses
-                    // (these embedded HTTP servers are flaky) before declaring
-                    // the connection Failed — clearing device_info on every
-                    // transient blip needlessly resets the whole UI (e.g. the
-                    // output selector, see the bug this was fixing) for
-                    // something that usually self-heals a second later.
-                    if ds.imp().inner.borrow().connection_state == ConnectionState::Connected {
-                        let declared_failed = {
-                            let mut inner = ds.imp().inner.borrow_mut();
-                            inner.slow_poll_failures += 1;
-                            if inner.slow_poll_failures >= SLOW_POLL_FAIL_THRESHOLD {
-                                dbg(&format!(
-                                    "slow poll: getStatusEx failed {} times in a row; transitioning to Failed",
-                                    inner.slow_poll_failures,
-                                ));
-                                inner.connection_state = ConnectionState::Failed;
-                                inner.device_info      = None;
-                                true
-                            } else {
-                                dbg(&format!(
-                                    "slow poll: getStatusEx failed ({}/{SLOW_POLL_FAIL_THRESHOLD}); retrying in {}s",
-                                    inner.slow_poll_failures, SLOW_POLL_FAIL_RETRY.as_secs(),
-                                ));
-                                // Rewind last_slow_poll so the next 1s tick
-                                // retries immediately instead of waiting out
-                                // the full SLOW_POLL_INTERVAL.
-                                inner.last_slow_poll =
-                                    Instant::now().checked_sub(SLOW_POLL_INTERVAL - SLOW_POLL_FAIL_RETRY);
-                                false
-                            }
-                        };
-                        if declared_failed {
-                            ds.emit_by_name::<()>("device-changed", &[]);
-                        }
-                    }
-                    continue;
-                };
-
-                let (prev_fw, prev_uuid, prev_name, prev_netstat, prev_rssi) = {
-                    let inner = ds.imp().inner.borrow();
-                    let di = inner.device_info.as_ref();
-                    (
-                        di.map(|i| i.firmware.clone()).unwrap_or_default(),
-                        di.map(|i| i.uuid.clone()).unwrap_or_default(),
-                        di.map(|i| i.device_name.clone()).unwrap_or_default(),
-                        inner.netstat,
-                        inner.rssi,
-                    )
-                };
-
-                // UUID change means the underlying device has been replaced on the
-                // same IP.  Do a full re-init rather than a partial identity update.
-                if !prev_uuid.is_empty() && new_info.uuid != prev_uuid {
-                    dbg(&format!(
-                        "slow poll: UUID changed ({} → {}); resetting connection",
-                        prev_uuid, new_info.uuid,
-                    ));
-                    let (client, ip) = {
-                        let inner = ds.imp().inner.borrow();
-                        (inner.client.clone(), inner.ip.clone())
-                    };
-                    {
-                        let mut inner = ds.imp().inner.borrow_mut();
-                        *inner = Inner::default();
-                        inner.client           = client;
-                        inner.ip                = ip;
-                        inner.connection_state = ConnectionState::Connecting;
-                    }
-                    ds.emit_by_name::<()>("device-changed", &[]);
-                    ds.fetch_device_info();
-                    continue;
-                }
-
-                let identity_changed =
-                    new_info.firmware    != prev_fw   ||
-                    new_info.device_name != prev_name;
-
-                let new_netstat: Option<u32> = new_info.netstat.parse().ok();
-                let new_rssi:    Option<i32> = new_info.rssi.parse().ok();
-
-                let network_changed =
-                    new_netstat != prev_netstat ||
-                    new_rssi    != prev_rssi;
-
-                {
-                    let mut inner = ds.imp().inner.borrow_mut();
-                    inner.netstat = new_netstat;
-                    inner.rssi    = new_rssi;
-                    inner.slow_poll_failures = 0;
-                    if identity_changed {
-                        dbg(&format!(
-                            "device identity changed: fw={} uuid={} name={}",
-                            new_info.firmware, new_info.uuid, new_info.device_name,
-                        ));
-                        inner.device_info = Some(new_info);
-                    }
-                }
-
-                if identity_changed {
-                    ds.emit_by_name::<()>("device-changed", &[]);
-                }
-                if network_changed {
-                    dbg(&format!(
-                        "signal: network changed: netstat={} rssi={}",
-                        ds.imp().inner.borrow().netstat.unwrap_or(0),
-                        ds.imp().inner.borrow().rssi.unwrap_or(0),
-                    ));
-                    ds.emit_by_name::<()>("network-changed", &[]);
-                }
-
-                // ── presets ───────────────────────────────────────────────────
-                if let Some((new_fp, entries)) = result.presets {
-                    dbg(&format!("signal: presets updated: {} slots", entries.len()));
-                    {
-                        let mut inner = ds.imp().inner.borrow_mut();
-                        inner.preset_fp = new_fp;
-                        inner.presets   = entries;
-                    }
-                    ds.emit_by_name::<()>("presets-changed", &[]);
+                match result {
+                    SlowPollResult::Presets(presets)     => ds.handle_slow_poll_presets(presets),
+                    SlowPollResult::Outputs(outputs)     => ds.handle_slow_poll_outputs(outputs),
+                    SlowPollResult::OutputStatus(status) => ds.handle_slow_poll_output_status(status),
+                    SlowPollResult::DeviceInfo(info)     => ds.handle_slow_poll_device_info(info),
                 }
             }
         });
     }
 
+    fn handle_slow_poll_presets(&self, presets: Option<(String, Vec<PresetEntry>)>) {
+        let Some((new_fp, entries)) = presets else {
+            dbg("slow poll: presets unchanged");
+            return;
+        };
+        dbg(&format!("slow poll: presets updated: {} slots", entries.len()));
+        {
+            let mut inner = self.imp().inner.borrow_mut();
+            inner.preset_fp = new_fp;
+            inner.presets   = entries;
+        }
+        dbg("signal: presets-changed");
+        self.emit_by_name::<()>("presets-changed", &[]);
+    }
+
+    fn handle_slow_poll_outputs(&self, outputs: Option<Vec<OutputEntry>>) {
+        match outputs {
+            None => {
+                dbg("slow poll: getSoundCardModeSupportList returned non-array; disabling");
+                self.imp().inner.borrow_mut().probe_outputs = false;
+            }
+            Some(list) => {
+                let prev = self.imp().inner.borrow().outputs.clone();
+                if list != prev {
+                    dbg(&format!("slow poll: outputs updated: {:?}", list));
+                    self.imp().inner.borrow_mut().outputs = list;
+                    dbg("signal: outputs-changed");
+                    self.emit_by_name::<()>("outputs-changed", &[]);
+                } else {
+                    dbg("slow poll: outputs unchanged");
+                }
+            }
+        }
+    }
+
+    fn handle_slow_poll_output_status(&self, status: Option<AudioOutputStatus>) {
+        let Some(out) = status else {
+            dbg("slow poll: getNewAudioOutputHardwareMode failed");
+            return;
+        };
+        let (changed, prev_hw) = {
+            let inner = self.imp().inner.borrow();
+            let prev_hw = inner.output_status.as_ref().map(|o| o.hardware.clone());
+            let changed = prev_hw.as_deref() != Some(out.hardware.as_str());
+            (changed, prev_hw)
+        };
+        if changed {
+            dbg(&format!(
+                "slow poll: output changed: {} → {}",
+                prev_hw.as_deref().unwrap_or("none"), out.hardware,
+            ));
+        } else {
+            dbg(&format!("slow poll: output status unchanged: {}", out.hardware));
+        }
+        self.imp().inner.borrow_mut().output_status = Some(out);
+        if changed {
+            dbg("signal: output-changed");
+            self.emit_by_name::<()>("output-changed", &[]);
+        }
+    }
+
+    fn handle_slow_poll_device_info(&self, info: Option<DeviceInfo>) {
+        // getStatusEx failed. Tolerate a few consecutive misses (these
+        // embedded HTTP servers are flaky) before declaring the connection
+        // Failed — clearing device_info on every transient blip needlessly
+        // resets the whole UI (e.g. the output selector, see the bug this
+        // was fixing) for something that usually self-heals a second later.
+        let Some(new_info) = info else {
+            if self.imp().inner.borrow().connection_state == ConnectionState::Connected {
+                let declared_failed = {
+                    let mut inner = self.imp().inner.borrow_mut();
+                    inner.slow_poll_failures += 1;
+                    if inner.slow_poll_failures >= SLOW_POLL_FAIL_THRESHOLD {
+                        dbg(&format!(
+                            "slow poll: getStatusEx failed {} times in a row; transitioning to Failed",
+                            inner.slow_poll_failures,
+                        ));
+                        inner.connection_state = ConnectionState::Failed;
+                        inner.device_info      = None;
+                        true
+                    } else {
+                        dbg(&format!(
+                            "slow poll: getStatusEx failed ({}/{SLOW_POLL_FAIL_THRESHOLD}); retrying in {}s",
+                            inner.slow_poll_failures, SLOW_POLL_FAIL_RETRY.as_secs(),
+                        ));
+                        // Rewind last_slow_poll so the next 1s tick retries
+                        // immediately instead of waiting out the full
+                        // SLOW_POLL_INTERVAL.
+                        inner.last_slow_poll =
+                            Instant::now().checked_sub(SLOW_POLL_INTERVAL - SLOW_POLL_FAIL_RETRY);
+                        false
+                    }
+                };
+                if declared_failed {
+                    self.emit_by_name::<()>("device-changed", &[]);
+                }
+            }
+            return;
+        };
+        dbg("slow poll: getStatusEx ok");
+
+        let (prev_fw, prev_uuid, prev_name, prev_netstat, prev_rssi) = {
+            let inner = self.imp().inner.borrow();
+            let di = inner.device_info.as_ref();
+            (
+                di.map(|i| i.firmware.clone()).unwrap_or_default(),
+                di.map(|i| i.uuid.clone()).unwrap_or_default(),
+                di.map(|i| i.device_name.clone()).unwrap_or_default(),
+                inner.netstat,
+                inner.rssi,
+            )
+        };
+
+        // UUID change means the underlying device has been replaced on the
+        // same IP.  Do a full re-init rather than a partial identity update.
+        if !prev_uuid.is_empty() && new_info.uuid != prev_uuid {
+            dbg(&format!(
+                "slow poll: UUID changed ({} → {}); resetting connection",
+                prev_uuid, new_info.uuid,
+            ));
+            let (client, ip) = {
+                let inner = self.imp().inner.borrow();
+                (inner.client.clone(), inner.ip.clone())
+            };
+            {
+                let mut inner = self.imp().inner.borrow_mut();
+                *inner = Inner::default();
+                inner.client           = client;
+                inner.ip                = ip;
+                inner.connection_state = ConnectionState::Connecting;
+            }
+            self.emit_by_name::<()>("device-changed", &[]);
+            self.fetch_device_info();
+            return;
+        }
+
+        let identity_changed =
+            new_info.firmware    != prev_fw   ||
+            new_info.device_name != prev_name;
+
+        let new_netstat: Option<u32> = new_info.netstat.parse().ok();
+        let new_rssi:    Option<i32> = new_info.rssi.parse().ok();
+
+        let network_changed =
+            new_netstat != prev_netstat ||
+            new_rssi    != prev_rssi;
+
+        {
+            let mut inner = self.imp().inner.borrow_mut();
+            inner.netstat = new_netstat;
+            inner.rssi    = new_rssi;
+            inner.slow_poll_failures = 0;
+            if identity_changed {
+                dbg(&format!(
+                    "device identity changed: fw={} uuid={} name={}",
+                    new_info.firmware, new_info.uuid, new_info.device_name,
+                ));
+                inner.device_info = Some(new_info);
+            }
+        }
+
+        if identity_changed {
+            self.emit_by_name::<()>("device-changed", &[]);
+        }
+        if network_changed {
+            dbg(&format!(
+                "signal: network changed: netstat={} rssi={}",
+                self.imp().inner.borrow().netstat.unwrap_or(0),
+                self.imp().inner.borrow().rssi.unwrap_or(0),
+            ));
+            self.emit_by_name::<()>("network-changed", &[]);
+        }
+    }
+
     fn process_poll(&self, data: PollData, art_tx: &async_channel::Sender<Vec<u8>>) {
-        let PollData { status, meta, output } = data;
+        let PollData { status, meta } = data;
         let mut playback_mask: u32 = 0;
 
         if let Some(st) = status {
@@ -785,24 +893,6 @@ impl DeviceState {
             if mode_changed {
                 dbg("signal: input-changed");
                 self.emit_by_name::<()>("input-changed", &[]);
-            }
-        }
-
-        if let Some(out) = output {
-            let prev_hw = self.imp().inner.borrow()
-                .output_status.as_ref().map(|o| o.hardware.clone());
-            let changed = prev_hw.as_deref() != Some(&out.hardware);
-            if changed {
-                dbg(&format!(
-                    "output changed: {} → {}",
-                    prev_hw.as_deref().unwrap_or("none"),
-                    out.hardware,
-                ));
-            }
-            self.imp().inner.borrow_mut().output_status = Some(out);
-            if changed {
-                dbg("signal: output-changed");
-                self.emit_by_name::<()>("output-changed", &[]);
             }
         }
 
@@ -991,7 +1081,7 @@ impl DeviceState {
                 rt.spawn(async move {
                     let status = c.get_status().await.ok();
                     let meta   = c.get_meta_info().await.ok();
-                    let _ = tx.send(PollData { status, meta, output: None }).await;
+                    let _ = tx.send(PollData { status, meta }).await;
                 });
             }
         });
