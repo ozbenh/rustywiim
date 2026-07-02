@@ -185,6 +185,7 @@ pub mod imp {
             // icon (in either direction) fades instead.
             let use_flip = is_art && prev_is_art && have_prev && content.is_some();
             let animate  = have_prev && content.is_some()
+                && crate::config::with(|cfg| cfg.animations)
                 && gtk::Settings::default().is_some_and(|s| s.is_gtk_enable_animations());
 
             // A transition already running (rapid changes): finish it

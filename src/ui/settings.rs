@@ -184,10 +184,21 @@ fn build_appearance_page() -> adw::PreferencesPage {
         config::update(|cfg| cfg.theme = theme);
     });
 
+    let animations = config::with(|cfg| cfg.animations);
+    let animations_row = adw::SwitchRow::builder()
+        .title("Animations")
+        .subtitle("Title/artist/album slide and artwork flip transitions")
+        .active(animations)
+        .build();
+    animations_row.connect_active_notify(move |row| {
+        config::update(|cfg| cfg.animations = row.is_active());
+    });
+
     let group = adw::PreferencesGroup::builder()
         .title("Appearance")
         .build();
     group.add(&theme_row);
+    group.add(&animations_row);
 
     let page = adw::PreferencesPage::new();
     page.add(&group);

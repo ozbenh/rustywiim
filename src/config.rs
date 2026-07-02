@@ -5,6 +5,7 @@ use std::fs;
 use std::path::PathBuf;
 
 fn default_panel_visible() -> bool { true }
+fn default_animations() -> bool { true }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -78,7 +79,7 @@ impl Default for DeviceConfig {
 }
 
 /// Top-level application config.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Config {
     /// IP of the last connected device.  Legacy field: read from old configs
     /// but not written back once cleared.  Per-device `DeviceConfig::last_ip`
@@ -103,6 +104,25 @@ pub struct Config {
     pub discovery_window_width: i32,
     #[serde(default)]
     pub discovery_window_height: i32,
+    /// Enable UI animations: title/artist/album slide transitions and the
+    /// artwork flip/fade. Defaults on; users can turn it off in Settings.
+    #[serde(default = "default_animations")]
+    pub animations: bool,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            last_ip: String::new(),
+            last_uuid: String::new(),
+            devices: HashMap::new(),
+            theme: ThemeMode::default(),
+            discovery_open: false,
+            discovery_window_width: 0,
+            discovery_window_height: 0,
+            animations: true,
+        }
+    }
 }
 
 /// Remove trailing commas before `}` or `]` so VS Code / hand-edited configs

@@ -60,7 +60,6 @@ impl SwipeText {
         }
         let stack = gtk::Stack::new();
         stack.set_hexpand(true);
-        stack.set_transition_type(gtk::StackTransitionType::SlideLeft);
         stack.set_transition_duration(250);
         stack.add_named(&a, Some("a"));
         stack.add_named(&b, Some("b"));
@@ -82,7 +81,12 @@ impl SwipeText {
         // track title or a transient empty-title flicker that reverts.
         if outgoing.text() == text { return; }
         incoming.set_text(text);
-        self.stack.set_visible_child_name(name);
+        let transition = if crate::config::with(|cfg| cfg.animations) {
+            gtk::StackTransitionType::SlideLeft
+        } else {
+            gtk::StackTransitionType::None
+        };
+        self.stack.set_visible_child_full(name, transition);
     }
 }
 
