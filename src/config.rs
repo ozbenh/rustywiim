@@ -6,6 +6,9 @@ use std::path::PathBuf;
 
 fn default_panel_visible() -> bool { true }
 fn default_animations() -> bool { true }
+/// Matches the accent colour hardcoded in dark.css before it became
+/// user-configurable, so existing users see no visual change by default.
+fn default_accent_color() -> String { "#4ecdc4".to_string() }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -125,6 +128,13 @@ pub struct Config {
     /// the Settings toggle is greyed out otherwise). Defaults off.
     #[serde(default)]
     pub mini_modern: bool,
+    /// Highlight/accent colour (hex, e.g. "#4ecdc4") used for song progress,
+    /// playback status, the play/pause button, and the side-panel toggle.
+    /// Only meaningful for the two RustyWiiM themes (classic and Modern);
+    /// the Settings control is greyed out for System/Light/Dark, which use
+    /// Adwaita's own accent colour instead.
+    #[serde(default = "default_accent_color")]
+    pub accent_color: String,
 }
 
 impl Default for Config {
@@ -139,6 +149,7 @@ impl Default for Config {
             discovery_window_height: 0,
             animations: true,
             mini_modern: false,
+            accent_color: default_accent_color(),
         }
     }
 }

@@ -6,7 +6,7 @@ window { background-color: #0a0a0a; }
 /* min-height reserves the line's space even when the label text is empty
    (status cleared on disconnect, quality absent for the current source), so
    the artwork above doesn't resize as these labels come and go. */
-.status-badge { font-size: 12px; font-weight: 600; color: #4ecdc4; min-height: 16px; }
+.status-badge { font-size: 12px; font-weight: 600; color: @rustywiim_accent; min-height: 16px; }
 .quality-label { font-size: 12px; color: #686868; min-height: 16px; }
 /* dim-label inherits from Adwaita opacity of 0.55, make it brighter */
 .dim-label    { font-size: 12px; color: #eeeeee; }
@@ -14,7 +14,7 @@ window { background-color: #0a0a0a; }
 .panel-dropdown { font-size: 12px; min-width: 0; }
 .device-info  { font-size: 11px; color: #686868; }
 .net-icon     { color: #686868; }
-.sidebar-toggle:checked { color: #4ecdc4; }
+.sidebar-toggle:checked { color: @rustywiim_accent; }
 .transport-btn {
     min-width: 36px; min-height: 36px;
     padding: 0; -gtk-icon-size: 16px;
@@ -25,24 +25,24 @@ window { background-color: #0a0a0a; }
 .play-btn {
     min-width: 44px; min-height: 44px;
     padding: 0; -gtk-icon-size: 20px;
-    background-color: #4ecdc4; color: #0a0a0a;
+    background-color: @rustywiim_accent; color: #0a0a0a;
     border: none; border-radius: 50%; box-shadow: none;
 }
-.play-btn:hover { background-color: #5fd9d0; }
+.play-btn:hover { background-color: lighter(@rustywiim_accent); }
 .loop-btn     { min-width: 36px; min-height: 36px; padding: 0; -gtk-icon-size: 16px; background-color: transparent; color: #909090; }
 .loop-btn:hover { background-color: #2a2a2a; color: #ffffff; }
-.loop-active  { color: #4ecdc4; }
+.loop-active  { color: @rustywiim_accent; }
 .vol-btn { background-color: transparent; color: #cccccc; border-radius: 6px; padding: 0 8px; min-width: 0; }
 .vol-btn:hover { background-color: #2a2a2a; }
 .vol-pop trough   { min-width: 3px; border-radius: 2px; background-color: #2a2a2a; }
-.vol-pop trough highlight { background-color: #4ecdc4; }
+.vol-pop trough highlight { background-color: @rustywiim_accent; }
 .vol-pop slider   { min-width: 8px; min-height: 8px; margin: -3px; background-color: #808080; border-radius: 50%; border: none; box-shadow: none; }
 .mini-vol-pop trough { min-width: 3px; border-radius: 2px; background-color: #2a2a2a; }
-.mini-vol-pop trough highlight { background-color: #4ecdc4; }
+.mini-vol-pop trough highlight { background-color: @rustywiim_accent; }
 .mini-vol-pop slider { min-width: 6px; min-height: 6px; margin: -2px; background-color: #808080; border-radius: 50%; border: none; box-shadow: none; }
 .mini-vol-popover > contents { min-width: 0; padding: 0; }
 .seek-scale trough { min-height: 4px; border-radius: 2px; background-color: #2a2a2a; }
-.seek-scale trough highlight { background-color: #4ecdc4; }
+.seek-scale trough highlight { background-color: @rustywiim_accent; }
 .seek-scale slider { min-width: 0; min-height: 0; margin: 0; padding: 0; opacity: 0; }
 .preset-tile  { border-radius: 8px; background-color: #141414; padding: 4px; }
 .preset-tile:hover { background-color: #202020; }
@@ -86,10 +86,10 @@ menubutton.mini-restore-btn > button:hover { color: #ffffff; background-color: #
 .mini-play-btn {
     min-width: 26px; min-height: 26px;
     padding: 0; -gtk-icon-size: 12px;
-    background-color: #4ecdc4; color: #0a0a0a;
+    background-color: @rustywiim_accent; color: #0a0a0a;
     border: none; border-radius: 50%; box-shadow: none;
 }
-.mini-play-btn:hover { background-color: #5fd9d0; }
+.mini-play-btn:hover { background-color: lighter(@rustywiim_accent); }
 /* Use rgba(r,g,b,0) — same hue at zero opacity — instead of `transparent`
    (which is black at alpha=0 and creates a dark fringe in GTK's GL renderer). */
 window.player-window .marquee-fade {

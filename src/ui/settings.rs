@@ -19,6 +19,15 @@ use crate::device::state::DeviceState;
 use crate::ui::DEBUG_UI;
 use std::sync::atomic::Ordering;
 
+fn rgba_to_hex(c: &gtk::gdk::RGBA) -> String {
+    format!(
+        "#{:02x}{:02x}{:02x}",
+        (c.red()   * 255.0).round() as u8,
+        (c.green() * 255.0).round() as u8,
+        (c.blue()  * 255.0).round() as u8,
+    )
+}
+
 // ── Public handle ─────────────────────────────────────────────────────────────
 
 pub(crate) struct SettingsWindow {
@@ -215,12 +224,44 @@ fn build_appearance_page() -> adw::PreferencesPage {
         config::update(|cfg| cfg.animations = row.is_active());
     });
 
+    let accent_hex = config::with(|cfg| cfg.accent_color.clone());
+    let accent_dialog = gtk::ColorDialog::new();
+    let accent_button = gtk::ColorDialogButton::new(Some(accent_dialog));
+    if let Ok(rgba) = gtk::gdk::RGBA::parse(&accent_hex) {
+        accent_button.set_rgba(&rgba);
+    }
+    accent_button.set_valign(gtk::Align::Center);
+    let accent_row = adw::ActionRow::builder()
+        .title("Highlight Color")
+        .subtitle("Song progress, playback status, play/pause and panel toggle")
+        .sensitive(theme == ThemeMode::RustyWiiM || theme == ThemeMode::RustyWiiMModern)
+        .build();
+    accent_row.add_suffix(&accent_button);
+    accent_button.connect_rgba_notify(move |btn| {
+        let hex = rgba_to_hex(&btn.rgba());
+        config::update(|cfg| cfg.accent_color = hex);
+        crate::ui::apply_accent_color();
+    });
+
+    theme_row.connect_selected_notify(glib::clone!(@weak accent_row => move |row| {
+            let theme = match row.selected() {
+                0 => ThemeMode::System,
+                1 => ThemeMode::SystemLight,
+                2 => ThemeMode::SystemDark,
+                3 => ThemeMode::RustyWiiM,
+                _ => ThemeMode::RustyWiiMModern,
+            };
+            accent_row.set_sensitive(theme == ThemeMode::RustyWiiM || theme == ThemeMode::RustyWiiMModern);
+        }
+    ));
+
     let group = adw::PreferencesGroup::builder()
         .title("Appearance")
         .build();
     group.add(&theme_row);
     group.add(&mini_modern_row);
     group.add(&animations_row);
+    group.add(&accent_row);
 
     let page = adw::PreferencesPage::new();
     page.add(&group);

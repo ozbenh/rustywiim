@@ -115,6 +115,37 @@ fn theme_css(theme: ThemeMode) -> &'static str {
     }
 }
 
+/// Build the full stylesheet for `theme`: a `@define-color` for the
+/// user-configurable accent (named `rustywiim_accent`, not `accent_color` —
+/// that name is libadwaita's own accent variable, which system.css deliberately
+/// uses as-is to follow the OS accent for the System themes) followed by the
+/// theme's own CSS. Defining it unconditionally is harmless for themes that
+/// don't reference it (system.css doesn't).
+fn build_css(theme: ThemeMode, accent: &str) -> String {
+    format!("@define-color rustywiim_accent {accent};\n{}", theme_css(theme))
+}
+
+/// Swap the live CSS provider for one loaded from `css`. Replaces the
+/// provider object rather than mutating it with `load_from_string` — GTK can
+/// miss detecting a rule *removal* from the same provider object (e.g.
+/// `window { background-color }` present in dark.css but absent in
+/// system.css), leaving computed style caches stale.
+fn reload_css_provider(css: &str) {
+    let display = gtk::gdk::Display::default().unwrap();
+    THEME_PROVIDER.with(|p| {
+        let mut borrow = p.borrow_mut();
+        if let Some(old) = borrow.take() {
+            gtk::style_context_remove_provider_for_display(&display, &old);
+        }
+        let provider = CssProvider::new();
+        provider.load_from_string(css);
+        gtk::style_context_add_provider_for_display(
+            &display, &provider, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+        );
+        *borrow = Some(provider);
+    });
+}
+
 fn apply_color_scheme(theme: ThemeMode) {
     let scheme = match theme {
         ThemeMode::System          => adw::ColorScheme::Default,
@@ -129,14 +160,20 @@ fn apply_color_scheme(theme: ThemeMode) {
 /// Initialise the CSS provider for the current process.  Must be called once.
 fn init_css(theme: ThemeMode) {
     apply_color_scheme(theme);
-    let provider = CssProvider::new();
-    provider.load_from_string(theme_css(theme));
-    gtk::style_context_add_provider_for_display(
-        &gtk::gdk::Display::default().unwrap(),
-        &provider,
-        gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
-    );
-    THEME_PROVIDER.with(|p| *p.borrow_mut() = Some(provider));
+    let accent = config::with(|cfg| cfg.accent_color.clone());
+    reload_css_provider(&build_css(theme, &accent));
+}
+
+/// Re-apply just the accent colour (no theme switch, no colour-scheme change,
+/// no ArtBackground visibility recompute) — for the Settings colour picker,
+/// which only ever changes `config.accent_color` while the theme stays put.
+pub(crate) fn apply_accent_color() {
+    let theme  = config::with(|cfg| cfg.theme);
+    let accent = config::with(|cfg| cfg.accent_color.clone());
+    reload_css_provider(&build_css(theme, &accent));
+    for win in gtk::Window::list_toplevels() {
+        queue_draw_recursive(&win);
+    }
 }
 
 /// Walk the widget tree rooted at `widget` and call `queue_draw()` on every
@@ -218,23 +255,8 @@ pub(crate) fn update_art_background_visibility() {
 pub(crate) fn apply_theme(theme: ThemeMode) {
     apply_color_scheme(theme);
 
-    // Replace the provider object rather than mutating it with load_from_string.
-    // GTK can miss detecting a rule *removal* from the same provider object
-    // (e.g. `window { background-color }` present in dark.css but absent in
-    // system.css), leaving computed style caches stale.
-    let display = gtk::gdk::Display::default().unwrap();
-    THEME_PROVIDER.with(|p| {
-        let mut borrow = p.borrow_mut();
-        if let Some(old) = borrow.take() {
-            gtk::style_context_remove_provider_for_display(&display, &old);
-        }
-        let provider = CssProvider::new();
-        provider.load_from_string(theme_css(theme));
-        gtk::style_context_add_provider_for_display(
-            &display, &provider, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
-        );
-        *borrow = Some(provider);
-    });
+    let accent = config::with(|cfg| cfg.accent_color.clone());
+    reload_css_provider(&build_css(theme, &accent));
 
     update_art_background_visibility();
 
