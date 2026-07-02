@@ -705,8 +705,9 @@ impl DeviceState {
         let mut playback_mask: u32 = 0;
 
         if let Some(st) = status {
-            // Diff against previous status before overwriting.
-            {
+            // 1. Borrow: diff against previous status, compute everything we
+            //    need from `inner` before it's dropped.
+            let (mode_changed, prev_mode) = {
                 let inner = self.imp().inner.borrow();
                 let prev = inner.player_status.as_ref();
                 if prev.map_or(true, |p| p.vol != st.vol || p.mute != st.mute) {
@@ -720,20 +721,29 @@ impl DeviceState {
                 }) {
                     playback_mask |= playback_changed::OTHER;
                 }
-            }
-            let prev_mode = self.imp().inner.borrow().current_mode.clone();
-            let mode_changed = st.mode != prev_mode;
+                let prev_mode = inner.current_mode.clone();
+                (st.mode != prev_mode, prev_mode)
+            };
+
             if mode_changed {
                 dbg(&format!(
                     "input changed: mode {} → {} (status={})",
                     prev_mode, st.mode, st.status,
                 ));
-                let mut inner = self.imp().inner.borrow_mut();
-                inner.current_mode    = st.mode.clone();
-                inner.current_art_url.clear();
-                inner.art_bytes       = None;
             }
-            self.imp().inner.borrow_mut().player_status = Some(st);
+
+            // 2. Borrow_mut: apply all mutations in one pass.
+            {
+                let mut inner = self.imp().inner.borrow_mut();
+                if mode_changed {
+                    inner.current_mode    = st.mode.clone();
+                    inner.current_art_url.clear();
+                    inner.art_bytes       = None;
+                }
+                inner.player_status = Some(st);
+            }
+
+            // 3. Side effects, after the borrow is dropped.
             if mode_changed {
                 dbg("signal: input-changed");
                 self.emit_by_name::<()>("input-changed", &[]);
@@ -759,8 +769,11 @@ impl DeviceState {
         }
 
         if let Some(m) = meta {
-            // Diff against previous metadata before overwriting.
-            {
+            let art_url = m.art_uri().to_string();
+
+            // 1. Borrow: diff against previous metadata, compute everything we
+            //    need from `inner` before it's dropped.
+            let url_changed = {
                 let inner = self.imp().inner.borrow();
                 let prev = inner.metadata.as_ref();
                 if prev.map_or(true, |p| p.title != m.title) {
@@ -777,13 +790,21 @@ impl DeviceState {
                 }) {
                     playback_mask |= playback_changed::OTHER;
                 }
+                art_url != inner.current_art_url
+            };
+
+            // 2. Borrow_mut: apply all mutations in one pass.
+            {
+                let mut inner = self.imp().inner.borrow_mut();
+                inner.metadata = Some(m);
+                if url_changed {
+                    inner.current_art_url = art_url.clone();
+                    inner.art_bytes = None;
+                }
             }
-            let art_url = m.art_uri().to_string();
-            let url_changed = art_url != self.imp().inner.borrow().current_art_url;
-            self.imp().inner.borrow_mut().metadata = Some(m);
+
+            // 3. Side effects, after the borrow is dropped.
             if url_changed {
-                self.imp().inner.borrow_mut().current_art_url = art_url.clone();
-                self.imp().inner.borrow_mut().art_bytes = None;
                 if art_url.is_empty() {
                     // Current track has no artwork at all (was non-empty before,
                     // or this is the first metadata) — clear immediately rather
