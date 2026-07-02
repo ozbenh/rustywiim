@@ -88,6 +88,12 @@ For now just this one:
   * 0.4.3 - 2026-06-30
     * Fix name/model display in device list for non pinned devices
 
+  * 0.5.0 - 2026-07-02
+    * Small cosmetic improvements (volume button, rendering glitches, slightly
+	  bigger fonts and less dim text).
+    * Should properly fix stale artwork when switching to a song with no artwork
+	* A whole lot of internal implementation cleanups, optimisations and fixes.
+
 ## Screenshots ##
 
 ![Screenshot](screenshot1.png)
