@@ -1,9 +1,12 @@
 
-.track-title  { font-size: 20px; font-weight: 800; }
-.track-artist { font-size: 14px; font-weight: 600; opacity: 0.75; }
-.track-album  { font-size: 13px; opacity: 0.55; }
-.status-badge { font-size: 12px; font-weight: 600; opacity: 0.6; }
-.quality-label { font-size: 12px; opacity: 0.55; }
+.track-title  { font-size: 20px; font-weight: 800; min-height: 26px; }
+.track-artist { font-size: 14px; font-weight: 600; opacity: 0.75; min-height: 18px; }
+.track-album  { font-size: 13px; opacity: 0.55; min-height: 17px; }
+/* min-height reserves the line's space even when the label text is empty
+   (status cleared on disconnect, quality absent for the current source), so
+   the artwork above doesn't resize as these labels come and go. */
+.status-badge { font-size: 12px; font-weight: 600; opacity: 0.6; min-height: 16px; }
+.quality-label { font-size: 12px; opacity: 0.55; min-height: 16px; }
 .dim-label    { font-size: 12px; }
 .section-label { font-size: 12px; font-weight: 700; letter-spacing: 1px; }
 .panel-dropdown { font-size: 12px; min-width: 0; }

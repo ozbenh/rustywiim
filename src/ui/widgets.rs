@@ -385,8 +385,12 @@ pub(super) fn build_playback_widgets() -> (PlaybackWidgets, Scale) {
         album:  { let l = ScrollFadeLabel::new("");
                    l.add_label_css_class("track-album");  l.set_hexpand(true); l },
         status:   Label::builder().css_classes(["status-badge"]).halign(Align::Center).build(),
-        quality:  Label::builder().css_classes(["quality-label"]).halign(Align::Center)
-            .visible(false).build(),
+        // Always visible (never `.set_visible(false)`) so its line-height is
+        // permanently reserved in the layout — otherwise the artwork above it
+        // resizes whenever quality info appears/disappears (e.g. no bitrate
+        // data for the current source). Empty text still keeps its line
+        // height in Pango's logical extents, same as the other labels here.
+        quality:  Label::builder().css_classes(["quality-label"]).halign(Align::Center).build(),
         pos:      Label::builder().label("0:00").css_classes(["dim-label"]).build(),
         dur:      Label::builder().label("0:00").css_classes(["dim-label"]).build(),
         seek:     Scale::with_range(Orientation::Horizontal, 0.0, 100.0, 1.0),

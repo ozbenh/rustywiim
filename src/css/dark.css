@@ -1,10 +1,13 @@
 
 window { background-color: #0a0a0a; }
-.track-title  { font-size: 20px; font-weight: 800; color: #ffffff; }
-.track-artist { font-size: 14px; font-weight: 600; color: #b0b0b0; }
-.track-album  { font-size: 13px; color: #707070; }
-.status-badge { font-size: 12px; font-weight: 600; color: #4ecdc4; }
-.quality-label { font-size: 12px; color: #686868; }
+.track-title  { font-size: 20px; font-weight: 800; color: #ffffff; min-height: 26px; }
+.track-artist { font-size: 14px; font-weight: 600; color: #b0b0b0; min-height: 18px; }
+.track-album  { font-size: 13px; color: #707070; min-height: 17px; }
+/* min-height reserves the line's space even when the label text is empty
+   (status cleared on disconnect, quality absent for the current source), so
+   the artwork above doesn't resize as these labels come and go. */
+.status-badge { font-size: 12px; font-weight: 600; color: #4ecdc4; min-height: 16px; }
+.quality-label { font-size: 12px; color: #686868; min-height: 16px; }
 /* dim-label inherits from Adwaita opacity of 0.55, make it brighter */
 .dim-label    { font-size: 12px; color: #eeeeee; }
 .section-label { font-size: 12px; font-weight: 700; color: #505050; letter-spacing: 1px; }

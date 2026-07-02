@@ -152,7 +152,7 @@ impl DeviceWindowInner {
         self.pw.artist.set_text("");
         self.pw.album.set_text("");
         self.pw.status.set_label("");
-        self.pw.quality.set_visible(false);
+        self.pw.quality.set_label("");
         self.pw.artwork.set_paintable(None::<&gtk::gdk::Paintable>);
         self.pw.art_stack.set_visible_child_name("artwork");
         self.dev_info_label.set_label("");
@@ -429,10 +429,10 @@ impl DeviceWindowInner {
                     self.pw.album.set_text(if is_unknown(&m.album) { "" } else { &m.album });
                 }
                 if mask & PC::OTHER != 0 {
-                    match format_quality(&m.bit_rate, &m.sample_rate, &m.bit_depth) {
-                        Some(q) => { self.pw.quality.set_label(&q); self.pw.quality.set_visible(true); }
-                        None    => self.pw.quality.set_visible(false),
-                    }
+                    // Never hidden — see the comment on PlaybackWidgets::quality's
+                    // construction. An empty label keeps the same reserved height.
+                    let q = format_quality(&m.bit_rate, &m.sample_rate, &m.bit_depth);
+                    self.pw.quality.set_label(q.as_deref().unwrap_or(""));
                 }
             }
         }
