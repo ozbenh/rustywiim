@@ -38,11 +38,58 @@ pub(crate) struct PresetWidgets {
     pub labels: Rc<Vec<Label>>,
 }
 
+/// Two `ScrollFadeLabel`s in a `gtk::Stack`, slid between on text change
+/// instead of a hard swap (ANIMATIONS.md Tier 1). `set_text()` matches
+/// `ScrollFadeLabel`'s own signature, so call sites don't change.
+#[derive(Clone)]
+pub(crate) struct SwipeText {
+    pub stack: gtk::Stack,
+    a: ScrollFadeLabel,
+    b: ScrollFadeLabel,
+}
+
+impl SwipeText {
+    fn new(initial: &str, css_class: &str, center_when_fits: bool) -> Self {
+        let a = ScrollFadeLabel::new(initial);
+        let b = ScrollFadeLabel::new("");
+        for l in [&a, &b] {
+            l.add_label_css_class(css_class);
+            l.set_hexpand(true);
+            l.set_center_when_fits(center_when_fits);
+        }
+        let stack = gtk::Stack::new();
+        stack.set_hexpand(true);
+        stack.set_transition_type(gtk::StackTransitionType::SlideLeft);
+        stack.set_transition_duration(250);
+        stack.add_named(&a, Some("a"));
+        stack.add_named(&b, Some("b"));
+        stack.set_visible_child_name("a");
+        Self { stack, a, b }
+    }
+
+    /// Swap to `text`, sliding the new label in over the old one.
+    /// No-op if `text` already matches what's currently shown.
+    pub fn set_text(&self, text: &str) {
+        let showing_a = self.stack.visible_child_name().as_deref() == Some("a");
+        let (outgoing, incoming, name) =
+            if showing_a { (&self.a, &self.b, "b") } else { (&self.b, &self.a, "a") };
+        // Compare against what's actually on screen (outgoing), not the
+        // hidden face — the hidden face still holds leftover text from
+        // *two* changes ago, so comparing against it wrongly no-ops (and
+        // leaves the stale visible label on screen) whenever a new title
+        // happens to coincide with that stale leftover, e.g. a repeated
+        // track title or a transient empty-title flicker that reverts.
+        if outgoing.text() == text { return; }
+        incoming.set_text(text);
+        self.stack.set_visible_child_name(name);
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct PlaybackWidgets {
-    pub title:      ScrollFadeLabel,
-    pub artist:     ScrollFadeLabel,
-    pub album:      ScrollFadeLabel,
+    pub title:      SwipeText,
+    pub artist:     SwipeText,
+    pub album:      SwipeText,
     pub status:     Label,
     pub quality:    Label,
     pub pos:        Label,
@@ -83,8 +130,8 @@ pub(crate) struct MiniWidgets {
     pub menu_btn:      gtk::MenuButton,
     pub restore_btn:   Button,
     pub close_btn:     Button,
-    pub title_label:   ScrollFadeLabel,
-    pub artist_label:  ScrollFadeLabel,
+    pub title_label:   SwipeText,
+    pub artist_label:  SwipeText,
     pub status_label:  Label,
     pub btn_prev:      Button,
     pub btn_play:      Button,
@@ -378,12 +425,9 @@ pub(super) fn build_playback_widgets() -> (PlaybackWidgets, Scale) {
             s.set_transition_duration(200);
             s
         },
-        title:  { let l = ScrollFadeLabel::new("Not connected");
-                   l.add_label_css_class("track-title"); l.set_hexpand(true); l },
-        artist: { let l = ScrollFadeLabel::new("");
-                   l.add_label_css_class("track-artist"); l.set_hexpand(true); l },
-        album:  { let l = ScrollFadeLabel::new("");
-                   l.add_label_css_class("track-album");  l.set_hexpand(true); l },
+        title:  SwipeText::new("Not connected", "track-title",  true),
+        artist: SwipeText::new("",              "track-artist", true),
+        album:  SwipeText::new("",              "track-album",  true),
         status:   Label::builder().css_classes(["status-badge"]).halign(Align::Center).build(),
         // Always visible (never `.set_visible(false)`) so its line-height is
         // permanently reserved in the layout — otherwise the artwork above it
@@ -460,9 +504,9 @@ pub(super) fn build_right_pane(pw: &PlaybackWidgets) -> gtk::Box {
         .margin_top(8).margin_bottom(8).margin_start(12).margin_end(16)
         .build();
     right_pane.append(&art_overlay);
-    right_pane.append(&pw.title);
-    right_pane.append(&pw.artist);
-    right_pane.append(&pw.album);
+    right_pane.append(&pw.title.stack);
+    right_pane.append(&pw.artist.stack);
+    right_pane.append(&pw.album.stack);
     right_pane.append(&pw.status);
     right_pane.append(&pw.quality);
     right_pane.append(&seek_row);
@@ -620,19 +664,15 @@ pub(super) fn build_mini_window(app: &adw::Application) -> (MiniWidgets, gtk::Ap
          mini_vol_btn, mini_vol_icon_img, mini_vol_label,
          mini_vol_scale, mini_mute_btn, mini_vol_popover, mini_transport) = build_mini_transport();
 
-    let mini_title_label = { let l = ScrollFadeLabel::new("—");
-                              l.add_label_css_class("mini-title"); l.set_hexpand(true);
-                              l.set_center_when_fits(false); l };
-    let mini_artist_label = { let l = ScrollFadeLabel::new("");
-                               l.add_label_css_class("mini-artist"); l.set_hexpand(true);
-                               l.set_center_when_fits(false); l };
+    let mini_title_label  = SwipeText::new("—", "mini-title",  false);
+    let mini_artist_label = SwipeText::new("",  "mini-artist", false);
 
     let mini_info_box = GtkBox::builder()
         .orientation(Orientation::Vertical).spacing(4)
         .valign(Align::Center).hexpand(true)
         .build();
-    mini_info_box.append(&mini_title_label);
-    mini_info_box.append(&mini_artist_label);
+    mini_info_box.append(&mini_title_label.stack);
+    mini_info_box.append(&mini_artist_label.stack);
     mini_info_box.append(&mini_transport);
 
     let mini_main_row = GtkBox::builder()
