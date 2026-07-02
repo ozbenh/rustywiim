@@ -574,6 +574,13 @@ impl DeviceWindowInner {
                 dev.panel_visible    = self.sidebar_btn.is_active();
                 dev.paned_position   = *self.saved_panel_width.borrow();
                 dev.mini_mode        = *self.mini_mode.borrow();
+                // Only overwrite if the mini window has actually been shown
+                // this session (width() reports 0 for a never-realized
+                // window) — otherwise this would clobber a previously saved
+                // good value with 0 every time a session never happens to
+                // enter mini mode.
+                let mw = self.mini_win.width();
+                if mw > 0 { dev.mini_window_width = mw; }
             });
         }
 
@@ -606,6 +613,10 @@ impl DeviceWindowInner {
             }
             self.window.unmaximize();
         }
+
+        if dev_cfg.mini_window_width > 0 {
+            self.mini_win.set_default_width(dev_cfg.mini_window_width);
+        }
     }
 
     /// Immediately persist the current device's window/panel state.
@@ -634,6 +645,10 @@ impl DeviceWindowInner {
             dev.panel_visible    = self.sidebar_btn.is_active();
             dev.paned_position   = *self.saved_panel_width.borrow();
             dev.mini_mode        = *self.mini_mode.borrow();
+            // See the matching guard in apply_device_window_state(): only
+            // overwrite once the mini window has actually been realized.
+            let mw = self.mini_win.width();
+            if mw > 0 { dev.mini_window_width = mw; }
         });
     }
 

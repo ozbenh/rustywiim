@@ -40,6 +40,12 @@ pub struct DeviceConfig {
     pub panel_visible: bool,
     #[serde(default)]
     pub mini_mode: bool,
+    /// Width of the mini player window, in pixels. 0 means "not saved yet,
+    /// use the built-in default" — the mini window has no maximized state
+    /// and its height is content-driven (no equivalent field needed), only
+    /// its width is user-resizable.
+    #[serde(default)]
+    pub mini_window_width: i32,
     /// Keep in the device list even when not seen on the network.
     /// `None` means the device predates the pinning feature (legacy entry);
     /// it is treated as a ghost candidate until the user explicitly pins or
@@ -69,6 +75,7 @@ impl Default for DeviceConfig {
             paned_position:  0,
             panel_visible:   true,
             mini_mode:       false,
+            mini_window_width: 0,
             pinned:          None,
             window_open:     false,
             last_ip:         None,

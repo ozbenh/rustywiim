@@ -642,6 +642,33 @@ fn build_mini_transport() -> (Label, Button, Button, Button, Button, gtk::Image,
      mini_vol_scale, mini_mute_btn, mini_vol_popover, mini_transport)
 }
 
+/// A thin, invisible, full-height strip along `edge` that starts an
+/// interactive horizontal resize when pressed — see the comment at its call
+/// site in `build_mini_window()` for why an undecorated window needs this at
+/// all. `align` is the strip's own edge (Start for West, End for East).
+fn build_mini_resize_edge(edge: gtk::gdk::SurfaceEdge, align: Align) -> GtkBox {
+    let handle = GtkBox::builder()
+        .width_request(6)
+        .hexpand(false).vexpand(true)
+        .halign(align)
+        .build();
+    handle.set_cursor_from_name(Some("ew-resize"));
+
+    let gesture = gtk::GestureClick::new();
+    gesture.set_button(1); // primary button only
+    gesture.connect_pressed(glib::clone!(@weak handle => move |gesture, _n_press, x, y| {
+        let Some(surface) = handle.native().and_then(|n| n.surface()) else { return };
+        let Some(toplevel) = surface.downcast::<gtk::gdk::Toplevel>().ok() else { return };
+        let device = gesture.current_event_device();
+        let button = gesture.current_button() as i32;
+        let time   = gesture.current_event_time();
+        toplevel.begin_resize(edge, device.as_ref(), button, x, y, time);
+    }));
+    handle.add_controller(gesture);
+
+    handle
+}
+
 pub(super) fn build_mini_window(app: &adw::Application) -> (MiniWidgets, gtk::ApplicationWindow) {
     let mini_artwork = build_mini_flip_cover();
     let (mini_device_label, mini_menu_btn, mini_restore_btn, mini_close_btn, mini_top_bar) = build_mini_top_bar();
@@ -679,13 +706,25 @@ pub(super) fn build_mini_window(app: &adw::Application) -> (MiniWidgets, gtk::Ap
     mini_outer.append(&mini_top_bar);
     mini_outer.append(&mini_main_row);
 
+    // Resizable(true) alone (below) only permits the window manager/
+    // compositor to resize the surface — it doesn't give an undecorated
+    // window any UI to *trigger* that, since decorated(false) means there's
+    // no server-side titlebar/border providing the usual edge hit-testing.
+    // These are thin invisible strips along the left/right edges, added as
+    // the topmost overlay children so they receive the press before
+    // mini_content underneath, that manually kick off an interactive resize
+    // via the surface's own begin_resize() — the same mechanism GTK's own
+    // CSD border-drag logic uses internally.
+    mini_outer.add_overlay(&build_mini_resize_edge(gtk::gdk::SurfaceEdge::West, Align::Start));
+    mini_outer.add_overlay(&build_mini_resize_edge(gtk::gdk::SurfaceEdge::East, Align::End));
+
     let mini_root = gtk::WindowHandle::new();
     mini_root.set_child(Some(&mini_outer));
 
     let mini_win = gtk::ApplicationWindow::builder()
         .application(app)
         .decorated(false)
-        .resizable(false)
+        .resizable(true)
         .default_width(380)
         .title("RustyWiiM")
         .child(&mini_root)
