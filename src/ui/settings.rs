@@ -81,7 +81,7 @@ impl SettingsWindow {
             .hexpand(true)
             .build();
 
-        let appearance_page = build_appearance_page();
+        let (appearance_page, reset_btn) = build_appearance_page();
         content_stack.add_named(&appearance_page, Some("appearance"));
 
         // Select "Appearance" by default
@@ -114,6 +114,19 @@ impl SettingsWindow {
         let toolbar_view = adw::ToolbarView::new();
         toolbar_view.add_top_bar(&header);
         toolbar_view.set_content(Some(&paned));
+
+        // Reset lives in the window's own bottom bar, outside the Appearance
+        // page's scrollable PreferencesGroup card — a "reset everything"
+        // action doesn't belong visually grouped with the individual rows
+        // it resets, and a bottom bar is also where it'll stay findable if
+        // more (non-Appearance) settings pages get added later.
+        let bottom_bar = gtk::Box::builder()
+            .orientation(Orientation::Horizontal)
+            .halign(gtk::Align::End)
+            .margin_top(6).margin_bottom(6).margin_end(12)
+            .build();
+        bottom_bar.append(&reset_btn);
+        toolbar_view.add_bottom_bar(&bottom_bar);
 
         let initial_title = match ds.as_ref().and_then(|d| d.device_info()) {
             Some(i) => format!("Settings ({})", i.device_name),
@@ -167,7 +180,7 @@ impl SettingsWindow {
 
 // ── Per-page builders ─────────────────────────────────────────────────────────
 
-fn build_appearance_page() -> adw::PreferencesPage {
+fn build_appearance_page() -> (adw::PreferencesPage, gtk::Button) {
     let theme = config::with(|cfg| cfg.theme);
 
     let theme_list = gtk::StringList::new(
@@ -255,6 +268,29 @@ fn build_appearance_page() -> adw::PreferencesPage {
         }
     ));
 
+    // Reset button drives every control through its own connect_*_notify
+    // handler (set_selected/set_active/set_rgba below), rather than writing
+    // to config directly — so it can't drift out of sync with what each
+    // control's own handler does when changed by hand. Placed in the
+    // window's bottom bar (see SettingsWindow::new), not in this page's
+    // PreferencesGroup card, so it reads as a window-level action rather
+    // than one more settings row.
+    let reset_btn = gtk::Button::builder()
+        .label("Reset to Defaults")
+        .css_classes(["flat"])
+        .build();
+    reset_btn.connect_clicked(glib::clone!(
+        @weak theme_row, @weak mini_modern_row, @weak animations_row, @weak accent_button
+        => move |_| {
+            theme_row.set_selected(3); // RustyWiiM
+            mini_modern_row.set_active(false);
+            animations_row.set_active(true);
+            if let Ok(rgba) = gtk::gdk::RGBA::parse(&config::default_accent_color()) {
+                accent_button.set_rgba(&rgba);
+            }
+        }
+    ));
+
     let group = adw::PreferencesGroup::builder()
         .title("Appearance")
         .build();
@@ -265,5 +301,5 @@ fn build_appearance_page() -> adw::PreferencesPage {
 
     let page = adw::PreferencesPage::new();
     page.add(&group);
-    page
+    (page, reset_btn)
 }

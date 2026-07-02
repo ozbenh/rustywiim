@@ -8,7 +8,8 @@ fn default_panel_visible() -> bool { true }
 fn default_animations() -> bool { true }
 /// Matches the accent colour hardcoded in dark.css before it became
 /// user-configurable, so existing users see no visual change by default.
-fn default_accent_color() -> String { "#4ecdc4".to_string() }
+/// Public: also used by the Settings "Reset to Defaults" button.
+pub fn default_accent_color() -> String { "#4ecdc4".to_string() }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
