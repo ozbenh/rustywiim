@@ -74,6 +74,8 @@ pub mod imp {
         pub is_scrolling:     Cell<bool>,
         pub text:             RefCell<String>,
         pub center_when_fits: Cell<bool>,
+        // Optional drop shadow behind the text — off by default
+        pub drop_shadow:      Cell<bool>,
         // Set in size_allocate: width of one text copy + GAP gap.
         pub loop_width:       Cell<f32>,
         // Current horizontal scroll position in pixels.
@@ -93,6 +95,7 @@ pub mod imp {
                 is_scrolling:     Cell::new(false),
                 text:             RefCell::new(String::new()),
                 center_when_fits: Cell::new(CENTER_WHEN_FITS_DEFAULT),
+                drop_shadow:      Cell::new(false),
                 loop_width:       Cell::new(0.0),
                 scroll_offset:    Cell::new(0.0),
                 layout_cache:     RefCell::new(None),
@@ -132,6 +135,10 @@ pub mod imp {
                         .nick("Center When Fits")
                         .default_value(CENTER_WHEN_FITS_DEFAULT)
                         .build(),
+                    glib::ParamSpecBoolean::builder("drop-shadow")
+                        .nick("Drop Shadow")
+                        .default_value(false)
+                        .build(),
                 ]
             })
         }
@@ -151,6 +158,10 @@ pub mod imp {
                     self.center_when_fits.set(value.get::<bool>().unwrap_or(CENTER_WHEN_FITS_DEFAULT));
                     self.obj().queue_draw();
                 }
+                "drop-shadow" => {
+                    self.drop_shadow.set(value.get::<bool>().unwrap_or(false));
+                    self.obj().queue_draw();
+                }
                 _ => unimplemented!(),
             }
         }
@@ -161,6 +172,7 @@ pub mod imp {
                 "speed"            => self.speed.get().to_value(),
                 "fade-width"       => self.fade_pct.get().to_value(),
                 "center-when-fits" => self.center_when_fits.get().to_value(),
+                "drop-shadow"      => self.drop_shadow.get().to_value(),
                 _ => unimplemented!(),
             }
         }
@@ -274,12 +286,12 @@ pub mod imp {
 
                 snapshot.save();
                 snapshot.translate(&gtk::graphene::Point::new(-offset, y));
-                snapshot.append_layout(&layout, &color);
+                self.append_layout_shadowed(snapshot, &layout, &color);
                 snapshot.restore();
 
                 snapshot.save();
                 snapshot.translate(&gtk::graphene::Point::new(loop_w - offset, y));
-                snapshot.append_layout(&layout, &color);
+                self.append_layout_shadowed(snapshot, &layout, &color);
                 snapshot.restore();
 
                 snapshot.pop(); // apply mask to content
@@ -291,7 +303,7 @@ pub mod imp {
                 };
                 snapshot.save();
                 snapshot.translate(&gtk::graphene::Point::new(x, y));
-                snapshot.append_layout(&layout, &color);
+                self.append_layout_shadowed(snapshot, &layout, &color);
                 snapshot.restore();
             }
 
@@ -300,6 +312,29 @@ pub mod imp {
     }
 
     impl ScrollFadeLabel {
+        /// Draw `layout` at the snapshot's current (already-translated)
+        /// origin, with an optional soft drop shadow behind it when
+        /// `drop_shadow` is set. A plain gtk::Label gets CSS text-shadow for
+        /// free; this custom-rendered widget doesn't, so the shadow is drawn
+        /// manually as a blurred, offset dark copy underneath the real text.
+        fn append_layout_shadowed(
+            &self,
+            snapshot: &gtk::Snapshot,
+            layout: &gtk::pango::Layout,
+            color: &gtk::gdk::RGBA,
+        ) {
+            if self.drop_shadow.get() {
+                let shadow = gtk::gdk::RGBA::new(0.0, 0.0, 0.0, 0.75);
+                snapshot.push_blur(2.0);
+                snapshot.save();
+                snapshot.translate(&gtk::graphene::Point::new(0.0, 1.0));
+                snapshot.append_layout(layout, &shadow);
+                snapshot.restore();
+                snapshot.pop();
+            }
+            snapshot.append_layout(layout, color);
+        }
+
         fn create_layout(&self) -> gtk::pango::Layout {
             let mut cache = self.layout_cache.borrow_mut();
             if let Some(ref layout) = *cache {
@@ -380,6 +415,14 @@ impl ScrollFadeLabel {
     pub fn set_center_when_fits(&self, center: bool) {
         let imp = self.imp();
         imp.center_when_fits.set(center);
+        self.queue_draw();
+    }
+
+    /// Toggle the manual drop shadow — off by default. Experimental knob for
+    /// legibility on busy/blurred backgrounds; flip freely to compare.
+    pub fn set_drop_shadow(&self, enabled: bool) {
+        let imp = self.imp();
+        imp.drop_shadow.set(enabled);
         self.queue_draw();
     }
 }
