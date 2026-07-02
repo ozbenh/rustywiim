@@ -1,5 +1,6 @@
 #![allow(deprecated)] // glib clone! old-style @strong syntax
 
+mod art_background;
 pub mod devlist;
 mod flip_cover;
 mod icons;
@@ -95,6 +96,12 @@ pub struct DeviceSpec {
 
 const SYSTEM_CSS: &str = include_str!("../css/system.css");
 const DARK_CSS: &str   = include_str!("../css/dark.css");
+// RustyWiiM Modern layers its own overrides (card panels, divider styling,
+// etc.) on top of the classic dark palette rather than duplicating it.
+const MODERN_CSS: &str = concat!(
+    include_str!("../css/dark.css"),
+    include_str!("../css/modern.css"),
+);
 
 thread_local! {
     static THEME_PROVIDER: RefCell<Option<CssProvider>> = const { RefCell::new(None) };
@@ -102,17 +109,19 @@ thread_local! {
 
 fn theme_css(theme: ThemeMode) -> &'static str {
     match theme {
-        ThemeMode::RustyWiiM => DARK_CSS,
-        _                    => SYSTEM_CSS,
+        ThemeMode::RustyWiiM       => DARK_CSS,
+        ThemeMode::RustyWiiMModern => MODERN_CSS,
+        _                          => SYSTEM_CSS,
     }
 }
 
 fn apply_color_scheme(theme: ThemeMode) {
     let scheme = match theme {
-        ThemeMode::System      => adw::ColorScheme::Default,
-        ThemeMode::SystemLight => adw::ColorScheme::ForceLight,
-        ThemeMode::SystemDark  => adw::ColorScheme::ForceDark,
-        ThemeMode::RustyWiiM  => adw::ColorScheme::ForceDark,
+        ThemeMode::System          => adw::ColorScheme::Default,
+        ThemeMode::SystemLight     => adw::ColorScheme::ForceLight,
+        ThemeMode::SystemDark      => adw::ColorScheme::ForceDark,
+        ThemeMode::RustyWiiM       => adw::ColorScheme::ForceDark,
+        ThemeMode::RustyWiiMModern => adw::ColorScheme::ForceDark,
     };
     adw::StyleManager::default().set_color_scheme(scheme);
 }
@@ -143,6 +152,68 @@ fn queue_draw_recursive(widget: &gtk::Widget) {
     }
 }
 
+/// Find every `ArtBackground` in `widget`'s subtree and set its visibility.
+/// An invisible widget is skipped entirely by GTK's measure/snapshot passes
+/// — not just covered by opaque foreground content — so this is what
+/// actually stops the blur rendering from running under any theme but
+/// RustyWiiM Modern, rather than merely hiding its (still computed) output.
+fn set_art_background_visible(widget: &gtk::Widget, visible: bool) {
+    if let Some(bg) = widget.downcast_ref::<art_background::ArtBackground>() {
+        bg.set_visible(visible);
+    }
+    let mut child = widget.first_child();
+    while let Some(c) = child {
+        set_art_background_visible(&c, visible);
+        child = c.next_sibling();
+    }
+}
+
+/// Find every `ScrollFadeLabel` in `widget`'s subtree and set its drop-shadow
+/// flag (see `update_art_background_visibility()`, which calls this once per
+/// window with a window-appropriate `enabled` value).
+fn set_scroll_fade_drop_shadow(widget: &gtk::Widget, enabled: bool) {
+    if let Some(label) = widget.downcast_ref::<scroll_fade_label::ScrollFadeLabel>() {
+        label.set_drop_shadow(enabled);
+    }
+    let mut child = widget.first_child();
+    while let Some(c) = child {
+        set_scroll_fade_drop_shadow(&c, enabled);
+        child = c.next_sibling();
+    }
+}
+
+/// Sync every open window's `ArtBackground` visibility (and, for the mini
+/// window, a CSS marker class + text drop-shadow) to the current theme +
+/// mini_modern setting. Called on theme switch and whenever mini_modern is
+/// toggled on its own — the latter doesn't need a full CSS provider reload,
+/// so it's split out from `apply_theme()` rather than folded into it.
+pub(crate) fn update_art_background_visibility() {
+    let theme       = config::with(|cfg| cfg.theme);
+    let mini_modern = config::with(|cfg| cfg.mini_modern);
+    let modern = theme == ThemeMode::RustyWiiMModern;
+
+    for win in gtk::Window::list_toplevels() {
+        let is_mini = win.has_css_class("mini-window");
+        let apply = modern && (!is_mini || mini_modern);
+        set_art_background_visible(&win, apply);
+        if is_mini {
+            // modern.css keys mini-window-specific styling (frosted
+            // mini-outer, etc.) off this — plain window.mini-window alone
+            // can't tell "Modern is active" from "Modern + mini_modern".
+            if apply { win.add_css_class("mini-window-modern"); }
+            else     { win.remove_css_class("mini-window-modern"); }
+        }
+        // ScrollFadeLabel (title/artist/album on the main window, title/
+        // artist on the mini window) renders manually via GSK and doesn't
+        // pick up CSS text-shadow for free, so it needs this instead — only
+        // wanted for Modern's blurred background, which is exactly what
+        // `apply` already means for a non-mini window (`modern && !is_mini`
+        // reduces to `modern`) as well as for the mini window's own
+        // Modern-gated case.
+        set_scroll_fade_drop_shadow(&win, apply);
+    }
+}
+
 /// Switch the active CSS theme at runtime.
 pub(crate) fn apply_theme(theme: ThemeMode) {
     apply_color_scheme(theme);
@@ -164,6 +235,8 @@ pub(crate) fn apply_theme(theme: ThemeMode) {
         );
         *borrow = Some(provider);
     });
+
+    update_art_background_visibility();
 
     // Mark every widget in every window dirty so the next frame re-snapshot's
     // everything from the updated CSS.  Two passes: immediate + LOW-priority
@@ -200,6 +273,11 @@ struct DeviceWindowInner {
     // Window / panel state — kept here so device-change and close handlers
     // only need one Rc<Inner> capture.
     window:              adw::ApplicationWindow,
+    /// Blurred-artwork background layer, behind everything else in the main
+    /// window. Only actually visible under the RustyWiiM Modern theme — for
+    /// other themes the foreground content above it is opaque, so this is
+    /// always fed the current art but effectively inert otherwise.
+    art_bg:              art_background::ArtBackground,
     paned:               gtk::Paned,
     left_pane:           gtk::Box,
     sidebar_btn:         gtk::ToggleButton,
@@ -360,8 +438,14 @@ impl DeviceWindow {
             .hexpand(true)
             .margin_top(4).margin_bottom(4).build();
 
+        // "ip-label" alongside "dim-label" gives modern.css a hook to match
+        // this label's exact size/treatment to "device-info" (which doesn't
+        // share dim-label's font-size with the pos/dur time labels that
+        // also use it) — see the comment on apply_device_info()'s
+        // ip_label.set_visible(true) call for why this one needed it and
+        // device-info didn't.
         let ip_label = Label::builder()
-            .css_classes(["dim-label"])
+            .css_classes(["dim-label", "ip-label"])
             .margin_end(6).margin_top(4).margin_bottom(4)
             .visible(false)
             .build();
@@ -390,14 +474,32 @@ impl DeviceWindow {
         full_toolbar.add_top_bar(&header);
         full_toolbar.set_content(Some(&outer));
 
+        // Blurred-artwork background layer, behind the toolbar. Always
+        // present; only visible when the active theme makes the toolbar/
+        // window backgrounds transparent (RustyWiiM Modern — see modern.css).
+        // Initial visibility (for both this and the mini window's own
+        // art_bg) is set once both windows exist, below.
+        let art_bg = art_background::ArtBackground::new();
+        art_bg.set_hexpand(true);
+        art_bg.set_vexpand(true);
+        let window_overlay = gtk::Overlay::new();
+        window_overlay.set_child(Some(&art_bg));
+        window_overlay.add_overlay(&full_toolbar);
+
         let win_w = if init_dev_cfg.window_width  > 0 { init_dev_cfg.window_width  } else { 680 };
         let win_h = if init_dev_cfg.window_height > 0 { init_dev_cfg.window_height } else { 640 };
         let window = adw::ApplicationWindow::builder()
-            .application(app).title("RustyWiiM").content(&full_toolbar)
+            .application(app).title("RustyWiiM").content(&window_overlay)
             .default_width(win_w).default_height(win_h)
             .build();
         window.add_css_class("player-window");
         if init_dev_cfg.window_maximized { window.maximize(); }
+
+        // apply_theme() only fires on explicit runtime switches, so a window
+        // (main or mini, both now built) opened after the app already
+        // started on some theme needs its initial art_bg visibility set
+        // directly from the live config.
+        update_art_background_visibility();
 
         // ── Shared UI state ───────────────────────────────────────────────────────
         let ui_state = PlaybackUiState {
@@ -419,6 +521,7 @@ impl DeviceWindow {
             vol_scale,
             ui_state,
             window: window.clone(),
+            art_bg: art_bg.clone(),
             paned:  paned.clone(),
             left_pane: left_pane.clone(),
             sidebar_btn: sidebar_btn.clone(),

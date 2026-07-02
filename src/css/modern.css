@@ -1,0 +1,228 @@
+/* RustyWiiM Modern theme overrides — layered on top of dark.css.
+   No extra CSS class needed for scoping: this file only loads at all when
+   Modern is the active theme (mod.rs's theme_css() swaps the whole
+   CssProvider per theme), so plain selectors here never leak into the
+   classic RustyWiiM theme. Targets .player-window, the class already
+   unconditionally added to the main window (see ui/mod.rs).
+
+   The mini window additionally needs the "mini-window-modern" marker class
+   (see ui/mod.rs's update_art_background_visibility()) — Modern being
+   active isn't enough on its own, since applying it to the mini window is
+   a separate, Settings-gated opt-in (config.mini_modern). */
+
+/* Transparent window so the ArtBackground layer behind the toolbar (an
+   Overlay base child) is actually visible. The header bar gets a frosted
+   strip rather than full transparency, so its icon buttons have a stable
+   backing instead of floating loose over whatever's behind them. */
+window.player-window {
+    background-color: transparent;
+}
+
+window.player-window headerbar {
+    background-color: rgba(20, 20, 20, 0.35);
+    box-shadow: none;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+/* Floating card panels — "panel-card" (presets/output side panel) and
+   "controls-card" (seek bar + transport buttons) are always structurally
+   present (see widgets.rs) but only styled here. Artwork, title/artist/
+   album, and status/quality stay uncarded, floating directly on the blur
+   (see the text-shadow rules below).
+
+   margin-bottom on panel-card matches right_pane's Rust-set
+   margin_bottom(8) (ui/widgets.rs build_right_pane) so the two cards'
+   bottom edges line up — panel-card itself has no other margin/inset
+   working against it, but right_pane's does, so without this the left
+   card sits 8px lower than the transport controls card. margin-left
+   pulls it in from the window's left edge, which it otherwise sits
+   flush against (the Paned has no start margin). */
+.panel-card, .controls-card {
+    background-color: rgba(30, 30, 30, 0.55);
+    border-radius: 12px;
+}
+.panel-card { padding: 8px; margin-bottom: 8px; margin-left: 10px; }
+.controls-card { padding: 12px; }
+
+/* Preset list entries: dark.css's #141414/#202020 are opaque near-black,
+   which reads as a solid hole against the blur rather than a translucent
+   card. Same darkness, but with alpha so the blur shows through. Negative
+   vertical margin tightens the list without touching the Rust-level
+   presets_box spacing(2) shared with the classic theme. */
+.preset-tile {
+    background-color: rgba(20, 20, 20, 0.55);
+    margin: -3px 0;
+}
+.preset-tile:hover {
+    background-color: rgba(32, 32, 32, 0.7);
+}
+/* The tile's own wrapping flat button has Adwaita's default horizontal
+   button padding (~12px a side), on top of presets_box's own
+   margin_start/end(8) (Rust, shared with the classic theme) — trim just
+   the button's contribution so the tiles aren't inset so far. */
+.preset-btn {
+    padding-left: 4px;
+    padding-right: 4px;
+}
+
+/* Text legibility for everything floating directly on the blur, instead of
+   boxing it — same "shadows, not panels" approach as the wiim-now-playing
+   reference design (FULLSCREEN.md §1.3). The 0.45-alpha darkening wash in
+   ArtBackground already helps; this is the extra insurance layer.
+
+   Blur radius is scaled down for the smaller labels — a 4px blur on an
+   11-13px font reads as smudged/blurry text rather than a crisp drop
+   shadow, since the blur spread is a large fraction of the glyph size.
+
+   The small labels use a symmetric (no y-offset) glow instead of a
+   directional drop shadow: a downward-offset shadow was clipping the
+   glyphs' own top row of pixels — GTK4 computes each label's clip region
+   from Pango's natural (shadow-unaware) metrics, and a one-sided shadow
+   pushes the effective render bounds off-centre enough to bite into the
+   text itself at these small font sizes. Symmetric blur doesn't. */
+.track-title {
+    text-shadow: 0 2px 5px rgba(0, 0, 0, 0.8);
+}
+.track-artist, .track-album {
+    text-shadow: 0 1px 3px rgba(0, 0, 0, 0.75);
+}
+.status-badge, .quality-label, .device-info, .dim-label {
+    text-shadow: 0 0 2px rgba(0, 0, 0, 0.9);
+}
+
+/* device-info's #686868 (dark.css) reads fine on the classic theme's flat
+   black background but is too dark against the blur even with the shadow
+   above — lighten it for this theme specifically. Same for track-album's
+   #707070. */
+.device-info {
+    color: #b0b0b0;
+}
+.track-album {
+    color: #a8a8a8;
+}
+/* net-icon: matching ip-label's #eeeeee exactly still reads visibly
+   brighter than the text next to it — a symbolic icon is a solid filled
+   silhouette at that colour, where Pango's anti-aliased strokes at 11px only
+   partially cover their pixels, so equal RGB isn't equal apparent brightness.
+   Dimming with opacity (same approach system.css uses for this icon) instead
+   of a plain darker colour keeps it visually level with ip-label. */
+.net-icon {
+    color: #eeeeee;
+    opacity: 0.65;
+}
+
+/* ip-label (alongside dim-label — see ui/mod.rs) matches device-info's
+   font-size. dim-label's own 12px (shared with the pos/dur time labels) was
+   one of two differences from device-info, which doesn't show the top-row
+   clipping ip_label does; see the comment on
+   apply_device_info()'s ip_label.set_visible(true) call in playback.rs for
+   the other (visibility-lifecycle) half of the fix. */
+.ip-label {
+    font-size: 11px;
+}
+
+/* Paned divider: invisible until hovered, rather than a constant
+   translucent bar — cheaper and less visually noisy than a dedicated grip
+   widget; revisit with one only if this proves hard to find in practice.
+   box-shadow/border/background-image: none clears Adwaita's own default
+   separator line, which persisted as a thin vertical line even with
+   background-color alone overridden. */
+paned > separator {
+    background-color: transparent;
+    background-image: none;
+    box-shadow: none;
+    border: none;
+    transition: background-color 150ms ease;
+}
+paned > separator:hover {
+    background-color: rgba(255, 255, 255, 0.3);
+}
+
+/* Mini window with config.mini_modern set — see the marker-class
+   note at the top of this file. mini-outer had an opaque #111111
+   background (dark.css); frosted here instead. */
+window.mini-window.mini-window-modern .mini-outer {
+    background-color: rgba(20, 20, 20, 0.5);
+}
+
+/* mini-main-row's own opaque #111111 (dark.css) exists to paper over a
+   stale-GPU-pixel rendering glitch in the empty region above mini_info_box
+   (see its comment in widgets.rs), not for any visual reason — mini-outer
+   above already provides the card look for that whole area. Because
+   mini-main-row sits *inside* mini-outer, giving it the same alpha as
+   mini-outer would visibly double up (two translucent layers of the same
+   colour stack to a noticeably darker result) right behind the title/
+   artist/status text, which live in this row. A near-zero alpha still
+   repaints the region every frame — which is all the workaround actually
+   needs — without being visually distinguishable from mini-outer alone. */
+window.mini-window.mini-window-modern .mini-main-row {
+    background-color: rgba(20, 20, 20, 0.06);
+}
+
+/* Top-bar (device name, restore/menu/close) floats directly on the blur —
+   no card background, just the lighter text/icon colours below. */
+
+/* Playback controls card wraps only prev/play/next + volume (see
+   mini_controls_card in widgets.rs) — the status label sits outside it,
+   uncarded, matching the top-bar's treatment.
+
+   The box-shadow-as-spread trick tried here previously (to grow the card a
+   few px without affecting layout) turned out not to work the way CSS
+   normally does it: GTK's box-shadow apparently doesn't paint behind the
+   border box's own area at all, only the halo outside it, so with
+   background-color removed the box's own interior was fully transparent —
+   not the double-layered seam that was diagnosed at the time. Back to
+   plain padding + background-color; the resulting few px of window growth
+   under Modern is compensated below (mini-main-row's margin-bottom),
+   rather than accepted as-is. */
+window.mini-window.mini-window-modern .mini-transport-card {
+    background-color: rgba(30, 30, 30, 0.55);
+    border-radius: 10px;
+    padding: 3px 8px;
+}
+/* Compensates the ~6px (3px top + 3px bottom) mini-transport-card's padding
+   above adds to mini_main_row's height, so the Modern mini window ends up
+   the same overall height as the classic theme's despite the taller card.
+   CSS margin fully replaces (not adds to) the Rust-set margin_bottom(14) —
+   same override behaviour already relied on for .panel-card's margin-left/
+   margin-bottom and .preset-tile's negative margin, both above. Scoped to
+   Modern only, so the classic theme's spacing is untouched. */
+window.mini-window.mini-window-modern .mini-main-row {
+    margin-bottom: 8px;
+}
+
+/* dark.css's mini-device-label/mini-status-label greys (#606060) and
+   mini-restore-btn's #555555 assume a flat black background — too dark
+   against the blur even inside the top-bar card above. mini-title/
+   mini-artist (ScrollFadeLabel, not a plain Label) get the same treatment
+   via the drop-shadow property instead of text-shadow — see
+   set_scroll_fade_drop_shadow() in ui/mod.rs, toggled live alongside this
+   marker class since it can't be expressed in CSS. */
+window.mini-window.mini-window-modern .mini-device-label,
+window.mini-window.mini-window-modern .mini-status-label {
+    color: #cccccc;
+    text-shadow: 0 0 2px rgba(0, 0, 0, 0.9);
+}
+window.mini-window.mini-window-modern .mini-restore-btn,
+window.mini-window.mini-window-modern menubutton.mini-restore-btn > button {
+    color: #dddddd;
+}
+
+/* dark.css's #2a2a2a hover fill is opaque, tuned for contrast against the
+   flat black classic background — against Modern's cards/blur it reads as
+   a dark smudge instead of a highlight. Lighter and translucent instead,
+   for every icon button on both windows. Scoped per-window/marker-class
+   like the rest of this file's mini-window rules, since the mini window
+   can stay on the classic theme (mini_modern off) even while Modern is the
+   active app-wide theme. */
+window.player-window .transport-btn:hover,
+window.player-window .loop-btn:hover,
+window.player-window .vol-btn:hover {
+    background-color: rgba(255, 255, 255, 0.15);
+}
+window.mini-window.mini-window-modern .mini-restore-btn:hover,
+window.mini-window.mini-window-modern menubutton.mini-restore-btn > button:hover,
+window.mini-window.mini-window-modern .mini-transport-btn:hover,
+window.mini-window.mini-window-modern .mini-vol-btn:hover {
+    background-color: rgba(255, 255, 255, 0.15);
+}

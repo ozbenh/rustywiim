@@ -21,6 +21,11 @@ pub enum ThemeMode {
     // "custom" is the old serialised name kept for backwards compatibility.
     #[serde(rename = "rusty_wiim", alias = "custom")]
     RustyWiiM,
+    /// RustyWiiM Modern: blurred-artwork background with floating
+    /// semi-transparent panels. Main window only for now — the mini window
+    /// keeps the classic RustyWiiM styling regardless of this setting.
+    #[serde(rename = "rusty_wiim_modern")]
+    RustyWiiMModern,
 }
 
 /// Per-device window state, keyed on the device UUID from `getStatusEx`.
@@ -115,6 +120,11 @@ pub struct Config {
     /// artwork flip/fade. Defaults on; users can turn it off in Settings.
     #[serde(default = "default_animations")]
     pub animations: bool,
+    /// Experimental: also apply RustyWiiM Modern's blurred-art background to
+    /// the mini window (only meaningful when `theme == RustyWiiMModern`;
+    /// the Settings toggle is greyed out otherwise). Defaults off.
+    #[serde(default)]
+    pub mini_modern: bool,
 }
 
 impl Default for Config {
@@ -128,6 +138,7 @@ impl Default for Config {
             discovery_window_width: 0,
             discovery_window_height: 0,
             animations: true,
+            mini_modern: false,
         }
     }
 }

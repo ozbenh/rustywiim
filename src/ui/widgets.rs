@@ -7,6 +7,7 @@ use adw::prelude::*;
 use glib::clone;
 use gtk::{Align, Box as GtkBox, Button, Label, Orientation, Scale};
 
+use super::art_background;
 use super::flip_cover::FlipCover;
 use super::icons;
 use super::scroll_fade_label::ScrollFadeLabel;
@@ -50,13 +51,14 @@ pub(crate) struct SwipeText {
 }
 
 impl SwipeText {
-    fn new(initial: &str, css_class: &str, center_when_fits: bool) -> Self {
+    fn new(initial: &str, css_class: &str, center_when_fits: bool, drop_shadow: bool) -> Self {
         let a = ScrollFadeLabel::new(initial);
         let b = ScrollFadeLabel::new("");
         for l in [&a, &b] {
             l.add_label_css_class(css_class);
             l.set_hexpand(true);
             l.set_center_when_fits(center_when_fits);
+            l.set_drop_shadow(drop_shadow);
         }
         let stack = gtk::Stack::new();
         stack.set_hexpand(true);
@@ -125,6 +127,7 @@ pub(crate) struct PlaybackUiState {
 
 pub(crate) struct MiniWidgets {
     pub root:          gtk::WindowHandle,
+    pub art_bg:        art_background::ArtBackground,
     pub artwork:       FlipCover,
     pub device_label:  Label,
     #[allow(dead_code)] // owned for lifetime; the widget is parented to the top bar
@@ -207,7 +210,10 @@ pub(super) fn build_presets_panel() -> (PresetWidgets, gtk::ScrolledWindow) {
         tile.append(&badge);
         tile.append(&pic);
         tile.append(&lbl);
-        let btn = Button::builder().child(&tile).css_classes(["flat"]).build();
+        // "preset-btn" only styled under RustyWiiM Modern (see modern.css),
+        // to trim its default flat-button horizontal padding — inert
+        // elsewhere, same pattern as "panel-card"/"controls-card".
+        let btn = Button::builder().child(&tile).css_classes(["flat", "preset-btn"]).build();
         btn.set_tooltip_text(Some(&format!("Preset {i}")));
         btn.set_visible(false);
         presets_box.append(&btn);
@@ -349,7 +355,12 @@ pub(super) fn build_left_pane(sw: &SourceWidgets, ow: &OutputWidgets, presets_sc
     io_box.append(&sw.dropdown);
     io_box.append(&ow.section);
 
-    let left_pane = GtkBox::builder().orientation(Orientation::Vertical).build();
+    // "panel-card" is only ever styled under the RustyWiiM Modern theme
+    // (see modern.css) — inert everywhere else, so no theme branching here.
+    let left_pane = GtkBox::builder()
+        .orientation(Orientation::Vertical)
+        .css_classes(["panel-card"])
+        .build();
     left_pane.append(presets_scroll);
     left_pane.append(&io_box);
     left_pane
@@ -423,9 +434,14 @@ pub(super) fn build_playback_widgets() -> (PlaybackWidgets, Scale) {
         // (crossfading between them), so no separate art_stack/input_icon.
         artwork:    { let f = FlipCover::new();
                       f.set_hexpand(true); f.set_vexpand(true); f },
-        title:  SwipeText::new("Not connected", "track-title",  true),
-        artist: SwipeText::new("",              "track-artist", true),
-        album:  SwipeText::new("",              "track-album",  true),
+        // drop_shadow starts false regardless of theme — it's only wanted
+        // for legibility against Modern's blurred background, and gets
+        // toggled live by update_art_background_visibility() in ui/mod.rs
+        // (called once more right after window construction, so this
+        // initial value only matters for the instant before that runs).
+        title:  SwipeText::new("Not connected", "track-title",  true, false),
+        artist: SwipeText::new("",              "track-artist", true, false),
+        album:  SwipeText::new("",              "track-album",  true, false),
         status:   Label::builder().css_classes(["status-badge"]).halign(Align::Center).build(),
         // Always visible (never `.set_visible(false)`) so its line-height is
         // permanently reserved in the layout — otherwise the artwork above it
@@ -495,6 +511,17 @@ pub(super) fn build_right_pane(pw: &PlaybackWidgets) -> gtk::Box {
         .build();
     art_overlay.add_overlay(&art_frame);
 
+    // Seek row + transport grouped into one card under RustyWiiM Modern
+    // (see modern.css); inert everywhere else, same as "panel-card" above.
+    // Artwork/title/artist/album/status/quality stay uncarded, floating
+    // directly on the blurred background when that theme is active.
+    let controls_card = GtkBox::builder()
+        .orientation(Orientation::Vertical).spacing(8)
+        .css_classes(["controls-card"])
+        .build();
+    controls_card.append(&seek_row);
+    controls_card.append(&transport);
+
     let right_pane = GtkBox::builder()
         .orientation(Orientation::Vertical).spacing(8).hexpand(true)
         .margin_top(8).margin_bottom(8).margin_start(12).margin_end(16)
@@ -505,8 +532,7 @@ pub(super) fn build_right_pane(pw: &PlaybackWidgets) -> gtk::Box {
     right_pane.append(&pw.album.stack);
     right_pane.append(&pw.status);
     right_pane.append(&pw.quality);
-    right_pane.append(&seek_row);
-    right_pane.append(&transport);
+    right_pane.append(&controls_card);
 
     right_pane
 }
@@ -546,6 +572,7 @@ fn build_mini_top_bar() -> (Label, gtk::MenuButton, Button, Button, GtkBox) {
     let mini_top_bar = GtkBox::builder()
         .orientation(Orientation::Horizontal).spacing(4)
         .margin_start(14).margin_end(12).margin_top(10).margin_bottom(4)
+        .css_classes(["mini-top-bar"])
         .build();
     mini_top_bar.append(&mini_device_label);
     mini_top_bar.append(&mini_restore_btn);
@@ -628,14 +655,27 @@ fn build_mini_transport() -> (Label, Button, Button, Button, Button, gtk::Image,
 
     mini_vol_btn.set_margin_end(0);
     let mini_vol_end = GtkBox::builder()
-        .hexpand(true).halign(Align::End).valign(Align::Center).build();
+        .valign(Align::Center).build();
     mini_vol_end.append(&mini_vol_btn);
 
+    // Card wraps only the actual playback controls (prev/play/next +
+    // volume) — mini_status_label sits outside it. mini_status_label's own
+    // hexpand(true) already pushes this group to the row's trailing edge
+    // (the only hexpand child in mini_transport, so it absorbs all the
+    // leftover width), so mini_vol_end no longer needs its own
+    // hexpand/halign(End) to get there.
+    let mini_controls_card = GtkBox::builder()
+        .orientation(Orientation::Horizontal).spacing(6)
+        .css_classes(["mini-transport-card"])
+        .build();
+    mini_controls_card.append(&mini_transport_center);
+    mini_controls_card.append(&mini_vol_end);
+
     let mini_transport = GtkBox::builder()
-        .orientation(Orientation::Horizontal).hexpand(true).build();
+        .orientation(Orientation::Horizontal).hexpand(true)
+        .build();
     mini_transport.append(&mini_status_label);
-    mini_transport.append(&mini_transport_center);
-    mini_transport.append(&mini_vol_end);
+    mini_transport.append(&mini_controls_card);
 
     (mini_status_label, mini_btn_prev, mini_btn_play, mini_btn_next,
      mini_vol_btn, mini_vol_icon_img, mini_vol_label,
@@ -676,8 +716,8 @@ pub(super) fn build_mini_window(app: &adw::Application) -> (MiniWidgets, gtk::Ap
          mini_vol_btn, mini_vol_icon_img, mini_vol_label,
          mini_vol_scale, mini_mute_btn, mini_vol_popover, mini_transport) = build_mini_transport();
 
-    let mini_title_label  = SwipeText::new("—", "mini-title",  false);
-    let mini_artist_label = SwipeText::new("",  "mini-artist", false);
+    let mini_title_label  = SwipeText::new("—", "mini-title",  false, false);
+    let mini_artist_label = SwipeText::new("",  "mini-artist", false, false);
 
     let mini_info_box = GtkBox::builder()
         .orientation(Orientation::Vertical).spacing(4)
@@ -698,13 +738,34 @@ pub(super) fn build_mini_window(app: &adw::Application) -> (MiniWidgets, gtk::Ap
     mini_main_row.append(&mini_artwork);
     mini_main_row.append(&mini_info_box);
 
-    let mini_outer = GtkBox::builder()
+    let mini_content = GtkBox::builder()
         .orientation(Orientation::Vertical).spacing(0)
-        .css_classes(["mini-outer"])
-        .overflow(gtk::Overflow::Hidden)
         .build();
-    mini_outer.append(&mini_top_bar);
-    mini_outer.append(&mini_main_row);
+    mini_content.append(&mini_top_bar);
+    mini_content.append(&mini_main_row);
+
+    // ArtBackground sits *inside* mini-outer (not wrapping the whole
+    // window) so mini-outer's own overflow(Hidden) + border-radius clips
+    // both the background layer and the foreground content to the same
+    // rounded shape — wrapping the whole window instead would let the
+    // (rectangular) blur peek out past the rounded corners, where the
+    // window itself is otherwise fully transparent to the real desktop.
+    let mini_art_bg = art_background::ArtBackground::new();
+    mini_art_bg.set_hexpand(true);
+    mini_art_bg.set_vexpand(true);
+    mini_art_bg.set_visible(false); // gated live — see update_art_background_visibility()
+
+    let mini_outer = gtk::Overlay::new();
+    mini_outer.set_child(Some(&mini_art_bg));
+    mini_outer.add_overlay(&mini_content);
+    // ArtBackground (the main/measured child) reports no intrinsic size — it's
+    // meant to be sized by whatever allocates it — so without this the Overlay
+    // sizes itself off a 0×0 child instead of mini_content, and the window's
+    // actual height (there is no explicit default_height, only default_width)
+    // ends up wrong. mini_content is the widget that should drive sizing here.
+    mini_outer.set_measure_overlay(&mini_content, true);
+    mini_outer.add_css_class("mini-outer");
+    mini_outer.set_overflow(gtk::Overflow::Hidden);
 
     // Resizable(true) alone (below) only permits the window manager/
     // compositor to resize the surface — it doesn't give an undecorated
@@ -733,6 +794,7 @@ pub(super) fn build_mini_window(app: &adw::Application) -> (MiniWidgets, gtk::Ap
 
     let mini = MiniWidgets {
         root:          mini_root,
+        art_bg:        mini_art_bg,
         artwork:       mini_artwork,
         device_label:  mini_device_label,
         menu_btn:      mini_menu_btn,

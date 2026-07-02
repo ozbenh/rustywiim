@@ -154,6 +154,7 @@ impl DeviceWindowInner {
         self.pw.status.set_label("");
         self.pw.quality.set_label("");
         self.pw.artwork.clear();
+        self.art_bg.clear();
         self.dev_info_label.set_label("");
         self.ip_label.set_visible(false);
 
@@ -315,10 +316,17 @@ impl DeviceWindowInner {
             caps.vendor.display_name(), caps.model, info.firmware,
         ));
 
+        // Unlike dev_info_label (always visible, only its text ever
+        // changes), ip_label starts invisible and is shown/hidden here on
+        // every device-changed. queue_resize() forces a full fresh layout
+        // pass on the reveal rather than risking a stale allocation/clip
+        // from before the label was visible — belt-and-suspenders against
+        // the top-row clipping seen on this label but not on dev_info_label.
         let ip = info.ip_addr();
         if !ip.is_empty() {
             self.ip_label.set_label(ip);
             self.ip_label.set_visible(true);
+            self.ip_label.queue_resize();
         } else {
             self.ip_label.set_visible(false);
         }
@@ -450,7 +458,13 @@ impl DeviceWindowInner {
     /// stack/icon widget needed.
     fn update_artwork(&self) {
         let mini = *self.mini_mode.borrow();
-        let flip = if mini { &self.mini.artwork } else { &self.pw.artwork };
+        let flip   = if mini { &self.mini.artwork } else { &self.pw.artwork };
+        // Fed unconditionally regardless of whether Modern (and, for the
+        // mini one, mini_modern) is actually active — cheap (a texture
+        // clone + queue_draw(), the latter a no-op while invisible), and
+        // keeps both in sync so switching the setting on shows current art
+        // immediately instead of waiting for the next poll.
+        let art_bg = if mini { &self.mini.art_bg } else { &self.art_bg };
         let icon_size = if mini { 36.0 } else { 128.0 };
 
         let tex = self.ds.art_bytes().and_then(|bytes| {
@@ -460,10 +474,15 @@ impl DeviceWindowInner {
 
         if let Some(tex) = &tex {
             let art_key = self.ds.current_art_url();
+            art_bg.set_art(Some(tex), &art_key);
             flip.set_art(Some(tex), &art_key);
         } else {
             let mode = self.ds.current_mode();
             let source_id = capabilities::mode_to_input_source(&mode);
+            // Fixed key (not per-source) so switching between different
+            // no-art sources doesn't re-trigger the background fade for a
+            // gradient that looks the same either way.
+            art_bg.set_art(None, "__no_art__");
             flip.set_icon(
                 self.icons.source_paintable(source_id), icon_size, &format!("icon:{source_id}"));
         }

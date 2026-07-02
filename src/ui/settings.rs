@@ -161,28 +161,49 @@ impl SettingsWindow {
 fn build_appearance_page() -> adw::PreferencesPage {
     let theme = config::with(|cfg| cfg.theme);
 
-    let theme_list = gtk::StringList::new(&["System", "System Light", "System Dark", "RustyWiiM"]);
+    let theme_list = gtk::StringList::new(
+        &["System", "System Light", "System Dark", "RustyWiiM", "RustyWiiM Modern"]);
     let theme_row = adw::ComboRow::builder()
         .title("Theme")
         .subtitle("Application colour scheme")
         .model(&theme_list)
         .build();
     theme_row.set_selected(match theme {
-        ThemeMode::System      => 0,
-        ThemeMode::SystemLight => 1,
-        ThemeMode::SystemDark  => 2,
-        ThemeMode::RustyWiiM   => 3,
+        ThemeMode::System         => 0,
+        ThemeMode::SystemLight    => 1,
+        ThemeMode::SystemDark     => 2,
+        ThemeMode::RustyWiiM      => 3,
+        ThemeMode::RustyWiiMModern => 4,
     });
-    theme_row.connect_selected_notify(move |row| {
-        let theme = match row.selected() {
-            0 => ThemeMode::System,
-            1 => ThemeMode::SystemLight,
-            2 => ThemeMode::SystemDark,
-            _ => ThemeMode::RustyWiiM,
-        };
-        crate::ui::apply_theme(theme);
-        config::update(|cfg| cfg.theme = theme);
+
+    let mini_modern = config::with(|cfg| cfg.mini_modern);
+    let mini_modern_row = adw::SwitchRow::builder()
+        .title("Modern Theme for Mini Player")
+        .subtitle("Experimental — also apply the blurred background to the mini window")
+        .active(mini_modern)
+        .sensitive(theme == ThemeMode::RustyWiiMModern)
+        .build();
+    mini_modern_row.connect_active_notify(move |row| {
+        config::update(|cfg| cfg.mini_modern = row.is_active());
+        crate::ui::update_art_background_visibility();
     });
+
+    theme_row.connect_selected_notify(glib::clone!(@weak mini_modern_row => move |row| {
+            let theme = match row.selected() {
+                0 => ThemeMode::System,
+                1 => ThemeMode::SystemLight,
+                2 => ThemeMode::SystemDark,
+                3 => ThemeMode::RustyWiiM,
+                _ => ThemeMode::RustyWiiMModern,
+            };
+            // Persist before apply_theme(): it calls update_art_background_visibility()
+            // internally, which reads config.theme back — updating config first avoids
+            // computing visibility off the theme that's about to be replaced.
+            config::update(|cfg| cfg.theme = theme);
+            crate::ui::apply_theme(theme);
+            mini_modern_row.set_sensitive(theme == ThemeMode::RustyWiiMModern);
+        }
+    ));
 
     let animations = config::with(|cfg| cfg.animations);
     let animations_row = adw::SwitchRow::builder()
@@ -198,6 +219,7 @@ fn build_appearance_page() -> adw::PreferencesPage {
         .title("Appearance")
         .build();
     group.add(&theme_row);
+    group.add(&mini_modern_row);
     group.add(&animations_row);
 
     let page = adw::PreferencesPage::new();
