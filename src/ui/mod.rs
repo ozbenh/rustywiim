@@ -1,6 +1,7 @@
 #![allow(deprecated)] // glib clone! old-style @strong syntax
 
 pub mod devlist;
+mod flip_cover;
 mod icons;
 pub(crate) mod menu;
 mod scroll_fade_label;

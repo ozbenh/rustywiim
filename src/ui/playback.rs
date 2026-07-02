@@ -153,8 +153,7 @@ impl DeviceWindowInner {
         self.pw.album.set_text("");
         self.pw.status.set_label("");
         self.pw.quality.set_label("");
-        self.pw.artwork.set_paintable(None::<&gtk::gdk::Paintable>);
-        self.pw.art_stack.set_visible_child_name("artwork");
+        self.pw.artwork.clear();
         self.dev_info_label.set_label("");
         self.ip_label.set_visible(false);
 
@@ -446,26 +445,28 @@ impl DeviceWindowInner {
 
     /// Decode and display artwork, or fall back to the source icon.
     /// Operates on the full-player or mini widgets depending on `mini_mode`.
+    /// Both are FlipCover, which renders art and the fallback icon itself
+    /// (flipping or crossfading between them as appropriate) — no separate
+    /// stack/icon widget needed.
     fn update_artwork(&self) {
         let mini = *self.mini_mode.borrow();
-        let art_stack  = if mini { &self.mini.art_stack  } else { &self.pw.art_stack  };
-        let input_icon = if mini { &self.mini.input_icon } else { &self.pw.input_icon };
+        let flip = if mini { &self.mini.artwork } else { &self.pw.artwork };
+        let icon_size = if mini { 36.0 } else { 128.0 };
 
-        if let Some(bytes) = self.ds.art_bytes() {
+        let tex = self.ds.art_bytes().and_then(|bytes| {
             let gbytes = glib::Bytes::from(bytes.as_ref());
-            if let Ok(tex) = gtk::gdk::Texture::from_bytes(&gbytes) {
-                if mini { self.mini.artwork.set_paintable(Some(&tex)); }
-                else    { self.pw.artwork.set_paintable(Some(&tex)); }
-                art_stack.set_visible_child_name("artwork");
-                return;
-            }
+            gtk::gdk::Texture::from_bytes(&gbytes).ok()
+        });
+
+        if let Some(tex) = &tex {
+            let art_key = self.ds.current_art_url();
+            flip.set_art(Some(tex), &art_key);
+        } else {
+            let mode = self.ds.current_mode();
+            let source_id = capabilities::mode_to_input_source(&mode);
+            flip.set_icon(
+                self.icons.source_paintable(source_id), icon_size, &format!("icon:{source_id}"));
         }
-        let mode = self.ds.current_mode();
-        let source_id = capabilities::mode_to_input_source(&mode);
-        input_icon.set_paintable(Some(self.icons.source_paintable(source_id)));
-        if mini { self.mini.artwork.set_paintable(None::<&gtk::gdk::Paintable>); }
-        else    { self.pw.artwork.set_paintable(None::<&gtk::gdk::Paintable>); }
-        art_stack.set_visible_child_name("icon");
     }
 
     // ── Input / Output display ────────────────────────────────────────────────

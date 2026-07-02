@@ -7,6 +7,7 @@ use adw::prelude::*;
 use glib::clone;
 use gtk::{Align, Box as GtkBox, Button, Label, Orientation, Scale};
 
+use super::flip_cover::FlipCover;
 use super::icons;
 use super::scroll_fade_label::ScrollFadeLabel;
 
@@ -105,9 +106,7 @@ pub(crate) struct PlaybackWidgets {
     pub vol_label:    gtk::Label,
     pub vol_popover:  gtk::Popover,
     pub mute_btn:     Button,
-    pub artwork:     gtk::Picture,
-    pub art_stack:   gtk::Stack,
-    pub input_icon:  gtk::Image,
+    pub artwork:     FlipCover,
 }
 
 // ── Playback UI state ─────────────────────────────────────────────────────────
@@ -122,9 +121,7 @@ pub(crate) struct PlaybackUiState {
 
 pub(crate) struct MiniWidgets {
     pub root:          gtk::WindowHandle,
-    pub art_stack:     gtk::Stack,
-    pub artwork:       gtk::Image,
-    pub input_icon:    gtk::Image,
+    pub artwork:       FlipCover,
     pub device_label:  Label,
     #[allow(dead_code)] // owned for lifetime; the widget is parented to the top bar
     pub menu_btn:      gtk::MenuButton,
@@ -413,18 +410,15 @@ pub(super) fn build_playback_widgets() -> (PlaybackWidgets, Scale) {
     let (vol_btn, vol_icon_img, vol_label, vol_scale, mute_btn, vol_popover) = build_vol_popover();
 
     let pw = PlaybackWidgets {
-        artwork:    gtk::Picture::builder()
-            .content_fit(gtk::ContentFit::Contain).can_shrink(true)
-            .halign(Align::Center).vexpand(true).build(),
-        input_icon: gtk::Image::builder()
-            .pixel_size(128).halign(Align::Center).valign(Align::Center).build(),
-        art_stack: {
-            let s = gtk::Stack::new();
-            s.set_vexpand(true);
-            s.set_transition_type(gtk::StackTransitionType::Crossfade);
-            s.set_transition_duration(200);
-            s
-        },
+        // hexpand+vexpand (default Fill alignment) so the widget always gets
+        // the full art area to work with — it does its own aspect-preserving
+        // "contain"/fixed-size centering internally (draw_content() in
+        // flip_cover.rs), so unlike gtk::Picture it doesn't need a
+        // content-derived natural size for halign(Center) to center against.
+        // It also renders both real art AND the fallback icon itself now
+        // (crossfading between them), so no separate art_stack/input_icon.
+        artwork:    { let f = FlipCover::new();
+                      f.set_hexpand(true); f.set_vexpand(true); f },
         title:  SwipeText::new("Not connected", "track-title",  true),
         artist: SwipeText::new("",              "track-artist", true),
         album:  SwipeText::new("",              "track-album",  true),
@@ -460,8 +454,6 @@ pub(super) fn build_playback_widgets() -> (PlaybackWidgets, Scale) {
         mute_btn,
     };
 
-    pw.art_stack.add_named(&pw.artwork, Some("artwork"));
-    pw.art_stack.add_named(&pw.input_icon, Some("icon"));
     pw.seek.set_hexpand(true);
     pw.seek.set_draw_value(false);
     pw.seek.add_css_class("seek-scale");
@@ -491,7 +483,7 @@ pub(super) fn build_right_pane(pw: &PlaybackWidgets) -> gtk::Box {
     // Overlay adds a radial vignette frame over the artwork that fades into the panel background.
     let art_overlay = gtk::Overlay::new();
     art_overlay.set_vexpand(true);
-    art_overlay.set_child(Some(&pw.art_stack));
+    art_overlay.set_child(Some(&pw.artwork));
     let art_frame = GtkBox::builder()
         .hexpand(true).vexpand(true)
         .css_classes(["art-frame"])
@@ -515,28 +507,17 @@ pub(super) fn build_right_pane(pw: &PlaybackWidgets) -> gtk::Box {
     right_pane
 }
 
-fn build_mini_art_stack() -> (gtk::Image, gtk::Image, gtk::Stack) {
-    let mini_artwork = gtk::Image::builder()
-        .pixel_size(64)
-        .halign(Align::Fill).valign(Align::Fill)
-        .build();
-    let mini_input_icon = gtk::Image::builder()
-        .pixel_size(36).halign(Align::Center).valign(Align::Center)
-        .build();
-    let mini_art_stack = {
-        let s = gtk::Stack::new();
-        s.set_hexpand(false);
-        s.set_vexpand(false);
-        s.set_valign(Align::Center);
-        s.add_css_class("mini-art");
-        s.set_overflow(gtk::Overflow::Hidden); // clips border-radius corners
-        s.set_transition_type(gtk::StackTransitionType::Crossfade);
-        s.set_transition_duration(200);
-        s
-    };
-    mini_art_stack.add_named(&mini_artwork, Some("artwork"));
-    mini_art_stack.add_named(&mini_input_icon, Some("icon"));
-    (mini_artwork, mini_input_icon, mini_art_stack)
+fn build_mini_flip_cover() -> FlipCover {
+    let f = FlipCover::new();
+    f.set_hexpand(false);
+    f.set_vexpand(false);
+    f.set_valign(Align::Center);
+    f.add_css_class("mini-art");
+    // Defensive clip to the widget's own box (e.g. in case the 3D flip's
+    // perspective transform renders very slightly outside its bounds at
+    // extreme angles) — no rounded corners here, so nothing to clip normally.
+    f.set_overflow(gtk::Overflow::Hidden);
+    f
 }
 
 fn build_mini_top_bar() -> (Label, gtk::MenuButton, Button, Button, GtkBox) {
@@ -658,7 +639,7 @@ fn build_mini_transport() -> (Label, Button, Button, Button, Button, gtk::Image,
 }
 
 pub(super) fn build_mini_window(app: &adw::Application) -> (MiniWidgets, gtk::ApplicationWindow) {
-    let (mini_artwork, mini_input_icon, mini_art_stack) = build_mini_art_stack();
+    let mini_artwork = build_mini_flip_cover();
     let (mini_device_label, mini_menu_btn, mini_restore_btn, mini_close_btn, mini_top_bar) = build_mini_top_bar();
     let (mini_status_label, mini_btn_prev, mini_btn_play, mini_btn_next,
          mini_vol_btn, mini_vol_icon_img, mini_vol_label,
@@ -683,7 +664,7 @@ pub(super) fn build_mini_window(app: &adw::Application) -> (MiniWidgets, gtk::Ap
     // mini_info_box (valign=Center, shorter than the art stack).  Without it
     // the NGL renderer can leave stale GPU buffer pixels there.
     mini_main_row.add_css_class("mini-main-row");
-    mini_main_row.append(&mini_art_stack);
+    mini_main_row.append(&mini_artwork);
     mini_main_row.append(&mini_info_box);
 
     let mini_outer = GtkBox::builder()
@@ -709,9 +690,7 @@ pub(super) fn build_mini_window(app: &adw::Application) -> (MiniWidgets, gtk::Ap
 
     let mini = MiniWidgets {
         root:          mini_root,
-        art_stack:     mini_art_stack,
         artwork:       mini_artwork,
-        input_icon:    mini_input_icon,
         device_label:  mini_device_label,
         menu_btn:      mini_menu_btn,
         restore_btn:   mini_restore_btn,

@@ -1024,6 +1024,14 @@ impl DeviceState {
         self.imp().inner.borrow().art_bytes.clone()
     }
 
+    /// URL of the currently-cached artwork (empty if the current track has
+    /// none). Stable across repeated calls for the same track, unlike the
+    /// art bytes themselves — useful as a de-dupe key for UI that animates on
+    /// artwork *change* rather than every time it's asked to redraw.
+    pub fn current_art_url(&self) -> String {
+        self.imp().inner.borrow().current_art_url.clone()
+    }
+
     // ── Typed signal connectors ───────────────────────────────────────────────
 
     pub fn connect_device_changed<F: Fn(&Self) + 'static>(&self, f: F) -> glib::SignalHandlerId {

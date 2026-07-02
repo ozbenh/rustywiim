@@ -52,7 +52,7 @@ window { background-color: #0a0a0a; }
 .preset-badge { font-size: 9px; font-weight: 700; color: #1a1a1a; background-color: #606060; border-radius: 50%; min-width: 16px; min-height: 16px; padding: 1px; }
 window.mini-window { background-color: transparent; }
 .mini-outer   { background-color: #111111; border-radius: 10px; }
-.mini-art     { min-width: 64px; min-height: 64px; border-radius: 6px; }
+.mini-art     { min-width: 64px; min-height: 64px; }
 .mini-main-row { background-color: #111111; }
 .mini-title        { font-size: 13px; font-weight: 700; color: #ffffff; }
 .mini-artist       { font-size: 11px; color: #909090; }
