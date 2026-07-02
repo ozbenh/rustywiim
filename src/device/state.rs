@@ -35,6 +35,13 @@ use std::time::{Duration, Instant};
 
 /// Slow poll (device info, outputs, presets) runs at most this often.
 const SLOW_POLL_INTERVAL: Duration = Duration::from_secs(10);
+/// Consecutive getStatusEx failures tolerated during a slow poll before the
+/// connection is declared Failed. These embedded HTTP servers are flaky
+/// enough that a single miss shouldn't reset the whole UI.
+const SLOW_POLL_FAIL_THRESHOLD: u32 = 3;
+/// How soon to retry after a getStatusEx failure, instead of waiting out the
+/// full SLOW_POLL_INTERVAL.
+const SLOW_POLL_FAIL_RETRY: Duration = Duration::from_secs(1);
 /// Volume commands are rate-limited: at most one per this interval.
 const VOLUME_DEBOUNCE: Duration = Duration::from_millis(500);
 
@@ -154,6 +161,9 @@ struct Inner {
     last_volume_cmd:  Option<Instant>,
     /// When the last slow poll completed (None = never; triggers immediately).
     last_slow_poll:   Option<Instant>,
+    /// Consecutive getStatusEx failures during a slow poll while Connected.
+    /// Reset to 0 on any successful getStatusEx. See SLOW_POLL_FAIL_THRESHOLD.
+    slow_poll_failures: u32,
 }
 
 impl Default for Inner {
@@ -183,6 +193,7 @@ impl Default for Inner {
             target_volume:    -1,
             last_volume_cmd:  None,
             last_slow_poll:   None,
+            slow_poll_failures: 0,
         }
     }
 }
@@ -397,6 +408,7 @@ impl DeviceState {
                 inner.preset_fp         = String::new();
                 inner.presets           = Vec::new();
                 inner.connection_state  = ConnectionState::Connected;
+                inner.slow_poll_failures = 0;
             }
             dbg("signal: device-changed (ready)");
             ds.emit_by_name::<()>("device-changed", &[]);
@@ -602,15 +614,40 @@ impl DeviceState {
 
                 // ── device info (getStatusEx) ─────────────────────────────────
                 let Some(new_info) = result.device_info else {
-                    // getStatusEx failed while we were Connected → declare failure.
+                    // getStatusEx failed. Tolerate a few consecutive misses
+                    // (these embedded HTTP servers are flaky) before declaring
+                    // the connection Failed — clearing device_info on every
+                    // transient blip needlessly resets the whole UI (e.g. the
+                    // output selector, see the bug this was fixing) for
+                    // something that usually self-heals a second later.
                     if ds.imp().inner.borrow().connection_state == ConnectionState::Connected {
-                        dbg("slow poll: getStatusEx failed; transitioning to Failed");
-                        {
+                        let declared_failed = {
                             let mut inner = ds.imp().inner.borrow_mut();
-                            inner.connection_state = ConnectionState::Failed;
-                            inner.device_info      = None;
+                            inner.slow_poll_failures += 1;
+                            if inner.slow_poll_failures >= SLOW_POLL_FAIL_THRESHOLD {
+                                dbg(&format!(
+                                    "slow poll: getStatusEx failed {} times in a row; transitioning to Failed",
+                                    inner.slow_poll_failures,
+                                ));
+                                inner.connection_state = ConnectionState::Failed;
+                                inner.device_info      = None;
+                                true
+                            } else {
+                                dbg(&format!(
+                                    "slow poll: getStatusEx failed ({}/{SLOW_POLL_FAIL_THRESHOLD}); retrying in {}s",
+                                    inner.slow_poll_failures, SLOW_POLL_FAIL_RETRY.as_secs(),
+                                ));
+                                // Rewind last_slow_poll so the next 1s tick
+                                // retries immediately instead of waiting out
+                                // the full SLOW_POLL_INTERVAL.
+                                inner.last_slow_poll =
+                                    Instant::now().checked_sub(SLOW_POLL_INTERVAL - SLOW_POLL_FAIL_RETRY);
+                                false
+                            }
+                        };
+                        if declared_failed {
+                            ds.emit_by_name::<()>("device-changed", &[]);
                         }
-                        ds.emit_by_name::<()>("device-changed", &[]);
                     }
                     continue;
                 };
@@ -665,6 +702,7 @@ impl DeviceState {
                     let mut inner = ds.imp().inner.borrow_mut();
                     inner.netstat = new_netstat;
                     inner.rssi    = new_rssi;
+                    inner.slow_poll_failures = 0;
                     if identity_changed {
                         dbg(&format!(
                             "device identity changed: fw={} uuid={} name={}",
