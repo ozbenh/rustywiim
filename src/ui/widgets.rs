@@ -196,7 +196,7 @@ pub(super) fn build_source_widgets(icons: &Rc<icons::IconSet>) -> SourceWidgets 
 
     let factory = gtk::SignalListItemFactory::new();
     factory.connect_setup(|_, obj| {
-        let item = obj.downcast_ref::<gtk::ListItem>().unwrap();
+        let Some(item) = obj.downcast_ref::<gtk::ListItem>() else { return };
         let hbox = GtkBox::builder()
             .orientation(Orientation::Horizontal).spacing(6).build();
         hbox.append(&gtk::Image::builder().pixel_size(16).build());
@@ -206,7 +206,7 @@ pub(super) fn build_source_widgets(icons: &Rc<icons::IconSet>) -> SourceWidgets 
     factory.connect_bind(clone!(
         @strong sw, @strong icons
             => move |_, obj| {
-                let item = obj.downcast_ref::<gtk::ListItem>().unwrap();
+                let Some(item) = obj.downcast_ref::<gtk::ListItem>() else { return };
                 let pos  = item.position() as usize;
                 if let Some(hbox) = item.child().and_downcast::<GtkBox>() {
                     let enabled = sw.enabled.borrow().get(pos).copied().unwrap_or(true);
@@ -226,7 +226,7 @@ pub(super) fn build_source_widgets(icons: &Rc<icons::IconSet>) -> SourceWidgets 
             }
     ));
     factory.connect_unbind(|_, obj| {
-        let item = obj.downcast_ref::<gtk::ListItem>().unwrap();
+        let Some(item) = obj.downcast_ref::<gtk::ListItem>() else { return };
         item.set_activatable(true);
         if let Some(hbox) = item.child().and_downcast::<GtkBox>() {
             if let Some(lbl) = hbox.last_child().and_downcast::<Label>() {
@@ -253,7 +253,7 @@ pub(super) fn build_output_widgets(icons: &Rc<icons::IconSet>) -> OutputWidgets 
 
     let factory = gtk::SignalListItemFactory::new();
     factory.connect_setup(|_, obj| {
-        let item = obj.downcast_ref::<gtk::ListItem>().unwrap();
+        let Some(item) = obj.downcast_ref::<gtk::ListItem>() else { return };
         let hbox = GtkBox::builder()
             .orientation(Orientation::Horizontal).spacing(6).build();
         hbox.append(&gtk::Image::builder().pixel_size(16).build());
@@ -261,7 +261,7 @@ pub(super) fn build_output_widgets(icons: &Rc<icons::IconSet>) -> OutputWidgets 
         item.set_child(Some(&hbox));
     });
     factory.connect_bind(clone!(@strong ow, @strong icons => move |_, obj| {
-        let item = obj.downcast_ref::<gtk::ListItem>().unwrap();
+        let Some(item) = obj.downcast_ref::<gtk::ListItem>() else { return };
         let pos  = item.position() as usize;
         if let Some(hbox) = item.child().and_downcast::<GtkBox>() {
             let names = ow.canon_names.borrow();
