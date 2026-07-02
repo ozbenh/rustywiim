@@ -94,9 +94,18 @@ For now just this one:
     * Should properly fix stale artwork when switching to a song with no artwork
 	* A whole lot of internal implementation cleanups, optimisations and fixes.
 
+  * 0.6.0 - 2026-07-02
+    * Add animations (song transitions and side panel open/close)
+	* Add a new "modern" theme with blurry art background and transparency
+	* A few cosmetic tweaks here or there
+	* Hammer the WiiM a bit less on poll
+	* Mini window is horizontally resizable
+
 ## Screenshots ##
 
-![Screenshot](screenshot1.png)
-![Screenshot](screenshot2.png)
-![Screenshot](screenshot3.png)
-![Screenshot](screenshot4.png)
+![Screenshot](pics/screenshot1.png)
+![Screenshot](pics/screenshot2.png)
+![Screenshot](pics/screenshot3.png)
+![Screenshot](pics/screenshot4.png)
+![Screenshot](pics/screenshot5.png)
+![Screenshot](pics/screenshot6.png)
