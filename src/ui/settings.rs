@@ -200,23 +200,42 @@ fn theme_index(mode: ThemeMode) -> u32 {
 }
 
 /// Popup-list factory for `theme_row`. Rows whose `THEMES` entry is `None`
-/// render as a plain `gtk::Separator` and are made non-selectable; every
-/// other row renders exactly as AdwComboRow's own default (a plain label)
-/// would. Only affects the open popup — the closed row keeps the default
-/// expression-based display.
+/// show a plain `gtk::Separator` and are made non-selectable; every other row
+/// shows a plain label. Only affects the open popup — the closed row keeps
+/// the default expression-based display.
+///
+/// `setup` builds both a label and a separator once per `ListItem` and
+/// `bind` only ever toggles which is visible — it must NOT call
+/// `list_item.set_child()` itself. `bind` fires repeatedly over a row's
+/// lifetime (not just once), including in response to pointer hover, and
+/// destroying/replacing the child widget on every call raced with GTK's own
+/// hover/crossing tracking on the outgoing widget: `gtk_widget_compute_point:
+/// assertion 'GTK_IS_WIDGET (widget)' failed` warnings and, at least once, a
+/// hard crash, reproducible just by hovering the popup — no selection needed.
 fn build_theme_list_factory() -> gtk::SignalListItemFactory {
     let factory = gtk::SignalListItemFactory::new();
-    factory.connect_bind(|_, list_item| {
+    factory.connect_setup(|_, list_item| {
         // `list_item` is `&glib::Object` at this GTK API level (v4_8+); the
         // concrete type is always `gtk::ListItem` for a list-view factory.
         let list_item = list_item.downcast_ref::<gtk::ListItem>().unwrap();
+        let outer = gtk::Box::new(Orientation::Vertical, 0);
+        let label = gtk::Label::builder().halign(gtk::Align::Start).build();
+        let separator = gtk::Separator::new(Orientation::Horizontal);
+        outer.append(&label);
+        outer.append(&separator);
+        list_item.set_child(Some(&outer));
+    });
+    factory.connect_bind(|_, list_item| {
+        let list_item = list_item.downcast_ref::<gtk::ListItem>().unwrap();
         let (name, mode) = THEMES[list_item.position() as usize];
-        if mode.is_none() {
-            list_item.set_child(Some(&gtk::Separator::new(Orientation::Horizontal)));
-            list_item.set_selectable(false);
-        } else {
-            list_item.set_child(Some(&gtk::Label::builder().label(name).halign(gtk::Align::Start).build()));
-        }
+        let is_separator = mode.is_none();
+        let outer = list_item.child().and_downcast::<gtk::Box>().unwrap();
+        let label = outer.first_child().and_downcast::<gtk::Label>().unwrap();
+        let separator = outer.last_child().and_downcast::<gtk::Separator>().unwrap();
+        label.set_label(name);
+        label.set_visible(!is_separator);
+        separator.set_visible(is_separator);
+        list_item.set_selectable(!is_separator);
     });
     factory
 }
@@ -294,11 +313,12 @@ fn build_appearance_page() -> (adw::PreferencesPage, gtk::Button) {
         }
     ));
 
-    // Reset button drives every control through its own connect_*_notify
-    // handler (set_selected/set_active/set_rgba below), rather than writing
-    // to config directly — so it can't drift out of sync with what each
-    // control's own handler does when changed by hand. Placed in the
-    // window's bottom bar (see SettingsWindow::new), not in this page's
+    // config::reset_ui_settings() persists the defaults in one write; the
+    // widget setters below then push those values into the controls, which
+    // fires each control's own connect_*_notify handler and writes the same
+    // values back — a no-op given config::update()'s diff-before-persist, so
+    // this can't drift the widgets and the persisted config apart. Placed in
+    // the window's bottom bar (see SettingsWindow::new), not in this page's
     // PreferencesGroup card, so it reads as a window-level action rather
     // than one more settings row.
     let reset_btn = gtk::Button::builder()
@@ -308,10 +328,14 @@ fn build_appearance_page() -> (adw::PreferencesPage, gtk::Button) {
     reset_btn.connect_clicked(glib::clone!(
         @weak theme_row, @weak mini_modern_row, @weak animations_row, @weak accent_button
         => move |_| {
-            theme_row.set_selected(theme_index(ThemeMode::RustyWiiM));
-            mini_modern_row.set_active(false);
-            animations_row.set_active(true);
-            if let Ok(rgba) = gtk::gdk::RGBA::parse(&config::default_accent_color()) {
+            config::reset_ui_settings();
+            let (theme, mini_modern, animations, accent_color) = config::with(|cfg| {
+                (cfg.theme, cfg.mini_modern, cfg.animations, cfg.accent_color.clone())
+            });
+            theme_row.set_selected(theme_index(theme));
+            mini_modern_row.set_active(mini_modern);
+            animations_row.set_active(animations);
+            if let Ok(rgba) = gtk::gdk::RGBA::parse(&accent_color) {
                 accent_button.set_rgba(&rgba);
             }
         }

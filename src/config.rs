@@ -6,10 +6,10 @@ use std::path::PathBuf;
 
 fn default_panel_visible() -> bool { true }
 fn default_animations() -> bool { true }
+fn default_mini_modern() -> bool { true }
 /// Matches the accent colour hardcoded in dark.css before it became
 /// user-configurable, so existing users see no visual change by default.
-/// Public: also used by the Settings "Reset to Defaults" button.
-pub fn default_accent_color() -> String { "#4ecdc4".to_string() }
+fn default_accent_color() -> String { "#4ecdc4".to_string() }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -124,10 +124,10 @@ pub struct Config {
     /// artwork flip/fade. Defaults on; users can turn it off in Settings.
     #[serde(default = "default_animations")]
     pub animations: bool,
-    /// Experimental: also apply RustyWiiM Modern's blurred-art background to
-    /// the mini window (only meaningful when `theme == RustyWiiMModern`;
-    /// the Settings toggle is greyed out otherwise). Defaults off.
-    #[serde(default)]
+    /// Also apply RustyWiiM Modern's blurred-art background to the mini
+    /// window (only meaningful when `theme == RustyWiiMModern`; the Settings
+    /// toggle is greyed out otherwise). Defaults on.
+    #[serde(default = "default_mini_modern")]
     pub mini_modern: bool,
     /// Highlight/accent colour (hex, e.g. "#4ecdc4") used for song progress,
     /// playback status, the play/pause button, and the side-panel toggle.
@@ -158,7 +158,7 @@ impl Default for Config {
             discovery_window_width: 0,
             discovery_window_height: 0,
             animations: true,
-            mini_modern: false,
+            mini_modern: default_mini_modern(),
             accent_color: default_accent_color(),
             mini_stale_pixel_workaround: false,
         }
@@ -309,6 +309,19 @@ pub fn update<R>(f: impl FnOnce(&mut Config) -> R) -> R {
     });
     if changed { save(); }
     result
+}
+
+/// Reset every field the Settings window's Appearance page controls
+/// (theme, mini-window Modern, animations, accent colour) to its default, in
+/// one `update()` call. Callers still need to push the new values into their
+/// widgets afterwards — this only touches the persisted config.
+pub fn reset_ui_settings() {
+    update(|cfg| {
+        cfg.theme = ThemeMode::RustyWiiM;
+        cfg.mini_modern = default_mini_modern();
+        cfg.animations = default_animations();
+        cfg.accent_color = default_accent_color();
+    });
 }
 
 /// Write the current in-memory config to disk. `update()` already calls this
