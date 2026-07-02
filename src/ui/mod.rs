@@ -36,6 +36,13 @@ fn dbg_ui(msg: &str) {
     }
 }
 
+/// Set just before the quit action starts closing windows, so the
+/// close-request/destroy handlers it triggers (DeviceWindowInner::cleanup())
+/// know this isn't a user-initiated close. A window closed because the app
+/// is quitting should still be reopened on next launch; a window the user
+/// explicitly closed should not.
+static QUITTING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 // ── Shared window actions ─────────────────────────────────────────────────────
 
 /// Register `win.about` and `win.settings` on any ApplicationWindow.
@@ -236,7 +243,10 @@ impl DeviceWindowInner {
         if let Some(id) = self.settle_timer.borrow_mut().take() { id.remove(); }
         if let Some(id) = self.config_save_timer.borrow_mut().take() { id.remove(); }
         self.save_config_now();
-        if !uuid.is_empty() {
+        // Window geometry is still saved above either way — only the
+        // window_open flag itself is skipped during quit, so a window that
+        // was open reopens on next launch instead of being forgotten.
+        if !uuid.is_empty() && !QUITTING.load(Ordering::Relaxed) {
             config::update(|cfg| cfg.device_mut(&uuid).window_open = false);
         }
         self.mini_win.destroy();
@@ -1055,6 +1065,7 @@ impl AppState {
             let quit_action = gio::SimpleAction::new("quit", None);
             quit_action.connect_activate(move |_, _| {
                 dbg_ui("quit action fired");
+                QUITTING.store(true, Ordering::Relaxed);
                 if let Some(s) = s.upgrade() {
                     // Collect first so connect_destroy (which mutates registry) doesn't
                     // invalidate the iterator.
