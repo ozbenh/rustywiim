@@ -1,0 +1,464 @@
+# Commands wiim-capture sends to a target device, beyond the always-run
+# getStatusEx/getStatus model-detection pass (see TESTING.md).
+#
+# Schema per entry:
+#   command:      the LinkPlay command, literal or a "{name}" template
+#   method:       get (default) | set | getsyslog
+#   safe:         only checked for method: set — defaults to false, and a
+#                 Set entry is NEVER sent unless this is explicitly true.
+#                 Even when true, it's still only sent if wiim-capture was
+#                 invoked with --destructive — safe: true alone is no longer
+#                 enough to mutate device state (added after a real run left
+#                 a device's touch controls disabled, LED off, volume
+#                 changed, and EQ preset overwritten — see TESTING.md's
+#                 "Known issue" section).
+#   params:       list of {name, values} — one command sent per value,
+#                 independent parameters are crossed (cartesian product)
+#   value_sets:   list of {name: value, ...} maps — for commands whose
+#                 multiple placeholders must vary together, not be crossed
+#   urlencode:    bool, default false — percent-encodes everything after the
+#                 command name's first ":" (the substituted argument
+#                 portion) before it's sent, for arguments that can contain
+#                 spaces/colons/slashes/etc. unsafe to embed literally in a
+#                 query string (e.g. EQv2GetNewList:{str}'s JSON argument).
+#   summary/tag/operation_id: optional, purely descriptive, echoed into output
+#
+# method: getsyslog is reserved for exactly one entry (getsyslog itself) —
+# wiim-capture special-cases it entirely (its own two-step fetch, with a
+# longer timeout — see TESTING.md's "getsyslog's special two-step retrieval")
+# rather than sending it through the normal single-GET path. Never gated by
+# safe/--destructive; it's still read-only.
+#
+# NEVER mark a `set` command `safe: true` if it's destructive, touches
+# network/WiFi credentials, reboots/resets/updates firmware, triggers an
+# audible alarm, or needs real other hardware (Bluetooth, multiroom peers).
+# See TESTING.md's "safe must default to false" section for the full list of
+# command classes that must never be marked safe.
+#
+# Generated + hand-curated against docs/wiim-httpapi-catalog.md (2026-07-04).
+# The Get-method block below is close to exhaustive for the categories judged
+# relevant to a WiiM/LinkPlay audio device (playback, presets, EQ, audio
+# hardware, multiroom, Bluetooth status, device diagnostics) — Alexa/TVS/
+# Chromecast/streaming-account/network-config/firmware-update categories were
+# deliberately left out entirely (irrelevant noise or actively risky; see the
+# catalog doc). The Set-method section is intentionally sparse: only a
+# handful of illustrative, clearly-reversible examples are marked
+# `safe: true`; everything else mutating is either omitted or listed
+# explicitly with `safe: false` as a documented "never" — review and expand
+# by hand from the catalog doc as needed, this is a starting point.
+
+# ── Confirmed-working commands missing from the OpenAPI spec ─────────────────
+# (src/device/api.rs / pywiim — see docs/wiim-httpapi-catalog.md)
+- command: getPlayerStatusEx
+  summary: "Get the playback status (extended) — this app's primary status poll"
+
+- command: getAudioInputEnable
+  summary: "Get enabled audio inputs"
+
+- command: getAudioOutputStatus
+  summary: "Get audio output status"
+
+- command: getAudioInputCapbility
+  summary: "Get audio input capability"
+
+- command: getDeviceInfo
+  summary: "Alias of getStatusEx"
+
+- command: getTriggeroutStatus
+  summary: "12V trigger status (Ultra/Pro/Pro Plus only per pywiim)"
+
+- command: GetAcousticCapability
+  summary: "Get acoustic capability"
+
+# ── Playback / Player ─────────────────────────────────────────────────────
+- command: getMetaInfo
+  summary: "Get Current Track Metadata"
+
+- command: getPlayerStatus
+  summary: "Get the playback status"
+
+# ── Presets / Routines ────────────────────────────────────────────────────
+- command: getAllRoutines
+  summary: "Get all routines"
+
+- command: getPresetInfo
+  summary: "Get Preset List"
+
+- command: getRoutineCapability
+  summary: "Get routine capability"
+
+# ── EQ / Room Correction / Channel ────────────────────────────────────────
+- command: EQGetList
+  summary: "Get theGEQ preset list"
+
+- command: EQGetBand
+  summary: "Read the current EQ values for 10 bands GEQ (old API, no source specified, current source)"
+
+- command: EQGetStat
+  summary: "Check if the EQ is ON or OFF (often doesn't work, probably deprecated)"
+
+- command: EQLoad:Flat
+  method: set
+  summary: "Apply and return the EQ values for 10 bands GEQ for a preset (old API, no source specified)"  
+
+- command: RoomCorrGet
+  summary: "Get the current room correction settings"
+
+- command: EQv2GetList:http://moddevices.com/plugins/caps/Eq10HP
+  summary: "Get the preset list for new-style plugin based EQ, using GEQ (old non-encoded API)"
+
+- command: EQv2GetList:http://moddevices.com/plugins/caps/EqNp
+  summary: "Get the preset list for new-style plugin based EQ, using PEQ (old non-encoded API)"
+
+- command: EQv2GetNewList:{"pluginURI":"http://moddevices.com/plugins/caps/Eq10HP"}
+  urlencode: true
+  summary: "Get the preset list for new-style plugin based EQ, using GEQ"
+
+- command: EQv2GetNewList:{"pluginURI":"http://moddevices.com/plugins/caps/EqNp"}
+  urlencode: true
+  summary: "Get the presets for new-style plugin based EQ, using PEQ"
+
+- command: EQv2Load:{"pluginURI":"http://moddevices.com/plugins/caps/Eq10HP","Name":"Flat"}
+  method: set
+  urlencode: true
+  summary: "Apply and get the presets for new-style plugin based EQ, using GEQ (current source)"
+
+- command: EQv2Load:{"pluginURI":"http://moddevices.com/plugins/caps/EqNp","Name":"Flat"}
+  method: set
+  urlencode: true
+  summary: "Apply and get the presets for new-style plugin based EQ, using PEQ (current source)"
+
+- command: EQv2SourceLoad:{"pluginURI":"http://moddevices.com/plugins/caps/Eq10HP","source_name":"wifi","Name":"Flat"}
+  method: set
+  urlencode: true
+  summary: "Apply and get the presets for new-style plugin based EQ, using GEQ to specified source"
+
+- command: EQv2SourceLoad:{"pluginURI":"http://moddevices.com/plugins/caps/EqNp","source_name":"wifi","Name":"Flat"}
+  method: set
+  urlencode: true
+  summary: "Apply and get the presets for new-style plugin based EQ, using PEQ to specified source"
+
+- command: EQGetLV2BandEx:{"pluginURI":"http://moddevices.com/plugins/caps/Eq10HP"}
+  urlencode: true
+  summary: "Read the new style current source EQ bands for a source (GEQ)"
+
+- command: EQGetLV2BandEx:{"pluginURI":"http://moddevices.com/plugins/caps/EqNp"}
+  urlencode: true
+  summary: "Read the new style current source EQ bands for a source (PEQ)"
+
+- command: EQGetLV2SourceBandEx:{"pluginURI":"http://moddevices.com/plugins/caps/Eq10HP","source_name":"wifi"}
+  urlencode: true
+  summary: "Read the new style per-source EQ bands for a source (GEQ)"
+
+- command: EQGetLV2SourceBandEx:{"pluginURI":"http://moddevices.com/plugins/caps/EqNp","source_name":"wifi"}
+  urlencode: true
+  summary: "Read the new style per-source EQ bands for a source (PEQ)"
+
+- command: EQGetSourceModes
+  summary: "Get the EQ source modes"
+
+- command: EQGetLV2Band:http://moddevices.com/plugins/caps/Eq10HP
+  summary: "Read the old-style LV2 band for a plugin, no source specified (GEQ)"
+
+- command: EQGetLV2Band:http://moddevices.com/plugins/caps/EqNp
+  summary: "Read the old-style LV2 band for a plugin, no source specified (PEQ)"
+
+# EQGetLV2SourceBand (non-Ex) isn't confirmed against a real device — the catalog
+# gives it a single opaque `str` param, unlike EQGetLV2SourceBandEx's JSON
+# {pluginURI, source_name} object above. Guessing the old-style plain-colon form
+# by analogy with EQv2GetList's "old non-encoded API" pattern; verify and correct
+# if a real device disagrees.
+- command: "EQGetLV2SourceBand:http://moddevices.com/plugins/caps/Eq10HP:wifi"
+  summary: "Read the old-style per-source EQ bands for a source (GEQ) — unconfirmed param format"
+
+- command: "EQGetLV2SourceBand:http://moddevices.com/plugins/caps/EqNp:wifi"
+  summary: "Read the old-style per-source EQ bands for a source (PEQ) — unconfirmed param format"
+
+- command: RoomCorrGetMode
+  summary: "Get the current room correction mode"
+
+- command: getChannelBalance
+  summary: "Get left/right channel balance"
+
+- command: getChannelMode
+  summary: "Get channel mode"
+
+# ── Subwoofer ────────────────────────────────────────
+
+- command: getSubLPF
+  summary: "Get subwoofer LPF"
+
+# str is a multiroom slave IP; 0.0.0.0 is a harmless placeholder when queried
+# against a device with no slaves — expect an error/empty reply, not a crash.
+- command: "getMRMSubLPF:0.0.0.0"
+  summary: "Get multi-room sub LPF for a slave (placeholder IP; needs a real slave to return real data)"
+
+# ── Audio Output / Input Hardware ─────────────────────────────────────────
+- command: getAudioOutMax32bit
+  summary: "Get audio output maximum 32-bit support"
+
+- command: getAudioOutputVrmsSupportList
+  summary: "Get list of audio outputs that support VRMS"
+
+- command: getAuxAutoSenseEnable
+  summary: "Get AUX auto-sense enable status"
+
+- command: getAuxInMaxCap
+  summary: "Get AUX input maximum capacity"
+
+- command: getCoaxOutMaxCap
+  summary: "Get the maximum capabilities of the coaxial output"
+
+- command: getDigitalFilterType
+  summary: "Get current digital filter type"
+
+- command: getDigitalFilterTypeSupportList
+  summary: "Get list of supported digital filter types"
+
+- command: getHDMIAutoSenseEnable
+  summary: "Get HDMI auto-sense enable"
+
+- command: getLineInMaxCap
+  summary: "Get LINE IN maximum capacity"
+
+- command: getNewAudioOutputHardwareMode
+  summary: "Get audio output mode"
+
+- command: getOutputDigitalFilterTypeSupportList
+  summary: "Get list of supported output digital filter types"
+
+- command: getOutputVoltage
+  summary: "Get output voltage"
+
+- command: getOutputDigitalFilterType:AUDIO_OUTPUT_COAX_MODE
+  summary: Get digital filter for COAX output (should be 0)
+
+- command: getOutputDigitalFilterType:AUDIO_OUTPUT_SPDIF_MODE
+  summary: Get digital filter for SPDIF output (should be 0)
+
+- command: getOutputDigitalFilterType:AUDIO_OUTPUT_AUX_MODE
+  summary: Get digital filter for main analog output
+
+- command: getOutputDigitalFilterType:AUDIO_OUTPUT_PHONE_JACK_MODE
+  summary: Get digital filter for headphone analog output
+
+- command: getOutputDigitalFilterType:AUDIO_OUTPUT_UAC_CARD_MODE
+  summary: Get digital filter for USB output (should be 0)
+
+- command: getSpdifAutoSenseEnable
+  summary: "Get SPDIF auto-sense enable status"
+
+- command: getSpdifInNoiseRemove
+  summary: "Get SPDIF input noise removal status"
+
+- command: getSpdifOutMaxCap
+  summary: "Get SPDIF output maximum capabilities"
+
+- command: getSpdifOutSwitchDelayMs
+  summary: "Get SPDIF sample rate switch latency"
+
+- command: getUacOutMaxCap
+  summary: "Get UAC output maximum capacity"
+
+- command: getSoundCardModeSupportList
+  summary: "Get sound card mode support list"
+
+# Catalog lists these under "Other/Uncategorized" but they're audio-hardware
+# status/capability reads, same family as the block above.
+- command: GetAirplayExtraDelay
+  summary: "Get AirPlay extra delay"
+
+- command: GetFadeFeature
+  summary: "Get fade in/out feature status"
+
+- command: GetSyncPlayExtraDelay
+  summary: "Get sync play extra delay (multiroom audio sync timing)"
+
+- command: PHONO_MODE_SWITCH_GET
+  summary: "Get phono mode switch state"
+
+- command: getActiveSoundCardOutputMode
+  summary: "Get the active sound card output mode"
+
+- command: getAutoSenseEnable
+  summary: "Get auto-sense enable status"
+
+- command: getAuxVoltageSupportList
+  summary: "Get auxiliary voltage support list"
+
+- command: getCecPowerCtrl
+  summary: "Get HDMI-CEC power control status"
+
+- command: getDigitalInputAudioTypeSupport
+  summary: "Get supported digital input audio types"
+
+- command: getInputModeSupportList
+  summary: "Get list of supported input modes"
+
+- command: getLMPFilterCapability
+  summary: "Get LMP filter capability"
+
+- command: getMQAReceiverCap
+  summary: "Get MQA receiver capacity"
+
+- command: getMainSubExtraDelay
+  summary: "Get main/sub extra delay (multiroom audio sync timing)"
+
+- command: getModeRename
+  summary: "Get input mode rename information"
+
+- command: getPlayModeGainConfig
+  summary: "Get play mode gain configuration"
+
+- command: getPlayModeVolumeEnable
+  summary: "Get play mode volume enable"
+
+- command: getPlayModeVolumeValue
+  summary: "Get play mode volume value"
+
+- command: getSoftMute
+  summary: "Get soft mute status"
+
+# getAudioOutputVrms:{str} (str = an output name) isn't included: unlike
+# getOutputDigitalFilterType above, no AUDIO_OUTPUT_*_MODE-style token has been
+# confirmed to work for this specific command against a real device — add by
+# hand with a confirmed value once known (see docs/wiim-httpapi-catalog.md).
+
+# ── Physical Controls (LED/Button/Trigger) ────────────────────────────────
+- command: get_button_volume_step
+  summary: "Get the volume step of the buttons"
+
+- command: get_remote_volume_step
+  summary: "Get the remote volume step"
+
+- command: Button_Enable_GET
+  summary: "Get button enable status"
+
+- command: LED_SWITCH_GET
+  summary: "Get LED switch status"
+
+- command: Reload_Button_GET
+  summary: "Reload button status"
+
+- command: getblediscoveryresult
+  summary: "Get BLE discovery result"
+
+# ── Multiroom (status reads only) ─────────────────────────────────────────
+- command: "multiroom:getSlaveList"
+  summary: "Get a list of LinkPlay available"
+
+- command: "multiroom:getnamegrouplist"
+  summary: "Get the list of group names in multi-room mode"
+
+- command: "multiroom:ConfigGet:leadtime"
+  summary: "Multi-room get lead time"
+
+- command: "multiroom:ConfigGet:realtime_cache_limit"
+  summary: "Get the real-time cache limit"
+
+- command: "multiroom:subwooferGetPairInfo"
+  summary: "Multi-room subwoofer get pair info"
+
+# ── Bluetooth (status reads only) ─────────────────────────────────────────
+- command: getblehidstatus
+  summary: "Get BLE HID status"
+
+- command: getbtstatus
+  summary: "Get Bluetooth status"
+
+- command: getbtpairstatus
+  summary: "Get Bluetooth pairing status"
+
+- command: getbthistory
+  summary: "Get paired Bluetooth devices"
+
+- command: getbtPairDevStat
+  summary: "Get Bluetooth pair device status"
+
+- command: getbtdiscoveryresult
+  summary: "Get Bluetooth (classic) device scan result — distinct from getblediscoveryresult (BLE)"
+
+# ── Device Info / Diagnostics ─────────────────────────────────────────────
+- command: getDebugInfo
+  summary: "Get device debug information"
+
+- command: getDeviceNameChangeable
+  summary: "Get device name changeable status"
+
+- command: getHwErrorInfo
+  summary: "Get hardware error information"
+
+- command: getStatusEx
+  summary: "Get device information"
+
+# This is nice but a bit crazy too, all the internal logs: kernel, applications, i2c devices,
+# content of the filesystem, etc... you name it, it's in there, let's not exfiltrate it
+# by default.
+#- command: getsyslog
+#  method: getsyslog
+#  summary: "Get system log — special two-step retrieval, see wiim-capture's capture_syslog()"
+
+- command: getFirmwareVersion
+  summary: "Get firmware version"
+
+- command: getFeatureCapbility
+  summary: "Get feature capability"
+
+- command: getNetwork
+  summary: "Get the network configuration"
+
+- command: getNetworkHealth
+  summary: "Get network health status"
+
+- command: wlanGetConnectState
+  summary: "Get the connection status"
+
+- command: GetCurrentWirelessConnect
+  summary: "Get current wireless connection information"
+
+- command: streamServicesCapability
+  summary: "Get streaming services capabilities"
+
+- command: getbatteryval
+  summary: "Get battery value (battery-powered models only)"
+
+# ── Alarms (status read only — never marked safe: set, no audible/mutating alarm calls) ──
+- command: "getAlarmClock:{n}"
+  params:
+    - {name: n, values: [0, 1, 2]}
+  summary: "Get alarm clock configuration for slot n"
+
+# ── Misc ──────────────────────────────────────────────────────────────────
+- command: getWeatherInfo
+  summary: "Get weather info"
+
+- command: getLightOperationBrightConfig
+  summary: "Get light operation brightness configuration (WiiM Ultra screen)"
+
+- command: get_ui_config
+  summary: "Get UI config"
+
+- command: get_ui_wallpaper_list
+  summary: "Get UI wallpaper list"
+
+# Considered and excluded (ambiguous/borderline, revisit by hand if useful):
+#   getLowPriorityPromptDisable  — voice-assistant-prompt-adjacent, excluded per
+#                                  the Alexa/Voice-Assistant category policy above
+#   getPowerModeTime             — power/standby-timer-adjacent, excluded per the
+#                                  same reasoning as the Firmware/Reboot/Power
+#                                  (DANGEROUS) category, even though Get-only
+#   getCxdishPrecent             — unclear semantics, name suggests a firmware/
+#                                  update-progress percentage (like the excluded
+#                                  getMvRomBurnPrecent); excluded for caution
+#   getSetupRouterInfo           — Network/WiFi-adjacent, excluded per category policy
+#   getIPV6Enable                — Network/WiFi-adjacent, excluded per category policy
+#   getAsrStatus                 — Automatic Speech Recognition status, excluded
+#                                  per the Alexa/Voice-Assistant category policy
+#   getLPAuthCode:hostId={str}:clientId={str2}, checkAccessPIN
+#                                 — auth/handshake-adjacent, excluded for caution
+#   getStreamServiceConfig:{source} — Streaming-service-account-adjacent, excluded
+#                                  per category policy
+#   timeSync:{YYYYMMDDHHMMSS}    — summary says "Get network time" but the param
+#                                  looks like a time to push to the device, not a
+#                                  read; ambiguous, excluded pending clarification
+

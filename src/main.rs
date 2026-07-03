@@ -4,8 +4,9 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 mod config;
-mod device;
 mod ui;
+
+use rustywiim::device;
 
 fn main() -> glib::ExitCode {
     let app = adw::Application::builder()
