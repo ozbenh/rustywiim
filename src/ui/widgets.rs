@@ -1,6 +1,6 @@
 #![allow(deprecated)] // glib clone! old-style @strong syntax
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use adw::prelude::*;
@@ -682,31 +682,113 @@ fn build_mini_transport() -> (Label, Button, Button, Button, Button, gtk::Image,
      mini_vol_scale, mini_mute_btn, mini_vol_popover, mini_transport)
 }
 
-/// A thin, invisible, full-height strip along `edge` that starts an
-/// interactive horizontal resize when pressed — see the comment at its call
-/// site in `build_mini_window()` for why an undecorated window needs this at
-/// all. `align` is the strip's own edge (Start for West, End for East).
-fn build_mini_resize_edge(edge: gtk::gdk::SurfaceEdge, align: Align) -> GtkBox {
+/// Narrowest/widest the mini window can be dragged to via `build_mini_resize_handle()`.
+const MINI_WIDTH_MIN: i32 = 260;
+const MINI_WIDTH_MAX: i32 = 900;
+
+/// Hit-test width (px) for the right-edge resize drag, measured inward from
+/// `stable`'s own right edge in `wire_mini_resize()` — a bit wider than the
+/// visible cursor strip below, for an easier grab target.
+const MINI_RESIZE_EDGE_PX: f64 = 10.0;
+
+/// A thin, invisible, full-height strip along the window's right edge.
+/// Purely a cursor hint (`ew-resize` on hover) — the actual resize gesture
+/// is wired onto a *different*, stable-origin widget by `wire_mini_resize()`
+/// (see its doc comment for why this strip can't carry the gesture itself).
+fn build_mini_resize_handle() -> GtkBox {
     let handle = GtkBox::builder()
         .width_request(6)
         .hexpand(false).vexpand(true)
-        .halign(align)
+        .halign(Align::End)
         .build();
     handle.set_cursor_from_name(Some("ew-resize"));
-
-    let gesture = gtk::GestureClick::new();
-    gesture.set_button(1); // primary button only
-    gesture.connect_pressed(glib::clone!(@weak handle => move |gesture, _n_press, x, y| {
-        let Some(surface) = handle.native().and_then(|n| n.surface()) else { return };
-        let Some(toplevel) = surface.downcast::<gtk::gdk::Toplevel>().ok() else { return };
-        let device = gesture.current_event_device();
-        let button = gesture.current_button() as i32;
-        let time   = gesture.current_event_time();
-        toplevel.begin_resize(edge, device.as_ref(), button, x, y, time);
-    }));
-    handle.add_controller(gesture);
-
     handle
+}
+
+/// Wires a right-edge resize drag onto `stable`, driven entirely by hand
+/// (`gtk::GestureDrag` + `gtk::Window::set_default_width()`) rather than the
+/// compositor-mediated `gdk::Toplevel::begin_resize()` a GTK CSD
+/// border-drag would normally use — see the GDK4 gotcha in `CLAUDE.md` for
+/// why that was abandoned.
+///
+/// `stable` must be a widget whose own on-screen *origin* (top-left) never
+/// moves as a side effect of the resize itself — `mini_outer` in
+/// `build_mini_window()`, which only ever grows rightward and keeps a fixed
+/// top-left, qualifies; the resize-cursor strip from
+/// `build_mini_resize_handle()` does not, because it's right-aligned and so
+/// its own origin necessarily shifts right as the window grows. The first
+/// attempt attached the gesture to that strip directly: `GtkGestureDrag`'s
+/// offset is relative to whatever widget it's attached to, so each resize
+/// we applied moved the reference frame for the *next* reading, creating a
+/// feedback loop (`new_width` computed from an offset that itself shrank by
+/// however much we'd already grown the window). Symptoms were exactly what
+/// that predicts: rapid oscillation between two sizes while the pointer
+/// briefly stopped moving (each resize is itself a synthetic "the pointer's
+/// local position just changed" event, triggering another, opposite
+/// correction), and systematic undershoot while dragging continuously. A
+/// widget anchored at a fixed origin doesn't have this problem — its
+/// reported offset is a clean read of actual pointer movement.
+///
+/// Right-edge-only, not left+right: GTK4/Wayland gives a client no way to
+/// reposition its own top-level window, so growing from a fixed top-left
+/// anchor (i.e. rightward) is the only direction that can be made to track
+/// the cursor correctly.
+fn wire_mini_resize(stable: &gtk::Overlay) {
+    let stable = stable.clone();
+    let gesture = gtk::GestureDrag::new();
+    gesture.set_button(1); // primary button only
+    let start_width:   Rc<Cell<i32>>                            = Rc::new(Cell::new(0));
+    // Latest computed width from drag-update, applied at most once per
+    // rendered frame by the tick callback below rather than immediately —
+    // calling set_default_width() straight from drag-update fired a
+    // resize/layout pass on every raw pointer-motion event, faster than the
+    // compositor could redraw, and briefly showed a "shadow" of the
+    // previous size superimposed while the drag was still in progress.
+    let pending_width: Rc<Cell<Option<i32>>>                    = Rc::new(Cell::new(None));
+    let tick_id:       Rc<RefCell<Option<gtk::TickCallbackId>>> = Rc::new(RefCell::new(None));
+
+    gesture.connect_drag_begin(glib::clone!(
+        @strong stable, @strong start_width, @strong pending_width, @strong tick_id
+        => move |gesture, x, _y| {
+            // `stable` spans the whole window, so this fires for a press
+            // anywhere in it — only actually arm a resize near its right edge.
+            if x < stable.width() as f64 - MINI_RESIZE_EDGE_PX {
+                return;
+            }
+            // Claim the sequence: mini_root (an ancestor, gtk::WindowHandle)
+            // has its own built-in click-and-drag-to-move gesture on the
+            // same pointer sequence. Without an explicit claim here, that
+            // ancestor gesture is free to also recognize the drag and wins
+            // it — the cursor still showed the resize shape (that's just
+            // CSS on hover), but the drag itself moved the window.
+            gesture.set_state(gtk::EventSequenceState::Claimed);
+            let Some(win) = stable.native().and_then(|n| n.downcast::<gtk::Window>().ok()) else { return };
+            start_width.set(win.width());
+            pending_width.set(None);
+            let id = stable.add_tick_callback(glib::clone!(@strong win, @strong pending_width => move |_, _| {
+                if let Some(w) = pending_width.take() {
+                    win.set_default_width(w);
+                }
+                glib::ControlFlow::Continue
+            }));
+            *tick_id.borrow_mut() = Some(id);
+        }
+    ));
+    gesture.connect_drag_update(glib::clone!(
+        @strong start_width, @strong pending_width, @strong tick_id => move |_, offset_x, _offset_y| {
+            if tick_id.borrow().is_none() { return; } // press wasn't near the edge
+            let new_width = (start_width.get() + offset_x.round() as i32).clamp(MINI_WIDTH_MIN, MINI_WIDTH_MAX);
+            pending_width.set(Some(new_width));
+        }
+    ));
+    gesture.connect_drag_end(glib::clone!(
+        @strong tick_id, @strong pending_width => move |_, _, _| {
+            let Some(id) = tick_id.borrow_mut().take() else { return }; // press wasn't near the edge
+            id.remove();
+            pending_width.set(None);
+        }
+    ));
+    stable.add_controller(gesture);
 }
 
 pub(super) fn build_mini_window(app: &adw::Application) -> (MiniWidgets, gtk::ApplicationWindow) {
@@ -774,17 +856,15 @@ pub(super) fn build_mini_window(app: &adw::Application) -> (MiniWidgets, gtk::Ap
     mini_outer.add_css_class("mini-outer");
     mini_outer.set_overflow(gtk::Overflow::Hidden);
 
-    // Resizable(true) alone (below) only permits the window manager/
-    // compositor to resize the surface — it doesn't give an undecorated
-    // window any UI to *trigger* that, since decorated(false) means there's
-    // no server-side titlebar/border providing the usual edge hit-testing.
-    // These are thin invisible strips along the left/right edges, added as
-    // the topmost overlay children so they receive the press before
-    // mini_content underneath, that manually kick off an interactive resize
-    // via the surface's own begin_resize() — the same mechanism GTK's own
-    // CSD border-drag logic uses internally.
-    mini_outer.add_overlay(&build_mini_resize_edge(gtk::gdk::SurfaceEdge::West, Align::Start));
-    mini_outer.add_overlay(&build_mini_resize_edge(gtk::gdk::SurfaceEdge::East, Align::End));
+    // An undecorated window (decorated(false) below) has no server-side
+    // titlebar/border providing the usual edge hit-testing, so there's no UI
+    // to resize it at all without this: a thin invisible strip along the
+    // right edge, added as the topmost overlay child so it receives the
+    // press before mini_content underneath (cursor hint only — see
+    // wire_mini_resize()'s doc comment for why the actual gesture is wired
+    // onto mini_outer itself instead of this strip).
+    mini_outer.add_overlay(&build_mini_resize_handle());
+    wire_mini_resize(&mini_outer);
 
     let mini_root = gtk::WindowHandle::new();
     mini_root.set_child(Some(&mini_outer));
@@ -792,7 +872,18 @@ pub(super) fn build_mini_window(app: &adw::Application) -> (MiniWidgets, gtk::Ap
     let mini_win = gtk::ApplicationWindow::builder()
         .application(app)
         .decorated(false)
-        .resizable(true)
+        // Permanently non-resizable. GNOME/Mutter only offers its
+        // edge-tiling/snap-to-maximize gesture (dragging a window to a
+        // screen edge or corner, or inheriting a maximized sibling window's
+        // state on first present) to windows advertised as resizable, so an
+        // always-resizable undecorated window was getting silently
+        // full-screened by that gesture. wire_mini_resize()'s
+        // set_default_width() calls still work with this permanently
+        // false: unlike gdk::Toplevel::begin_resize() (a compositor-side
+        // interactive resize, abandoned for this — see the GDK4 gotcha in
+        // CLAUDE.md), it's a pure client-side size *request*, not something
+        // that needs the compositor to agree the window is resizable first.
+        .resizable(false)
         .default_width(380)
         .title("RustyWiiM")
         .child(&mini_root)
