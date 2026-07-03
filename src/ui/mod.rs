@@ -13,7 +13,7 @@ mod widgets;
 use playback::decode_loop_mode;
 use widgets::*;
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -315,6 +315,15 @@ struct DeviceWindowInner {
     /// SSID for which window state was last applied; guards against
     /// re-applying on every device-changed fire for the same device.
     applied_window_key: RefCell<String>,
+    /// Guards `cleanup()` so its body only actually runs once, even though
+    /// it's invoked from both `close-request` and `connect_destroy` for a
+    /// single user-initiated close. Nothing in `cleanup()` benefits from
+    /// running twice, and computing "is this the last visible window"
+    /// specifically needs to *not* re-run on the second call, since by then
+    /// the window may be torn down enough for that to (wrongly) come out
+    /// differently — a single guard on the whole function is simpler than
+    /// caching that one value.
+    cleaned_up: Cell<bool>,
     // ── Mini player ───────────────────────────────────────────────────────────
     mini:              MiniWidgets,
     mini_mode:         RefCell<bool>,
@@ -335,6 +344,14 @@ impl Drop for DeviceWindowInner {
 
 impl DeviceWindowInner {
     fn cleanup(&self) {
+        // Fires from both close-request and connect_destroy for a single
+        // user-initiated close; nothing below benefits from running twice,
+        // and computing "is this the last visible window" specifically
+        // needs to run exactly once, while self.window is still guaranteed
+        // fully alive/registered (true on the first call, not guaranteed by
+        // the second) — so just don't let there be a second call.
+        if self.cleaned_up.replace(true) { return; }
+
         let uuid = self.ds.device_info()
             .map(|di| di.uuid)
             .filter(|u| !u.is_empty())
@@ -347,11 +364,41 @@ impl DeviceWindowInner {
         if let Some(id) = self.settle_timer.borrow_mut().take() { id.remove(); }
         if let Some(id) = self.config_save_timer.borrow_mut().take() { id.remove(); }
         self.save_config_now();
+
+        // Skip saving the "window_open" flag to false if that was the last
+        // window, since that will be "quit" operation, it's more intuitive
+        // to come back to the same state on re-launch.
+        //
         // Window geometry is still saved above either way — only the
-        // window_open flag itself is skipped during quit, so a window that
-        // was open reopens on next launch instead of being forgotten.
-        if !uuid.is_empty() && !QUITTING.load(Ordering::Relaxed) {
+        // window_open flag itself is skipped, in two cases: an explicit
+        // app quit (QUITTING), and closing what turns out to be the last
+        // visible window.
+        //
+        // Settings windows never register with the GtkApplication, so they
+        // don't count as "another visible window" here — closing
+        // your last device window while a Settings window happens to be
+        // open still preserves it. self.mini_win is excluded too: it's the
+        // *other surface of this same device window*, not a separate one —
+        // closing via mini.close_btn calls window.close() while mini_win is
+        // still visible (nothing hides it until this function's last line),
+        // so without this exclusion that path always saw "another visible
+        // window" and never recognized itself as the last one.
+        let last_window = self.window.application().is_some_and(|app| {
+            !app.windows().iter().any(|w| {
+                w.upcast_ref::<gtk::Widget>() != self.window.upcast_ref::<gtk::Widget>()
+                    && w.upcast_ref::<gtk::Widget>() != self.mini_win.upcast_ref::<gtk::Widget>()
+                    && w.is_visible()
+            })
+        });
+        dbg_ui(&format!(
+            "DeviceWindow cleanup uuid={uuid} last_window={last_window} quitting={}",
+            QUITTING.load(Ordering::Relaxed)
+        ));
+        if !uuid.is_empty() && !QUITTING.load(Ordering::Relaxed) && !last_window {
+            dbg_ui(&format!("DeviceWindow cleanup uuid={uuid} persisting window_open=false"));
             config::update(|cfg| cfg.device_mut(&uuid).window_open = false);
+        } else if !uuid.is_empty() {
+            dbg_ui(&format!("DeviceWindow cleanup uuid={uuid} preserving window_open (last_window or quitting)"));
         }
         self.mini_win.destroy();
     }
@@ -553,6 +600,7 @@ impl DeviceWindow {
             settle_timer,
             config_save_timer,
             applied_window_key: RefCell::new(cfg_uuid.clone()),
+            cleaned_up: Cell::new(false),
             mini,
             mini_mode:         RefCell::new(false),
             mini_toggling:     RefCell::new(false),
