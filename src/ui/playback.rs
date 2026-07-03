@@ -387,6 +387,16 @@ impl DeviceWindowInner {
         *self.ui_state.drag_timer.borrow_mut() = Some(id);
     }
 
+    /// Nudge the volume by `delta` (clamped to 0..=100) — used by the Up/Down
+    /// keyboard shortcuts. Routes through `on_vol_changed` so it gets the
+    /// same UI sync + rate-limited device command + drag-protection timer as
+    /// a manual slider drag.
+    pub(super) fn step_volume(&self, delta: i32) {
+        let current = self.ds.get_vol().unwrap_or(0) as i32;
+        let new_vol = (current + delta).clamp(0, 100);
+        self.on_vol_changed(new_vol as f64);
+    }
+
     // ── Playback ──────────────────────────────────────────────────────────────
 
     pub(super) fn update_playback_ui(&self, mask: u32) {
@@ -751,6 +761,76 @@ impl DeviceWindowInner {
         self.update_input_display();
     }
 } // impl DeviceWindowInner
+
+/// Briefly apply the "key-flash" CSS class to `btn`, then remove it — the
+/// visual acknowledgement for a keyboard-triggered prev/next/play-pause.
+/// Deliberately our own class, not libadwaita's built-in `.suggested-action`:
+/// `.transport-btn`/`.play-btn` (and their mini-window equivalents) set an
+/// explicit `background-color` in `dark.css`/`system.css`, loaded at
+/// `STYLE_PROVIDER_PRIORITY_APPLICATION` — GTK's cascade resolves provider
+/// priority *before* selector specificity, so that plain background-color
+/// always wins over `.suggested-action` (a lower-priority, THEME-level
+/// libadwaita class) regardless of which class list order or specificity.
+/// `key-flash` is defined in our own stylesheets with compound selectors
+/// that outrank the base rule instead.
+fn flash_button(btn: &gtk::Button) {
+    btn.add_css_class("key-flash");
+    let btn = btn.clone();
+    glib::timeout_add_local_once(std::time::Duration::from_millis(200), move || {
+        btn.remove_css_class("key-flash");
+    });
+}
+
+/// Global playback/volume/window-mode keyboard shortcuts, shared by the main
+/// and mini windows via the `EventControllerKey`s wired in `mod.rs`.
+/// `prev_btn`/`next_btn`/`play_btn` are whichever window's transport buttons
+/// received the key, so the flash appears on the window the user is
+/// actually looking at.
+pub(super) fn handle_transport_key(
+    i:        &Rc<DeviceWindowInner>,
+    keyval:   gtk::gdk::Key,
+    state:    gtk::gdk::ModifierType,
+    prev_btn: &gtk::Button,
+    next_btn: &gtk::Button,
+    play_btn: &gtk::Button,
+) -> glib::Propagation {
+    // Ignore Ctrl/Alt combinations so this doesn't shadow other accelerators
+    // (Ctrl-W, Ctrl-Q, Alt-based window-manager bindings, etc.).
+    if state.intersects(gtk::gdk::ModifierType::CONTROL_MASK | gtk::gdk::ModifierType::ALT_MASK) {
+        return glib::Propagation::Proceed;
+    }
+    match keyval {
+        gtk::gdk::Key::Left => {
+            i.ds.do_prev();
+            flash_button(prev_btn);
+            glib::Propagation::Stop
+        }
+        gtk::gdk::Key::Right => {
+            i.ds.do_next();
+            flash_button(next_btn);
+            glib::Propagation::Stop
+        }
+        gtk::gdk::Key::space => {
+            i.ds.do_play_pause();
+            flash_button(play_btn);
+            glib::Propagation::Stop
+        }
+        gtk::gdk::Key::Up => {
+            i.step_volume(5);
+            glib::Propagation::Stop
+        }
+        gtk::gdk::Key::Down => {
+            i.step_volume(-5);
+            glib::Propagation::Stop
+        }
+        gtk::gdk::Key::m | gtk::gdk::Key::M => {
+            if *i.mini_mode.borrow() { i.exit_mini_mode(); } else { i.enter_mini_mode(); }
+            schedule_config_save(i);
+            glib::Propagation::Stop
+        }
+        _ => glib::Propagation::Proceed,
+    }
+}
 
 /// Schedule a deferred config save for `inner`, debounced at 500 ms.
 /// Cancels any previously scheduled save so only one write happens per burst.

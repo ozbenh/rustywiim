@@ -29,6 +29,20 @@ window { background-color: #0a0a0a; }
     border: none; border-radius: 50%; box-shadow: none;
 }
 .play-btn:hover { background-color: lighter(@rustywiim_accent); }
+/* Brief keyboard-shortcut acknowledgement — playback::flash_button() adds
+   "key-flash" for ~200ms. Compound (two-class) selectors so these
+   deterministically outrank the plain .transport-btn/.play-btn background
+   above regardless of file order; libadwaita's own .suggested-action
+   class does NOT work here even combined with these buttons — it's a
+   lower-priority (THEME) stylesheet, and GTK's cascade resolves provider
+   priority before specificity, so this file's plain background-color above
+   always wins over it anyway. */
+.transport-btn.key-flash, .mini-transport-btn.key-flash {
+    background-color: @rustywiim_accent; color: #0a0a0a;
+}
+.play-btn.key-flash, .mini-play-btn.key-flash {
+    background-color: lighter(@rustywiim_accent);
+}
 .loop-btn     { min-width: 36px; min-height: 36px; padding: 0; -gtk-icon-size: 16px; background-color: transparent; color: #909090; }
 .loop-btn:hover { background-color: #2a2a2a; color: #ffffff; }
 .loop-active  { color: @rustywiim_accent; }

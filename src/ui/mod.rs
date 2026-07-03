@@ -726,6 +726,24 @@ impl DeviceWindow {
             move |_| { if let Some(i) = i.upgrade() { i.ds.do_next(); } }
         });
 
+        // ── Keyboard shortcuts (main window) ────────────────────────────────────
+        // Capture phase: must win over a focused seek/volume Scale's own
+        // Left/Right/Up/Down handling, since the whole point is a global
+        // shortcut that works regardless of what has focus.
+        {
+            let key_ctrl = gtk::EventControllerKey::new();
+            key_ctrl.set_propagation_phase(gtk::PropagationPhase::Capture);
+            key_ctrl.connect_key_pressed({
+                let i = Rc::downgrade(&inner);
+                move |_, keyval, _keycode, state| {
+                    let Some(i) = i.upgrade() else { return glib::Propagation::Proceed };
+                    let (prev, next, play) = (i.pw.btn_prev.clone(), i.pw.btn_next.clone(), i.pw.btn_play.clone());
+                    playback::handle_transport_key(&i, keyval, state, &prev, &next, &play)
+                }
+            });
+            window.add_controller(key_ctrl);
+        }
+
         inner.pw.shuffle.connect_clicked({
             let i = Rc::downgrade(&inner);
             move |_| {
@@ -895,6 +913,21 @@ impl DeviceWindow {
                 glib::Propagation::Proceed
             }
         });
+
+        // ── Keyboard shortcuts (mini window) ────────────────────────────────────
+        {
+            let key_ctrl = gtk::EventControllerKey::new();
+            key_ctrl.set_propagation_phase(gtk::PropagationPhase::Capture);
+            key_ctrl.connect_key_pressed({
+                let i = Rc::downgrade(&inner);
+                move |_, keyval, _keycode, state| {
+                    let Some(i) = i.upgrade() else { return glib::Propagation::Proceed };
+                    let (prev, next, play) = (i.mini.btn_prev.clone(), i.mini.btn_next.clone(), i.mini.btn_play.clone());
+                    playback::handle_transport_key(&i, keyval, state, &prev, &next, &play)
+                }
+            });
+            inner.mini_win.add_controller(key_ctrl);
+        }
 
         // ── Mini window signals ───────────────────────────────────────────────────
         // X / Alt+F4 on the mini window → exit mini mode (don't destroy the window).
