@@ -101,6 +101,14 @@ For now just this one:
 	* Hammer the WiiM a bit less on poll
 	* Mini window is horizontally resizable
 
+  * 0.6.1 - 2026-07-03
+    * Rework mini-window resize to avoid compositor maximization (side effect: it
+	  can only be resized from the right hand edge, not the left hand one).
+    * Add key shortcuts (left & right for prev & next, space for play/pause, up & down
+	  for volume and M for minimize/maximize).
+    * When closing the last window, don't save it as closed. The app will quit and
+	  will be re-launched with that window opened instead of the device-list now.
+
 ## Screenshots ##
 
 ![Screenshot](pics/screenshot1.png)
