@@ -35,8 +35,19 @@ For now just this one:
 
 | Option              | Description                                                                                                                                                              |
 |:--------------------|:-------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `--debug=<options>` | Comma-separated list of debug/tracing options: `api` (dump API calls), `state` (state change messages), `device` (device capabilities detection), `all` (all of the above) |
+| `--debug=<options>` | Comma-separated list of debug/tracing options: `api` (dump API calls), `state` (state change messages), `device` (device capabilities detection), `discovery` (the discovery machinery), `ui` (parts of the GUI code), `all` (all of the above) |
 | `--tls=<mode>`      | Override TLS mode: `wiim` (default), `audio-pro`, `any`, `http`                                                                                                         |
+## Helping with your device ##
+
+Since I can only really test here with a WiiM Ultra and the implementation of the API seems to vary fairly wildly from device to device (or FW version to FW version), I have added a little tool that gets built in `target/debug/wiim-capture`.
+
+You call it by passing the IP address of your device as an argugment, for example:
+
+`wiim-capture 192.168.1.38`
+
+It will send a number of non-destructive commands to the device (basically all "get" type commands), and generate a large JSON file called "<model>_<date>_<time>.json", for example "WiiM_Ultra_20260704_104058.json". Unless I missed some, all the MAC addresses, IP addresses, SSIDs, UUIDs etc... (identifying information) should be sanitized out.
+
+You can pretty-print this file using `target/debug/wiim-capdump`. I would appreciate capture files sent to me (benh@kernel.crashing.org) so I can keep a collection. For now any device that isn't a WiiM Ultra, I will update this once I have enough of them with more precise asks. Please also let me know if you are ok with me shipping the file in a future version since I plan to build some testing infrastructure using those capture files. Thanks !
 
 ## Known issues ##
 
@@ -108,6 +119,10 @@ For now just this one:
 	  for volume and M for minimize/maximize).
     * When closing the last window, don't save it as closed. The app will quit and
 	  will be re-launched with that window opened instead of the device-list now.
+
+  * 0.6.2 - 2026-07-04
+    * Make modern theme the default
+	* Add wiim-capture and wiim-capdump for creating/viewing command capture files
 
 ## Screenshots ##
 
