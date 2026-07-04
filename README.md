@@ -124,6 +124,9 @@ You can pretty-print this file using `target/debug/wiim-capdump`. I would apprec
     * Make modern theme the default
 	* Add wiim-capture and wiim-capdump for creating/viewing command capture files
 
+  * 0.6.3 - 2026-07-05
+    * Remove remaining target_ip field from capture files
+
 ## Screenshots ##
 
 ![Screenshot](pics/screenshot1.png)
