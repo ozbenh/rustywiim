@@ -197,7 +197,6 @@ pub struct UpnpCapture {
 /// Top-level capture file written by `wiim-capture`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CaptureFile {
-    pub target_ip: String,
     /// RFC 3339, UTC.
     pub captured_at: String,
     pub gave_up: bool,

@@ -868,7 +868,6 @@ async fn main() {
     let Some(winner) = winner else {
         eprintln!("[wiim-capture] gave up: neither getStatusEx nor getStatus responded on any probed port");
         let capture = CaptureFile {
-            target_ip: ip,
             captured_at,
             gave_up: true,
             model: "unknown".to_string(),
@@ -931,7 +930,6 @@ async fn main() {
     let upnp = capture_upnp(&ip).await;
 
     let capture = CaptureFile {
-        target_ip: ip,
         captured_at,
         gave_up: false,
         model,

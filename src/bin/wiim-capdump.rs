@@ -624,8 +624,7 @@ fn render_capture(mode: OutputMode, value: &serde_json::Value) -> String {
     let mut out = String::new();
 
     let model = get_str("model").unwrap_or("unknown");
-    let target_ip = get_str("target_ip").unwrap_or("?");
-    out.push_str(&mode.heading(1, &format!("WiiM Capture: {model} ({target_ip})")));
+    out.push_str(&mode.heading(1, &format!("WiiM Capture: {model}")));
     out.push('\n');
 
     let mut meta = Vec::new();
