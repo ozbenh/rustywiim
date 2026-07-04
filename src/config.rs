@@ -15,7 +15,6 @@ fn default_accent_color() -> String { "#4ecdc4".to_string() }
 #[serde(rename_all = "snake_case")]
 pub enum ThemeMode {
     /// Adwaita, follows the OS light/dark preference.
-    #[default]
     System,
     /// Force Adwaita light mode.
     SystemLight,
@@ -29,6 +28,7 @@ pub enum ThemeMode {
     /// semi-transparent panels. Main window only for now — the mini window
     /// keeps the classic RustyWiiM styling regardless of this setting.
     #[serde(rename = "rusty_wiim_modern")]
+    #[default]
     RustyWiiMModern,
 }
 
