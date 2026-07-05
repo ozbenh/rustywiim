@@ -194,14 +194,25 @@ window.mini-window.mini-window-modern .mini-main-row {
 /* dark.css's mini-device-label/mini-status-label greys (#606060) and
    mini-restore-btn's #555555 assume a flat black background — too dark
    against the blur even inside the top-bar card above. mini-title/
-   mini-artist (ScrollFadeLabel, not a plain Label) get the same treatment
-   via the drop-shadow property instead of text-shadow — see
+   mini-artist (ScrollFadeLabel, not a plain Label) can't take text-shadow
+   via CSS — they get contrast from the drop-shadow property instead, see
    set_scroll_fade_drop_shadow() in ui/mod.rs, toggled live alongside this
-   marker class since it can't be expressed in CSS. */
+   marker class since it can't be expressed in CSS. mini-title's dark.css
+   color is already pure white (#ffffff), so the drop-shadow alone is
+   enough there; mini-artist's dark.css grey (#909090) still needs an
+   explicit lighter override here, same as mini-device-label/
+   mini-status-label — same underlying problem (a mid-grey tuned for a
+   flat black background, not a blur), same fix. */
 window.mini-window.mini-window-modern .mini-device-label,
 window.mini-window.mini-window-modern .mini-status-label {
     color: #cccccc;
     text-shadow: 0 0 2px rgba(0, 0, 0, 0.9);
+}
+/* No text-shadow here — ScrollFadeLabel doesn't consume it (see comment
+   above); contrast for this one comes from the drop-shadow property
+   instead, already toggled on for Modern regardless of this rule. */
+window.mini-window.mini-window-modern .mini-artist {
+    color: #cccccc;
 }
 window.mini-window.mini-window-modern .mini-restore-btn,
 window.mini-window.mini-window-modern menubutton.mini-restore-btn > button {
