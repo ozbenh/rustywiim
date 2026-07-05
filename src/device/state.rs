@@ -510,147 +510,191 @@ impl DeviceState {
     ) {
         *self.imp().poll_tx.borrow_mut() = Some(poll_tx.clone());
         let ds_weak = self.downgrade();
-        let rt = self.rt();
         glib::timeout_add_local(Duration::from_secs(1), move || {
             let Some(ds) = ds_weak.upgrade() else { return glib::ControlFlow::Break };
-            let mut inner = ds.imp().inner.borrow_mut();
-            let state = inner.connection_state;
+            ds.do_poll(&poll_tx, &slow_tx)
+        });
+    }
 
-            // Nothing to do while not yet connected or deliberately disconnected.
-            if matches!(state, ConnectionState::Disconnected | ConnectionState::Connecting) {
-                return glib::ControlFlow::Continue;
+    /// Fires once per second while Connected or Failed (a no-op tick while
+    /// Disconnected/Connecting). Reads everything this tick needs to decide
+    /// from `Inner` in one borrow — several interrelated pieces of state
+    /// that don't split cleanly without just moving the borrow-juggling
+    /// into another function's parameter list — then, once the borrow is
+    /// dropped, hands off to a focused helper per action: reconnecting, the
+    /// fast poll, one slow-poll phase.
+    fn do_poll(
+        &self,
+        poll_tx: &async_channel::Sender<PollData>,
+        slow_tx: &async_channel::Sender<SlowPollResult>,
+    ) -> glib::ControlFlow {
+        let mut inner = self.imp().inner.borrow_mut();
+        let state = inner.connection_state;
+
+        // Nothing to do while not yet connected or deliberately disconnected.
+        if matches!(state, ConnectionState::Disconnected | ConnectionState::Connecting) {
+            return glib::ControlFlow::Continue;
+        }
+
+        let now = Instant::now();
+
+        // Is it time to start a new slow-poll cycle / reconnect attempt?
+        let cycle_due = inner.last_slow_poll
+            .map_or(true, |t| now.duration_since(t) >= SLOW_POLL_INTERVAL);
+
+        // Flush any pending volume command if the debounce window has elapsed.
+        let pending_vol = if state == ConnectionState::Connected
+            && inner.target_volume >= 0
+            && inner.last_volume_cmd
+                .map_or(true, |t| now.duration_since(t) >= VOLUME_DEBOUNCE)
+        {
+            let v = inner.target_volume as u32;
+            inner.target_volume   = -1;
+            inner.last_volume_cmd = Some(now);
+            Some(v)
+        } else {
+            None
+        };
+
+        let do_reconnect   = cycle_due && state == ConnectionState::Failed;
+        let dispatch_phase = self.advance_slow_poll_rotation(&mut inner, state, cycle_due, now);
+
+        let client        = inner.client.clone();
+        // Read straight off `capabilities` rather than a separate cached
+        // bool in `Inner` — `supports_presets` was already purely
+        // static/redundant with capabilities, and `probes_outputs` now
+        // lives there too (set by `capabilities::detect_capabilities()`).
+        // See ANALYSIS.md item 18.
+        let probe_outputs = inner.capabilities.as_ref().is_some_and(|c| c.probes_outputs);
+        let probe_presets = inner.capabilities.as_ref().is_some_and(|c| c.supports_presets);
+        let preset_fp     = inner.preset_fp.clone();
+        drop(inner);
+
+        // Reconnect when Failed and the interval has elapsed.
+        if do_reconnect {
+            self.try_reconnect(client);
+            return glib::ControlFlow::Continue;
+        }
+
+        let Some(client) = client else { return glib::ControlFlow::Continue };
+
+        // Send any deferred volume command first.
+        if let Some(vol) = pending_vol {
+            let cv = client.clone();
+            self.rt().spawn(async move { let _ = cv.set_volume(vol).await; });
+        }
+
+        self.dispatch_fast_poll(&client, poll_tx);
+        self.dispatch_slow_poll(&client, slow_tx, dispatch_phase, probe_outputs, probe_presets, preset_fp);
+
+        glib::ControlFlow::Continue
+    }
+
+    /// Advances the slow-poll rotation (see `SlowPollPhase`), starting a
+    /// new cycle if one is due, and returns this tick's phase to run, if
+    /// any. Takes `&mut Inner` directly rather than re-borrowing —
+    /// `do_poll()` already holds the borrow this needs to read/mutate
+    /// (`slow_poll_active`/`slow_poll_phase`/`last_slow_poll`).
+    fn advance_slow_poll_rotation(
+        &self,
+        inner:     &mut Inner,
+        state:     ConnectionState,
+        cycle_due: bool,
+        now:       Instant,
+    ) -> Option<SlowPollPhase> {
+        if state != ConnectionState::Connected {
+            return None;
+        }
+        if !inner.slow_poll_active && cycle_due {
+            inner.slow_poll_active = true;
+            inner.slow_poll_phase  = SlowPollPhase::FIRST;
+            inner.last_slow_poll   = Some(now);
+            let device_id = inner.device_info.as_ref()
+                .map(|d| format!("{} ({})", d.device_name, d.ip_addr()))
+                .unwrap_or_else(|| "unknown".to_string());
+            dbg(&format!(
+                "slow poll: starting new cycle (refcount={} device={device_id})",
+                self.ref_count(),
+            ));
+        }
+        if inner.slow_poll_active {
+            let phase = inner.slow_poll_phase;
+            let next  = phase.next();
+            inner.slow_poll_phase = next;
+            if next == SlowPollPhase::FIRST {
+                // Rotation complete; go idle until the next cycle_due.
+                inner.slow_poll_active = false;
             }
+            Some(phase)
+        } else {
+            None
+        }
+    }
 
-            let now = Instant::now();
+    /// Begin a reconnect attempt: transition to Connecting and re-run
+    /// `fetch_device_info()` against the same client/IP. No-op if there's
+    /// no client at all (shouldn't normally happen while Failed).
+    fn try_reconnect(&self, client: Option<WiimClient>) {
+        if client.is_some() {
+            dbg("reconnect attempt: transitioning Connecting");
+            self.imp().inner.borrow_mut().connection_state = ConnectionState::Connecting;
+            self.emit_by_name::<()>("device-changed", &[]);
+            self.fetch_device_info();
+        }
+    }
 
-            // Is it time to start a new slow-poll cycle / reconnect attempt?
-            let cycle_due = inner.last_slow_poll
-                .map_or(true, |t| now.duration_since(t) >= SLOW_POLL_INTERVAL);
+    /// Fast poll — status + metadata, every tick this function is called
+    /// (i.e. whenever a client exists and this tick isn't a reconnect
+    /// attempt; see `do_poll()`). Deliberately unconditional rather than
+    /// checking `inner.access` (the resolved `PlaybackAccessConfig`): every
+    /// field group's only real fetch path today is HTTP —
+    /// `AccessMethod::UpnpPolled` has no fetch implementation in
+    /// `device/upnp.rs` yet and would have to fall back to these same two
+    /// calls regardless of which group selected it (see
+    /// `PlaybackAccessConfig::warn_unimplemented()`, called from
+    /// `recompute_access()`). So there is currently no real second branch
+    /// for `access` to select between — add one here once `upnp.rs` can
+    /// actually fetch something, rather than introducing a branch now that
+    /// would just call the exact same two functions either way.
+    fn dispatch_fast_poll(&self, client: &WiimClient, poll_tx: &async_channel::Sender<PollData>) {
+        let cp = client.clone();
+        let tx = poll_tx.clone();
+        self.rt().spawn(async move {
+            let status = cp.get_status().await.ok();
+            let meta   = cp.get_meta_info().await.ok();
+            let _ = tx.send(PollData { status, meta }).await;
+        });
+    }
 
-            // Flush any pending volume command if the debounce window has elapsed.
-            let pending_vol = if state == ConnectionState::Connected
-                && inner.target_volume >= 0
-                && inner.last_volume_cmd
-                    .map_or(true, |t| now.duration_since(t) >= VOLUME_DEBOUNCE)
-            {
-                let v = inner.target_volume as u32;
-                inner.target_volume   = -1;
-                inner.last_volume_cmd = Some(now);
-                Some(v)
-            } else {
-                None
-            };
-
-            let do_reconnect = cycle_due && state == ConnectionState::Failed;
-
-            // Slow poll: dispatch at most one phase this tick. Starting a new
-            // cycle is gated by cycle_due; once started, every following tick
-            // runs the next phase unconditionally until the rotation wraps
-            // back to FIRST, which marks the cycle complete (idle until the
-            // next cycle_due).
-            let dispatch_phase = if state == ConnectionState::Connected {
-                if !inner.slow_poll_active && cycle_due {
-                    inner.slow_poll_active = true;
-                    inner.slow_poll_phase  = SlowPollPhase::FIRST;
-                    inner.last_slow_poll   = Some(now);
-                    let device_id = inner.device_info.as_ref()
-                        .map(|d| format!("{} ({})", d.device_name, d.ip_addr()))
-                        .unwrap_or_else(|| "unknown".to_string());
-                    dbg(&format!(
-                        "slow poll: starting new cycle (refcount={} device={device_id})",
-                        ds.ref_count(),
-                    ));
-                }
-                if inner.slow_poll_active {
-                    let phase = inner.slow_poll_phase;
-                    let next  = phase.next();
-                    inner.slow_poll_phase = next;
-                    if next == SlowPollPhase::FIRST {
-                        // Rotation complete; go idle until the next cycle_due.
-                        inner.slow_poll_active = false;
-                    }
-                    Some(phase)
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
-
-            let client        = inner.client.clone();
-            // Read straight off `capabilities` rather than a separate cached
-            // bool in `Inner` — `supports_presets` was already purely
-            // static/redundant with capabilities, and `probes_outputs` now
-            // lives there too (set by `capabilities::detect_capabilities()`).
-            // See ANALYSIS.md item 18.
-            let probe_outputs = inner.capabilities.as_ref().is_some_and(|c| c.probes_outputs);
-            let probe_presets = inner.capabilities.as_ref().is_some_and(|c| c.supports_presets);
-            let preset_fp     = inner.preset_fp.clone();
-            drop(inner);
-
-            // Reconnect when Failed and the interval has elapsed.
-            if do_reconnect {
-                if client.is_some() {
-                    dbg("reconnect attempt: transitioning Connecting");
-                    ds.imp().inner.borrow_mut().connection_state = ConnectionState::Connecting;
-                    ds.emit_by_name::<()>("device-changed", &[]);
-                    ds.fetch_device_info();
-                }
-                return glib::ControlFlow::Continue;
-            }
-
-            let Some(c) = client else { return glib::ControlFlow::Continue };
-
-            // Send any deferred volume command first.
-            if let Some(vol) = pending_vol {
-                let cv = c.clone();
-                rt.spawn(async move { let _ = cv.set_volume(vol).await; });
-            }
-
-            // Fast poll — always runs when Connected. Deliberately unconditional
-            // rather than checking `inner.access` (the resolved
-            // `PlaybackAccessConfig`): every field group's only real fetch
-            // path today is HTTP — `AccessMethod::UpnpPolled` has no fetch
-            // implementation in `device/upnp.rs` yet and would have to fall
-            // back to these same two calls regardless of which group
-            // selected it (see `PlaybackAccessConfig::warn_unimplemented()`,
-            // called from `recompute_access()`). So there is currently no
-            // real second branch for `access` to select between — add one
-            // here once `upnp.rs` can actually fetch something, rather than
-            // introducing a branch now that would just call the exact same
-            // two functions either way.
-            {
-                let cp = c.clone();
-                let tx = poll_tx.clone();
-                rt.spawn(async move {
-                    let status = cp.get_status().await.ok();
-                    let meta   = cp.get_meta_info().await.ok();
-                    let _ = tx.send(PollData { status, meta }).await;
-                });
-            }
-
-            // Slow poll — this tick's phase, if the rotation is active.
-            if let Some(phase) = dispatch_phase {
-                let enabled = match phase {
-                    SlowPollPhase::Outputs => probe_outputs,
-                    SlowPollPhase::Presets => probe_presets,
-                    SlowPollPhase::OutputStatus | SlowPollPhase::DeviceInfo => true,
-                };
-                if enabled {
-                    dbg(&format!("slow poll: phase {phase:?}"));
-                    let cp        = c.clone();
-                    let tx        = slow_tx.clone();
-                    let preset_fp = preset_fp.clone();
-                    rt.spawn(async move {
-                        let result = run_slow_poll_phase(cp, phase, preset_fp).await;
-                        let _ = tx.send(result).await;
-                    });
-                } else {
-                    dbg(&format!("slow poll: phase {phase:?} skipped (not supported)"));
-                }
-            }
-
-            glib::ControlFlow::Continue
+    /// Slow poll — this tick's phase, if the rotation is active
+    /// (`dispatch_phase`, from `advance_slow_poll_rotation()`). Skips (with
+    /// a debug log) rather than fetching when the relevant capability flag
+    /// says this device doesn't support the phase's endpoint.
+    fn dispatch_slow_poll(
+        &self,
+        client:         &WiimClient,
+        slow_tx:        &async_channel::Sender<SlowPollResult>,
+        dispatch_phase: Option<SlowPollPhase>,
+        probe_outputs:  bool,
+        probe_presets:  bool,
+        preset_fp:      String,
+    ) {
+        let Some(phase) = dispatch_phase else { return };
+        let enabled = match phase {
+            SlowPollPhase::Outputs => probe_outputs,
+            SlowPollPhase::Presets => probe_presets,
+            SlowPollPhase::OutputStatus | SlowPollPhase::DeviceInfo => true,
+        };
+        if !enabled {
+            dbg(&format!("slow poll: phase {phase:?} skipped (not supported)"));
+            return;
+        }
+        dbg(&format!("slow poll: phase {phase:?}"));
+        let cp = client.clone();
+        let tx = slow_tx.clone();
+        self.rt().spawn(async move {
+            let result = run_slow_poll_phase(cp, phase, preset_fp).await;
+            let _ = tx.send(result).await;
         });
     }
 
