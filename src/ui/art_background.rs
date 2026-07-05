@@ -4,10 +4,9 @@
 //! "cover"-fit rendering of the current album art — the ambient full-window
 //! wash used by the RustyWiiM Modern theme. Falls back to a static gradient
 //! when there's no artwork, and cross-fades between whatever it was
-//! previously showing and the new state on every change. See `FULLSCREEN.md`
-//! §1.2/§2.4, which this is a near-direct port of (originally speced for a
-//! fullscreen "Now Playing" view; reused here as a main-window theme
-//! background instead).
+//! previously showing and the new state on every change. Originally speced
+//! for a fullscreen "Now Playing" view that was never built; reused here as
+//! a main-window theme background instead.
 //!
 //! GTK4 CSS has no `filter: blur()`, so — same as `FlipCover` and
 //! `ScrollFadeLabel` — this is a custom `snapshot()` using a GSK render node

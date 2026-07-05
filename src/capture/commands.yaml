@@ -1,5 +1,5 @@
 # Commands wiim-capture sends to a target device, beyond the always-run
-# getStatusEx/getStatus model-detection pass (see TESTING.md).
+# getStatusEx/getStatus model-detection pass.
 #
 # Schema per entry:
 #   command:      the LinkPlay command, literal or a "{name}" template
@@ -10,8 +10,7 @@
 #                 invoked with --destructive — safe: true alone is no longer
 #                 enough to mutate device state (added after a real run left
 #                 a device's touch controls disabled, LED off, volume
-#                 changed, and EQ preset overwritten — see TESTING.md's
-#                 "Known issue" section).
+#                 changed, and EQ preset overwritten).
 #   params:       list of {name, values} — one command sent per value,
 #                 independent parameters are crossed (cartesian product)
 #   value_sets:   list of {name: value, ...} maps — for commands whose
@@ -25,15 +24,12 @@
 #
 # method: getsyslog is reserved for exactly one entry (getsyslog itself) —
 # wiim-capture special-cases it entirely (its own two-step fetch, with a
-# longer timeout — see TESTING.md's "getsyslog's special two-step retrieval")
-# rather than sending it through the normal single-GET path. Never gated by
-# safe/--destructive; it's still read-only.
+# longer timeout) rather than sending it through the normal single-GET path.
+# Never gated by safe/--destructive; it's still read-only.
 #
 # NEVER mark a `set` command `safe: true` if it's destructive, touches
 # network/WiFi credentials, reboots/resets/updates firmware, triggers an
 # audible alarm, or needs real other hardware (Bluetooth, multiroom peers).
-# See TESTING.md's "safe must default to false" section for the full list of
-# command classes that must never be marked safe.
 #
 # Generated + hand-curated against docs/wiim-httpapi-catalog.md (2026-07-04).
 # The Get-method block below is close to exhaustive for the categories judged

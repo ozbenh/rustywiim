@@ -41,8 +41,8 @@ pub(crate) struct PresetWidgets {
 }
 
 /// Two `ScrollFadeLabel`s in a `gtk::Stack`, slid between on text change
-/// instead of a hard swap (ANIMATIONS.md Tier 1). `set_text()` matches
-/// `ScrollFadeLabel`'s own signature, so call sites don't change.
+/// instead of a hard swap. `set_text()` matches `ScrollFadeLabel`'s own
+/// signature, so call sites don't change.
 #[derive(Clone)]
 pub(crate) struct SwipeText {
     pub stack: gtk::Stack,
@@ -708,8 +708,12 @@ fn build_mini_resize_handle() -> GtkBox {
 /// Wires a right-edge resize drag onto `stable`, driven entirely by hand
 /// (`gtk::GestureDrag` + `gtk::Window::set_default_width()`) rather than the
 /// compositor-mediated `gdk::Toplevel::begin_resize()` a GTK CSD
-/// border-drag would normally use — see the GDK4 gotcha in `CLAUDE.md` for
-/// why that was abandoned.
+/// border-drag would normally use. `begin_resize()` was tried and abandoned:
+/// it hands the pointer grab to the compositor with no completion event to
+/// react to, and was observed to silently do nothing in one real case —
+/// flipping `resizable(true)` immediately before calling it raced GTK/
+/// Wayland's asynchronous application of that property to the compositor,
+/// which still believed the window was fixed-size and dropped the request.
 ///
 /// `stable` must be a widget whose own on-screen *origin* (top-left) never
 /// moves as a side effect of the resize itself — `mini_outer` in
@@ -880,9 +884,11 @@ pub(super) fn build_mini_window(app: &adw::Application) -> (MiniWidgets, gtk::Ap
         // full-screened by that gesture. wire_mini_resize()'s
         // set_default_width() calls still work with this permanently
         // false: unlike gdk::Toplevel::begin_resize() (a compositor-side
-        // interactive resize, abandoned for this — see the GDK4 gotcha in
-        // CLAUDE.md), it's a pure client-side size *request*, not something
-        // that needs the compositor to agree the window is resizable first.
+        // interactive resize, abandoned for this window — it hands the
+        // pointer grab to the compositor with no completion event, and was
+        // once observed to silently do nothing at all), it's a pure
+        // client-side size *request*, not something that needs the
+        // compositor to agree the window is resizable first.
         .resizable(false)
         .default_width(380)
         .title("RustyWiiM")

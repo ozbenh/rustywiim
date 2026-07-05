@@ -5,8 +5,7 @@
 /// `device/playback.rs` owns turning these into canonical `PlaybackState`
 /// fields, not this module.
 ///
-/// Skeleton only for now — see `/PLAYBACKSTATE.md`'s "New module:
-/// src/device/upnp.rs" section. Nothing in `state.rs` calls this yet;
+/// Skeleton only for now. Nothing in `state.rs` calls this yet;
 /// `AccessMethod::UpnpPolled` is accepted by the config/UI plumbing but has
 /// no real fetch path until this module is built out against a concrete
 /// need (the artwork-source experiment is the most likely first consumer).

@@ -1,6 +1,6 @@
 //! Loads `commands.yaml` (embedded at compile time) and expands each
 //! `CommandSpec` into the concrete, fully-substituted command strings to
-//! actually send — see `TESTING.md`'s "Execution" note.
+//! actually send.
 
 use crate::capture::format::{CommandSpec, Method};
 use std::collections::HashMap;
@@ -34,7 +34,7 @@ pub struct ExpandedCommand {
 /// - `skipped_not_destructive` — raw `command` templates that are `method ==
 ///   Set && safe == true` (so would otherwise be sent) but were skipped
 ///   because `destructive` is false. `wiim-capture` does not mutate device
-///   state unless invoked with `--destructive` — see TESTING.md.
+///   state unless invoked with `--destructive`.
 pub fn expand_commands(specs: &[CommandSpec], destructive: bool) -> (Vec<ExpandedCommand>, Vec<String>, Vec<String>) {
     let mut out = Vec::new();
     let mut skipped_unsafe = Vec::new();

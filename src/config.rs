@@ -59,9 +59,9 @@ pub enum ThemeMode {
 }
 
 /// Per-device override of `PlaybackAccessConfig`'s field groups, editable
-/// via Settings' "Device -> Advanced" panel (field diagnostics — see
-/// `/PLAYBACKSTATE.md`). Every field defaults to `None`, meaning "use the
-/// device profile's default for this group".
+/// via Settings' "Device -> Advanced" panel (field diagnostics). Every
+/// field defaults to `None`, meaning "use the device profile's default for
+/// this group".
 ///
 /// **Selecting "Default" in the UI must write `None`, never the concrete
 /// `AccessMethod` value that happens to be default today.**

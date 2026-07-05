@@ -1,6 +1,6 @@
 //! Shared JSON schema for capture files, produced by `wiim-capture` and
-//! (later) consumed by the Phase 2 simulator. Kept as one definition so the
-//! two can't drift apart — see `TESTING.md` for the full design rationale.
+//! consumed by `wiim-simulator`. Kept as one definition so the two can't
+//! drift apart.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -40,9 +40,9 @@ pub struct ParamSpec {
 /// (`"setPlayerCmd:vol:{value}"`), resolved via `params`/`value_sets`.
 ///
 /// `safe` is only ever consulted when `method == Set`; it must default to
-/// `false` and is never inferred from the command's name — see the "safe
-/// must default to false" note in `TESTING.md` for why (`getMvRemoteUpdateStart`
-/// starts a firmware update despite its `get`-looking name).
+/// `false` and is never inferred from the command's name
+/// (`getMvRemoteUpdateStart` starts a firmware update despite its
+/// `get`-looking name).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CommandSpec {
     pub command: String,
@@ -74,9 +74,9 @@ pub struct CommandSpec {
     pub operation_id: Option<String>,
 }
 
-/// How a captured response body is represented in the output JSON. See the
-/// "Blob encoding rule" in `TESTING.md`: JSON parses as JSON, else XML-looking
-/// content (checked before the plain-text tier, since it may contain `"` from
+/// How a captured response body is represented in the output JSON.
+/// Blob-encoding rule: JSON parses as JSON, else XML-looking content
+/// (checked before the plain-text tier, since it may contain `"` from
 /// attributes) stays human-readable XML, else plain printable ASCII with no
 /// `"` stays human-readable text, else base64. XML only ever comes from the
 /// UPnP capture (description.xml, SOAP action responses) in practice.
@@ -127,8 +127,7 @@ pub struct CommandCapture {
     pub body: Option<serde_json::Value>,
     /// True when a 200-OK body is literally "unknown command"/"Failed"/
     /// "unknown" (case-insensitive) — LinkPlay's way of saying "not
-    /// supported," not a real payload. See TESTING.md's "Unsupported-command
-    /// detection".
+    /// supported," not a real payload.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub unsupported: bool,
     /// Hex+HTML-entity-decoded companion for player-status Title/Artist/
@@ -163,7 +162,7 @@ pub struct UpnpActionCapture {
 /// Basic, read-only UPnP capture: SSDP discovery response, device-description
 /// XML (fetched via SSDP's LOCATION or, as a fallback, the two well-known
 /// LinkPlay UPnP ports directly), and a handful of standard GetXxx SOAP
-/// actions. See TESTING.md's "UPnP capture (basic, read-only)".
+/// actions.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct UpnpCapture {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -197,9 +196,9 @@ pub struct UpnpCapture {
 /// Top-level capture file written by `wiim-capture`.
 ///
 /// Deliberately has no `target_ip` field — the real IP is scrubbed from
-/// every other field (`CommandCapture.url`, UPnP URLs, `<UDN>` etc. — see
-/// TESTING.md's "Anonymizing IPs" section), so keeping the plain IP around
-/// as a top-level field would undo that on every single capture file.
+/// every other field (`CommandCapture.url`, UPnP URLs, `<UDN>` etc.), so
+/// keeping the plain IP around as a top-level field would undo that on
+/// every single capture file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CaptureFile {
     /// RFC 3339, UTC.
@@ -230,9 +229,8 @@ pub struct CaptureFile {
     pub skipped_unsafe: Vec<String>,
     /// Raw `command` templates that are `method == Set` and `safe == true`
     /// (so *would* run under `--destructive`) but were skipped because
-    /// `wiim-capture` was invoked without that flag — see CLAUDE.md/
-    /// TESTING.md's "wiim-capture does not mutate device state by default"
-    /// note.
+    /// `wiim-capture` was invoked without that flag — `wiim-capture` does
+    /// not mutate device state by default.
     #[serde(default)]
     pub skipped_not_destructive: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

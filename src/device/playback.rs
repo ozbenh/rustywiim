@@ -1,6 +1,5 @@
 /// Canonical playback state, decoupled from whichever backend populated it
 /// (today: LinkPlay HTTP `getPlayerStatusEx`/`getMetaInfo`; later: UPnP).
-/// See `/PLAYBACKSTATE.md` at the repo root for the full design rationale.
 ///
 /// This module owns:
 /// - The canonical `PlaybackState` struct + its component enums, built once
@@ -141,7 +140,7 @@ pub enum AccessMethod {
     /// Not yet implemented — accepted by config/UI plumbing so the choice is
     /// persisted and visible, but `state.rs`'s poll loop has no UPnP fetch
     /// path yet and falls back to the HTTP default with a debug warning if
-    /// selected. See `/PLAYBACKSTATE.md`'s "Non-goals".
+    /// selected.
     UpnpPolled,
 }
 
@@ -158,7 +157,7 @@ pub enum AccessMethod {
 /// or `metadata`: the natural bundling differs by backend (HTTP: rides with
 /// `status`; UPnP: rides with `metadata`), and it's unverified whether
 /// `getMetaInfo` might carry better source-identifying info than
-/// `getPlayerStatusEx`'s `mode`/`vendor` — see `/PLAYBACKSTATE.md`.
+/// `getPlayerStatusEx`'s `mode`/`vendor`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PlaybackAccessConfig {
     pub status:   AccessMethod,

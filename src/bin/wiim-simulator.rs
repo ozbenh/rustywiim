@@ -1,7 +1,6 @@
 //! `wiim-simulator` — replays a `wiim-capture` JSON file as a fake
 //! LinkPlay/WiiM HTTP(S) device, so `rustywiim` (or `wiim-capture` itself)
-//! can be pointed at something other than real hardware for testing. See
-//! TESTING.md's "Part 2 — simulator server" for the design.
+//! can be pointed at something other than real hardware for testing.
 //!
 //! Usage: `wiim-simulator <capture-file-or-dir> [--http PORT] [--https PORT] [--stateful] [--global]`
 //!

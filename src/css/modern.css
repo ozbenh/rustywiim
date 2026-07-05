@@ -67,8 +67,8 @@ window.player-window headerbar {
 
 /* Text legibility for everything floating directly on the blur, instead of
    boxing it — same "shadows, not panels" approach as the wiim-now-playing
-   reference design (FULLSCREEN.md §1.3). The 0.45-alpha darkening wash in
-   ArtBackground already helps; this is the extra insurance layer.
+   reference design. The 0.45-alpha darkening wash in ArtBackground already
+   helps; this is the extra insurance layer.
 
    Blur radius is scaled down for the smaller labels — a 4px blur on an
    11-13px font reads as smudged/blurry text rather than a crisp drop

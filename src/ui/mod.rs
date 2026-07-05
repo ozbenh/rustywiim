@@ -1336,10 +1336,10 @@ impl AppState {
                 for entry in &entries {
                     if entry.uuid.is_empty() { continue; }
                     // No-op if a live DeviceState for this UUID is already
-                    // using this IP; otherwise reconnects it (see
-                    // ANALYSIS.md #1 — devlist.rs refreshes entry.ip on
-                    // rediscovery, this pushes the correction into any open
-                    // window instead of it retrying the old dead IP forever).
+                    // using this IP; otherwise reconnects it — devlist.rs
+                    // refreshes entry.ip on rediscovery, this pushes the
+                    // correction into any open window instead of it
+                    // retrying the old dead IP forever.
                     self_rc.device_manager.update_ip(&entry.uuid, &entry.ip, entry.tls_mode);
                 }
                 // update() only saves if something actually changed, so no

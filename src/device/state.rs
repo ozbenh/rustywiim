@@ -86,10 +86,10 @@ struct PollData {
 // ── Slow poll ─────────────────────────────────────────────────────────────────
 //
 // The slow poll used to fire 3-4 sequential HTTP calls back to back every
-// SLOW_POLL_INTERVAL. These embedded HTTP servers handle that poorly (see
-// CLAUDE.md), so instead it's a rotation that dispatches exactly one call per
-// 1-second tick, spread across the first ~4 seconds of every ~10s cycle, then
-// idles until the next cycle starts. See start_unified_timer.
+// SLOW_POLL_INTERVAL. These embedded HTTP servers handle concurrent/rapid-fire
+// connections poorly, so instead it's a rotation that dispatches exactly one
+// call per 1-second tick, spread across the first ~4 seconds of every ~10s
+// cycle, then idles until the next cycle starts. See start_unified_timer.
 
 /// One phase of the slow-poll rotation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -159,7 +159,7 @@ struct Inner {
     metadata:        Option<MetaData>,
     /// Canonical, backend-independent playback state — updated in place,
     /// field by field, by `process_poll()` rather than rebuilt and diffed
-    /// wholesale every tick. See `/PLAYBACKSTATE.md`.
+    /// wholesale every tick.
     playback:        PlaybackState,
     /// Effective per-field-group backend selection for this device:
     /// capability-profile default with any `access_override` applied on top.
@@ -363,7 +363,7 @@ impl DeviceState {
             // `DeviceCapabilities` (currently: getSoundCardModeSupportList
             // for outputs, getAudioInputEnable for inputs) — this function
             // doesn't try anything itself or interpret a failure; it only
-            // reads the result. See ANALYSIS.md items 18 and 19.
+            // reads the result.
             //
             // Deliberately NOT calling get_audio_output() here — that used
             // to duplicate the slow-poll's own OutputStatus phase, which
@@ -564,7 +564,6 @@ impl DeviceState {
         // bool in `Inner` — `supports_presets` was already purely
         // static/redundant with capabilities, and `probes_outputs` now
         // lives there too (set by `capabilities::detect_capabilities()`).
-        // See ANALYSIS.md item 18.
         let probe_outputs = inner.capabilities.as_ref().is_some_and(|c| c.probes_outputs);
         let probe_presets = inner.capabilities.as_ref().is_some_and(|c| c.supports_presets);
         let preset_fp     = inner.preset_fp.clone();
@@ -788,9 +787,9 @@ impl DeviceState {
 
     /// Reports one slow-poll `getSoundCardModeSupportList` result to
     /// `capabilities::DeviceCapabilities::record_outputs_probe()`, which
-    /// owns the actual give-up/failure-counting policy (see ANALYSIS.md
-    /// item 18) — this is just the thin reporting + signal-emitting
-    /// wrapper. `state.rs` never sees a failure counter or threshold.
+    /// owns the actual give-up/failure-counting policy — this is just the
+    /// thin reporting + signal-emitting wrapper. `state.rs` never sees a
+    /// failure counter or threshold.
     fn handle_slow_poll_outputs(&self, outputs: Option<Vec<OutputEntry>>) {
         let mut inner = self.imp().inner.borrow_mut();
         let Some(caps) = inner.capabilities.as_mut() else { return };
@@ -949,7 +948,7 @@ impl DeviceState {
     /// through metadata decoding, an unchanged `mode`/`vendor` pair never
     /// re-runs the source-name lookup, an unchanged `curpos`/`totlen` never
     /// re-runs the ms/µs heuristic — decode cost is paid only when the raw
-    /// diff already told us something changed. See `/PLAYBACKSTATE.md`.
+    /// diff already told us something changed.
     fn process_poll(&self, data: PollData, art_tx: &async_channel::Sender<Vec<u8>>) {
         let PollData { status, meta } = data;
         let mut playback_mask: u32 = 0;
@@ -999,8 +998,7 @@ impl DeviceState {
                     // "disabled" — a capability snapshot (static guess or a
                     // one-time getAudioInputEnable probe) claiming otherwise
                     // is stale/wrong, not something to keep believing over
-                    // what the device is demonstrably doing right now. See
-                    // ANALYSIS.md item 19.
+                    // what the device is demonstrably doing right now.
                     let active_id = capabilities::mode_to_input_source(st.mode);
                     if let Some(caps) = inner.capabilities.as_mut() {
                         if let Some(entry) = caps.inputs.iter_mut().find(|i| i.id == active_id) {
@@ -1278,7 +1276,7 @@ impl DeviceState {
 
     /// Canonical playback state, independent of which backend populated it.
     /// Cheap to clone — every heap-allocated field is `Rc`-wrapped, so this
-    /// is refcount bumps only, not a deep copy. See `/PLAYBACKSTATE.md`.
+    /// is refcount bumps only, not a deep copy.
     pub fn playback_state(&self) -> PlaybackState {
         self.imp().inner.borrow().playback.clone()
     }

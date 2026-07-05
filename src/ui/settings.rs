@@ -416,11 +416,10 @@ fn build_appearance_page() -> (adw::PreferencesPage, gtk::Button) {
 
 // ── Device -> Advanced (playback access-method overrides) ────────────────────
 //
-// Field diagnostics, not a supported end-user-facing feature — see
-// /PLAYBACKSTATE.md's "Debugging overrides: a 'Device' section in Settings".
-// Lets a user experiencing a playback-state bug on real hardware try forcing
-// one field group's AccessMethod away from the device profile's default and
-// report back what does/doesn't work.
+// Field diagnostics, not a supported end-user-facing feature. Lets a user
+// experiencing a playback-state bug on real hardware try forcing one field
+// group's AccessMethod away from the device profile's default and report
+// back what does/doesn't work.
 
 /// Display name paired with the override value it writes. `None` ("Default")
 /// must always stay index 0 and must always serialize as an absent field
@@ -558,7 +557,7 @@ fn build_advanced_page(ds: &DeviceState) -> adw::PreferencesPage {
 // Not live — a snapshot of whatever `DeviceState::device_info()`/
 // `capabilities()` already have cached at the moment the settings window
 // opens, same as everything else that reads those accessors. Reopen the
-// window to see fresher values. See /PLAYBACKSTATE.md.
+// window to see fresher values.
 
 fn about_row(title: &str, value: &str) -> adw::ActionRow {
     adw::ActionRow::builder()

@@ -14,7 +14,7 @@
 //!
 //! Both textures and icon `gdk::Paintable`s are drawn via
 //! `Paintable::snapshot()`, so the same code path handles either; no
-//! offscreen "pixmap" render step is needed. See `ANIMATIONS.md` Part 2.1.
+//! offscreen "pixmap" render step is needed.
 
 #![allow(deprecated)] // glib::clone! old-style @weak syntax, matches scroll_fade_label.rs
 

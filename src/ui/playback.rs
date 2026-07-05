@@ -147,7 +147,7 @@ impl DeviceWindowInner {
         // plm_support-based detection, amended by a live getAudioInputEnable
         // probe if that succeeded, further self-corrected in state.rs
         // against the actively-in-use input. No more either/or fallback
-        // between two competing sources; see ANALYSIS.md item 19.
+        // between two competing sources.
         let ids: Vec<String> = caps.inputs.iter().map(|e| e.id.clone()).collect();
         let enabled_flags: Vec<bool> = caps.inputs.iter().map(|e| e.enabled).collect();
 
@@ -589,10 +589,9 @@ impl DeviceWindowInner {
             self.mini_win.set_default_width(dev_cfg.mini_window_width);
         }
 
-        // Load this device's Advanced-panel access-method override, if any
-        // (see /PLAYBACKSTATE.md's "Debugging overrides" section). Settings'
-        // Advanced page re-pushes this immediately on every change; this is
-        // just the "loaded with device state" half.
+        // Load this device's Advanced-panel access-method override, if any.
+        // Settings' Advanced page re-pushes this immediately on every
+        // change; this is just the "loaded with device state" half.
         self.ds.set_playback_access_override(dev_cfg.playback_access_override.as_ref());
     }
 

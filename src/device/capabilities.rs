@@ -63,7 +63,7 @@ pub enum LoopModeScheme {
 // consulted by anything that fetches data. It's been replaced by
 // `playback::PlaybackAccessConfig`, which gives that same intent a real
 // consumer (`DeviceState`'s effective access-config resolution) and a
-// Settings-UI-facing per-device override mechanism. See `/PLAYBACKSTATE.md`.
+// Settings-UI-facing per-device override mechanism.
 //
 // Every family profile below defaults to `PlaybackAccessConfig::default()`
 // (all-HTTP) rather than reinstating the old MkII UPnP-preference values,
@@ -618,8 +618,7 @@ pub struct DeviceCapabilities {
     /// Whether `getSoundCardModeSupportList` actually worked on this
     /// device. `state.rs` only reads this to decide whether to keep
     /// polling that endpoint on the slow-poll cycle — it doesn't need to
-    /// know *why* the answer is what it is (static guess vs. live probe);
-    /// see ANALYSIS.md item 18's "opaque to callers" constraint.
+    /// know *why* the answer is what it is (static guess vs. live probe).
     pub probes_outputs:     bool,
     /// Consecutive `getSoundCardModeSupportList` failures during ongoing
     /// slow polling (not part of the initial `detect_capabilities()` probe,
@@ -630,10 +629,12 @@ pub struct DeviceCapabilities {
     /// Resolved audio input list — `detect_inputs()`'s static plm_support-
     /// based list, `enabled` defaulting `true` for every entry, optionally
     /// amended by a one-time `getAudioInputEnable` probe in
-    /// `detect_capabilities()` if that call succeeds and parses. See
-    /// ANALYSIS.md item 19 for the full design (including why an entry
-    /// found here "disabled" can still be forced back on by `state.rs` if
-    /// it's the device's actively-in-use input).
+    /// `detect_capabilities()` if that call succeeds and parses. `state.rs`
+    /// additionally self-corrects this live: an entry marked `enabled:
+    /// false` here gets forced back to `true` (with a warning) if the
+    /// device's currently-polled playback mode maps to that same input —
+    /// a capability snapshot can't be right calling something "disabled"
+    /// while it's demonstrably in active use.
     pub inputs:             Vec<InputEntry>,
 }
 
@@ -718,7 +719,7 @@ impl DeviceCapabilities {
         // Base input list — static, from plm_support + per-model profile.
         // `detect_capabilities()` may amend `enabled` (and append entries
         // this static detection missed) via a live `getAudioInputEnable`
-        // probe; this is just the starting point. See ANALYSIS.md item 19.
+        // probe; this is just the starting point.
         let inputs = detect_inputs(device_id, info.plm_support_value())
             .into_iter()
             .map(|id| InputEntry { id: id.to_string(), enabled: true })
@@ -769,10 +770,10 @@ impl DeviceCapabilities {
 
     /// This device family's default `PlaybackAccessConfig` — the starting
     /// point `DeviceState` applies any per-device `PlaybackAccessOverride`
-    /// on top of. See `/PLAYBACKSTATE.md`. Currently just the static
-    /// per-family default (`self.family.playback_access`); once
-    /// `detect_capabilities()` probes more than outputs, findings from that
-    /// probing should feed into this too — see ANALYSIS.md item 18.
+    /// on top of. Currently just the static per-family default
+    /// (`self.family.playback_access`); once `detect_capabilities()` probes
+    /// more than outputs, findings from that probing should feed into this
+    /// too.
     pub fn playback_access(&self) -> PlaybackAccessConfig {
         self.family.playback_access
     }
@@ -789,10 +790,9 @@ impl DeviceCapabilities {
     /// attempt. `state.rs` just reports what happened here; this method —
     /// not the caller — decides whether/when to actually give up. Keeps the
     /// give-up policy (and the failure counter itself) entirely inside
-    /// capabilities.rs, consistent with ANALYSIS.md item 18: `state.rs`
-    /// never sees the counter or the threshold, only the resulting
-    /// `probes_outputs` flag and whatever it needs to know whether to emit
-    /// `outputs-changed`.
+    /// capabilities.rs: `state.rs` never sees the counter or the threshold,
+    /// only the resulting `probes_outputs` flag and whatever it needs to
+    /// know whether to emit `outputs-changed`.
     ///
     /// Returns `true` if `self.outputs` actually changed as a result (the
     /// caller emits `outputs-changed` when this is `true`).
@@ -836,9 +836,10 @@ impl DeviceCapabilities {
 /// for output support — the same two calls `state.rs`'s `fetch_device_info`
 /// used to make and interpret itself, now made once, here, and returned as
 /// one flat, opaque result. `state.rs` never decides what to try or
-/// interprets a failure; it only reads the result. See ANALYSIS.md item 18
-/// for the full rationale (including why the static-vs-probed distinction
-/// must never leak past this function).
+/// interprets a failure; it only reads the result — the distinction between
+/// "statically known" and "just probed" must never leak past this
+/// function, so callers can't end up branching on *how* a fact was
+/// determined instead of just what it is.
 ///
 /// Returns `None` if `getStatusEx` itself fails — nothing else is worth
 /// probing without basic device info.
@@ -866,7 +867,7 @@ pub async fn detect_capabilities(client: &WiimClient) -> Option<(DeviceInfo, Dev
     // device supports the call and the response actually parses. Never
     // authoritative for *existence* — only for `enabled`, and only for
     // entries it actually mentions (missing entries keep their static
-    // default rather than being dropped). See ANALYSIS.md item 19.
+    // default rather than being dropped).
     match client.get_audio_input_enable().await {
         Some(entries) => {
             dbg(&format!("audio input enable: {:?}", entries));
@@ -1080,10 +1081,10 @@ static PLM_BIT_TO_INPUT: &[(u8, &str)] = &[
 ];
 
 /// Detect available inputs for a device — the static base list
-/// `DeviceCapabilities::from_device_info()` seeds `inputs` from (see
-/// `InputEntry`/ANALYSIS.md item 19). No longer `pub`: nothing outside this
-/// module needs the raw list on its own since `caps.inputs` is now the one
-/// place callers read resolved inputs from.
+/// `DeviceCapabilities::from_device_info()` seeds `inputs` (`InputEntry`)
+/// from. No longer `pub`: nothing outside this module needs the raw list
+/// on its own since `caps.inputs` is now the one place callers read
+/// resolved inputs from.
 ///
 /// Algorithm:
 /// 1. Decode `plm_support` bits using `PLM_BIT_TO_INPUT`.

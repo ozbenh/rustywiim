@@ -89,7 +89,7 @@ impl TlsMode {
 /// that rustls rejects with `CaUsedAsEndEntity`.
 ///
 /// Building a `Client` loads and parses the system CA store plus the WiiM
-/// CA/identity PEMs — ~250M instructions per call (see ANALYSIS.md). Every
+/// CA/identity PEMs — ~250M instructions per call, measured via callgrind. Every
 /// `WiimClient::new()`, health check, and discovery probe used to pay that
 /// cost from scratch; a `reqwest::Client` is cheap to clone (internally
 /// `Arc`-based) and every device shares identical TLS config, so it's cached
@@ -654,7 +654,7 @@ impl WiimClient {
     /// a real empty list. Real devices wrap the array
     /// (`{"audioInput": [...], "ver": "1.0"}`, confirmed via captures) —
     /// a previous version of this parsed it as a bare array, which silently
-    /// failed every time against real hardware (see ANALYSIS.md item 19).
+    /// failed every time against real hardware.
     pub async fn get_audio_input_enable(&self) -> Option<Vec<AudioInputEntry>> {
         #[derive(Deserialize)]
         struct Response {

@@ -1,16 +1,14 @@
-//! `wiim-capture` — Phase 1 of the testing-infrastructure plan (see
-//! `TESTING.md`): probes a real WiiM/LinkPlay device in the field and
+//! `wiim-capture` — probes a real WiiM/LinkPlay device in the field and
 //! records its responses to a curated command list, plus a basic UPnP
-//! capture, into one JSON file for later use by the Phase 2 simulator.
+//! capture, into one JSON file for later use by `wiim-simulator`.
 //!
 //! Usage: `wiim-capture [--destructive] <ip>`
 //!
 //! By default no `Set` command is ever sent, however reversible-looking a
 //! `commands.yaml` entry's `safe: true` marks it — only `--destructive`
-//! unlocks those. See TESTING.md's "wiim-capture does not mutate device
-//! state by default" note for why (a real run without this gate was
-//! observed to leave a device's touch controls disabled, its LED off, its
-//! volume changed, and its EQ preset overwritten).
+//! unlocks those. A real run without this gate was once observed to leave
+//! a device's touch controls disabled, its LED off, its volume changed,
+//! and its EQ preset overwritten.
 
 use base64::Engine;
 use rustywiim::capture::commands::{self, ExpandedCommand};
@@ -25,8 +23,7 @@ const MAX_RETRIES: u32 = 3;
 const INTER_COMMAND_DELAY: Duration = Duration::from_millis(100);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// HTTPS-first, matching pywiim's `wiim-diagnostics` probe order — see
-/// TESTING.md's "Connection / TLS mode".
+/// HTTPS-first, matching pywiim's `wiim-diagnostics` probe order.
 const PROBE_COMBOS: &[(&str, u16)] = &[
     ("https", 443),
     ("https", 4443),
@@ -51,7 +48,7 @@ struct Attempt {
 /// a `reqwest::RequestBuilder` can't just be resent), retrying up to
 /// `MAX_RETRIES` times, but only on a connection failure — an HTTP error
 /// status or any other protocol-level error is recorded as-is with no
-/// retry. See TESTING.md's "Retry / spacing semantics".
+/// retry.
 async fn send_request<F>(build: F) -> Attempt
 where
     F: Fn() -> reqwest::RequestBuilder,
@@ -113,8 +110,8 @@ fn looks_like_xml(s: &str) -> bool {
     t.starts_with("<?xml") || (t.starts_with('<') && t.ends_with('>'))
 }
 
-/// "Blob encoding rule" from TESTING.md: JSON if it parses, else XML if it
-/// looks like XML, else plain text if printable-ASCII-no-quotes, else base64.
+/// Blob encoding rule: JSON if it parses, else XML if it looks like XML,
+/// else plain text if printable-ASCII-no-quotes, else base64.
 fn encode_blob(raw: &str) -> (ResponseFormat, serde_json::Value) {
     if let Ok(v) = serde_json::from_str::<serde_json::Value>(raw) {
         return (ResponseFormat::Json, v);
@@ -135,9 +132,9 @@ fn encode_blob(raw: &str) -> (ResponseFormat, serde_json::Value) {
 }
 
 /// Key-name substrings (case-insensitive) that trigger anonymization of a
-/// JSON string value, regardless of the value's own shape. Broadened per
-/// TESTING.md's "Anonymization" section beyond the original mac/uuid/ssid
-/// scope. `eth0`/`apcli0`/`eth2`/`ra0` are LinkPlay's actual LAN-interface
+/// JSON string value, regardless of the value's own shape. Broadened over
+/// time beyond the original mac/uuid/ssid scope.
+/// `eth0`/`apcli0`/`eth2`/`ra0` are LinkPlay's actual LAN-interface
 /// field names (confirmed against a real WiiM Ultra capture) — plain `"ip"`
 /// as a substring was dropped: it never matched any of those real field
 /// names in the first place (none of them contain the literal substring
@@ -299,7 +296,7 @@ fn html_unescape(s: &str) -> String {
 /// entity-encoded Title/Artist/Album fields. Checked: no existing decoder
 /// for this in `src/device/api.rs`/`state.rs` — this app gets track
 /// metadata from `getMetaInfo` instead, which is already plain UTF-8, so it
-/// never needed one. See TESTING.md's "Decoded sidecar for hex-encoded fields".
+/// never needed one.
 fn decode_player_status_fields(command: &str, body: &serde_json::Value) -> Option<serde_json::Value> {
     if !matches!(command, "getPlayerStatus" | "getPlayerStatusEx") {
         return None;
@@ -389,10 +386,8 @@ fn looks_like_linkplay_response(body: &str) -> bool {
 
 /// Probes getStatusEx, then getStatus, across all 5 scheme/port combos each,
 /// stopping at the first response that looks like a real LinkPlay endpoint.
-/// Every individual probe attempt is recorded (not just the winner) — see
-/// TESTING.md's give-up-diagnostics note; this plan implementation records
-/// every attempt rather than only the last, for maximum diagnostic value
-/// when nothing responds at all.
+/// Every individual probe attempt is recorded (not just the winner), for
+/// maximum diagnostic value when nothing responds at all.
 async fn probe_and_detect(ip: &str) -> (Vec<CommandCapture>, Option<Winner>) {
     let mut records = Vec::new();
 
@@ -608,9 +603,8 @@ fn extract_header(text: &str, name: &str) -> Option<String> {
 }
 
 /// Minimal, non-namespace-aware `<tag>...</tag>` extractor — sufficient for
-/// the well-known tags LinkPlay's device-description XML actually uses (see
-/// TESTING.md's "basic, read-only" UPnP scope; a full XML parser would be
-/// overkill here).
+/// the well-known tags LinkPlay's device-description XML actually uses; a
+/// full XML parser would be overkill for this basic, read-only UPnP capture.
 fn extract_tag(xml: &str, tag: &str) -> Option<String> {
     let open = format!("<{tag}>");
     let close = format!("</{tag}>");
@@ -913,7 +907,7 @@ async fn main() {
 
     for exp in &expanded {
         if exp.command == winner.cmd_used {
-            continue; // already captured during model detection — see TESTING.md's dedup note
+            continue; // already captured during model detection above, don't re-fetch
         }
         if exp.method == Method::Getsyslog {
             commands.extend(capture_syslog(winner.scheme, &ip, winner.port, Some(exp)).await);
