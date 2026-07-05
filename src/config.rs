@@ -3,6 +3,30 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::OnceLock;
+
+/// `--no-config`: skip disk I/O entirely (no read at startup, no write ever)
+/// — every run behaves like a fresh install with no persisted state at all.
+/// Must be set (via `set_no_config`) before anything touches the config —
+/// in practice, during `main.rs`'s `connect_handle_local_options`, which runs
+/// before `connect_activate` and thus before the `CONFIG` thread_local below
+/// is ever first accessed.
+static NO_CONFIG: AtomicBool = AtomicBool::new(false);
+
+/// `--config-file <path>`: use this path instead of the default
+/// `dirs::config_dir()/rustywiim/config.json` — for testing against a
+/// specific config state without touching the real one. Same set-before-use
+/// requirement as `NO_CONFIG` above.
+static CONFIG_PATH_OVERRIDE: OnceLock<PathBuf> = OnceLock::new();
+
+pub fn set_no_config(v: bool) {
+    NO_CONFIG.store(v, Ordering::Relaxed);
+}
+
+pub fn set_config_path_override(path: PathBuf) {
+    let _ = CONFIG_PATH_OVERRIDE.set(path);
+}
 
 fn default_panel_visible() -> bool { true }
 fn default_animations() -> bool { true }
@@ -203,6 +227,12 @@ fn strip_trailing_commas(s: &str) -> String {
 }
 
 fn config_path() -> PathBuf {
+    if let Some(p) = CONFIG_PATH_OVERRIDE.get() {
+        if let Some(parent) = p.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        return p.clone();
+    }
     let dir = dirs::config_dir()
         .unwrap_or_else(|| PathBuf::from(".config"))
         .join("rustywiim");
@@ -212,6 +242,9 @@ fn config_path() -> PathBuf {
 
 impl Config {
     fn load_from_disk() -> Self {
+        if NO_CONFIG.load(Ordering::Relaxed) {
+            return Self::default();
+        }
         let path = config_path();
         let text = match fs::read_to_string(&path) {
             Ok(s) => s,
@@ -235,6 +268,9 @@ impl Config {
     }
 
     fn write_to_disk(&self) {
+        if NO_CONFIG.load(Ordering::Relaxed) {
+            return;
+        }
         if let Ok(json) = serde_json::to_string_pretty(self) {
             let _ = fs::write(config_path(), json);
         }

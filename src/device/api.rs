@@ -152,10 +152,18 @@ pub fn log_request_error(context: &str, err: &reqwest::Error) {
 /// Return the base `httpapi.asp` URL for the given IP and TLS mode.
 ///
 /// Does not append any command query string — append `?command=…` yourself.
+///
+/// `ip` may already include a `:port` (e.g. `"127.0.0.1:8080"`, used by
+/// `--connect`/`wiim-simulator` testing) — for `Http`/`HttpsAny`/`HttpsWiiM`
+/// this just works, since those modes never append a port of their own and
+/// let the URL's own default (80/443) apply otherwise. `HttpsAudioPro`
+/// always uses port 4443 on real hardware, so its hardcoded `:4443` is only
+/// skipped when `ip` already carries its own port, to avoid doubling up.
 pub fn api_base_url(ip: &str, tls: TlsMode) -> String {
     match tls {
         TlsMode::Http                           => format!("http://{ip}/httpapi.asp"),
         TlsMode::HttpsAny | TlsMode::HttpsWiiM => format!("https://{ip}/httpapi.asp"),
+        TlsMode::HttpsAudioPro if ip.contains(':') => format!("https://{ip}/httpapi.asp"),
         TlsMode::HttpsAudioPro                  => format!("https://{ip}:4443/httpapi.asp"),
         TlsMode::Auto => panic!("api_base_url: Auto must be resolved by the caller"),
     }

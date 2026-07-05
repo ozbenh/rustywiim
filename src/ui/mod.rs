@@ -92,6 +92,19 @@ pub struct DeviceSpec {
     pub tls_mode: TlsMode,
 }
 
+/// `--connect <scheme://ip[:port]>` override: when set, `AppState::activate()`
+/// skips discovery entirely and opens exactly one device window straight at
+/// this address (uuid unknown until `getStatusEx` resolves it, same as any
+/// freshly-added manual device) — for pointing the app directly at
+/// `wiim-simulator` without it needing to be discoverable via SSDP. Must be
+/// set (via `set_direct_connect`) before `activate()` runs — in practice,
+/// during `main.rs`'s `connect_handle_local_options`.
+static DIRECT_CONNECT: std::sync::OnceLock<(String, TlsMode)> = std::sync::OnceLock::new();
+
+pub fn set_direct_connect(ip: String, tls_mode: TlsMode) {
+    let _ = DIRECT_CONNECT.set((ip, tls_mode));
+}
+
 // ── CSS ───────────────────────────────────────────────────────────────────────
 
 const SYSTEM_CSS: &str = include_str!("../css/system.css");
@@ -1106,9 +1119,17 @@ pub(crate) struct AppState {
 impl AppState {
     // `disc_svc.start()` must run inside `connect_activate` so that
     // `glib::spawn_future_local` has an active main context.
+    //
+    // Skipped entirely under `--connect`: that mode exists to point the app
+    // at an isolated target (e.g. `wiim-simulator`) without touching the
+    // real network, so starting SSDP discovery in the background would
+    // defeat the purpose (and send real traffic) even though `activate()`
+    // never shows its results.
     pub(crate) fn new(app: &adw::Application, rt: Arc<tokio::runtime::Runtime>) -> Rc<Self> {
         let disc_svc = DiscoveryService::new(rt.clone());
-        disc_svc.start();
+        if DIRECT_CONNECT.get().is_none() {
+            disc_svc.start();
+        }
         let disc_mgr = devlist::DiscoveryManager::new(rt.clone(), disc_svc.clone());
 
         Rc::new(Self {
@@ -1290,6 +1311,21 @@ impl AppState {
                 app.quit();
             });
             self_rc.app.add_action(&quit_action);
+        }
+
+        // `--connect` override: skip discovery/config-restored windows entirely
+        // and open exactly one device window straight at the given address.
+        // uuid is empty (unresolved until getStatusEx) — DeviceManager::get()
+        // and DeviceWindow::new_inner() already handle that case (a brand new,
+        // not-yet-deduplicated DeviceState), same as for a manually-added device.
+        if let Some((ip, tls_mode)) = DIRECT_CONNECT.get() {
+            dbg_state(&format!("activate: --connect direct to {ip} via {tls_mode:?}"));
+            Self::open_device_spec(self_rc, DeviceSpec {
+                ip: ip.clone(),
+                uuid: String::new(),
+                tls_mode: *tls_mode,
+            });
+            return;
         }
 
         // Keep last_ip current, and reconnect any already-open device window

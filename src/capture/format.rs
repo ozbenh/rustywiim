@@ -195,6 +195,11 @@ pub struct UpnpCapture {
 }
 
 /// Top-level capture file written by `wiim-capture`.
+///
+/// Deliberately has no `target_ip` field — the real IP is scrubbed from
+/// every other field (`CommandCapture.url`, UPnP URLs, `<UDN>` etc. — see
+/// TESTING.md's "Anonymizing IPs" section), so keeping the plain IP around
+/// as a top-level field would undo that on every single capture file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CaptureFile {
     /// RFC 3339, UTC.

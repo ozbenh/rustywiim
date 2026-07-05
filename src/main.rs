@@ -8,6 +8,25 @@ mod ui;
 
 use rustywiim::device;
 
+/// Parses `--connect`'s `scheme://ip[:port]` into (ip-with-optional-port,
+/// TlsMode). Deliberately minimal — no path/query, just enough to point
+/// `device::api::api_base_url()` at an arbitrary host:port (e.g.
+/// `wiim-simulator`'s randomly-assigned ports), which already accepts an
+/// embedded port in `ip` for `Http`/`HttpsAny`/`HttpsWiiM`.
+fn parse_connect_url(url: &str) -> Option<(String, device::api::TlsMode)> {
+    let (scheme, rest) = url.split_once("://")?;
+    let tls = match scheme {
+        "http" => device::api::TlsMode::Http,
+        "https" => device::api::TlsMode::HttpsWiiM,
+        _ => return None,
+    };
+    let host_port = rest.split('/').next().unwrap_or(rest);
+    if host_port.is_empty() {
+        return None;
+    }
+    Some((host_port.to_string(), tls))
+}
+
 fn main() -> glib::ExitCode {
     let app = adw::Application::builder()
         .application_id("com.github.ozbenh.rustywiim2")
@@ -28,6 +47,31 @@ fn main() -> glib::ExitCode {
         glib::OptionArg::String,
         "Override TLS mode: wiim (default), audio-pro, any, http",
         Some("MODE"),
+    );
+    app.add_main_option(
+        "connect",
+        glib::Char(0),
+        glib::OptionFlags::NONE,
+        glib::OptionArg::String,
+        "Connect directly to scheme://ip[:port] (e.g. http://127.0.0.1:8080 for wiim-simulator), \
+         opening a device window for it immediately instead of discovery",
+        Some("URL"),
+    );
+    app.add_main_option(
+        "no-config",
+        glib::Char(0),
+        glib::OptionFlags::NONE,
+        glib::OptionArg::None,
+        "Don't load or save the config file — every run behaves like a fresh install",
+        None,
+    );
+    app.add_main_option(
+        "config-file",
+        glib::Char(0),
+        glib::OptionFlags::NONE,
+        glib::OptionArg::Filename,
+        "Use an alternate config file path instead of the default (for testing)",
+        Some("PATH"),
     );
 
     app.connect_handle_local_options(|_, opts| {
@@ -60,6 +104,23 @@ fn main() -> glib::ExitCode {
                 _           => device::api::TlsMode::HttpsWiiM,
             };
             device::api::TLS_MODE.store(tls as usize, Ordering::Relaxed);
+        }
+        if opts.lookup::<bool>("no-config").ok().flatten().unwrap_or(false) {
+            config::set_no_config(true);
+        }
+        if let Ok(Some(path)) = opts.lookup::<String>("config-file") {
+            config::set_config_path_override(std::path::PathBuf::from(path));
+        }
+        if let Ok(Some(url)) = opts.lookup::<String>("connect") {
+            match parse_connect_url(&url) {
+                Some((ip, tls_mode)) => ui::set_direct_connect(ip, tls_mode),
+                None => {
+                    eprintln!(
+                        "rustywiim: --connect expects scheme://ip[:port] (e.g. http://127.0.0.1:8080), got {url:?}"
+                    );
+                    return 1;
+                }
+            }
         }
         -1 // continue normal startup
     });
