@@ -91,7 +91,6 @@ pub struct EndpointConfig {
     /// `getPlayerStatusEx` available (Audio Pro MkII uses `getStatusEx` instead).
     pub supports_player_status_ex: bool,
     pub supports_get_meta_info:    bool,
-    pub supports_preset_info:      bool,
     pub supports_eq:               bool,
     /// Some devices can read EQ but not write it (many Arylic).
     pub supports_eq_set:           bool,
@@ -141,7 +140,6 @@ static FAMILY_WIIM: FamilyProfile = FamilyProfile {
     endpoints: EndpointConfig {
         supports_player_status_ex: true,
         supports_get_meta_info:    true,
-        supports_preset_info:      true,
         supports_eq:               true,
         supports_eq_set:           true,
         supports_alarms:           true,
@@ -166,7 +164,6 @@ static FAMILY_ARYLIC: FamilyProfile = FamilyProfile {
     endpoints: EndpointConfig {
         supports_player_status_ex: true,
         supports_get_meta_info:    true,
-        supports_preset_info:      true,
         supports_eq:               true,
         supports_eq_set:           false, // Many Arylic devices: read-only EQ
         supports_alarms:           false,
@@ -199,7 +196,6 @@ static FAMILY_AUDIO_PRO_MKII: FamilyProfile = FamilyProfile {
     endpoints: EndpointConfig {
         supports_player_status_ex: false, // Uses getStatusEx instead
         supports_get_meta_info:    false,
-        supports_preset_info:      false,
         supports_eq:               false,
         supports_eq_set:           false,
         supports_alarms:           false,
@@ -225,7 +221,6 @@ static FAMILY_AUDIO_PRO_WGEN: FamilyProfile = FamilyProfile {
     endpoints: EndpointConfig {
         supports_player_status_ex: true,
         supports_get_meta_info:    true,
-        supports_preset_info:      true,
         supports_eq:               true,
         supports_eq_set:           true,
         supports_alarms:           false,
@@ -251,7 +246,6 @@ static FAMILY_AUDIO_PRO_ORIGINAL: FamilyProfile = FamilyProfile {
     endpoints: EndpointConfig {
         supports_player_status_ex: true,
         supports_get_meta_info:    true,
-        supports_preset_info:      true,
         supports_eq:               false,
         supports_eq_set:           false,
         supports_alarms:           false,
@@ -278,7 +272,6 @@ static FAMILY_LINKPLAY_GENERIC: FamilyProfile = FamilyProfile {
     endpoints: EndpointConfig {
         supports_player_status_ex: true,
         supports_get_meta_info:    true,
-        supports_preset_info:      true,
         supports_eq:               true,
         supports_eq_set:           true,
         supports_alarms:           false,
@@ -756,9 +749,9 @@ impl DeviceCapabilities {
                 c.retry_count, c.requires_client_cert,
             ));
             dbg(&format!(
-                "endpoints: player_status_ex={}  meta={}  presets={}  eq={}  eq_set={}  alarms={}  sleep_timer={}",
+                "endpoints: player_status_ex={}  meta={}  eq={}  eq_set={}  alarms={}  sleep_timer={}",
                 ep.supports_player_status_ex, ep.supports_get_meta_info,
-                ep.supports_preset_info, ep.supports_eq, ep.supports_eq_set,
+                ep.supports_eq, ep.supports_eq_set,
                 ep.supports_alarms, ep.supports_sleep_timer,
             ));
             dbg(&format!("  status_endpoint: {:?}", ep.status_endpoint));
