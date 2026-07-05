@@ -14,7 +14,8 @@ use adw::prelude::*;
 use gtk::glib;
 use gtk::Orientation;
 
-use crate::config::{self, ThemeMode};
+use crate::config::{self, PlaybackAccessOverride, ThemeMode};
+use crate::device::playback::AccessMethod;
 use crate::device::state::DeviceState;
 use crate::ui::DEBUG_UI;
 use std::sync::atomic::Ordering;
@@ -68,6 +69,42 @@ impl SettingsWindow {
         sidebar_list.append(&appearance_row);
         sidebar_box.append(&sidebar_list);
 
+        // "Device" section — only when opened from a device window (`ds`
+        // carries the DeviceState in that case; `None` means opened from the
+        // device list, global-settings-only). Its own ListBox (GTK's
+        // selection model is per-ListBox), coordinated with `sidebar_list`
+        // below so only one row across both sections ever reads as selected.
+        let device_list = gtk::ListBox::builder()
+            .selection_mode(gtk::SelectionMode::Single)
+            .css_classes(["navigation-sidebar"])
+            .build();
+        if ds.is_some() {
+            let device_label = gtk::Label::builder()
+                .label("Device")
+                .xalign(0.0)
+                .css_classes(["caption", "dim-label"])
+                .margin_start(12).margin_end(12)
+                .margin_top(12).margin_bottom(4)
+                .build();
+            sidebar_box.append(&device_label);
+
+            let advanced_row = adw::ActionRow::builder()
+                .title("Advanced")
+                .selectable(true)
+                .activatable(true)
+                .build();
+            device_list.append(&advanced_row);
+
+            let about_row = adw::ActionRow::builder()
+                .title("About")
+                .selectable(true)
+                .activatable(true)
+                .build();
+            device_list.append(&about_row);
+
+            sidebar_box.append(&device_list);
+        }
+
         let sidebar_scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
             .vexpand(true)
@@ -84,19 +121,42 @@ impl SettingsWindow {
         let (appearance_page, reset_btn) = build_appearance_page();
         content_stack.add_named(&appearance_page, Some("appearance"));
 
+        if let Some(ref d) = ds {
+            let advanced_page = build_advanced_page(d);
+            content_stack.add_named(&advanced_page, Some("advanced"));
+            let about_page = build_about_page(d);
+            content_stack.add_named(&about_page, Some("about"));
+        }
+
         // Select "Appearance" by default
         sidebar_list.select_row(sidebar_list.row_at_index(0).as_ref());
 
         sidebar_list.connect_row_selected({
-            let stack = content_stack.clone();
+            let stack  = content_stack.clone();
+            let device_list = device_list.clone();
             move |_, row| {
-                if let Some(row) = row {
-                    let name = match row.index() {
-                        0 => "appearance",
-                        _ => return,
-                    };
-                    stack.set_visible_child_name(name);
-                }
+                let Some(row) = row else { return };
+                device_list.unselect_all();
+                let name = match row.index() {
+                    0 => "appearance",
+                    _ => return,
+                };
+                stack.set_visible_child_name(name);
+            }
+        });
+
+        device_list.connect_row_selected({
+            let stack = content_stack.clone();
+            let sidebar_list = sidebar_list.clone();
+            move |_, row| {
+                let Some(row) = row else { return };
+                sidebar_list.unselect_all();
+                let name = match row.index() {
+                    0 => "advanced",
+                    1 => "about",
+                    _ => return,
+                };
+                stack.set_visible_child_name(name);
             }
         });
 
@@ -352,4 +412,195 @@ fn build_appearance_page() -> (adw::PreferencesPage, gtk::Button) {
     let page = adw::PreferencesPage::new();
     page.add(&group);
     (page, reset_btn)
+}
+
+// ── Device -> Advanced (playback access-method overrides) ────────────────────
+//
+// Field diagnostics, not a supported end-user-facing feature — see
+// /PLAYBACKSTATE.md's "Debugging overrides: a 'Device' section in Settings".
+// Lets a user experiencing a playback-state bug on real hardware try forcing
+// one field group's AccessMethod away from the device profile's default and
+// report back what does/doesn't work.
+
+/// Display name paired with the override value it writes. `None` ("Default")
+/// must always stay index 0 and must always serialize as an absent field
+/// (`PlaybackAccessOverride`'s `skip_serializing_if`) — never resolve it to
+/// a concrete `AccessMethod` before saving, or a future version's changed
+/// defaults would stop reaching users who left this on "Default".
+const ACCESS_METHOD_CHOICES: &[(&str, Option<AccessMethod>)] = &[
+    ("Default",             None),
+    ("HTTP: Player Status", Some(AccessMethod::HttpPlayerStatusEx)),
+    ("HTTP: Meta Info",     Some(AccessMethod::HttpMetaInfo)),
+    ("UPnP (polled)",       Some(AccessMethod::UpnpPolled)),
+];
+
+fn access_method_index(v: Option<AccessMethod>) -> u32 {
+    ACCESS_METHOD_CHOICES.iter().position(|(_, m)| *m == v).unwrap_or(0) as u32
+}
+
+/// Display name for a *resolved* (never "Default" itself) `AccessMethod` —
+/// used to show the device profile's actual default under each row, not to
+/// populate the dropdown (that's `ACCESS_METHOD_CHOICES` directly).
+fn access_method_label(v: AccessMethod) -> &'static str {
+    ACCESS_METHOD_CHOICES.iter()
+        .find(|(_, m)| *m == Some(v))
+        .map(|(name, _)| *name)
+        .unwrap_or("?")
+}
+
+/// `default` is this device profile's actual resolved default for the field
+/// group (from `DeviceCapabilities::playback_access()`), appended to the
+/// description text — libadwaita's own subtitle styling already renders at
+/// small/dim weight, so no custom CSS is needed. Kept on one line rather
+/// than a `\n`-separated second line: `ComboRow`'s subtitle label may not be
+/// configured for multi-line wrapping, and this couldn't be visually
+/// verified here (no display server in this environment) — a guaranteed-
+/// safe single line beats an unverified assumption about wrapping.
+fn build_access_row(title: &str, subtitle: &str, default: AccessMethod, current: Option<AccessMethod>) -> adw::ComboRow {
+    let names: Vec<&str> = ACCESS_METHOD_CHOICES.iter().map(|(n, _)| *n).collect();
+    let row = adw::ComboRow::builder()
+        .title(title)
+        .subtitle(format!("{subtitle} · Default: {}", access_method_label(default)))
+        .model(&gtk::StringList::new(&names))
+        .build();
+    row.set_selected(access_method_index(current));
+    row
+}
+
+/// Persist `row`'s selection into `setter`'s field of this device's
+/// `playback_access_override`, then push the recomputed override into `ds`
+/// immediately so it takes effect on the next poll tick.
+fn wire_access_row(
+    row:    &adw::ComboRow,
+    uuid:   String,
+    ds:     DeviceState,
+    setter: fn(&mut PlaybackAccessOverride, Option<AccessMethod>),
+) {
+    row.connect_selected_notify(move |r| {
+        let (_, method) = ACCESS_METHOD_CHOICES[r.selected() as usize];
+        config::update(|cfg| setter(&mut cfg.device_mut(&uuid).playback_access_override, method));
+        let over = config::with(|cfg| cfg.device(&uuid).playback_access_override);
+        ds.set_playback_access_override(over.as_ref());
+    });
+}
+
+fn build_advanced_page(ds: &DeviceState) -> adw::PreferencesPage {
+    let uuid = ds.device_info().map(|i| i.uuid).unwrap_or_default();
+    let over = config::with(|cfg| cfg.device(&uuid).playback_access_override);
+    // This device's actual profile default (not just the global fallback) —
+    // every family currently resolves to the same `all_http()` set, but this
+    // stays correct if/once families diverge.
+    let defaults = ds.capabilities().map(|c| c.playback_access()).unwrap_or_default();
+
+    let status_row   = build_access_row("Status", "Play/pause/stop state", defaults.status, over.status);
+    let timing_row   = build_access_row("Timing", "Position + duration", defaults.timing, over.timing);
+    let volume_row   = build_access_row("Volume", "Volume + mute", defaults.volume, over.volume);
+    let metadata_row = build_access_row("Metadata", "Title/artist/album", defaults.metadata, over.metadata);
+    let artwork_row  = build_access_row("Artwork", "Cover art", defaults.artwork, over.artwork);
+    let source_row   = build_access_row("Source", "Decoded source label (e.g. \"Spotify\")", defaults.source, over.source);
+
+    wire_access_row(&status_row,   uuid.clone(), ds.clone(), |o, v| o.status   = v);
+    wire_access_row(&timing_row,   uuid.clone(), ds.clone(), |o, v| o.timing   = v);
+    wire_access_row(&volume_row,   uuid.clone(), ds.clone(), |o, v| o.volume   = v);
+    wire_access_row(&metadata_row, uuid.clone(), ds.clone(), |o, v| o.metadata = v);
+    wire_access_row(&artwork_row,  uuid.clone(), ds.clone(), |o, v| o.artwork  = v);
+    wire_access_row(&source_row,   uuid.clone(), ds.clone(), |o, v| o.source   = v);
+
+    let group = adw::PreferencesGroup::builder()
+        .title("Playback Access Methods")
+        .description(
+            "Field diagnostics: override which backend supplies each part of \
+             playback state. Leave everything on \"Default\" unless you're \
+             troubleshooting a specific problem."
+        )
+        .build();
+    group.add(&status_row);
+    group.add(&timing_row);
+    group.add(&volume_row);
+    group.add(&metadata_row);
+    group.add(&artwork_row);
+    group.add(&source_row);
+
+    let actions_group = adw::PreferencesGroup::new();
+    let defaults_row = adw::ActionRow::builder()
+        .title("Reset all to Default")
+        .build();
+    let defaults_btn = gtk::Button::builder()
+        .label("Defaults")
+        .valign(gtk::Align::Center)
+        .build();
+    defaults_row.add_suffix(&defaults_btn);
+    actions_group.add(&defaults_row);
+
+    defaults_btn.connect_clicked(glib::clone!(
+        @strong ds, @strong uuid,
+        @weak status_row, @weak timing_row, @weak volume_row,
+        @weak metadata_row, @weak artwork_row, @weak source_row
+        => move |_| {
+            config::update(|cfg| {
+                cfg.device_mut(&uuid).playback_access_override = PlaybackAccessOverride::default();
+            });
+            ds.set_playback_access_override(PlaybackAccessOverride::default().as_ref());
+            for row in [&status_row, &timing_row, &volume_row, &metadata_row, &artwork_row, &source_row] {
+                row.set_selected(0);
+            }
+        }
+    ));
+
+    let page = adw::PreferencesPage::new();
+    page.add(&group);
+    page.add(&actions_group);
+    page
+}
+
+// ── Device -> About ───────────────────────────────────────────────────────────
+//
+// Not live — a snapshot of whatever `DeviceState::device_info()`/
+// `capabilities()` already have cached at the moment the settings window
+// opens, same as everything else that reads those accessors. Reopen the
+// window to see fresher values. See /PLAYBACKSTATE.md.
+
+fn about_row(title: &str, value: &str) -> adw::ActionRow {
+    adw::ActionRow::builder()
+        .title(title)
+        .subtitle(if value.is_empty() { "—" } else { value })
+        .build()
+}
+
+fn build_about_page(ds: &DeviceState) -> adw::PreferencesPage {
+    let group = adw::PreferencesGroup::builder().title("Device").build();
+
+    let Some(info) = ds.device_info() else {
+        group.add(&about_row("Status", "Not connected yet"));
+        let page = adw::PreferencesPage::new();
+        page.add(&group);
+        return page;
+    };
+    let caps = ds.capabilities();
+
+    let vendor_model = match &caps {
+        Some(c) => format!("{} · {}", c.vendor.display_name(), c.model),
+        None    => String::new(),
+    };
+    let network = match ds.netstat() {
+        Some(0) => "Ethernet".to_string(),
+        Some(2) => match ds.rssi() {
+            Some(rssi) => format!("Wi-Fi ({rssi} dBm)"),
+            None       => "Wi-Fi".to_string(),
+        },
+        _ => String::new(),
+    };
+
+    group.add(&about_row("Device Name", &info.device_name));
+    group.add(&about_row("Vendor / Model", &vendor_model));
+    group.add(&about_row("Firmware", &info.firmware));
+    group.add(&about_row("IP Address", info.ip_addr()));
+    group.add(&about_row("UUID", &info.uuid));
+    group.add(&about_row("Project", &info.project));
+    group.add(&about_row("Hardware", &info.hardware));
+    group.add(&about_row("Network", &network));
+
+    let page = adw::PreferencesPage::new();
+    page.add(&group);
+    page
 }

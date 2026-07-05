@@ -10,7 +10,6 @@ mod playback;
 pub(crate) mod settings;
 mod widgets;
 
-use playback::decode_loop_mode;
 use widgets::*;
 
 use std::cell::{Cell, RefCell};
@@ -28,6 +27,7 @@ use crate::config;
 use crate::config::ThemeMode;
 use crate::device::discovery::DiscoveryService;
 use crate::device::manager::DeviceManager;
+use crate::device::playback::RepeatMode;
 use crate::device::state::{ConnectionState, DeviceState, DEBUG_STATE};
 
 pub static DEBUG_UI: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -809,10 +809,8 @@ impl DeviceWindow {
             let i = Rc::downgrade(&inner);
             move |_| {
                 let Some(i) = i.upgrade() else { return };
-                let (shuf, rep) = i.ds.player_status()
-                    .map(|s| decode_loop_mode(&s.loop_mode))
-                    .unwrap_or((false, 0));
-                i.ds.do_set_loop_mode(loop_api_mode(!shuf, rep));
+                let ps = i.ds.playback_state();
+                i.ds.do_set_loop_mode(loop_api_mode(!ps.shuffle, ps.repeat));
             }
         });
 
@@ -820,10 +818,8 @@ impl DeviceWindow {
             let i = Rc::downgrade(&inner);
             move |_| {
                 let Some(i) = i.upgrade() else { return };
-                let (shuf, rep) = i.ds.player_status()
-                    .map(|s| decode_loop_mode(&s.loop_mode))
-                    .unwrap_or((false, 0));
-                i.ds.do_set_loop_mode(loop_api_mode(shuf, (rep + 1) % 3));
+                let ps = i.ds.playback_state();
+                i.ds.do_set_loop_mode(loop_api_mode(ps.shuffle, ps.repeat.next()));
             }
         });
 
@@ -1394,14 +1390,13 @@ impl AppState {
 }
 
 // Private helper used within mod.rs new() — also accessible from child modules.
-fn loop_api_mode(shuffle: bool, repeat: u32) -> i32 {
+fn loop_api_mode(shuffle: bool, repeat: RepeatMode) -> i32 {
     match (shuffle, repeat) {
-        (false, 0) => 4,
-        (false, 1) => 0,
-        (false, 2) => 1,
-        (true,  0) => 3,
-        (true,  1) => 2,
-        (true,  2) => 5,
-        _           => 4,
+        (false, RepeatMode::Off) => 4,
+        (false, RepeatMode::All) => 0,
+        (false, RepeatMode::One) => 1,
+        (true,  RepeatMode::Off) => 3,
+        (true,  RepeatMode::All) => 2,
+        (true,  RepeatMode::One) => 5,
     }
 }

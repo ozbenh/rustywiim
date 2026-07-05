@@ -62,6 +62,8 @@ use super::api::{
     PresetEntry, TlsMode, WiimClient, TLS_MODE,
 };
 use super::capabilities::{DeviceCapabilities, detect_outputs, output_display_name};
+use super::playback;
+use super::playback::{PlaybackAccessConfig, PlaybackAccessOverrideRef, PlaybackState};
 
 // ── Connection state ──────────────────────────────────────────────────────────
 
@@ -151,14 +153,34 @@ struct Inner {
     ip:              String,
     device_info:     Option<DeviceInfo>,
     capabilities:    Option<DeviceCapabilities>,
+    /// Raw wire-shaped responses, cached purely as a diffing baseline for
+    /// next tick — the UI never reads these directly; see `playback` below.
     player_status:   Option<PlayerStatus>,
     metadata:        Option<MetaData>,
+    /// Canonical, backend-independent playback state — updated in place,
+    /// field by field, by `process_poll()` rather than rebuilt and diffed
+    /// wholesale every tick. See `/PLAYBACKSTATE.md`.
+    playback:        PlaybackState,
+    /// Effective per-field-group backend selection for this device:
+    /// capability-profile default with any `access_override` applied on top.
+    /// Recomputed by `recompute_access()`.
+    access:          PlaybackAccessConfig,
+    /// Last override pushed in via `set_playback_access_override()` (from
+    /// Settings' Advanced panel, via `config::DeviceConfig::
+    /// playback_access_override`) — kept so `recompute_access()` can
+    /// re-derive `access` when capabilities change without the caller
+    /// needing to resupply it.
+    access_override: PlaybackAccessOverrideRef,
     output_status:   Option<AudioOutputStatus>,
     audio_inputs:    Vec<AudioInputEntry>,
     mode_renames:    HashMap<String, String>,
-    current_mode:    String,
-    current_art_url: String,
-    art_bytes:       Option<Rc<Vec<u8>>>,
+    /// Raw wire `mode` value from the last poll; -1 = not yet known (see
+    /// `de_i32_or_neg1`'s doc comment in api.rs). Purely the polled value —
+    /// `switch_input()` no longer writes an optimistic value here (it used
+    /// to hold a canonical source-ID string instead, which doesn't fit an
+    /// integer field; see that method's doc comment for why that write was
+    /// dropped rather than converted).
+    current_mode:    i32,
     /// Outputs currently supported by the device (canonical name + display label).
     /// Initialised from the static capability profile; replaced by
     /// `getSoundCardModeSupportList` results when the device supports that API.
@@ -208,12 +230,13 @@ impl Default for Inner {
             capabilities:    None,
             player_status:   None,
             metadata:        None,
+            playback:        PlaybackState::default(),
+            access:          PlaybackAccessConfig::default(),
+            access_override: PlaybackAccessOverrideRef::default(),
             output_status:   None,
             audio_inputs:    Vec::new(),
             mode_renames:    HashMap::new(),
-            current_mode:    String::new(),
-            current_art_url: String::new(),
-            art_bytes:       None,
+            current_mode:    -1,
             outputs:          Vec::new(),
             probe_outputs:    true,
             probe_presets:    true,
@@ -445,6 +468,7 @@ impl DeviceState {
                 inner.connection_state  = ConnectionState::Connected;
                 inner.slow_poll_failures = 0;
             }
+            ds.recompute_access();
             dbg("signal: device-changed (ready)");
             ds.emit_by_name::<()>("device-changed", &[]);
             // Kick off the slow-poll rotation on the very next 1s tick,
@@ -464,6 +488,31 @@ impl DeviceState {
         inner.slow_poll_active = true;
         inner.slow_poll_phase  = SlowPollPhase::FIRST;
         inner.last_slow_poll   = Some(Instant::now());
+    }
+
+    // ── Playback access-method configuration ─────────────────────────────────
+
+    /// Recompute the effective `PlaybackAccessConfig` from this device's
+    /// capability profile plus whatever override is currently stored (see
+    /// `access_override`). Called whenever either input changes: after
+    /// capabilities are (re)detected, and from `set_playback_access_override`.
+    fn recompute_access(&self) {
+        let mut inner = self.imp().inner.borrow_mut();
+        let base = inner.capabilities.as_ref()
+            .map(|c| c.playback_access())
+            .unwrap_or_default();
+        let over = inner.access_override;
+        inner.access = base.with_overrides(over);
+        inner.access.warn_unimplemented();
+    }
+
+    /// Push a field-diagnostics override (from Settings' "Device -> Advanced"
+    /// panel, sourced from `config::DeviceConfig::playback_access_override`)
+    /// in and recompute the effective access config immediately, so a change
+    /// takes effect on the next poll tick without reconnecting.
+    pub fn set_playback_access_override(&self, over: PlaybackAccessOverrideRef) {
+        self.imp().inner.borrow_mut().access_override = over;
+        self.recompute_access();
     }
 
     // ── Polling ───────────────────────────────────────────────────────────────
@@ -585,7 +634,18 @@ impl DeviceState {
                 rt.spawn(async move { let _ = cv.set_volume(vol).await; });
             }
 
-            // Fast poll — always runs when Connected.
+            // Fast poll — always runs when Connected. Deliberately unconditional
+            // rather than checking `inner.access` (the resolved
+            // `PlaybackAccessConfig`): every field group's only real fetch
+            // path today is HTTP — `AccessMethod::UpnpPolled` has no fetch
+            // implementation in `device/upnp.rs` yet and would have to fall
+            // back to these same two calls regardless of which group
+            // selected it (see `PlaybackAccessConfig::warn_unimplemented()`,
+            // called from `recompute_access()`). So there is currently no
+            // real second branch for `access` to select between — add one
+            // here once `upnp.rs` can actually fetch something, rather than
+            // introducing a branch now that would just call the exact same
+            // two functions either way.
             {
                 let cp = c.clone();
                 let tx = poll_tx.clone();
@@ -644,17 +704,39 @@ impl DeviceState {
         glib::spawn_future_local(async move {
             while let Ok(bytes) = art_rx.recv().await {
                 let Some(ds) = ds.upgrade() else { break };
-                if bytes.is_empty() {
-                    dbg("artwork fetch failed; clearing stale art");
-                    ds.imp().inner.borrow_mut().art_bytes = None;
-                } else {
-                    dbg(&format!("artwork loaded: {} bytes", bytes.len()));
-                    ds.imp().inner.borrow_mut().art_bytes = Some(Rc::new(bytes));
+                {
+                    let mut inner = ds.imp().inner.borrow_mut();
+                    Self::replace_artwork(&mut inner, None); // leak-check the outgoing value first
+                    if bytes.is_empty() {
+                        dbg("artwork fetch failed; clearing stale art");
+                    } else {
+                        dbg(&format!("artwork loaded: {} bytes", bytes.len()));
+                        inner.playback.artwork = Some(Rc::new(bytes));
+                    }
                 }
                 dbg("signal: playback-changed (artwork)");
                 ds.emit_by_name::<()>("playback-changed", &[&playback_changed::ARTWORK]);
             }
         });
+    }
+
+    /// Replace `inner.playback.artwork` with `new`, first logging (gated on
+    /// `DEBUG_STATE`) if the outgoing value's `Rc` still has more than one
+    /// strong reference — that would mean something outside `DeviceState`
+    /// (a stale widget, a leftover clone) is holding artwork alive longer
+    /// than the track it belongs to, which should never happen since every
+    /// consumer is expected to re-fetch via `playback_state()` rather than
+    /// cache the `Rc` itself.
+    fn replace_artwork(inner: &mut Inner, new: Option<Rc<Vec<u8>>>) {
+        if let Some(old) = inner.playback.artwork.take() {
+            let refs = Rc::strong_count(&old);
+            if refs > 1 {
+                dbg(&format!(
+                    "artwork Rc still has {refs} strong refs at replacement — possible leak"
+                ));
+            }
+        }
+        inner.playback.artwork = new;
     }
 
     fn start_slow_poll_processor(&self, rx: async_channel::Receiver<SlowPollResult>) {
@@ -846,6 +928,15 @@ impl DeviceState {
         }
     }
 
+    /// Diffs the raw per-backend responses against the cached baseline
+    /// *before* any decoding happens (plain field/value comparisons — this
+    /// is also the `playback_changed` bitmask computation), then decodes
+    /// only the field groups whose bit came out set, writing straight into
+    /// `inner.playback` in place. An unchanged `title` never gets re-run
+    /// through metadata decoding, an unchanged `mode`/`vendor` pair never
+    /// re-runs the source-name lookup, an unchanged `curpos`/`totlen` never
+    /// re-runs the ms/µs heuristic — decode cost is paid only when the raw
+    /// diff already told us something changed. See `/PLAYBACKSTATE.md`.
     fn process_poll(&self, data: PollData, art_tx: &async_channel::Sender<Vec<u8>>) {
         let PollData { status, meta } = data;
         let mut playback_mask: u32 = 0;
@@ -853,23 +944,23 @@ impl DeviceState {
         if let Some(st) = status {
             // 1. Borrow: diff against previous status, compute everything we
             //    need from `inner` before it's dropped.
-            let (mode_changed, prev_mode) = {
+            let (mode_changed, prev_mode, volume_changed, timing_valid, time_changed, other_changed) = {
                 let inner = self.imp().inner.borrow();
                 let prev = inner.player_status.as_ref();
-                if prev.map_or(true, |p| p.vol != st.vol || p.mute != st.mute) {
-                    playback_mask |= playback_changed::VOLUME;
-                }
-                if prev.map_or(true, |p| p.curpos != st.curpos || p.totlen != st.totlen) {
-                    playback_mask |= playback_changed::TIME;
-                }
-                if prev.map_or(true, |p| {
+                let volume_changed = prev.map_or(true, |p| p.vol != st.vol || p.mute != st.mute);
+                let timing_valid = playback::timing_looks_valid(st.curpos, st.totlen);
+                let time_changed = timing_valid
+                    && prev.map_or(true, |p| p.curpos != st.curpos || p.totlen != st.totlen);
+                let other_changed = prev.map_or(true, |p| {
                     p.status != st.status || p.loop_mode != st.loop_mode || p.vendor != st.vendor
-                }) {
-                    playback_mask |= playback_changed::OTHER;
-                }
-                let prev_mode = inner.current_mode.clone();
-                (st.mode != prev_mode, prev_mode)
+                });
+                let prev_mode = inner.current_mode;
+                (st.mode != prev_mode, prev_mode, volume_changed, timing_valid, time_changed, other_changed)
             };
+
+            if volume_changed { playback_mask |= playback_changed::VOLUME; }
+            if time_changed   { playback_mask |= playback_changed::TIME; }
+            if other_changed  { playback_mask |= playback_changed::OTHER; }
 
             if mode_changed {
                 dbg(&format!(
@@ -877,14 +968,36 @@ impl DeviceState {
                     prev_mode, st.mode, st.status,
                 ));
             }
+            if !timing_valid {
+                dbg(&format!(
+                    "timing: ignoring garbage reading (curpos={} > totlen={})",
+                    st.curpos, st.totlen,
+                ));
+            }
 
-            // 2. Borrow_mut: apply all mutations in one pass.
+            // 2. Borrow_mut: decode only what changed, straight into `playback`.
             {
                 let mut inner = self.imp().inner.borrow_mut();
                 if mode_changed {
-                    inner.current_mode    = st.mode.clone();
-                    inner.current_art_url.clear();
-                    inner.art_bytes       = None;
+                    inner.current_mode = st.mode;
+                    Self::replace_artwork(&mut inner, None);
+                    inner.playback.art_url = None;
+                }
+                if volume_changed {
+                    inner.playback.volume = st.vol;
+                    inner.playback.muted  = st.mute;
+                }
+                if time_changed {
+                    let (pos, dur) = playback::decode_timing_http(st.curpos, st.totlen, st.mode);
+                    inner.playback.position = pos;
+                    inner.playback.duration = dur;
+                }
+                if other_changed {
+                    inner.playback.status      = playback::decode_status_http(&st.status);
+                    inner.playback.source_name = playback::decode_source_name_http(st.mode, &st.vendor);
+                    let (shuffle, repeat) = playback::decode_loop_mode_http(st.loop_mode);
+                    inner.playback.shuffle = shuffle;
+                    inner.playback.repeat  = repeat;
                 }
                 inner.player_status = Some(st);
             }
@@ -901,34 +1014,40 @@ impl DeviceState {
 
             // 1. Borrow: diff against previous metadata, compute everything we
             //    need from `inner` before it's dropped.
-            let url_changed = {
+            let (url_changed, title_changed, artist_changed, album_changed, other_changed) = {
                 let inner = self.imp().inner.borrow();
                 let prev = inner.metadata.as_ref();
-                if prev.map_or(true, |p| p.title != m.title) {
-                    playback_mask |= playback_changed::TITLE;
-                }
-                if prev.map_or(true, |p| p.artist != m.artist) {
-                    playback_mask |= playback_changed::ARTIST;
-                }
-                if prev.map_or(true, |p| p.album != m.album) {
-                    playback_mask |= playback_changed::ALBUM;
-                }
-                if prev.map_or(true, |p| {
+                let title_changed  = prev.map_or(true, |p| p.title != m.title);
+                let artist_changed = prev.map_or(true, |p| p.artist != m.artist);
+                let album_changed  = prev.map_or(true, |p| p.album != m.album);
+                let other_changed  = prev.map_or(true, |p| {
                     p.bit_rate != m.bit_rate || p.sample_rate != m.sample_rate || p.bit_depth != m.bit_depth
-                }) {
-                    playback_mask |= playback_changed::OTHER;
-                }
-                art_url != inner.current_art_url
+                });
+                let cached_url = inner.playback.art_url.as_deref().unwrap_or("");
+                (art_url != cached_url, title_changed, artist_changed, album_changed, other_changed)
             };
 
-            // 2. Borrow_mut: apply all mutations in one pass.
+            if title_changed  { playback_mask |= playback_changed::TITLE; }
+            if artist_changed { playback_mask |= playback_changed::ARTIST; }
+            if album_changed  { playback_mask |= playback_changed::ALBUM; }
+            if other_changed  { playback_mask |= playback_changed::OTHER; }
+
+            // 2. Borrow_mut: decode only what changed, straight into `playback`.
             {
                 let mut inner = self.imp().inner.borrow_mut();
-                inner.metadata = Some(m);
-                if url_changed {
-                    inner.current_art_url = art_url.clone();
-                    inner.art_bytes = None;
+                if title_changed  { inner.playback.title  = Rc::from(m.title.as_str()); }
+                if artist_changed { inner.playback.artist = Rc::from(m.artist.as_str()); }
+                if album_changed  { inner.playback.album  = Rc::from(m.album.as_str()); }
+                if other_changed {
+                    inner.playback.quality =
+                        playback::decode_quality_http(&m.bit_rate, &m.sample_rate, &m.bit_depth);
                 }
+                if url_changed {
+                    inner.playback.art_url =
+                        if art_url.is_empty() { None } else { Some(Rc::from(art_url.as_str())) };
+                    Self::replace_artwork(&mut inner, None);
+                }
+                inner.metadata = Some(m);
             }
 
             // 3. Side effects, after the borrow is dropped.
@@ -941,7 +1060,7 @@ impl DeviceState {
                     playback_mask |= playback_changed::ARTWORK;
                 } else {
                     dbg(&format!("art url changed: {art_url}"));
-                    // No immediate ARTWORK signal here: art_bytes is already
+                    // No immediate ARTWORK signal here: artwork is already
                     // cleared, but we hold off telling the UI until fetch_art()
                     // resolves (success or failure — see start_art_loader) so a
                     // fast reload doesn't flash the fallback icon in between.
@@ -992,14 +1111,27 @@ impl DeviceState {
 
     /// Request an input source switch.
     ///
-    /// The cached `current_mode` is updated optimistically.  The regular poll
-    /// detects any mismatch and emits `input-changed` to correct the dropdown.
+    /// `current_mode` is now a plain `i32` (the raw wire `mode` value —
+    /// see `process_poll`), so it can no longer hold `src`, a canonical
+    /// source-ID *string* (e.g. "bluetooth", from `sw.ids`/
+    /// `capabilities::detect_inputs()`) — there's no clean, unambiguous
+    /// integer to derive from it up front (several raw modes can map to the
+    /// same canonical ID, e.g. 11/42/51 all mean "udisk"). The previous
+    /// "optimistic" write here was confirmed dead in practice anyway:
+    /// nothing calls `update_input_display()`/`update_artwork()` (the only
+    /// readers of `current_mode()`) between this method returning and the
+    /// next real poll tick correcting the value via `input-changed` — the
+    /// dropdown itself already reflects the click immediately regardless,
+    /// being the widget the user just interacted with. So this is a
+    /// behavior-preserving simplification, not a functional regression; if
+    /// genuine optimistic artwork-icon feedback is ever wanted, it would
+    /// need the caller (the dropdown's `connect_selected_notify` handler in
+    /// `ui/mod.rs`) to explicitly trigger a UI refresh, not a write here.
     pub fn switch_input(&self, src: String) {
         let client = match self.imp().inner.borrow().client.clone() {
             Some(c) => c,
             None    => return,
         };
-        self.imp().inner.borrow_mut().current_mode = src.clone();
         self.rt().spawn(async move { let _ = client.switch_input(&src).await; });
     }
 
@@ -1078,6 +1210,9 @@ impl DeviceState {
             let Some(ds) = ds.upgrade() else { return };
             let client = ds.imp().inner.borrow().client.clone();
             if let Some(c) = client {
+                // Same "unconditional, no real second branch yet" reasoning
+                // as the main fast-poll dispatch in `start_unified_timer` —
+                // see that comment.
                 rt.spawn(async move {
                     let status = c.get_status().await.ok();
                     let meta   = c.get_meta_info().await.ok();
@@ -1110,12 +1245,15 @@ impl DeviceState {
         self.imp().inner.borrow().capabilities.clone()
     }
 
-    pub fn player_status(&self) -> Option<PlayerStatus> {
-        self.imp().inner.borrow().player_status.clone()
+    /// Canonical playback state, independent of which backend populated it.
+    /// Cheap to clone — every heap-allocated field is `Rc`-wrapped, so this
+    /// is refcount bumps only, not a deep copy. See `/PLAYBACKSTATE.md`.
+    pub fn playback_state(&self) -> PlaybackState {
+        self.imp().inner.borrow().playback.clone()
     }
 
     pub fn muted(&self) -> bool {
-        self.imp().inner.borrow().player_status.as_ref().map(|s| s.mute).unwrap_or(false)
+        self.imp().inner.borrow().playback.muted
     }
 
     /// Return the effective volume: the pending target if a rate-limited command
@@ -1126,10 +1264,6 @@ impl DeviceState {
             return Some(inner.target_volume as u32);
         }
         Some(inner.player_status.as_ref()?.vol)
-    }
-
-    pub fn metadata(&self) -> Option<MetaData> {
-        self.imp().inner.borrow().metadata.clone()
     }
 
     pub fn output_status(&self) -> Option<AudioOutputStatus> {
@@ -1144,20 +1278,9 @@ impl DeviceState {
         self.imp().inner.borrow().mode_renames.clone()
     }
 
-    pub fn current_mode(&self) -> String {
-        self.imp().inner.borrow().current_mode.clone()
-    }
-
-    pub fn art_bytes(&self) -> Option<Rc<Vec<u8>>> {
-        self.imp().inner.borrow().art_bytes.clone()
-    }
-
-    /// URL of the currently-cached artwork (empty if the current track has
-    /// none). Stable across repeated calls for the same track, unlike the
-    /// art bytes themselves — useful as a de-dupe key for UI that animates on
-    /// artwork *change* rather than every time it's asked to redraw.
-    pub fn current_art_url(&self) -> String {
-        self.imp().inner.borrow().current_art_url.clone()
+    /// Raw wire `mode` value from the last poll (-1 = not yet known).
+    pub fn current_mode(&self) -> i32 {
+        self.imp().inner.borrow().current_mode
     }
 
     // ── Typed signal connectors ───────────────────────────────────────────────

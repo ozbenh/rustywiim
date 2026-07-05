@@ -6,6 +6,8 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
 
+use rustywiim::device::playback::{AccessMethod, PlaybackAccessOverrideRef};
+
 /// `--no-config`: skip disk I/O entirely (no read at startup, no write ever)
 /// — every run behaves like a fresh install with no persisted state at all.
 /// Must be set (via `set_no_config`) before anything touches the config —
@@ -56,6 +58,52 @@ pub enum ThemeMode {
     RustyWiiMModern,
 }
 
+/// Per-device override of `PlaybackAccessConfig`'s field groups, editable
+/// via Settings' "Device -> Advanced" panel (field diagnostics — see
+/// `/PLAYBACKSTATE.md`). Every field defaults to `None`, meaning "use the
+/// device profile's default for this group".
+///
+/// **Selecting "Default" in the UI must write `None`, never the concrete
+/// `AccessMethod` value that happens to be default today.**
+/// `skip_serializing_if = "Option::is_none"` means a "Default" selection is
+/// simply absent from the saved JSON — deliberate, not a shortcut: if a
+/// future version changes a field group's default, every user who left it
+/// on "Default" gets the new behavior automatically on upgrade, rather than
+/// being silently pinned to whatever was default when they saved. Never
+/// resolve a `None` here into a concrete value before writing it back to
+/// config — resolution only happens transiently, in
+/// `DeviceState`'s effective-config computation.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+pub struct PlaybackAccessOverride {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status:   Option<AccessMethod>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timing:   Option<AccessMethod>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub volume:   Option<AccessMethod>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<AccessMethod>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artwork:  Option<AccessMethod>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source:   Option<AccessMethod>,
+}
+
+impl PlaybackAccessOverride {
+    /// Plain-field mirror for `device::playback`, which can't depend on this
+    /// (main-binary-crate) module.
+    pub fn as_ref(&self) -> PlaybackAccessOverrideRef {
+        PlaybackAccessOverrideRef {
+            status:   self.status,
+            timing:   self.timing,
+            volume:   self.volume,
+            metadata: self.metadata,
+            artwork:  self.artwork,
+            source:   self.source,
+        }
+    }
+}
+
 /// Per-device window state, keyed on the device UUID from `getStatusEx`.
 /// The UUID is a stable hardware-level identifier that does not change when
 /// the device is renamed or moved to a different network.
@@ -97,6 +145,14 @@ pub struct DeviceConfig {
     /// Last known marketing model name (e.g. "WiiM Pro Plus").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// Field-diagnostics override of the device profile's default
+    /// `PlaybackAccessConfig` — see `PlaybackAccessOverride`'s doc comment.
+    #[serde(default, skip_serializing_if = "is_default_override")]
+    pub playback_access_override: PlaybackAccessOverride,
+}
+
+fn is_default_override(o: &PlaybackAccessOverride) -> bool {
+    *o == PlaybackAccessOverride::default()
 }
 
 impl Default for DeviceConfig {
@@ -114,6 +170,7 @@ impl Default for DeviceConfig {
             last_ip:         None,
             name:            None,
             model:           None,
+            playback_access_override: PlaybackAccessOverride::default(),
         }
     }
 }

@@ -206,7 +206,29 @@ where
     Ok(s == "1")
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
+/// -1 sentinel for "missing or unparseable" — used for fields (`mode`,
+/// `loop_mode`) where every value in the field's actual range (0.. for
+/// `mode`, 0-5 for `loop_mode`) is already meaningful, so falling back to 0
+/// on parse failure (as `de_num_from_str` does) would silently collide with
+/// a real value. Confirmed via real captures, pywiim, Wiim-Dashboard, and
+/// linkplay-cli that `mode` is always a non-negative stringified integer on
+/// the wire; -1 itself is never observed on the wire, only used defensively
+/// by linkplay-cli's own lookup table — same spirit here. `loop_mode`'s own
+/// decode (`decode_loop_mode_http`) already has a catch-all defaulting to
+/// `(false, RepeatMode::Off)` for any unrecognized value, so -1 lands there
+/// and reproduces exactly the same "missing -> Off" behavior as today's
+/// empty/unparseable-string catch-all, not a new default.
+fn default_neg1() -> i32 { -1 }
+
+fn de_i32_or_neg1<'de, D>(deserializer: D) -> Result<i32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let s = String::deserialize(deserializer)?;
+    Ok(s.parse().unwrap_or(-1))
+}
+
+#[derive(Debug, Clone, Deserialize)]
 pub struct PlayerStatus {
     #[serde(default)]
     pub status: String,
@@ -218,16 +240,41 @@ pub struct PlayerStatus {
     pub curpos: u64,
     #[serde(default, deserialize_with = "de_num_from_str")]
     pub totlen: u64,
-    #[serde(default, rename = "loop")]
-    pub loop_mode: String,
-    #[serde(default)]
-    pub mode: String,
+    /// LinkPlay's `loop` field, always a stringified 0-5 integer on the wire
+    /// (see `decode_loop_mode_http` for the meaning of each value). -1 is a
+    /// sentinel for missing/unparseable, not a wire value — see
+    /// `de_i32_or_neg1`'s doc comment.
+    #[serde(default = "default_neg1", rename = "loop", deserialize_with = "de_i32_or_neg1")]
+    pub loop_mode: i32,
+    /// Always a stringified non-negative integer on the wire (confirmed
+    /// against real captures and every reference project this session
+    /// researched) — -1 is a sentinel for missing/unparseable, never a real
+    /// wire value. See `de_i32_or_neg1`'s doc comment.
+    #[serde(default = "default_neg1", deserialize_with = "de_i32_or_neg1")]
+    pub mode: i32,
     #[serde(default)]
     pub vendor: String,
     #[serde(default)]
     pub plicount: String,
     #[serde(default)]
     pub plicurr: String,
+}
+
+impl Default for PlayerStatus {
+    fn default() -> Self {
+        Self {
+            status:    String::new(),
+            vol:       0,
+            mute:      false,
+            curpos:    0,
+            totlen:    0,
+            loop_mode: -1,
+            mode:      -1,
+            vendor:    String::new(),
+            plicount:  String::new(),
+            plicurr:   String::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -500,12 +547,12 @@ fn soundcard_display_name(canon: &'static str, card_name: &str, dev_name: &str) 
 
 /// Apply firmware workarounds to a freshly-parsed `PlayerStatus`.
 fn fixup_player_status(st: &mut PlayerStatus) {
-    // Some devices report mode "10" (HTTP network stream) while actually playing
+    // Some devices report mode 10 (HTTP network stream) while actually playing
     // from a locally-attached USB storage device.  The "vendor" field is set to
-    // "UDiskLocal" in that case, which lets us detect and correct it to mode "11"
+    // "UDiskLocal" in that case, which lets us detect and correct it to mode 11
     // (USB local playback).
-    if st.mode == "10" && st.vendor == "UDiskLocal" {
-        st.mode = "11".to_string();
+    if st.mode == 10 && st.vendor == "UDiskLocal" {
+        st.mode = 11;
     }
 }
 
