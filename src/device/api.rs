@@ -648,13 +648,21 @@ impl WiimClient {
         Ok(serde_json::from_str(&text).unwrap_or_default())
     }
 
-    /// Returns each input and whether it is enabled (1) or disabled (0).
-    /// Returns an empty Vec if the device doesn't support the API.
-    pub async fn get_audio_input_enable(&self) -> Vec<AudioInputEntry> {
-        match self.cmd("getAudioInputEnable").await {
-            Ok(text) => serde_json::from_str::<Vec<AudioInputEntry>>(&text).unwrap_or_default(),
-            Err(_)   => Vec::new(),
+    /// Returns each input and whether it is enabled (1) or disabled (0), or
+    /// `None` if the call failed or didn't parse (device doesn't support
+    /// the API, or something else went wrong) — distinct from `Some(vec![])`,
+    /// a real empty list. Real devices wrap the array
+    /// (`{"audioInput": [...], "ver": "1.0"}`, confirmed via captures) —
+    /// a previous version of this parsed it as a bare array, which silently
+    /// failed every time against real hardware (see ANALYSIS.md item 19).
+    pub async fn get_audio_input_enable(&self) -> Option<Vec<AudioInputEntry>> {
+        #[derive(Deserialize)]
+        struct Response {
+            #[serde(default, rename = "audioInput")]
+            audio_input: Vec<AudioInputEntry>,
         }
+        let text = self.cmd("getAudioInputEnable").await.ok()?;
+        serde_json::from_str::<Response>(&text).ok().map(|r| r.audio_input)
     }
 
     /// Returns user-assigned names keyed by input mode string.

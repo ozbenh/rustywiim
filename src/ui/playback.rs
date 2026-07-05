@@ -140,19 +140,16 @@ impl DeviceWindowInner {
     // ── Source / Output / Network ─────────────────────────────────────────────
 
     pub(super) fn populate_source(&self) {
-        let in_enable = self.ds.audio_inputs();
-        let info = match self.ds.device_info() { Some(i) => i, None => return };
         let caps = match self.ds.capabilities() { Some(c) => c, None => return };
         let renames = self.ds.mode_renames();
 
-        let (ids, enabled_flags): (Vec<String>, Vec<bool>) = if !in_enable.is_empty() {
-            in_enable.iter().map(|e| (e.mode.clone(), e.is_enabled())).unzip()
-        } else {
-            let ids = capabilities::detect_inputs(caps.device_id, info.plm_support_value())
-                .into_iter().map(|s| s.to_string()).collect::<Vec<_>>();
-            let flags = vec![true; ids.len()];
-            (ids, flags)
-        };
+        // `caps.inputs` is already the one reconciled list — static
+        // plm_support-based detection, amended by a live getAudioInputEnable
+        // probe if that succeeded, further self-corrected in state.rs
+        // against the actively-in-use input. No more either/or fallback
+        // between two competing sources; see ANALYSIS.md item 19.
+        let ids: Vec<String> = caps.inputs.iter().map(|e| e.id.clone()).collect();
+        let enabled_flags: Vec<bool> = caps.inputs.iter().map(|e| e.enabled).collect();
 
         if ids.is_empty() {
             *self.sw.updating.borrow_mut() = true;
@@ -209,17 +206,26 @@ impl DeviceWindowInner {
         *self.ow.canon_names.borrow_mut() = output_names.iter().map(|e| e.canon).collect();
         *self.ow.updating.borrow_mut()    = true;
         self.ow.dropdown.set_model(Some(&gtk::StringList::new(&out_labels)));
-        self.ow.dropdown.set_sensitive(true);
         self.ow.section.set_visible(true);
 
-        if let Some(os) = self.ds.output_status() {
-            if let Ok(hw) = os.hardware.parse::<u32>() {
-                let hw_canon = capabilities::canon_mode_output_name(hw);
-                let names = self.ow.canon_names.borrow();
-                if let Some(pos) = names.iter().position(|&n| n == hw_canon) {
-                    self.ow.dropdown.set_selected(pos as u32);
+        // `output_status` is None right after connecting (state.rs no
+        // longer fetches it eagerly at connect time — see fetch_device_info)
+        // until the first slow-poll OutputStatus tick fills it in, a few
+        // seconds later. Grey the dropdown out rather than showing an
+        // unselected/first-item guess in the meantime; update_output_display()
+        // re-enables it once the real value arrives.
+        match self.ds.output_status() {
+            Some(os) => {
+                self.ow.dropdown.set_sensitive(true);
+                if let Ok(hw) = os.hardware.parse::<u32>() {
+                    let hw_canon = capabilities::canon_mode_output_name(hw);
+                    let names = self.ow.canon_names.borrow();
+                    if let Some(pos) = names.iter().position(|&n| n == hw_canon) {
+                        self.ow.dropdown.set_selected(pos as u32);
+                    }
                 }
             }
+            None => self.ow.dropdown.set_sensitive(false),
         }
         *self.ow.updating.borrow_mut() = false;
     }
@@ -447,6 +453,10 @@ impl DeviceWindowInner {
 
     pub(super) fn update_output_display(&self) {
         let Some(os) = self.ds.output_status() else { return };
+        // Now that we actually know the current output, the dropdown no
+        // longer needs to stay greyed out from the connect-time "unknown"
+        // state populate_output() set — see that function's comment.
+        self.ow.dropdown.set_sensitive(true);
         let Ok(hw) = os.hardware.parse::<u32>() else { return };
         let hw_canon = capabilities::canon_mode_output_name(hw);
         let names = self.ow.canon_names.borrow();

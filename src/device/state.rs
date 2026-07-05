@@ -58,10 +58,10 @@ fn dbg(msg: &str) {
 }
 
 use super::api::{
-    AudioInputEntry, AudioOutputStatus, DeviceInfo, MetaData, OutputEntry, PlayerStatus,
+    AudioOutputStatus, DeviceInfo, MetaData, OutputEntry, PlayerStatus,
     PresetEntry, TlsMode, WiimClient, TLS_MODE,
 };
-use super::capabilities::{DeviceCapabilities, detect_outputs, output_display_name};
+use super::capabilities::{self, DeviceCapabilities};
 use super::playback;
 use super::playback::{PlaybackAccessConfig, PlaybackAccessOverrideRef, PlaybackState};
 
@@ -172,7 +172,6 @@ struct Inner {
     /// needing to resupply it.
     access_override: PlaybackAccessOverrideRef,
     output_status:   Option<AudioOutputStatus>,
-    audio_inputs:    Vec<AudioInputEntry>,
     mode_renames:    HashMap<String, String>,
     /// Raw wire `mode` value from the last poll; -1 = not yet known (see
     /// `de_i32_or_neg1`'s doc comment in api.rs). Purely the polled value —
@@ -181,16 +180,6 @@ struct Inner {
     /// integer field; see that method's doc comment for why that write was
     /// dropped rather than converted).
     current_mode:    i32,
-    /// Outputs currently supported by the device (canonical name + display label).
-    /// Initialised from the static capability profile; replaced by
-    /// `getSoundCardModeSupportList` results when the device supports that API.
-    outputs:         Vec<OutputEntry>,
-    /// `true` while `getSoundCardModeSupportList` should be polled.
-    /// Set to `false` on the first call that returns a non-array response.
-    probe_outputs:    bool,
-    /// `true` while preset polling is active.
-    /// Set to `false` when capabilities indicate no preset support.
-    probe_presets:    bool,
     connection_state: ConnectionState,
     /// Last known network connection type (0=ethernet, 2=wifi).
     /// `None` until first `getStatusEx` result arrives.
@@ -234,12 +223,8 @@ impl Default for Inner {
             access:          PlaybackAccessConfig::default(),
             access_override: PlaybackAccessOverrideRef::default(),
             output_status:   None,
-            audio_inputs:    Vec::new(),
             mode_renames:    HashMap::new(),
             current_mode:    -1,
-            outputs:          Vec::new(),
-            probe_outputs:    true,
-            probe_presets:    true,
             netstat:          None,
             rssi:             None,
             connection_state: ConnectionState::Disconnected,
@@ -366,25 +351,34 @@ impl DeviceState {
         };
         let rt = self.rt();
         struct FetchOk {
-            info:      DeviceInfo,
-            output:    Option<AudioOutputStatus>,
-            in_enable: Vec<AudioInputEntry>,
-            renames:   HashMap<String, String>,
-            sc_list:   Option<Vec<OutputEntry>>,
+            info:    DeviceInfo,
+            caps:    DeviceCapabilities,
+            renames: HashMap<String, String>,
         }
         let (tx, rx) = async_channel::bounded::<Option<FetchOk>>(1);
 
         rt.spawn(async move {
-            let payload = match client.get_device_info().await {
-                Ok(info) => {
-                    let output    = client.get_audio_output().await.ok();
-                    let in_enable = client.get_audio_input_enable().await;
-                    let renames   = client.get_mode_rename().await;
-                    let sc_list   = client.get_sound_card_mode_support_list().await;
-                    Some(FetchOk { info, output, in_enable, renames, sc_list })
+            // `capabilities::detect_capabilities()` owns fetching getStatusEx
+            // *and* whatever probing is needed to resolve the rest of
+            // `DeviceCapabilities` (currently: getSoundCardModeSupportList
+            // for outputs, getAudioInputEnable for inputs) — this function
+            // doesn't try anything itself or interpret a failure; it only
+            // reads the result. See ANALYSIS.md items 18 and 19.
+            //
+            // Deliberately NOT calling get_audio_output() here — that used
+            // to duplicate the slow-poll's own OutputStatus phase, which
+            // fires within the first few ticks anyway (fire_slow_poll()
+            // starts the rotation immediately on connect). inner.output_status
+            // just stays None (Inner::default()'s value) until that first
+            // slow-poll tick arrives; populate_output() grays out the output
+            // dropdown while it's None rather than showing a guess.
+            let payload = match capabilities::detect_capabilities(&client).await {
+                Some((info, caps)) => {
+                    let renames = client.get_mode_rename().await;
+                    Some(FetchOk { info, caps, renames })
                 }
-                Err(e) => {
-                    eprintln!("[state] fetch_device_info failed: {e}");
+                None => {
+                    eprintln!("[state] fetch_device_info failed: getStatusEx unreachable");
                     None
                 }
             };
@@ -396,7 +390,7 @@ impl DeviceState {
             let payload = rx.recv().await.ok().flatten();
             let Some(ds) = ds.upgrade() else { return };
 
-            let Some(FetchOk { info, output, in_enable, renames, sc_list }) = payload else {
+            let Some(FetchOk { info, caps, renames }) = payload else {
                 ds.imp().inner.borrow_mut().connection_state = ConnectionState::Failed;
                 dbg("signal: device-changed (failed)");
                 ds.emit_by_name::<()>("device-changed", &[]);
@@ -418,50 +412,24 @@ impl DeviceState {
                     return;
                 }
             }
-            let caps = DeviceCapabilities::from_device_info(&info);
-            // Initialise outputs: prefer the live API list; fall back to the static profile.
-            let (probe_outputs, outputs) = match sc_list {
-                Some(list) => {
-                    dbg(&format!("outputs from API: {:?}", list));
-                    (true, list)
-                }
-                None => {
-                    dbg("getSoundCardModeSupportList not supported; using static profile");
-                    let fallback = detect_outputs(caps.device_id)
-                        .iter()
-                        .map(|&canon| OutputEntry {
-                            canon,
-                            name: output_display_name(canon).to_string(),
-                        })
-                        .collect();
-                    (false, fallback)
-                }
-            };
             dbg(&format!(
-                "device info: model=\"{}\" vendor={} fw={} project={} inputs={} outputs={}",
+                "device info: model=\"{}\" vendor={} fw={} project={} inputs={}",
                 caps.model,
                 caps.vendor.display_name(),
                 info.firmware,
                 info.project,
-                in_enable.len(),
-                output.as_ref().map_or("none", |o| &o.hardware),
+                caps.inputs.len(),
             ));
             {
                 let mut inner = ds.imp().inner.borrow_mut();
                 inner.netstat           = info.netstat.parse().ok();
                 inner.rssi              = info.rssi.parse().ok();
-                let probe_presets = caps.supports_presets;
                 inner.capabilities      = Some(caps);
                 inner.device_info       = Some(info);
-                inner.output_status     = output;
-                inner.audio_inputs      = in_enable;
+                // output_status is left None (Inner::default()) — the
+                // dropdown starts greyed out and the first slow-poll
+                // OutputStatus tick fills it in; see the comment above.
                 inner.mode_renames      = renames;
-                inner.outputs           = outputs;
-                inner.probe_outputs     = probe_outputs;
-                // Disable preset polling if capabilities explicitly report no support.
-                if !probe_presets {
-                    inner.probe_presets = false;
-                }
                 // Reset preset data so the first slow-poll cycle re-fetches from scratch.
                 inner.preset_fp         = String::new();
                 inner.presets           = Vec::new();
@@ -610,8 +578,13 @@ impl DeviceState {
             };
 
             let client        = inner.client.clone();
-            let probe_outputs = inner.probe_outputs;
-            let probe_presets = inner.probe_presets;
+            // Read straight off `capabilities` rather than a separate cached
+            // bool in `Inner` — `supports_presets` was already purely
+            // static/redundant with capabilities, and `probes_outputs` now
+            // lives there too (set by `capabilities::detect_capabilities()`).
+            // See ANALYSIS.md item 18.
+            let probe_outputs = inner.capabilities.as_ref().is_some_and(|c| c.probes_outputs);
+            let probe_presets = inner.capabilities.as_ref().is_some_and(|c| c.supports_presets);
             let preset_fp     = inner.preset_fp.clone();
             drop(inner);
 
@@ -769,23 +742,19 @@ impl DeviceState {
         self.emit_by_name::<()>("presets-changed", &[]);
     }
 
+    /// Reports one slow-poll `getSoundCardModeSupportList` result to
+    /// `capabilities::DeviceCapabilities::record_outputs_probe()`, which
+    /// owns the actual give-up/failure-counting policy (see ANALYSIS.md
+    /// item 18) — this is just the thin reporting + signal-emitting
+    /// wrapper. `state.rs` never sees a failure counter or threshold.
     fn handle_slow_poll_outputs(&self, outputs: Option<Vec<OutputEntry>>) {
-        match outputs {
-            None => {
-                dbg("slow poll: getSoundCardModeSupportList returned non-array; disabling");
-                self.imp().inner.borrow_mut().probe_outputs = false;
-            }
-            Some(list) => {
-                let prev = self.imp().inner.borrow().outputs.clone();
-                if list != prev {
-                    dbg(&format!("slow poll: outputs updated: {:?}", list));
-                    self.imp().inner.borrow_mut().outputs = list;
-                    dbg("signal: outputs-changed");
-                    self.emit_by_name::<()>("outputs-changed", &[]);
-                } else {
-                    dbg("slow poll: outputs unchanged");
-                }
-            }
+        let mut inner = self.imp().inner.borrow_mut();
+        let Some(caps) = inner.capabilities.as_mut() else { return };
+        let changed = caps.record_outputs_probe(outputs);
+        drop(inner);
+        if changed {
+            dbg("signal: outputs-changed");
+            self.emit_by_name::<()>("outputs-changed", &[]);
         }
     }
 
@@ -982,6 +951,24 @@ impl DeviceState {
                     inner.current_mode = st.mode;
                     Self::replace_artwork(&mut inner, None);
                     inner.playback.art_url = None;
+                    // Self-correct: an input actively in use can't really be
+                    // "disabled" — a capability snapshot (static guess or a
+                    // one-time getAudioInputEnable probe) claiming otherwise
+                    // is stale/wrong, not something to keep believing over
+                    // what the device is demonstrably doing right now. See
+                    // ANALYSIS.md item 19.
+                    let active_id = capabilities::mode_to_input_source(st.mode);
+                    if let Some(caps) = inner.capabilities.as_mut() {
+                        if let Some(entry) = caps.inputs.iter_mut().find(|i| i.id == active_id) {
+                            if !entry.enabled {
+                                eprintln!(
+                                    "[state] input {active_id:?} reported disabled but is \
+                                     actively in use; marking enabled",
+                                );
+                                entry.enabled = true;
+                            }
+                        }
+                    }
                 }
                 if volume_changed {
                     inner.playback.volume = st.vol;
@@ -1270,10 +1257,6 @@ impl DeviceState {
         self.imp().inner.borrow().output_status.clone()
     }
 
-    pub fn audio_inputs(&self) -> Vec<AudioInputEntry> {
-        self.imp().inner.borrow().audio_inputs.clone()
-    }
-
     pub fn mode_renames(&self) -> HashMap<String, String> {
         self.imp().inner.borrow().mode_renames.clone()
     }
@@ -1330,7 +1313,9 @@ impl DeviceState {
     }
 
     pub fn outputs(&self) -> Vec<OutputEntry> {
-        self.imp().inner.borrow().outputs.clone()
+        self.imp().inner.borrow().capabilities.as_ref()
+            .map(|c| c.outputs.clone())
+            .unwrap_or_default()
     }
 
     pub fn connection_state(&self) -> ConnectionState {

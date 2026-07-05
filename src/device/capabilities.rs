@@ -7,7 +7,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use super::api::DeviceInfo;
+use super::api::{DeviceInfo, OutputEntry, WiimClient};
 use super::playback::PlaybackAccessConfig;
 
 pub static DEBUG_DEVICE: AtomicBool = AtomicBool::new(false);
@@ -610,6 +610,41 @@ pub struct DeviceCapabilities {
     /// Parametric EQ.  Cannot be determined statically; starts `false` and
     /// must be updated after a successful runtime probe.
     pub supports_peq:       bool,
+    /// Resolved output list — from a live `getSoundCardModeSupportList`
+    /// probe if the device supports it, else the static per-model fallback
+    /// (`detect_outputs()`). Empty/harmless until `detect_capabilities()`
+    /// populates it; that's the only thing that should set this for real.
+    pub outputs:            Vec<OutputEntry>,
+    /// Whether `getSoundCardModeSupportList` actually worked on this
+    /// device. `state.rs` only reads this to decide whether to keep
+    /// polling that endpoint on the slow-poll cycle — it doesn't need to
+    /// know *why* the answer is what it is (static guess vs. live probe);
+    /// see ANALYSIS.md item 18's "opaque to callers" constraint.
+    pub probes_outputs:     bool,
+    /// Consecutive `getSoundCardModeSupportList` failures during ongoing
+    /// slow polling (not part of the initial `detect_capabilities()` probe,
+    /// which is a single attempt). Private — `state.rs` reports results via
+    /// `record_outputs_probe()` and never sees this counter directly; see
+    /// `OUTPUTS_PROBE_FAIL_THRESHOLD`.
+    outputs_probe_failures: u32,
+    /// Resolved audio input list — `detect_inputs()`'s static plm_support-
+    /// based list, `enabled` defaulting `true` for every entry, optionally
+    /// amended by a one-time `getAudioInputEnable` probe in
+    /// `detect_capabilities()` if that call succeeds and parses. See
+    /// ANALYSIS.md item 19 for the full design (including why an entry
+    /// found here "disabled" can still be forced back on by `state.rs` if
+    /// it's the device's actively-in-use input).
+    pub inputs:             Vec<InputEntry>,
+}
+
+/// One resolved audio input: a canonical ID (from `detect_inputs()`'s fixed
+/// set, or — if `getAudioInputEnable` reports something `detect_inputs()`
+/// missed — the raw device-reported string, appended rather than dropped)
+/// plus whether it's currently enabled.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InputEntry {
+    pub id:      String,
+    pub enabled: bool,
 }
 
 impl DeviceCapabilities {
@@ -680,10 +715,25 @@ impl DeviceCapabilities {
         let (supports_presets, supports_eq, supports_peq) =
             static_playback_caps(device_id);
 
+        // Base input list — static, from plm_support + per-model profile.
+        // `detect_capabilities()` may amend `enabled` (and append entries
+        // this static detection missed) via a live `getAudioInputEnable`
+        // probe; this is just the starting point. See ANALYSIS.md item 19.
+        let inputs = detect_inputs(device_id, info.plm_support_value())
+            .into_iter()
+            .map(|id| InputEntry { id: id.to_string(), enabled: true })
+            .collect();
+
         let caps = Self {
             device_id, vendor, model, family,
             loop_mode_scheme, uses_wifi_direct,
             supports_presets, supports_eq, supports_peq,
+            inputs,
+            // Harmless placeholders — only `detect_capabilities()` (the real
+            // probing entry point) sets these to something meaningful.
+            // Standalone callers of `from_device_info()` (e.g. `wiim-capture`,
+            // which only wants the model name) never see these matter.
+            outputs: Vec::new(), probes_outputs: true, outputs_probe_failures: 0,
         };
 
         if DEBUG_DEVICE.load(Ordering::Relaxed) {
@@ -719,10 +769,126 @@ impl DeviceCapabilities {
 
     /// This device family's default `PlaybackAccessConfig` — the starting
     /// point `DeviceState` applies any per-device `PlaybackAccessOverride`
-    /// on top of. See `/PLAYBACKSTATE.md`.
+    /// on top of. See `/PLAYBACKSTATE.md`. Currently just the static
+    /// per-family default (`self.family.playback_access`); once
+    /// `detect_capabilities()` probes more than outputs, findings from that
+    /// probing should feed into this too — see ANALYSIS.md item 18.
     pub fn playback_access(&self) -> PlaybackAccessConfig {
         self.family.playback_access
     }
+
+    /// Consecutive `getSoundCardModeSupportList` failures tolerated during
+    /// ongoing slow polling before giving up on it for this device
+    /// (`probes_outputs` flips to `false`). Matches `state.rs`'s
+    /// `SLOW_POLL_FAIL_THRESHOLD` — these embedded HTTP servers are flaky
+    /// enough that a single miss shouldn't immediately be treated as
+    /// "device doesn't support this."
+    const OUTPUTS_PROBE_FAIL_THRESHOLD: u32 = 3;
+
+    /// Report the result of one `getSoundCardModeSupportList` slow-poll
+    /// attempt. `state.rs` just reports what happened here; this method —
+    /// not the caller — decides whether/when to actually give up. Keeps the
+    /// give-up policy (and the failure counter itself) entirely inside
+    /// capabilities.rs, consistent with ANALYSIS.md item 18: `state.rs`
+    /// never sees the counter or the threshold, only the resulting
+    /// `probes_outputs` flag and whatever it needs to know whether to emit
+    /// `outputs-changed`.
+    ///
+    /// Returns `true` if `self.outputs` actually changed as a result (the
+    /// caller emits `outputs-changed` when this is `true`).
+    pub fn record_outputs_probe(&mut self, result: Option<Vec<OutputEntry>>) -> bool {
+        match result {
+            None => {
+                self.outputs_probe_failures += 1;
+                eprintln!(
+                    "[device] getSoundCardModeSupportList failed ({}/{})",
+                    self.outputs_probe_failures, Self::OUTPUTS_PROBE_FAIL_THRESHOLD,
+                );
+                if self.outputs_probe_failures >= Self::OUTPUTS_PROBE_FAIL_THRESHOLD {
+                    eprintln!(
+                        "[device] giving up on getSoundCardModeSupportList for this device \
+                         after {} consecutive failures",
+                        self.outputs_probe_failures,
+                    );
+                    self.probes_outputs = false;
+                }
+                false
+            }
+            Some(list) => {
+                self.outputs_probe_failures = 0;
+                if list != self.outputs {
+                    self.outputs = list;
+                    true
+                } else {
+                    false
+                }
+            }
+        }
+    }
+}
+
+/// Full capability detection for a live connection — the single place that
+/// owns *both* the static classification (`from_device_info()`) and
+/// whatever live probing is needed to resolve the rest of
+/// `DeviceCapabilities`. Fetches `getStatusEx` (`WiimClient::
+/// get_device_info()`) itself rather than requiring the caller to have
+/// already fetched it, and currently probes `getSoundCardModeSupportList`
+/// for output support — the same two calls `state.rs`'s `fetch_device_info`
+/// used to make and interpret itself, now made once, here, and returned as
+/// one flat, opaque result. `state.rs` never decides what to try or
+/// interprets a failure; it only reads the result. See ANALYSIS.md item 18
+/// for the full rationale (including why the static-vs-probed distinction
+/// must never leak past this function).
+///
+/// Returns `None` if `getStatusEx` itself fails — nothing else is worth
+/// probing without basic device info.
+pub async fn detect_capabilities(client: &WiimClient) -> Option<(DeviceInfo, DeviceCapabilities)> {
+    let info = client.get_device_info().await.ok()?;
+    let mut caps = DeviceCapabilities::from_device_info(&info);
+
+    match client.get_sound_card_mode_support_list().await {
+        Some(list) => {
+            dbg(&format!("outputs from API: {:?}", list));
+            caps.outputs = list;
+            caps.probes_outputs = true;
+        }
+        None => {
+            dbg("getSoundCardModeSupportList not supported; using static profile");
+            caps.outputs = detect_outputs(caps.device_id)
+                .iter()
+                .map(|&canon| OutputEntry { canon, name: output_display_name(canon).to_string() })
+                .collect();
+            caps.probes_outputs = false;
+        }
+    }
+
+    // Amend the static input list with a live enable/disable reading, if the
+    // device supports the call and the response actually parses. Never
+    // authoritative for *existence* — only for `enabled`, and only for
+    // entries it actually mentions (missing entries keep their static
+    // default rather than being dropped). See ANALYSIS.md item 19.
+    match client.get_audio_input_enable().await {
+        Some(entries) => {
+            dbg(&format!("audio input enable: {:?}", entries));
+            for e in &entries {
+                if let Some(existing) = caps.inputs.iter_mut().find(|i| i.id == e.mode) {
+                    existing.enabled = e.is_enabled();
+                } else {
+                    eprintln!(
+                        "[device] getAudioInputEnable reported {:?}, which isn't in the \
+                         static input list for this device — adding it",
+                        e.mode,
+                    );
+                    caps.inputs.push(InputEntry { id: e.mode.clone(), enabled: e.is_enabled() });
+                }
+            }
+        }
+        None => {
+            dbg("getAudioInputEnable not supported or didn't parse; all inputs default enabled");
+        }
+    }
+
+    Some((info, caps))
 }
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
@@ -913,14 +1079,18 @@ static PLM_BIT_TO_INPUT: &[(u8, &str)] = &[
     (7, "line-in-2"),
 ];
 
-/// Detect available inputs for a device.
+/// Detect available inputs for a device — the static base list
+/// `DeviceCapabilities::from_device_info()` seeds `inputs` from (see
+/// `InputEntry`/ANALYSIS.md item 19). No longer `pub`: nothing outside this
+/// module needs the raw list on its own since `caps.inputs` is now the one
+/// place callers read resolved inputs from.
 ///
 /// Algorithm:
 /// 1. Decode `plm_support` bits using `PLM_BIT_TO_INPUT`.
 /// 2. Remove inputs whose bit is in the device profile's `ignore_plm_bits`.
 /// 3. Append any `extra_inputs` from the profile not already in the list.
 /// 4. Prepend `"wifi"` (always available as a network streaming source).
-pub fn detect_inputs(device_id: DeviceId, plm_support: u64) -> Vec<&'static str> {
+fn detect_inputs(device_id: DeviceId, plm_support: u64) -> Vec<&'static str> {
     let profile = device_id.profile();
 
     // Step 1 — decode bitmap.
