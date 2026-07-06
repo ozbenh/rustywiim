@@ -498,7 +498,7 @@ static WIIM_PROFILES: [DeviceProfile; 9] = [
     /* 3 WiimAmp */ DeviceProfile {
         model_name:      Some("WiiM Amp"),
         ignore_plm_bits: &[],
-        extra_inputs:    &["bluetooth", "line-in", "optical", "udisk", "hdmi"],
+        extra_inputs:    &["bluetooth", "line-in", "optical", "udisk", "HDMI"],
         outputs:         &["line-out", "usb-out"],
         line_out_is_speaker: true,
     },
@@ -512,7 +512,7 @@ static WIIM_PROFILES: [DeviceProfile; 9] = [
     /* 5 WiimAmpUltra */ DeviceProfile {
         model_name:      Some("WiiM Amp Ultra"),
         ignore_plm_bits: &[],
-        extra_inputs:    &["bluetooth", "line-in", "optical", "udisk", "hdmi"],
+        extra_inputs:    &["bluetooth", "line-in", "optical", "udisk", "HDMI"],
         outputs:         &["speaker-out"],
         // Real firmware already reports `AUDIO_OUTPUT_SPEAKER_MODE`
         // directly (canon `"speaker-out"`, not `"line-out"`), so this flag
@@ -523,7 +523,7 @@ static WIIM_PROFILES: [DeviceProfile; 9] = [
     /* 6 WiimUltra */ DeviceProfile {
         model_name:      Some("WiiM Ultra"),
         ignore_plm_bits: &[],
-        extra_inputs:    &["bluetooth", "line-in", "optical", "coaxial", "udisk", "hdmi", "phono"],
+        extra_inputs:    &["bluetooth", "line-in", "optical", "coaxial", "udisk", "HDMI", "phono"],
         outputs:         &["line-out", "optical-out", "coax-out", "headphone-out", "usb-out"],
         line_out_is_speaker: false,
     },
@@ -554,7 +554,7 @@ static ARYLIC_PROFILES: [DeviceProfile; 3] = [
     /* 101 ArylicH50 */ DeviceProfile {
         model_name:      Some("Arylic H50"),
         ignore_plm_bits: &[],
-        extra_inputs:    &["bluetooth", "line-in", "optical", "udisk", "phono", "hdmi"],
+        extra_inputs:    &["bluetooth", "line-in", "optical", "udisk", "phono", "HDMI"],
         outputs:         &["line-out", "optical-out"],
         line_out_is_speaker: false,
     },
@@ -578,7 +578,7 @@ static AUDIO_PRO_PROFILES: [DeviceProfile; 6] = [
     /* 201 AudioProA28 */ DeviceProfile {
         model_name:      Some("Audio Pro A28"),
         ignore_plm_bits: &[],
-        extra_inputs:    &["bluetooth", "optical", "line-in", "hdmi"],
+        extra_inputs:    &["bluetooth", "optical", "line-in", "HDMI"],
         outputs:         &[],
         line_out_is_speaker: false,
     },
@@ -912,23 +912,29 @@ pub async fn detect_capabilities(client: &WiimClient) -> Option<(DeviceInfo, Dev
         Some(entries) => {
             dbg(&format!("audio input enable: {:?}", entries));
             for e in &entries {
-                // Real devices don't match our canonical (lowercase) casing —
-                // e.g. a WiiM Ultra/Amp reports `mode: "HDMI"` where every
-                // static ID here is `"hdmi"`. Comparing/storing case-sensitively
-                // used to silently append a second, differently-cased entry
-                // instead of updating the existing one (visible as a duplicate
-                // input in the UI, and with a different icon since icon lookup
-                // is also ID-keyed).
-                let mode = e.mode.to_ascii_lowercase();
-                if let Some(existing) = caps.inputs.iter_mut().find(|i| i.id == mode) {
+                // Case-insensitive match only — some devices report a mode
+                // in different casing than our canonical ID between calls
+                // or firmware versions. Never rewrite the *stored* ID to the
+                // device's casing here: canonical IDs are sent verbatim as
+                // the `setPlayerCmd:switchmode:{id}` wire value elsewhere
+                // (`DeviceState::switch_input()`), and for `"HDMI"`
+                // specifically that has to stay exactly the case the device
+                // expects — comparing case-sensitively used to silently
+                // append a second, differently-cased duplicate entry instead
+                // of updating the existing one (visible as a duplicate input
+                // in the UI, with a different icon since icon lookup is also
+                // ID-keyed).
+                if let Some(existing) = caps.inputs.iter_mut()
+                    .find(|i| i.id.eq_ignore_ascii_case(&e.name))
+                {
                     existing.enabled = e.is_enabled();
                 } else {
                     eprintln!(
                         "[device] getAudioInputEnable reported {:?}, which isn't in the \
                          static input list for this device — adding it",
-                        e.mode,
+                        e.name,
                     );
-                    caps.inputs.push(InputEntry { id: mode, enabled: e.is_enabled() });
+                    caps.inputs.push(InputEntry { id: e.name.clone(), enabled: e.is_enabled() });
                 }
             }
         }
@@ -1219,7 +1225,7 @@ pub fn input_display_name(id: &str) -> &str {
         "optical"   => "Optical",
         "coaxial"   => "Coaxial",
         "udisk"     => "USB",
-        "hdmi"      => "HDMI",
+        "HDMI"      => "HDMI",
         "phono"     => "Phono",
         _           => id,
     }
@@ -1230,6 +1236,15 @@ pub fn input_display_name(id: &str) -> &str {
 /// current_mode()`, now a plain `i32` — see that method's doc comment for
 /// why the older overloading with a canonical source-ID string was removed
 /// rather than converted).
+///
+/// Every canonical input ID here is lowercase *except* `"HDMI"` — not a
+/// stylistic inconsistency, it matches the actual device wire format
+/// exactly. Confirmed both ways: `getAudioInputEnable` reports it capitalized
+/// (real captures), and the authoritative `wiim` SDK's own `InputMode` enum
+/// (`consts.py`) has `HDMI`'s wire command name capitalized while every
+/// other entry's is lowercase — this is genuinely how the device spells it,
+/// on both the read and write (`setPlayerCmd:switchmode:{id}`) sides.
+/// Sending lowercase `"hdmi"` back is silently rejected by real hardware.
 pub fn mode_to_input_source(mode: i32) -> &'static str {
     match mode {
         40 | 44 | 60 => "line-in",
@@ -1237,7 +1252,7 @@ pub fn mode_to_input_source(mode: i32) -> &'static str {
         41           => "bluetooth",
         42 | 11 | 51 => "udisk",
         43           => "optical",
-        49           => "hdmi",
+        49           => "HDMI",
         54           => "phono",
         _            => "wifi",
     }

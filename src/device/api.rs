@@ -372,8 +372,11 @@ impl DeviceInfo {
 
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct AudioInputEntry {
-    #[serde(default)]
-    pub mode:   String,
+    /// Input source name (e.g. `"wifi"`, `"HDMI"`) — wire key is `"mode"`,
+    /// but it's a name string, not a numeric mode like `PlayerStatus.mode`;
+    /// renamed on this side to avoid confusing the two.
+    #[serde(default, rename = "mode")]
+    pub name:   String,
     #[serde(default)]
     pub enable: u8,
 }
