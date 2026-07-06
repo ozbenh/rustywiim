@@ -9,6 +9,23 @@
 //! unlocks those. A real run without this gate was once observed to leave
 //! a device's touch controls disabled, its LED off, its volume changed,
 //! and its EQ preset overwritten.
+//!
+//! `wiim-capture --one <target> <ip>` — a lightweight escape hatch for
+//! quick protocol probing/testing, distinct from the curated
+//! `commands.yaml`-driven capture above: sends exactly the one given
+//! command/action verbatim and prints only the raw response body to
+//! stdout — no JSON wrapping, no capture file written, no
+//! `commands.yaml`/safety-gating involved at all (it's whatever the caller
+//! directly typed, not something this tool inferred was safe). `<target>`
+//! is either:
+//! - a plain `httpapi.asp` command string, e.g. `getPlayerStatusEx` (sent
+//!   via the same probed/detected scheme+port as the normal flow), or
+//! - `upnp:<Action>` / `upnp:<Service>:<Action>` for a UPnP SOAP action,
+//!   e.g. `upnp:GetInfoEx` or `upnp:RenderingControl:GetVolume` — the
+//!   service is auto-detected for the handful of actions this tool already
+//!   knows about (see `known_upnp_action_service`), otherwise spell it out.
+//! Pairs with `wiim-capdump -`, which reads that raw body from stdin and
+//! pretty-prints it the same way it would a capture file's command body.
 
 use base64::Engine;
 use rustywiim::capture::commands::{self, ExpandedCommand};
@@ -669,7 +686,11 @@ async fn fetch_description(ip: &str, location: Option<&str>) -> Option<(String, 
     None
 }
 
-async fn soap_call(control_url: &str, service_type: &str, action: &str, args_xml: &str, ip: &str) -> UpnpActionCapture {
+/// Sends one SOAP action, returning the raw (unanonymized) `Attempt` —
+/// shared by `soap_call()` (full capture: wraps + anonymizes the result for
+/// the JSON file) and `send_one_upnp()` (the `--one upnp:...` escape hatch,
+/// which wants the bare response body, nothing wrapped or scrubbed).
+async fn soap_call_raw(control_url: &str, service_type: &str, action: &str, args_xml: &str) -> Attempt {
     let client = build_reqwest_client(
         tls_for_scheme(control_url.split(':').next().unwrap_or("http")),
         REQUEST_TIMEOUT,
@@ -681,14 +702,18 @@ async fn soap_call(control_url: &str, service_type: &str, action: &str, args_xml
          <s:Body><u:{action} xmlns:u=\"{service_type}\">{args_xml}</u:{action}></s:Body></s:Envelope>"
     );
     let soap_action_header = format!("\"{service_type}#{action}\"");
-    let attempt = send_request(|| {
+    send_request(|| {
         client
             .post(control_url)
             .header("Content-Type", "text/xml; charset=\"utf-8\"")
             .header("SOAPACTION", soap_action_header.clone())
             .body(body.clone())
     })
-    .await;
+    .await
+}
+
+async fn soap_call(control_url: &str, service_type: &str, action: &str, args_xml: &str, ip: &str) -> UpnpActionCapture {
+    let attempt = soap_call_raw(control_url, service_type, action, args_xml).await;
 
     let response = attempt.body.as_ref().map(|raw| {
         let (format, mut body) = encode_blob(raw);
@@ -708,6 +733,107 @@ async fn soap_call(control_url: &str, service_type: &str, action: &str, args_xml
         http_status: attempt.http_status,
         error: attempt.error,
         response,
+    }
+}
+
+// ── `--one upnp:...` support ─────────────────────────────────────────────────
+
+const AVT_SERVICE_TYPE: &str = "urn:schemas-upnp-org:service:AVTransport:1";
+const RC_SERVICE_TYPE: &str = "urn:schemas-upnp-org:service:RenderingControl:1";
+
+/// Known action -> owning short service name, so `--one upnp:<Action>`
+/// doesn't require spelling out the service too. Mirrors the action lists
+/// `capture_upnp()` already probes.
+fn known_upnp_action_service(action: &str) -> Option<&'static str> {
+    match action {
+        "GetTransportInfo" | "GetPositionInfo" | "GetMediaInfo" | "GetInfoEx" => Some("AVTransport"),
+        "GetVolume" | "GetMute" => Some("RenderingControl"),
+        _ => None,
+    }
+}
+
+fn upnp_service_type(short: &str) -> Option<&'static str> {
+    match short {
+        "AVTransport" => Some(AVT_SERVICE_TYPE),
+        "RenderingControl" => Some(RC_SERVICE_TYPE),
+        _ => None,
+    }
+}
+
+/// Every action this tool sends only ever needs `InstanceID`, plus
+/// `Channel` for `RenderingControl` — matches `capture_upnp()`'s existing
+/// argument choices for the actions it already knows about. An action
+/// requiring something richer (a real `Seek`/`SetVolume` argument, say)
+/// isn't supported by this read-only escape hatch.
+fn default_upnp_args(short_service: &str) -> &'static str {
+    if short_service == "RenderingControl" {
+        "<InstanceID>0</InstanceID><Channel>Master</Channel>"
+    } else {
+        "<InstanceID>0</InstanceID>"
+    }
+}
+
+/// Discovers the control URL for `short_service` ("AVTransport" or
+/// "RenderingControl") via SSDP + `description.xml`'s service list — the
+/// same discovery `capture_upnp()` does inline, factored out here for reuse
+/// by `--one upnp:...` (which only wants one service's control URL, not a
+/// full UPnP capture).
+async fn discover_control_url(ip: &str, short_service: &str) -> Option<String> {
+    let (ssdp_text, _) = ssdp_probe(ip).await;
+    let location = ssdp_text.as_deref().and_then(|t| extract_header(t, "LOCATION"));
+    let (description_url, attempt) = fetch_description(ip, location.as_deref()).await?;
+    let raw = attempt.body?;
+    for block in extract_service_blocks(&raw) {
+        let Some(service_type) = extract_tag(&block, "serviceType") else { continue };
+        if service_type.contains(&format!(":service:{short_service}:")) {
+            let control_url_raw = extract_tag(&block, "controlURL")?;
+            return Some(resolve_url(&description_url, &control_url_raw));
+        }
+    }
+    None
+}
+
+/// Runs `--one upnp:...`: resolves the service (explicit, or looked up for
+/// a known action), discovers its control URL, sends the action, and prints
+/// the raw response body to stdout. Exits the process on any failure.
+async fn send_one_upnp(ip: &str, service: Option<String>, action: String) -> ! {
+    let short_service = match service {
+        Some(s) => s,
+        None => match known_upnp_action_service(&action) {
+            Some(s) => s.to_string(),
+            None => {
+                eprintln!(
+                    "[wiim-capture] don't know which UPnP service '{action}' belongs to; \
+                     specify it explicitly, e.g. --one upnp:AVTransport:{action}"
+                );
+                std::process::exit(2);
+            }
+        },
+    };
+    let Some(service_type) = upnp_service_type(&short_service) else {
+        eprintln!("[wiim-capture] unknown UPnP service '{short_service}' (expected AVTransport or RenderingControl)");
+        std::process::exit(2);
+    };
+    eprintln!("[wiim-capture] discovering {short_service} control URL on {ip}...");
+    let Some(control_url) = discover_control_url(ip, &short_service).await else {
+        eprintln!("[wiim-capture] couldn't discover a {short_service} control URL for {ip}");
+        std::process::exit(1);
+    };
+    eprintln!("[wiim-capture] {short_service}.{action} on {control_url}");
+    let args_xml = default_upnp_args(&short_service);
+    let attempt = soap_call_raw(&control_url, service_type, &action, args_xml).await;
+    match attempt.body {
+        Some(b) if attempt.outcome == Outcome::Ok => {
+            println!("{b}");
+            std::process::exit(0);
+        }
+        _ => {
+            eprintln!(
+                "[wiim-capture] {short_service}.{action} failed: {}",
+                attempt.error.as_deref().unwrap_or("no response body"),
+            );
+            std::process::exit(1);
+        }
     }
 }
 
@@ -817,19 +943,60 @@ struct Args {
     /// this, `wiim-capture` never sends a `Set` command at all — see the
     /// module doc comment.
     destructive: bool,
+    /// `--one <command>` — see the module doc comment. `None` for the
+    /// normal full-capture flow.
+    one: Option<String>,
 }
 
 fn usage() -> ! {
     eprintln!("usage: wiim-capture [--destructive] <ip>");
+    eprintln!("       wiim-capture --one <command> <ip>");
+    eprintln!("       wiim-capture --one upnp:<Action> <ip>");
+    eprintln!("       wiim-capture --one upnp:<Service>:<Action> <ip>");
+    eprintln!("           <command>  a plain httpapi.asp command, e.g. getPlayerStatusEx");
+    eprintln!("           <Action>   a UPnP action, e.g. GetInfoEx — service auto-detected");
+    eprintln!("                      for known actions (GetTransportInfo/GetPositionInfo/");
+    eprintln!("                      GetMediaInfo/GetInfoEx -> AVTransport; GetVolume/GetMute");
+    eprintln!("                      -> RenderingControl), otherwise specify <Service>:");
+    eprintln!("           <Service>  AVTransport or RenderingControl");
     std::process::exit(2);
+}
+
+/// A `--one` target: either a plain HTTP `httpapi.asp` command, or a UPnP
+/// SOAP action — see `usage()` for the `upnp:<Action>`/`upnp:<Service>:<Action>`
+/// syntax.
+enum OneTarget {
+    Http(String),
+    Upnp { service: Option<String>, action: String },
+}
+
+fn parse_one_target(raw: &str) -> OneTarget {
+    match raw.strip_prefix("upnp:") {
+        Some(rest) => match rest.split_once(':') {
+            Some((service, action)) => {
+                OneTarget::Upnp { service: Some(service.to_string()), action: action.to_string() }
+            }
+            None => OneTarget::Upnp { service: None, action: rest.to_string() },
+        },
+        None => OneTarget::Http(raw.to_string()),
+    }
 }
 
 fn parse_args() -> Args {
     let mut ip = None;
     let mut destructive = false;
-    for arg in std::env::args().skip(1) {
+    let mut one = None;
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
         match arg.as_str() {
             "--destructive" => destructive = true,
+            "--one" => {
+                let Some(cmd) = args.next() else {
+                    eprintln!("wiim-capture: --one requires a command argument");
+                    usage();
+                };
+                one = Some(cmd);
+            }
             "-h" | "--help" => usage(),
             other if ip.is_none() && !other.starts_with('-') => ip = Some(other.to_string()),
             other => {
@@ -839,7 +1006,7 @@ fn parse_args() -> Args {
         }
     }
     let Some(ip) = ip else { usage() };
-    Args { ip, destructive }
+    Args { ip, destructive, one }
 }
 
 // ── Main ─────────────────────────────────────────────────────────────────────
@@ -848,6 +1015,15 @@ fn parse_args() -> Args {
 async fn main() {
     let args = parse_args();
     let ip = args.ip;
+    let one = args.one.as_deref().map(parse_one_target);
+
+    // UPnP one-shot doesn't touch httpapi.asp at all (SSDP + description.xml
+    // discovery instead), so it's handled before — not after —
+    // `probe_and_detect()`, which would otherwise waste 1-2 unrelated HTTP
+    // probes for no reason.
+    if let Some(OneTarget::Upnp { service, action }) = one {
+        send_one_upnp(&ip, service, action).await;
+    }
 
     if args.destructive {
         eprintln!(
@@ -856,6 +1032,35 @@ async fn main() {
     }
     eprintln!("[wiim-capture] target {ip}");
     let (mut commands, winner) = probe_and_detect(&ip).await;
+
+    if let Some(OneTarget::Http(command)) = one {
+        let Some(winner) = winner else {
+            eprintln!("[wiim-capture] gave up: neither getStatusEx nor getStatus responded on any probed port");
+            std::process::exit(1);
+        };
+        // Endpoint detection already happened to send `winner.cmd_used` —
+        // reuse that response instead of an extra round trip if it's the
+        // exact command asked for.
+        let body = if command == winner.cmd_used {
+            winner.body
+        } else {
+            eprintln!("[wiim-capture] {command}");
+            let url = format!("{}://{}:{}/httpapi.asp?command={}", winner.scheme, ip, winner.port, command);
+            let attempt = send_request(|| winner.client.get(&url)).await;
+            match attempt.body {
+                Some(b) if attempt.outcome == Outcome::Ok => b,
+                _ => {
+                    eprintln!(
+                        "[wiim-capture] {command} failed: {}",
+                        attempt.error.as_deref().unwrap_or("no response body"),
+                    );
+                    std::process::exit(1);
+                }
+            }
+        };
+        println!("{body}");
+        return;
+    }
 
     let captured_at = chrono::Utc::now().to_rfc3339();
 

@@ -26,6 +26,13 @@
 //! version of this tool.
 //!
 //! Usage: `wiim-capdump [--markdown] <capture-file.json>`
+//!
+//! `wiim-capdump [--markdown] -` — reads from stdin instead of a file (the
+//! usual Unix `-` convention), and pretty-prints the raw content as a single
+//! blob (format auto-detected: JSON/XML/plain text) rather than parsing it
+//! as a whole `CaptureFile`. Pairs with `wiim-capture --one <target> <ip>`,
+//! which prints exactly this shape — one command/UPnP action's bare
+//! response body, nothing wrapped around it.
 
 use base64::Engine;
 use std::io::{IsTerminal, Read};
@@ -748,6 +755,7 @@ struct Args {
 
 fn usage() -> ! {
     eprintln!("usage: wiim-capdump [--markdown] <capture-file.json>");
+    eprintln!("       wiim-capdump [--markdown] -");
     std::process::exit(2);
 }
 
@@ -758,6 +766,7 @@ fn parse_args() -> Args {
         match arg.as_str() {
             "--markdown" => markdown = true,
             "-h" | "--help" => usage(),
+            "-" if path.is_none() => path = Some("-".to_string()),
             other if path.is_none() && !other.starts_with('-') => path = Some(other.to_string()),
             other => {
                 eprintln!("wiim-capdump: unrecognized argument '{other}'");
@@ -769,16 +778,59 @@ fn parse_args() -> Args {
     Args { path, markdown }
 }
 
+/// True if `s` looks like an XML document/fragment. Ported from (not shared
+/// with) `wiim-capture.rs`'s identical `looks_like_xml` — separate binary
+/// crate, can't depend on the other's internals.
+fn looks_like_xml(s: &str) -> bool {
+    let t = s.trim();
+    t.starts_with("<?xml") || (t.starts_with('<') && t.ends_with('>'))
+}
+
+/// Renders raw stdin content (from `wiim-capture --one`) as a single blob —
+/// format auto-detected the same way `wiim-capture`'s own `encode_blob`
+/// decides what to write into a capture file, but without ever falling
+/// back to base64: `--one`'s stdout is always meant to be human-readable
+/// text already, so anything that isn't JSON or XML just prints as plain
+/// text verbatim, whatever it is.
+fn render_stdin_blob(mode: OutputMode, raw: &str) -> String {
+    let mut out = String::new();
+    match serde_json::from_str::<serde_json::Value>(raw) {
+        Ok(v) => render_body(mode, Some("json"), &v, &mut out),
+        Err(_) if looks_like_xml(raw) => {
+            render_body(mode, Some("xml"), &serde_json::Value::String(raw.to_string()), &mut out)
+        }
+        Err(_) => render_body(mode, Some("text"), &serde_json::Value::String(raw.to_string()), &mut out),
+    }
+    out.push('\n');
+    out
+}
+
 fn main() {
     let args = parse_args();
 
-    let raw = match std::fs::read_to_string(&args.path) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("wiim-capdump: failed to read {}: {e}", args.path);
+    let raw = if args.path == "-" {
+        let mut buf = String::new();
+        if let Err(e) = std::io::stdin().read_to_string(&mut buf) {
+            eprintln!("wiim-capdump: failed to read stdin: {e}");
             std::process::exit(1);
         }
+        buf
+    } else {
+        match std::fs::read_to_string(&args.path) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("wiim-capdump: failed to read {}: {e}", args.path);
+                std::process::exit(1);
+            }
+        }
     };
+
+    let mode = OutputMode::detect(args.markdown);
+
+    if args.path == "-" {
+        print!("{}", render_stdin_blob(mode, &raw));
+        return;
+    }
 
     let mut value: serde_json::Value = match serde_json::from_str(&raw) {
         Ok(v) => v,
@@ -791,6 +843,5 @@ fn main() {
     decode_syslog_entries(&mut value);
     decode_bodies_for_display(&mut value);
 
-    let mode = OutputMode::detect(args.markdown);
     print!("{}", render_capture(mode, &value));
 }
