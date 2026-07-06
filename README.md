@@ -1,5 +1,7 @@
 # RustyWiiM
 
+[![GitHub release](https://img.shields.io/github/v/release/ozbenh/rustywiim)](https://github.com/ozbenh/rustywiim/releases)
+
 A simple Linux GTK4 front-end for WiiM media players written in Rust.
 
 Copyright (c) 2026 Benjamin Herrenschmidt
@@ -12,6 +14,10 @@ The former is a hit, the latter, less so, at least initially as the AI did too w
 
 Now, though, as the project slowly evolves (matures ?), I'm getting more involved with the code, and while a lot is still written by AI, it's under much more precise directions, ie the amount of "slop" is hopefully decreasing. As a result I am slowly learning Rust, ah !
 
+## Pre-built packages ##
+
+See [Releases page](https://github.com/ozbenh/rustywiim/releases)
+
 ## Build instructions ##
 
 ### Install dependencies ###
@@ -23,12 +29,21 @@ Now, though, as the project slowly evolves (matures ?), I'm getting more involve
 `sudo dnf install cargo rust gtk4-devel libadwaita-devel openssl-devel glib2-devel`
 
 ### Build ###
+
+* Basic build:
+
 `cargo build`
+
+or
+
+`make`
+
+* Package build (.deb or .rpm depending on your distro):
+
+`make package`
 
 ### Run ###
 `target/debug/rustywiim`
-
-There is no installer or package yet and you can of course build a release build rather than a debug build etc... but since it's all pretty wet behind the ears, those simple instructions will do.
 
 ## Options ##
 For now just this one:
@@ -134,6 +149,13 @@ You can pretty-print this file using `target/debug/wiim-capdump`. I would apprec
       player status which seems to be what the WiiM official app does.
     * Fix WiiM Amp Ultra detection and outputs handling
     * Fix name and icon for "Speaker" output for other "Amps" models
+
+  * 0.7.0 - 2026-07-06
+    * Add cargo & Makefile rules to build packages
+    * Add binary package releases on github
+	* Fixes around handling of HDMI input
+	* Improvement in device discovery, don't hammer unrelated devices
+	* Add bluetooth remote info and Wifi signal strength
 
 
 ## Screenshots ##

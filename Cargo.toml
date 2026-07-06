@@ -1,6 +1,6 @@
 [package]
 name = "rustywiim"
-version = "0.6.4"
+version = "0.7.0"
 edition = "2021"
 license = "MIT"
 description = "Control WiiM and LinkPlay network audio players over LAN"
