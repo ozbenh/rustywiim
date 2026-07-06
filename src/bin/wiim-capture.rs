@@ -773,7 +773,7 @@ async fn capture_upnp(ip: &str) -> UpnpCapture {
         };
         let control_url = resolve_url(&description_url, &control_url_raw);
         if service_type.contains(":service:AVTransport:") {
-            for action in ["GetTransportInfo", "GetPositionInfo", "GetMediaInfo"] {
+            for action in ["GetTransportInfo", "GetPositionInfo", "GetMediaInfo", "GetInfoEx"] {
                 eprintln!("[wiim-capture] upnp: {action} on {service_type}");
                 upnp.actions.push(soap_call(&control_url, &service_type, action, "<InstanceID>0</InstanceID>", ip).await);
                 tokio::time::sleep(INTER_COMMAND_DELAY).await;
