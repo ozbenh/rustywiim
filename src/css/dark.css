@@ -16,7 +16,7 @@ window { background-color: #0a0a0a; }
 .net-icon     { color: #686868; }
 /* .remote-icon is a full-colour SVG texture, not a symbolic icon — `color`
    (used above for .net-icon) has no effect on it, opacity does. */
-.remote-icon  { opacity: 1,0; }
+.remote-icon  { opacity: 1.0; }
 .sidebar-toggle:checked { color: @rustywiim_accent; }
 .transport-btn {
     min-width: 36px; min-height: 36px;
