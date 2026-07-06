@@ -2,6 +2,10 @@
 name = "rustywiim"
 version = "0.6.4"
 edition = "2021"
+license = "MIT"
+description = "Control WiiM and LinkPlay network audio players over LAN"
+homepage = "https://github.com/ozbenh/rustywiim"
+repository = "https://github.com/ozbenh/rustywiim"
 
 [dependencies]
 gtk = { package = "gtk4", version = "0.9", features = ["v4_12"] }
@@ -22,3 +26,33 @@ flate2 = { version = "1", default-features = false, features = ["rust_backend"] 
 tar = "0.4"
 tiny_http = { version = "0.12", default-features = false, features = ["ssl-openssl"] }
 rcgen = "0.14"
+
+# See RELEASEPROCESS.md for the full packaging plan; `make deb`/`make rpm`/
+# `make package` (Makefile at repo root) drive these locally.
+[package.metadata.deb]
+maintainer = "Benjamin Herrenschmidt <benh@kernel.crashing.org>"
+copyright = "2026, Benjamin Herrenschmidt"
+license-file = ["LICENSE", "0"]
+extended-description = """\
+RustyWiiM is a GTK4/libadwaita desktop app for controlling WiiM and \
+LinkPlay network audio players over their LAN HTTP API — playback, volume, \
+input/output switching, presets, and device discovery."""
+section = "sound"
+priority = "optional"
+depends = "$auto"
+assets = [
+    ["target/release/rustywiim", "usr/bin/", "755"],
+    ["data/io.github.ozbenh.rustywiim.desktop", "usr/share/applications/", "644"],
+    ["src/icons/rustywiim-icon.svg", "usr/share/icons/hicolor/scalable/apps/io.github.ozbenh.rustywiim.svg", "644"],
+]
+
+[package.metadata.generate-rpm]
+assets = [
+    { source = "target/release/rustywiim", dest = "/usr/bin/rustywiim", mode = "755" },
+    { source = "data/io.github.ozbenh.rustywiim.desktop", dest = "/usr/share/applications/io.github.ozbenh.rustywiim.desktop", mode = "644" },
+    { source = "src/icons/rustywiim-icon.svg", dest = "/usr/share/icons/hicolor/scalable/apps/io.github.ozbenh.rustywiim.svg", mode = "644" },
+]
+
+[package.metadata.generate-rpm.requires]
+gtk4 = ">= 4.12"
+libadwaita = ">= 1.5"

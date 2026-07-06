@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gresources>
+  <gresource prefix="/io/github/ozbenh/rustywiim/icons/scalable/apps">
+    <file alias="io.github.ozbenh.rustywiim.svg">icons/rustywiim-icon.svg</file>
+  </gresource>
+</gresources>
