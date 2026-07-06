@@ -43,4 +43,29 @@ fn main() {
     // returns the git-derived version rather than the Cargo.toml placeholder.
     println!("cargo:rustc-env=CARGO_PKG_VERSION={version}");
     println!("cargo:rustc-env=GIT_HASH={hash}");
+
+    // Compile the app-icon GResource bundle. Embedded via include_bytes! in
+    // ui/mod.rs (not shipped as a separate file), so the icon is available
+    // in the About dialog even for a bare `cargo run`/unpackaged binary,
+    // with no system icon-theme install needed for that specific use.
+    // Requires glib-compile-resources at build time only (part of
+    // libglib2.0-dev-bin on Debian/Ubuntu, glib2-devel on Fedora) — not a
+    // runtime dependency.
+    println!("cargo:rerun-if-changed=src/rustywiim.gresource.xml");
+    println!("cargo:rerun-if-changed=src/icons/rustywiim-icon.svg");
+    let out_dir = std::env::var("OUT_DIR").unwrap();
+    let status = Command::new("glib-compile-resources")
+        .args([
+            "--sourcedir=src",
+            &format!("--target={out_dir}/rustywiim.gresource"),
+            "src/rustywiim.gresource.xml",
+        ])
+        .status()
+        .expect(
+            "failed to run glib-compile-resources — install libglib2.0-dev-bin \
+             (Debian/Ubuntu) or glib2-devel (Fedora)",
+        );
+    if !status.success() {
+        panic!("glib-compile-resources failed");
+    }
 }

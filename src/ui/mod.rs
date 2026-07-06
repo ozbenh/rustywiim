@@ -30,6 +30,11 @@ use crate::device::manager::DeviceManager;
 use crate::device::playback::RepeatMode;
 use crate::device::state::{ConnectionState, DeviceState, DEBUG_STATE};
 
+/// GApplication ID / icon name / GResource base path / `.desktop` basename —
+/// all the same string by freedesktop convention, kept in one place so
+/// there's no risk of them drifting apart.
+pub const APP_ID: &str = "io.github.ozbenh.rustywiim";
+
 pub static DEBUG_UI: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 fn dbg_ui(msg: &str) {
@@ -61,7 +66,7 @@ pub(crate) fn wire_window_actions(
     about_action.connect_activate(move |_, _| {
         adw::AboutDialog::builder()
             .application_name("RustyWiiM")
-            .application_icon("audio-x-generic")
+            .application_icon(APP_ID)
             .version(concat!(env!("CARGO_PKG_VERSION"), " (", env!("GIT_HASH"), ")"))
             .developer_name("Benjamin Herrenschmidt")
             .copyright("© 2026 Benjamin Herrenschmidt")
@@ -175,6 +180,34 @@ fn init_css(theme: ThemeMode) {
     apply_color_scheme(theme);
     let accent = config::with(|cfg| cfg.accent_color.clone());
     reload_css_provider(&build_css(theme, &accent));
+}
+
+/// App-icon GResource bundle, compiled at build time by `build.rs` from
+/// `rustywiim.gresource.xml` (`glib-compile-resources`) — embedded directly
+/// rather than shipped as a separate file, so the icon is available even
+/// for a bare `cargo run`/unpackaged binary with no system icon-theme
+/// install. A real packaged install (see `RELEASEPROCESS.md`) additionally
+/// installs `icons/rustywiim-icon.svg` into the standard hicolor theme
+/// path — that copy is what desktop launchers/window switchers resolve via
+/// the `.desktop` file's `Icon=` key; this GResource copy is only for
+/// in-process lookups (the About dialog, the default window icon) that
+/// must work regardless of installation state.
+static ICON_RESOURCE_BYTES: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/rustywiim.gresource"));
+
+/// Register the embedded icon resource and point GTK's default icon theme
+/// at it, so `application_icon`/`set_default_icon_name` can find `APP_ID`
+/// by name. Must be called once, after the GDK display is available.
+fn init_icon_resource() {
+    let resource = gio::Resource::from_data(&glib::Bytes::from_static(ICON_RESOURCE_BYTES))
+        .expect("bad embedded GResource — rustywiim.gresource.xml/build.rs mismatch");
+    gio::resources_register(&resource);
+
+    let display = gtk::gdk::Display::default().expect("GDK display not available");
+    gtk::IconTheme::for_display(&display)
+        .add_resource_path(&format!("/{}/icons", APP_ID.replace('.', "/")));
+
+    gtk::Window::set_default_icon_name(APP_ID);
 }
 
 /// Re-apply just the accent colour (no theme switch, no colour-scheme change,
@@ -1311,6 +1344,7 @@ impl AppState {
             config::update(|cfg| { cfg.migrate(); });
             let theme = config::with(|cfg| cfg.theme);
             init_css(theme);
+            init_icon_resource();
         }
 
         // Replace the app.quit action (set up in main.rs) with one that explicitly

@@ -17,10 +17,10 @@ Now, though, as the project slowly evolves (matures ?), I'm getting more involve
 ### Install dependencies ###
 
 #### Ubuntu / Debian ####
-`sudo apt-get install cargo rustc libgtk-4-dev libadwaita-1-dev libssl-dev`
+`sudo apt-get install cargo rustc libgtk-4-dev libadwaita-1-dev libssl-dev libglib2.0-dev-bin`
 
 #### Fedora ####
-`sudo dnf install cargo rust gtk4-devel libadwaita-devel openssl-devel`
+`sudo dnf install cargo rust gtk4-devel libadwaita-devel openssl-devel glib2-devel`
 
 ### Build ###
 `cargo build`

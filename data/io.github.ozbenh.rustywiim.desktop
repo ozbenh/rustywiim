@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=RustyWiiM
+Comment=Control WiiM and LinkPlay network audio players
+Exec=rustywiim
+Icon=io.github.ozbenh.rustywiim
+Terminal=false
+Categories=AudioVideo;Audio;Player;
+StartupNotify=true
+StartupWMClass=io.github.ozbenh.rustywiim

@@ -29,7 +29,7 @@ fn parse_connect_url(url: &str) -> Option<(String, device::api::TlsMode)> {
 
 fn main() -> glib::ExitCode {
     let app = adw::Application::builder()
-        .application_id("com.github.ozbenh.rustywiim2")
+        .application_id(ui::APP_ID)
         .build();
 
     app.add_main_option(
