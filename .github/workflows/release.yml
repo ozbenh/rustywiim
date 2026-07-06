@@ -1,0 +1,109 @@
+name: Release
+
+# Only ever runs on an actual release tag push (git tag vX.Y.Z && git push
+# --tags / git push origin vX.Y.Z) — no branch/PR triggers, so ordinary
+# commits never build or publish anything here.
+on:
+  push:
+    tags:
+      - 'v*'
+
+# Least-privilege default; only the publish job (which needs to attach
+# assets to the Release) escalates to write.
+permissions:
+  contents: read
+
+jobs:
+  deb-ubuntu:
+    name: .deb (Ubuntu 24.04)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full tag history — build.rs/Makefile both `git describe`
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-4-dev libadwaita-1-dev libssl-dev libglib2.0-dev-bin build-essential
+      - uses: dtolnay/rust-toolchain@stable
+      - run: make deb
+      - name: Tag filename with the distro (avoids clashing with the Debian job's output)
+        run: |
+          cd target/debian
+          for f in *.deb; do mv "$f" "ubuntu24.04-$f"; done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deb-ubuntu-24.04
+          path: target/debian/*.deb
+
+  deb-debian:
+    name: .deb (Debian 13 / trixie)
+    runs-on: ubuntu-latest
+    container: debian:trixie
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install build dependencies
+        run: |
+          apt-get update
+          apt-get install -y libgtk-4-dev libadwaita-1-dev libssl-dev libglib2.0-dev-bin build-essential curl git make ca-certificates
+      - uses: dtolnay/rust-toolchain@stable
+      - run: make deb
+      - name: Tag filename with the distro
+        run: |
+          cd target/debian
+          for f in *.deb; do mv "$f" "debian-trixie-$f"; done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deb-debian-trixie
+          path: target/debian/*.deb
+
+  rpm-fedora:
+    name: .rpm (Fedora 44)
+    runs-on: ubuntu-latest
+    container: fedora:44
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install build dependencies
+        run: dnf install -y cargo rust gtk4-devel libadwaita-devel openssl-devel glib2-devel gcc git make
+      - run: make rpm
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rpm-fedora-44
+          path: target/generate-rpm/*.rpm
+
+  source-tarball:
+    name: Source tarball
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Archive the tagged commit
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          git archive --prefix="rustywiim-${version}/" -o "rustywiim-${version}.tar.gz" "$GITHUB_REF_NAME"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: source-tarball
+          path: rustywiim-*.tar.gz
+
+  publish:
+    name: Attach everything to the GitHub Release
+    needs: [deb-ubuntu, deb-debian, rpm-fedora, source-tarball]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+      - name: Attach packages + source tarball to the release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            deb-ubuntu-24.04/*.deb
+            deb-debian-trixie/*.deb
+            rpm-fedora-44/*.rpm
+            source-tarball/*.tar.gz
