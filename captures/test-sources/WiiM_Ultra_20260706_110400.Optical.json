@@ -1,55 +1,63 @@
 {
-  "captured_at": "2026-07-05T21:04:55.883466758+00:00",
+  "captured_at": "2026-07-06T11:03:43.796835866+00:00",
   "gave_up": false,
-  "model": "WiiM Amp",
+  "model": "WiiM Ultra",
   "model_source": "getStatusEx",
-  "firmware": "Linkplay.5.0.814734",
+  "firmware": "Linkplay.5.2.822041",
   "hardware": "AmlogicA113",
-  "project": "WiiM_AMP",
+  "project": "WiiM_Ultra",
   "tls_scheme": "https",
   "tls_port": 443,
   "commands": [
     {
       "command": "getStatusEx",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=getStatusEx",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getStatusEx",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
       "format": "json",
       "body": {
         "AP_MAC": "xx:xx:xx:xx:xx:xx",
-        "BSSID": "",
+        "BSSID": "xx:xx:xx:xx:xx:xx",
         "BTMAC": "xx:xx:xx:xx:xx:xx",
-        "BleRemoteConnected": "0",
+        "BleRemoteBatterylevel": "100",
+        "BleRemoteConnected": "1",
         "BleRemoteControl": "1",
         "BleRemoteException": "0",
-        "BleRemote_update_checked_counter": "0",
-        "DeviceName": "xxxxxx xxxx",
+        "BleRemoteNewVersion": "",
+        "BleRemoteRSSI": "-70",
+        "BleRemoteVersion": "0054",
+        "BleRemote_dev_state": "normal",
+        "BleRemote_has_new": "0",
+        "BleRemote_power_status": "0",
+        "BleRemote_update_checked_counter": "2",
+        "DeviceName": "xxxx xxxxxx",
         "EQVersion": "4.3",
         "EQ_support": "Eq10HP_ver_2.0",
         "ETH_MAC": "xx:xx:xx:xx:xx:xx",
         "FW_Release_version": "",
-        "GroupName": "xxxxxx xxxx",
+        "GroupName": "xxxx xxxxxx",
         "HiFiSRC_version": "1.1",
         "InitialConfiguration": "1",
         "MAC": "xx:xx:xx:xx:xx:xx",
-        "ModuleColorNumber": "0",
+        "ModuleColorNumber": "3",
         "ModuleColorString": "",
         "NewVer": "0",
-        "PCB_version": "2",
-        "RSSI": "0",
-        "Release": "20260423",
+        "PCB_version": "4",
+        "RSSI": "-61",
+        "Release": "20260703",
         "VersionUpdate": "0",
         "WifiChannel": "0",
         "alexa_beta_enable": "0",
         "alexa_force_beta_cfg": "0",
         "alexa_ver": "20180604",
-        "apcli0": "x.x.x.x",
-        "app_timezone_id": "America/Halifax",
-        "audioOutputModeVer": "1.0",
+        "apcli0": "xx.x.x.xx",
+        "app_timezone_id": "Australia/Sydney",
+        "audioOutputModeVer": "1.3",
         "audio_channel_config": "1.0",
+        "audiocast": "1",
         "autoSenseVersion": "1.0",
-        "avs_timezone_id": "America/Halifax",
+        "avs_timezone_id": "Australia/Sydney",
         "battery": "0",
         "battery_percent": "0",
         "ble_active": "0",
@@ -57,43 +65,46 @@
         "cap1": "0x40000400",
         "capability": "0x20084808",
         "cast_enable": 1,
-        "cast_usage_report": 0,
+        "cast_usage_report": 1,
         "communication_port": "8819",
-        "date": "2026:07:05",
-        "dsp_ver": "",
+        "date": "2026:07:06",
+        "deviceSettingVer": "0.0",
+        "dsp_ver": "0",
         "dsp_ver_new": "",
-        "essid": "",
-        "eth0": "xxx.xxx.x.xxx",
+        "essid": "xxxxxxxxxxxxxxxxxxxx",
+        "eth0": "x.x.x.x",
         "eth2": "x.x.x.x",
         "expired": "0",
         "external": "0x0",
-        "firmware": "Linkplay.5.0.814734",
+        "files_db": "1",
+        "firmware": "Linkplay.5.2.822041",
         "group": "0",
         "hardware": "AmlogicA113",
-        "hdmi_ver": "71",
+        "hdmi_ver": "1100",
         "hdmi_ver_new": "",
         "hideSSID": "x",
         "internet": "1",
-        "language": "en-GB",
+        "language": "en-AU",
         "languages": "0x11ec",
         "lbc_support": "0",
-        "max_volume": "80",
+        "max_volume": "100",
         "mcu_ver": "0",
         "mcu_ver_new": "0",
         "mqtt_support": "1",
-        "netstat": "0",
+        "netstat": "2",
         "new_iheart_podcast": "1",
         "new_tunein_preset_and_alarm": "1",
-        "ota_api_ver": "3.0",
+        "ota_api_ver": "4.0",
         "ota_interface_ver": "2.0",
-        "plm_support": "0x2b00416",
+        "passthrough_support_ver": "1",
+        "plm_support": "0x2b10416",
         "power_mode": "-1",
         "preset_key": "12",
-        "priv_prj": "WiiM_AMP",
+        "priv_prj": "WiiM_Ultra",
         "privacy_mode": "0",
         "product_quality_test_ver": "1",
-        "project": "WiiM_AMP",
-        "project_build_name": "xxxx_xxx",
+        "project": "WiiM_Ultra",
+        "project_build_name": "xxxx_xxxxx",
         "prompt_status": "1",
         "public_https_version": "1.0",
         "ra0": "xx.xx.xx.xxx",
@@ -106,35 +117,35 @@
         },
         "security_version": "3.0",
         "service_version": "1.0",
-        "set_play_mode_enable": "1",
+        "set_play_mode_enable": "0",
         "set_play_mode_gain": "0",
-        "silence_ota_flag": "1",
-        "ssid": "xxxx xxx-xxxx",
-        "streams": "0xedf33fd",
-        "streams_all": "0xedf33fd",
+        "silence_ota_flag": "0",
+        "ssid": "xxxx xxxxx-xxxx",
+        "streams": "0xedf33fc",
+        "streams_all": "0xedf33fc",
         "temp_uuid": "xxxxxxxxxxxxxxxx",
-        "temperature_cpu": "37",
-        "temperature_power_control": "1000",
-        "temperature_tmp102": "-998",
         "tidal_version": "2.0",
-        "time": "21:04:55",
-        "tz": "-4.0",
+        "time": "11:03:43",
+        "tp_type": "4",
+        "tz": "10.0",
         "tz_info_ver": "1.0",
         "uart_pass_port": "0",
-        "uboot_verinfo": "231031.111159",
-        "udisk": "0",
+        "uboot_verinfo": "251124.171157",
+        "udisk": "1",
+        "udisk_error": "0",
         "udisk_features": "3",
-        "umount": "0",
-        "update_check_count": "2",
+        "udisk_uuid": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+        "umount": "1",
+        "update_check_count": "1",
         "upnp_uuid": "xxxx:xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
         "upnp_version": "1005",
         "uuid": "xxxxxxxxxxxxxxxxxxxxxxxx",
         "volume_control": "0",
         "web_firmware_update_hide": "0",
-        "wlanDataRate": "0",
-        "wlanFreq": "0",
-        "wlanNoise": "0",
-        "wlanSnr": "0",
+        "wlanDataRate": "360",
+        "wlanFreq": "5180",
+        "wlanNoise": "-91",
+        "wlanSnr": "30",
         "wmrm_capability": 63,
         "wmrm_sub_ver": "7",
         "wmrm_version": "4.3"
@@ -142,7 +153,7 @@
     },
     {
       "command": "getPlayerStatusEx",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=getPlayerStatusEx",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getPlayerStatusEx",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
@@ -153,19 +164,19 @@
         "Title": "556E6B6E6F776E",
         "alarmflag": "0",
         "ch": "0",
-        "curpos": "0",
+        "curpos": "191449",
         "eq": "0",
         "loop": "4",
-        "mode": "-1",
+        "mode": "43",
         "mute": "0",
-        "offset_pts": "0",
+        "offset_pts": "191449",
         "plicount": "0",
         "plicurr": "0",
-        "status": "none",
-        "totlen": "0",
+        "status": "play",
+        "totlen": "283480",
         "type": "0",
         "vendor": "",
-        "vol": "38"
+        "vol": "17"
       },
       "decoded": {
         "Album": "Unknown",
@@ -176,7 +187,7 @@
     },
     {
       "command": "getAudioInputEnable",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=getAudioInputEnable",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getAudioInputEnable",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
@@ -202,6 +213,10 @@
           {
             "enable": 1,
             "mode": "HDMI"
+          },
+          {
+            "enable": 1,
+            "mode": "phono"
           }
         ],
         "ver": "1.0"
@@ -210,7 +225,7 @@
     },
     {
       "command": "getAudioOutputStatus",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=getAudioOutputStatus",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getAudioOutputStatus",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
@@ -221,7 +236,7 @@
     },
     {
       "command": "getAudioInputCapbility",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=getAudioInputCapbility",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getAudioInputCapbility",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
@@ -241,7 +256,13 @@
             "mode": "optical"
           },
           {
+            "mode": "phono"
+          },
+          {
             "mode": "HDMI"
+          },
+          {
+            "mode": "udisk"
           }
         ],
         "ver": "1.0"
@@ -250,7 +271,7 @@
     },
     {
       "command": "getDeviceInfo",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=getDeviceInfo",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getDeviceInfo",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
@@ -261,19 +282,19 @@
     },
     {
       "command": "getTriggeroutStatus",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=getTriggeroutStatus",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getTriggeroutStatus",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
       "format": "json",
       "body": {
-        "status": "Failed"
+        "status": 1
       },
       "summary": "12V trigger status (Ultra/Pro/Pro Plus only per pywiim)"
     },
     {
       "command": "GetAcousticCapability",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=GetAcousticCapability",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=GetAcousticCapability",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
@@ -298,6 +319,12 @@
         "GEQ": {
           "Version": "1.0"
         },
+        "HeadphoneEQ": {
+          "Version": "1.0"
+        },
+        "MainProtect": {
+          "Version": "1.0"
+        },
         "OutputDelay": {
           "EnableMicroDelay": true,
           "MaxDelayUs": 1000000,
@@ -318,6 +345,9 @@
           "Version": "1.0"
         },
         "RC": {
+          "LevelMatch": {
+            "Version": "1.0"
+          },
           "Version": "1.0"
         },
         "SubLPF": {
@@ -329,18 +359,29 @@
     },
     {
       "command": "getMetaInfo",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=getMetaInfo",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getMetaInfo",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
-      "format": "text",
-      "body": "Failed",
-      "unsupported": true,
+      "format": "json",
+      "body": {
+        "metaData": {
+          "album": "unknow",
+          "albumArtURI": "un_known",
+          "artist": "unknow",
+          "bitDepth": "unknow",
+          "bitRate": "unknow",
+          "sampleRate": "unknow",
+          "subtitle": "unknow",
+          "title": "unknow",
+          "trackId": "0"
+        }
+      },
       "summary": "Get Current Track Metadata"
     },
     {
       "command": "getPlayerStatus",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=getPlayerStatus",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getPlayerStatus",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
@@ -351,19 +392,19 @@
         "Title": "556E6B6E6F776E",
         "alarmflag": "0",
         "ch": "0",
-        "curpos": "0",
+        "curpos": "191449",
         "eq": "0",
         "loop": "4",
-        "mode": "-1",
+        "mode": "43",
         "mute": "0",
-        "offset_pts": "0",
+        "offset_pts": "191449",
         "plicount": "0",
         "plicurr": "0",
-        "status": "none",
-        "totlen": "0",
+        "status": "play",
+        "totlen": "283480",
         "type": "0",
         "vendor": "",
-        "vol": "38"
+        "vol": "17"
       },
       "decoded": {
         "Album": "Unknown",
@@ -374,17 +415,167 @@
     },
     {
       "command": "getAllRoutines",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=getAllRoutines",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getAllRoutines",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
       "format": "json",
-      "body": {},
+      "body": {
+        "routines": [
+          {
+            "createDate": "2026-06-23T06:08:26Z",
+            "id": "0000000067570795",
+            "index": 3,
+            "name": "PC",
+            "steps": [
+              {
+                "payload": {
+                  "input": "optical"
+                },
+                "type": "audioInput"
+              },
+              {
+                "payload": {
+                  "output": ""
+                },
+                "type": "audioOutput"
+              },
+              {
+                "payload": {
+                  "mode": 4
+                },
+                "type": "loopMode"
+              },
+              {
+                "payload": {
+                  "subOutput": 1
+                },
+                "type": "subwoofer"
+              }
+            ],
+            "updateDate": "2026-06-23T06:08:56Z"
+          },
+          {
+            "createDate": "2026-06-24T06:03:11Z",
+            "id": "0000000035d32028",
+            "index": 6,
+            "name": "Baba",
+            "steps": [
+              {
+                "payload": {
+                  "input": "line-in"
+                },
+                "type": "audioInput"
+              },
+              {
+                "payload": {
+                  "devHexName": "4F70746963616C204F7574",
+                  "output": "AUDIO_OUTPUT_SPDIF_MODE"
+                },
+                "type": "audioOutput"
+              },
+              {
+                "payload": {
+                  "mode": 4
+                },
+                "type": "loopMode"
+              },
+              {
+                "payload": {
+                  "subOutput": 1
+                },
+                "type": "subwoofer"
+              }
+            ],
+            "updateDate": "2026-06-24T08:41:08Z"
+          },
+          {
+            "createDate": "2026-06-24T10:30:13Z",
+            "id": "000000005d9f1032",
+            "index": 4,
+            "name": "Bar",
+            "steps": [
+              {
+                "payload": {
+                  "input": "HDMI"
+                },
+                "type": "audioInput"
+              },
+              {
+                "payload": {
+                  "mode": 4
+                },
+                "type": "loopMode"
+              },
+              {
+                "payload": {
+                  "subOutput": 1
+                },
+                "type": "subwoofer"
+              }
+            ]
+          },
+          {
+            "createDate": "2026-06-24T05:55:46Z",
+            "id": "000000003b2fc884",
+            "index": 5,
+            "name": "Foo",
+            "steps": [
+              {
+                "payload": {
+                  "devHexName": "4865616470686F6E65204F7574",
+                  "output": "AUDIO_OUTPUT_PHONE_JACK_MODE"
+                },
+                "type": "audioOutput"
+              },
+              {
+                "payload": {
+                  "mode": 4
+                },
+                "type": "loopMode"
+              },
+              {
+                "payload": {
+                  "subOutput": 1
+                },
+                "type": "subwoofer"
+              }
+            ],
+            "updateDate": "2026-06-26T00:31:47Z"
+          },
+          {
+            "createDate": "2026-06-26T03:13:51Z",
+            "id": "00000000081a3519",
+            "index": 7,
+            "name": "Test",
+            "steps": [
+              {
+                "payload": {
+                  "input": "bluetooth"
+                },
+                "type": "audioInput"
+              },
+              {
+                "payload": {
+                  "mode": 4
+                },
+                "type": "loopMode"
+              },
+              {
+                "payload": {
+                  "subOutput": 1
+                },
+                "type": "subwoofer"
+              }
+            ]
+          }
+        ]
+      },
       "summary": "Get all routines"
     },
     {
       "command": "getPresetInfo",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=getPresetInfo",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getPresetInfo",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
@@ -392,97 +583,34 @@
       "body": {
         "preset_list": [
           {
-            "name": "QuickMix",
+            "name": "ABC Jazz",
             "number": 1,
-            "picurl": "http://mediaserver-cont-sv5-1-v4v6.pandora.com/images/08/e5/12/30/a4324bb6baa420d4db334f48/1080W_1080H.jpg",
-            "source": "Pandora2",
+            "picurl": "http://cdn-profiles.tunein.com/s44935/images/logog.png?t=636631071636630000",
+            "source": "newTuneIn",
             "url": "unknow"
           },
           {
-            "name": "Yo-Yo Ma Radio",
+            "name": "Radio National Sydney",
             "number": 2,
-            "picurl": "https://content-images.p-cdn.com/images/ac/94/1d/b8/b28d4e5fb747dd50dfd6ad6b/_500W_500H.jpg",
-            "source": "Pandora2",
+            "picurl": "http://cdn-profiles.tunein.com/s99531/images/logog.png?t=638733122560000000",
+            "source": "newTuneIn",
             "url": "unknow"
           },
           {
-            "name": "Arvo Pärt Radio",
+            "name": "ABC NewsRadio",
             "number": 3,
-            "picurl": "http://cont-4.p-cdn.us/images/a5/8b/04/43/3e7b4e75ae0820be83a4abf1/1080W_1080H.jpg",
-            "source": "Pandora2",
-            "url": "unknow"
-          },
-          {
-            "name": "Library Radio",
-            "number": 4,
-            "picurl": "unknow",
-            "source": "Plex",
-            "url": "unknow"
-          },
-          {
-            "name": "Ben Böhmer Radio",
-            "number": 5,
-            "picurl": "https://content-images.p-cdn.com/images/42/c9/10/47/026b42089c68f10d56c627a6/_500W_500H.jpg",
-            "source": "Pandora2",
-            "url": "unknow"
-          },
-          {
-            "name": "Golden Earring Radio",
-            "number": 6,
-            "picurl": "https://content-images.p-cdn.com/images/ed/2e/6d/46/33c14ae29787b0185f9fadd0/_500W_500H.jpg",
-            "source": "Pandora2",
-            "url": "unknow"
-          },
-          {
-            "name": "Everlast Radio",
-            "number": 7,
-            "picurl": "https://content-images.p-cdn.com/images/6f/3c/2f/ab/839643d891dbf565f913989f/_500W_500H.jpg",
-            "source": "Pandora2",
-            "url": "unknow"
-          },
-          {
-            "name": "Naim Classical",
-            "number": 8,
-            "picurl": "unknow",
-            "source": "UPnPServer",
-            "url": "unknow"
-          },
-          {
-            "name": "Spiffy Man Radio",
-            "number": 9,
-            "picurl": "https://content-images.p-cdn.com/images/69/bb/9a/3b/a0064fa29d41bd5b5a5f85dc/_500W_500H.jpg",
-            "source": "Pandora2",
-            "url": "unknow"
-          },
-          {
-            "name": "The Church Radio",
-            "number": 10,
-            "picurl": "https://content-images.p-cdn.com/images/4c/39/0c/c5/255c4456811385186f3b4454/_500W_500H.jpg",
-            "source": "Pandora2",
-            "url": "unknow"
-          },
-          {
-            "name": "PureClassix Netherlands flac 1648",
-            "number": 11,
-            "picurl": "unknow",
-            "source": "UPnPServer",
-            "url": "unknow"
-          },
-          {
-            "name": "Laid Back Morning Radio",
-            "number": 12,
-            "picurl": "https://content-images.p-cdn.com/images/89/c4/ff/20/571d4f3db2a260bccd8c08f3/_500W_500H.jpg",
-            "source": "Pandora2",
+            "picurl": "http://cdn-profiles.tunein.com/s7016/images/logog.png?t=637977437790000000",
+            "source": "newTuneIn",
             "url": "unknow"
           }
         ],
-        "preset_num": 12
+        "preset_num": 3
       },
       "summary": "Get Preset List"
     },
     {
       "command": "getRoutineCapability",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=getRoutineCapability",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getRoutineCapability",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
@@ -494,7 +622,7 @@
     },
     {
       "command": "EQGetList",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=EQGetList",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=EQGetList",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
@@ -529,7 +657,7 @@
     },
     {
       "command": "EQGetBand",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=EQGetBand",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=EQGetBand",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
@@ -589,17 +717,17 @@
         ],
         "EQLevel": 1,
         "EQStat": "Off",
-        "Name": "xxxx",
+        "Name": "",
         "channelMode": "Stereo",
         "pluginURI": "http://moddevices.com/plugins/caps/Eq10HP",
-        "source_name": "xxxx",
+        "source_name": "xxxxxxx",
         "status": "OK"
       },
       "summary": "Read the current EQ values for 10 bands GEQ (old API, no source specified, current source)"
     },
     {
       "command": "EQGetStat",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=EQGetStat",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=EQGetStat",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
@@ -611,7 +739,7 @@
     },
     {
       "command": "RoomCorrGet",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=RoomCorrGet",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=RoomCorrGet",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
@@ -626,17 +754,17 @@
           {
             "index": 1,
             "param_name": "a_freq",
-            "value": 51.0
+            "value": 56.0
           },
           {
             "index": 2,
             "param_name": "a_q",
-            "value": 3.869
+            "value": 5.945
           },
           {
             "index": 3,
             "param_name": "a_gain",
-            "value": -5.352
+            "value": -6.284
           },
           {
             "index": 4,
@@ -646,17 +774,17 @@
           {
             "index": 5,
             "param_name": "b_freq",
-            "value": 62.0
+            "value": 64.0
           },
           {
             "index": 6,
             "param_name": "b_q",
-            "value": 3.283
+            "value": 2.466
           },
           {
             "index": 7,
             "param_name": "b_gain",
-            "value": 5.882
+            "value": -9.839
           },
           {
             "index": 8,
@@ -666,17 +794,17 @@
           {
             "index": 9,
             "param_name": "c_freq",
-            "value": 74.0
+            "value": 115.0
           },
           {
             "index": 10,
             "param_name": "c_q",
-            "value": 2.378
+            "value": 2.469
           },
           {
             "index": 11,
             "param_name": "c_gain",
-            "value": 1.898
+            "value": 7.901
           },
           {
             "index": 12,
@@ -686,17 +814,17 @@
           {
             "index": 13,
             "param_name": "d_freq",
-            "value": 104.0
+            "value": 143.0
           },
           {
             "index": 14,
             "param_name": "d_q",
-            "value": 1.013
+            "value": 3.525
           },
           {
             "index": 15,
             "param_name": "d_gain",
-            "value": 9.938
+            "value": -10.0
           },
           {
             "index": 16,
@@ -706,17 +834,17 @@
           {
             "index": 17,
             "param_name": "e_freq",
-            "value": 125.0
+            "value": 207.0
           },
           {
             "index": 18,
             "param_name": "e_q",
-            "value": 5.186
+            "value": 4.269
           },
           {
             "index": 19,
             "param_name": "e_gain",
-            "value": -5.416
+            "value": 4.486
           },
           {
             "index": 20,
@@ -726,17 +854,17 @@
           {
             "index": 21,
             "param_name": "f_freq",
-            "value": 198.0
+            "value": 300.0
           },
           {
             "index": 22,
             "param_name": "f_q",
-            "value": 5.622
+            "value": 3.357
           },
           {
             "index": 23,
             "param_name": "f_gain",
-            "value": -4.529
+            "value": -6.584
           },
           {
             "index": 24,
@@ -746,17 +874,17 @@
           {
             "index": 25,
             "param_name": "g_freq",
-            "value": 462.0
+            "value": 612.0
           },
           {
             "index": 26,
             "param_name": "g_q",
-            "value": 6.706
+            "value": 1.004
           },
           {
             "index": 27,
             "param_name": "g_gain",
-            "value": 2.87
+            "value": -4.673
           },
           {
             "index": 28,
@@ -766,17 +894,17 @@
           {
             "index": 29,
             "param_name": "h_freq",
-            "value": 674.0
+            "value": 979.0
           },
           {
             "index": 30,
             "param_name": "h_q",
-            "value": 3.715
+            "value": 4.111
           },
           {
             "index": 31,
             "param_name": "h_gain",
-            "value": 4.852
+            "value": 3.786
           },
           {
             "index": 32,
@@ -786,17 +914,17 @@
           {
             "index": 33,
             "param_name": "i_freq",
-            "value": 1233.0
+            "value": 1765.0
           },
           {
             "index": 34,
             "param_name": "i_q",
-            "value": 2.349
+            "value": 0.522
           },
           {
             "index": 35,
             "param_name": "i_gain",
-            "value": 3.302
+            "value": 0.773
           },
           {
             "index": 36,
@@ -806,17 +934,17 @@
           {
             "index": 37,
             "param_name": "j_freq",
-            "value": 2732.0
+            "value": 2066.0
           },
           {
             "index": 38,
             "param_name": "j_q",
-            "value": 3.641
+            "value": 1.11
           },
           {
             "index": 39,
             "param_name": "j_gain",
-            "value": 2.774
+            "value": 2.622
           },
           {
             "index": 40,
@@ -861,7 +989,7 @@
         ],
         "EQLevel": 2,
         "EQStat": "Off",
-        "Name": "xxxxxx xxxxxxx",
+        "Name": "xxxxxxxx",
         "channelMode": "Stereo",
         "pluginURI": "http://moddevices.com/plugins/caps/EqNp",
         "source_name": "xxxxxxx",
@@ -871,7 +999,7 @@
     },
     {
       "command": "EQv2GetList:http://moddevices.com/plugins/caps/Eq10HP",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=EQv2GetList:http://moddevices.com/plugins/caps/Eq10HP",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=EQv2GetList:http://moddevices.com/plugins/caps/Eq10HP",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
@@ -909,22 +1037,20 @@
     },
     {
       "command": "EQv2GetList:http://moddevices.com/plugins/caps/EqNp",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=EQv2GetList:http://moddevices.com/plugins/caps/EqNp",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=EQv2GetList:http://moddevices.com/plugins/caps/EqNp",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
       "format": "json",
       "body": {
-        "custom": [
-          "messyroom"
-        ],
+        "custom": [],
         "preset": []
       },
       "summary": "Get the preset list for new-style plugin based EQ, using PEQ (old non-encoded API)"
     },
     {
       "command": "EQv2GetNewList:%7B%22pluginURI%22%3A%22http%3A%2F%2Fmoddevices.com%2Fplugins%2Fcaps%2FEq10HP%22%7D",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=EQv2GetNewList:%7B%22pluginURI%22%3A%22http%3A%2F%2Fmoddevices.com%2Fplugins%2Fcaps%2FEq10HP%22%7D",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=EQv2GetNewList:%7B%22pluginURI%22%3A%22http%3A%2F%2Fmoddevices.com%2Fplugins%2Fcaps%2FEq10HP%22%7D",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
@@ -1058,46 +1184,40 @@
     },
     {
       "command": "EQv2GetNewList:%7B%22pluginURI%22%3A%22http%3A%2F%2Fmoddevices.com%2Fplugins%2Fcaps%2FEqNp%22%7D",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=EQv2GetNewList:%7B%22pluginURI%22%3A%22http%3A%2F%2Fmoddevices.com%2Fplugins%2Fcaps%2FEqNp%22%7D",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=EQv2GetNewList:%7B%22pluginURI%22%3A%22http%3A%2F%2Fmoddevices.com%2Fplugins%2Fcaps%2FEqNp%22%7D",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
       "format": "json",
       "body": {
-        "custom": [
-          {
-            "Name": "messyroom",
-            "Type": "Custom",
-            "channelMode": "Stereo"
-          }
-        ],
+        "custom": [],
         "preset": []
       },
       "summary": "Get the presets for new-style plugin based EQ, using PEQ"
     },
     {
       "command": "EQGetLV2BandEx:%7B%22pluginURI%22%3A%22http%3A%2F%2Fmoddevices.com%2Fplugins%2Fcaps%2FEq10HP%22%7D",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=EQGetLV2BandEx:%7B%22pluginURI%22%3A%22http%3A%2F%2Fmoddevices.com%2Fplugins%2Fcaps%2FEq10HP%22%7D",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=EQGetLV2BandEx:%7B%22pluginURI%22%3A%22http%3A%2F%2Fmoddevices.com%2Fplugins%2Fcaps%2FEq10HP%22%7D",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
       "format": "base64",
-      "body": "eyJzdGF0dXMiOiJPSyIsIkVRTGV2ZWwiOjEsInNvdXJjZV9uYW1lIjoid2lmaSIsIkVRU3RhdCI6Ik9mZiIsIk5hbWUiOiIiLCJwbHVnaW5VUkkiOiJ7InBsdWdpblVSSSI6Imh0dHA6Ly9tb2RkZXZpY2VzLmNvbS9wbHVnaW5zL2NhcHMvRXExMEhQIn0iLCJjaGFubmVsTW9kZSI6IlN0ZXJlbyIsIkVRQmFuZCI6fQ==",
+      "body": "eyJzdGF0dXMiOiJPSyIsIkVRTGV2ZWwiOjEsInNvdXJjZV9uYW1lIjoib3B0aWNhbCIsIkVRU3RhdCI6Ik9mZiIsIk5hbWUiOiIiLCJwbHVnaW5VUkkiOiJ7InBsdWdpblVSSSI6Imh0dHA6Ly9tb2RkZXZpY2VzLmNvbS9wbHVnaW5zL2NhcHMvRXExMEhQIn0iLCJjaGFubmVsTW9kZSI6IlN0ZXJlbyIsIkVRQmFuZCI6fQ==",
       "summary": "Read the new style current source EQ bands for a source (GEQ)"
     },
     {
       "command": "EQGetLV2BandEx:%7B%22pluginURI%22%3A%22http%3A%2F%2Fmoddevices.com%2Fplugins%2Fcaps%2FEqNp%22%7D",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=EQGetLV2BandEx:%7B%22pluginURI%22%3A%22http%3A%2F%2Fmoddevices.com%2Fplugins%2Fcaps%2FEqNp%22%7D",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=EQGetLV2BandEx:%7B%22pluginURI%22%3A%22http%3A%2F%2Fmoddevices.com%2Fplugins%2Fcaps%2FEqNp%22%7D",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
       "format": "base64",
-      "body": "eyJzdGF0dXMiOiJPSyIsIkVRTGV2ZWwiOjEsInNvdXJjZV9uYW1lIjoid2lmaSIsIkVRU3RhdCI6Ik9mZiIsIk5hbWUiOiIiLCJwbHVnaW5VUkkiOiJ7InBsdWdpblVSSSI6Imh0dHA6Ly9tb2RkZXZpY2VzLmNvbS9wbHVnaW5zL2NhcHMvRXFOcCJ9IiwiY2hhbm5lbE1vZGUiOiJTdGVyZW8iLCJFUUJhbmQiOn0=",
+      "body": "eyJzdGF0dXMiOiJPSyIsIkVRTGV2ZWwiOjEsInNvdXJjZV9uYW1lIjoib3B0aWNhbCIsIkVRU3RhdCI6Ik9mZiIsIk5hbWUiOiIiLCJwbHVnaW5VUkkiOiJ7InBsdWdpblVSSSI6Imh0dHA6Ly9tb2RkZXZpY2VzLmNvbS9wbHVnaW5zL2NhcHMvRXFOcCJ9IiwiY2hhbm5lbE1vZGUiOiJTdGVyZW8iLCJFUUJhbmQiOn0=",
       "summary": "Read the new style current source EQ bands for a source (PEQ)"
     },
     {
       "command": "EQGetLV2SourceBandEx:%7B%22pluginURI%22%3A%22http%3A%2F%2Fmoddevices.com%2Fplugins%2Fcaps%2FEq10HP%22%2C%22source_name%22%3A%22wifi%22%7D",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=EQGetLV2SourceBandEx:%7B%22pluginURI%22%3A%22http%3A%2F%2Fmoddevices.com%2Fplugins%2Fcaps%2FEq10HP%22%2C%22source_name%22%3A%22wifi%22%7D",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=EQGetLV2SourceBandEx:%7B%22pluginURI%22%3A%22http%3A%2F%2Fmoddevices.com%2Fplugins%2Fcaps%2FEq10HP%22%2C%22source_name%22%3A%22wifi%22%7D",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
@@ -1167,7 +1287,7 @@
     },
     {
       "command": "EQGetLV2SourceBandEx:%7B%22pluginURI%22%3A%22http%3A%2F%2Fmoddevices.com%2Fplugins%2Fcaps%2FEqNp%22%2C%22source_name%22%3A%22wifi%22%7D",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=EQGetLV2SourceBandEx:%7B%22pluginURI%22%3A%22http%3A%2F%2Fmoddevices.com%2Fplugins%2Fcaps%2FEqNp%22%2C%22source_name%22%3A%22wifi%22%7D",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=EQGetLV2SourceBandEx:%7B%22pluginURI%22%3A%22http%3A%2F%2Fmoddevices.com%2Fplugins%2Fcaps%2FEqNp%22%2C%22source_name%22%3A%22wifi%22%7D",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
@@ -1182,17 +1302,17 @@
           {
             "index": 1,
             "param_name": "a_freq",
-            "value": 74.0
+            "value": 31.25
           },
           {
             "index": 2,
             "param_name": "a_q",
-            "value": 3.07
+            "value": 0.25
           },
           {
             "index": 3,
             "param_name": "a_gain",
-            "value": 6.343
+            "value": 0.0
           },
           {
             "index": 4,
@@ -1202,17 +1322,17 @@
           {
             "index": 5,
             "param_name": "b_freq",
-            "value": 105.0
+            "value": 62.5
           },
           {
             "index": 6,
             "param_name": "b_q",
-            "value": 1.862
+            "value": 0.25
           },
           {
             "index": 7,
             "param_name": "b_gain",
-            "value": 9.989
+            "value": 0.0
           },
           {
             "index": 8,
@@ -1222,17 +1342,17 @@
           {
             "index": 9,
             "param_name": "c_freq",
-            "value": 120.0
+            "value": 125.0
           },
           {
             "index": 10,
             "param_name": "c_q",
-            "value": 5.333
+            "value": 0.25
           },
           {
             "index": 11,
             "param_name": "c_gain",
-            "value": -3.719
+            "value": 0.0
           },
           {
             "index": 12,
@@ -1242,17 +1362,17 @@
           {
             "index": 13,
             "param_name": "d_freq",
-            "value": 249.0
+            "value": 250.0
           },
           {
             "index": 14,
             "param_name": "d_q",
-            "value": 5.126
+            "value": 0.25
           },
           {
             "index": 15,
             "param_name": "d_gain",
-            "value": 3.774
+            "value": 0.0
           },
           {
             "index": 16,
@@ -1262,17 +1382,17 @@
           {
             "index": 17,
             "param_name": "e_freq",
-            "value": 320.0
+            "value": 500.0
           },
           {
             "index": 18,
             "param_name": "e_q",
-            "value": 2.127
+            "value": 0.25
           },
           {
             "index": 19,
             "param_name": "e_gain",
-            "value": -5.195
+            "value": 0.0
           },
           {
             "index": 20,
@@ -1282,37 +1402,37 @@
           {
             "index": 21,
             "param_name": "f_freq",
-            "value": 587.0
+            "value": 1000.0
           },
           {
             "index": 22,
             "param_name": "f_q",
-            "value": 3.518
+            "value": 0.25
           },
           {
             "index": 23,
             "param_name": "f_gain",
-            "value": 4.341
+            "value": 0.0
           },
           {
             "index": 24,
             "param_name": "g_mode",
-            "value": 1.0
+            "value": -1.0
           },
           {
             "index": 25,
             "param_name": "g_freq",
-            "value": 982.0
+            "value": 2000.0
           },
           {
             "index": 26,
             "param_name": "g_q",
-            "value": 1.584
+            "value": 0.25
           },
           {
             "index": 27,
             "param_name": "g_gain",
-            "value": 6.799
+            "value": -12.0
           },
           {
             "index": 28,
@@ -1322,17 +1442,17 @@
           {
             "index": 29,
             "param_name": "h_freq",
-            "value": 1090.0
+            "value": 4000.0
           },
           {
             "index": 30,
             "param_name": "h_q",
-            "value": 5.333
+            "value": 0.25
           },
           {
             "index": 31,
             "param_name": "h_gain",
-            "value": -3.426
+            "value": 0.0
           },
           {
             "index": 32,
@@ -1342,17 +1462,17 @@
           {
             "index": 33,
             "param_name": "i_freq",
-            "value": 1382.0
+            "value": 8000.0
           },
           {
             "index": 34,
             "param_name": "i_q",
-            "value": 3.291
+            "value": 0.25
           },
           {
             "index": 35,
             "param_name": "i_gain",
-            "value": 2.187
+            "value": 0.0
           },
           {
             "index": 36,
@@ -1362,17 +1482,17 @@
           {
             "index": 37,
             "param_name": "j_freq",
-            "value": 1866.0
+            "value": 16000.0
           },
           {
             "index": 38,
             "param_name": "j_q",
-            "value": 5.667
+            "value": 0.25
           },
           {
             "index": 39,
             "param_name": "j_gain",
-            "value": -4.272
+            "value": 0.0
           },
           {
             "index": 40,
@@ -1427,7 +1547,7 @@
     },
     {
       "command": "EQGetSourceModes",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=EQGetSourceModes",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=EQGetSourceModes",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
@@ -1435,19 +1555,71 @@
       "body": [
         {
           "EQStat": "Off",
+          "Name": "Flat",
+          "NameL": "Flat",
+          "NameLR": "",
+          "NameMulti": "",
+          "NameR": "Flat",
+          "channelMode": "Stereo",
+          "pluginURI": "http://moddevices.com/plugins/caps/Eq10HP",
+          "source_name": "wifi"
+        },
+        {
+          "EQStat": "Off",
           "Name": "",
           "NameL": "",
+          "NameLR": "",
           "NameR": "",
           "channelMode": "Stereo",
-          "pluginURI": "http://moddevices.com/plugins/caps/EqNp",
-          "source_name": "wifi"
+          "pluginURI": "http://moddevices.com/plugins/caps/Eq10HP",
+          "source_name": "optical"
+        },
+        {
+          "EQStat": "Off",
+          "Name": "",
+          "NameL": "",
+          "NameLR": "",
+          "NameR": "",
+          "channelMode": "Stereo",
+          "pluginURI": "http://moddevices.com/plugins/caps/Eq10HP",
+          "source_name": "bluetooth"
+        },
+        {
+          "EQStat": "Off",
+          "Name": "",
+          "NameL": "",
+          "NameLR": "",
+          "NameR": "",
+          "channelMode": "Stereo",
+          "pluginURI": "http://moddevices.com/plugins/caps/Eq10HP",
+          "source_name": "HDMI"
+        },
+        {
+          "EQStat": "Off",
+          "Name": "",
+          "NameL": "",
+          "NameLR": "",
+          "NameR": "",
+          "channelMode": "Stereo",
+          "pluginURI": "http://moddevices.com/plugins/caps/Eq10HP",
+          "source_name": "line-in"
+        },
+        {
+          "EQStat": "Off",
+          "Name": "",
+          "NameL": "",
+          "NameLR": "",
+          "NameR": "",
+          "channelMode": "Stereo",
+          "pluginURI": "http://moddevices.com/plugins/caps/Eq10HP",
+          "source_name": "phono"
         }
       ],
       "summary": "Get the EQ source modes"
     },
     {
       "command": "EQGetLV2Band:http://moddevices.com/plugins/caps/Eq10HP",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=EQGetLV2Band:http://moddevices.com/plugins/caps/Eq10HP",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=EQGetLV2Band:http://moddevices.com/plugins/caps/Eq10HP",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
@@ -1507,17 +1679,17 @@
         ],
         "EQLevel": 1,
         "EQStat": "Off",
-        "Name": "xxxx",
+        "Name": "",
         "channelMode": "Stereo",
         "pluginURI": "http://moddevices.com/plugins/caps/Eq10HP",
-        "source_name": "xxxx",
+        "source_name": "xxxxxxx",
         "status": "OK"
       },
       "summary": "Read the old-style LV2 band for a plugin, no source specified (GEQ)"
     },
     {
       "command": "EQGetLV2Band:http://moddevices.com/plugins/caps/EqNp",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=EQGetLV2Band:http://moddevices.com/plugins/caps/EqNp",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=EQGetLV2Band:http://moddevices.com/plugins/caps/EqNp",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
@@ -1532,17 +1704,17 @@
           {
             "index": 1,
             "param_name": "a_freq",
-            "value": 74.0
+            "value": 31.25
           },
           {
             "index": 2,
             "param_name": "a_q",
-            "value": 3.07
+            "value": 0.25
           },
           {
             "index": 3,
             "param_name": "a_gain",
-            "value": 6.343
+            "value": 0.0
           },
           {
             "index": 4,
@@ -1552,17 +1724,17 @@
           {
             "index": 5,
             "param_name": "b_freq",
-            "value": 105.0
+            "value": 62.5
           },
           {
             "index": 6,
             "param_name": "b_q",
-            "value": 1.862
+            "value": 0.25
           },
           {
             "index": 7,
             "param_name": "b_gain",
-            "value": 9.989
+            "value": 0.0
           },
           {
             "index": 8,
@@ -1572,17 +1744,17 @@
           {
             "index": 9,
             "param_name": "c_freq",
-            "value": 120.0
+            "value": 125.0
           },
           {
             "index": 10,
             "param_name": "c_q",
-            "value": 5.333
+            "value": 0.25
           },
           {
             "index": 11,
             "param_name": "c_gain",
-            "value": -3.719
+            "value": 0.0
           },
           {
             "index": 12,
@@ -1592,17 +1764,17 @@
           {
             "index": 13,
             "param_name": "d_freq",
-            "value": 249.0
+            "value": 250.0
           },
           {
             "index": 14,
             "param_name": "d_q",
-            "value": 5.126
+            "value": 0.25
           },
           {
             "index": 15,
             "param_name": "d_gain",
-            "value": 3.774
+            "value": 0.0
           },
           {
             "index": 16,
@@ -1612,17 +1784,17 @@
           {
             "index": 17,
             "param_name": "e_freq",
-            "value": 320.0
+            "value": 500.0
           },
           {
             "index": 18,
             "param_name": "e_q",
-            "value": 2.127
+            "value": 0.25
           },
           {
             "index": 19,
             "param_name": "e_gain",
-            "value": -5.195
+            "value": 0.0
           },
           {
             "index": 20,
@@ -1632,17 +1804,17 @@
           {
             "index": 21,
             "param_name": "f_freq",
-            "value": 587.0
+            "value": 1000.0
           },
           {
             "index": 22,
             "param_name": "f_q",
-            "value": 3.518
+            "value": 0.25
           },
           {
             "index": 23,
             "param_name": "f_gain",
-            "value": 4.341
+            "value": 0.0
           },
           {
             "index": 24,
@@ -1652,17 +1824,17 @@
           {
             "index": 25,
             "param_name": "g_freq",
-            "value": 982.0
+            "value": 2000.0
           },
           {
             "index": 26,
             "param_name": "g_q",
-            "value": 1.584
+            "value": 0.25
           },
           {
             "index": 27,
             "param_name": "g_gain",
-            "value": 6.799
+            "value": 0.0
           },
           {
             "index": 28,
@@ -1672,17 +1844,17 @@
           {
             "index": 29,
             "param_name": "h_freq",
-            "value": 1090.0
+            "value": 4000.0
           },
           {
             "index": 30,
             "param_name": "h_q",
-            "value": 5.333
+            "value": 0.25
           },
           {
             "index": 31,
             "param_name": "h_gain",
-            "value": -3.426
+            "value": 0.0
           },
           {
             "index": 32,
@@ -1692,17 +1864,17 @@
           {
             "index": 33,
             "param_name": "i_freq",
-            "value": 1382.0
+            "value": 8000.0
           },
           {
             "index": 34,
             "param_name": "i_q",
-            "value": 3.291
+            "value": 0.25
           },
           {
             "index": 35,
             "param_name": "i_gain",
-            "value": 2.187
+            "value": 0.0
           },
           {
             "index": 36,
@@ -1712,17 +1884,17 @@
           {
             "index": 37,
             "param_name": "j_freq",
-            "value": 1866.0
+            "value": 16000.0
           },
           {
             "index": 38,
             "param_name": "j_q",
-            "value": 5.667
+            "value": 0.25
           },
           {
             "index": 39,
             "param_name": "j_gain",
-            "value": -4.272
+            "value": 0.0
           },
           {
             "index": 40,
@@ -1770,14 +1942,14 @@
         "Name": "",
         "channelMode": "Stereo",
         "pluginURI": "http://moddevices.com/plugins/caps/EqNp",
-        "source_name": "xxxx",
+        "source_name": "xxxxxxx",
         "status": "OK"
       },
       "summary": "Read the old-style LV2 band for a plugin, no source specified (PEQ)"
     },
     {
       "command": "EQGetLV2SourceBand:http://moddevices.com/plugins/caps/Eq10HP:wifi",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=EQGetLV2SourceBand:http://moddevices.com/plugins/caps/Eq10HP:wifi",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=EQGetLV2SourceBand:http://moddevices.com/plugins/caps/Eq10HP:wifi",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
@@ -1789,7 +1961,7 @@
     },
     {
       "command": "EQGetLV2SourceBand:http://moddevices.com/plugins/caps/EqNp:wifi",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=EQGetLV2SourceBand:http://moddevices.com/plugins/caps/EqNp:wifi",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=EQGetLV2SourceBand:http://moddevices.com/plugins/caps/EqNp:wifi",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
@@ -1801,7 +1973,7 @@
     },
     {
       "command": "RoomCorrGetMode",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=RoomCorrGetMode",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=RoomCorrGetMode",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
@@ -1816,17 +1988,17 @@
           {
             "index": 1,
             "param_name": "a_freq",
-            "value": 51.0
+            "value": 56.0
           },
           {
             "index": 2,
             "param_name": "a_q",
-            "value": 3.869
+            "value": 5.945
           },
           {
             "index": 3,
             "param_name": "a_gain",
-            "value": -5.352
+            "value": -6.284
           },
           {
             "index": 4,
@@ -1836,17 +2008,17 @@
           {
             "index": 5,
             "param_name": "b_freq",
-            "value": 62.0
+            "value": 64.0
           },
           {
             "index": 6,
             "param_name": "b_q",
-            "value": 3.283
+            "value": 2.466
           },
           {
             "index": 7,
             "param_name": "b_gain",
-            "value": 5.882
+            "value": -9.839
           },
           {
             "index": 8,
@@ -1856,17 +2028,17 @@
           {
             "index": 9,
             "param_name": "c_freq",
-            "value": 74.0
+            "value": 115.0
           },
           {
             "index": 10,
             "param_name": "c_q",
-            "value": 2.378
+            "value": 2.469
           },
           {
             "index": 11,
             "param_name": "c_gain",
-            "value": 1.898
+            "value": 7.901
           },
           {
             "index": 12,
@@ -1876,17 +2048,17 @@
           {
             "index": 13,
             "param_name": "d_freq",
-            "value": 104.0
+            "value": 143.0
           },
           {
             "index": 14,
             "param_name": "d_q",
-            "value": 1.013
+            "value": 3.525
           },
           {
             "index": 15,
             "param_name": "d_gain",
-            "value": 9.938
+            "value": -10.0
           },
           {
             "index": 16,
@@ -1896,17 +2068,17 @@
           {
             "index": 17,
             "param_name": "e_freq",
-            "value": 125.0
+            "value": 207.0
           },
           {
             "index": 18,
             "param_name": "e_q",
-            "value": 5.186
+            "value": 4.269
           },
           {
             "index": 19,
             "param_name": "e_gain",
-            "value": -5.416
+            "value": 4.486
           },
           {
             "index": 20,
@@ -1916,17 +2088,17 @@
           {
             "index": 21,
             "param_name": "f_freq",
-            "value": 198.0
+            "value": 300.0
           },
           {
             "index": 22,
             "param_name": "f_q",
-            "value": 5.622
+            "value": 3.357
           },
           {
             "index": 23,
             "param_name": "f_gain",
-            "value": -4.529
+            "value": -6.584
           },
           {
             "index": 24,
@@ -1936,17 +2108,17 @@
           {
             "index": 25,
             "param_name": "g_freq",
-            "value": 462.0
+            "value": 612.0
           },
           {
             "index": 26,
             "param_name": "g_q",
-            "value": 6.706
+            "value": 1.004
           },
           {
             "index": 27,
             "param_name": "g_gain",
-            "value": 2.87
+            "value": -4.673
           },
           {
             "index": 28,
@@ -1956,17 +2128,17 @@
           {
             "index": 29,
             "param_name": "h_freq",
-            "value": 674.0
+            "value": 979.0
           },
           {
             "index": 30,
             "param_name": "h_q",
-            "value": 3.715
+            "value": 4.111
           },
           {
             "index": 31,
             "param_name": "h_gain",
-            "value": 4.852
+            "value": 3.786
           },
           {
             "index": 32,
@@ -1976,17 +2148,17 @@
           {
             "index": 33,
             "param_name": "i_freq",
-            "value": 1233.0
+            "value": 1765.0
           },
           {
             "index": 34,
             "param_name": "i_q",
-            "value": 2.349
+            "value": 0.522
           },
           {
             "index": 35,
             "param_name": "i_gain",
-            "value": 3.302
+            "value": 0.773
           },
           {
             "index": 36,
@@ -1996,17 +2168,17 @@
           {
             "index": 37,
             "param_name": "j_freq",
-            "value": 2732.0
+            "value": 2066.0
           },
           {
             "index": 38,
             "param_name": "j_q",
-            "value": 3.641
+            "value": 1.11
           },
           {
             "index": 39,
             "param_name": "j_gain",
-            "value": 2.774
+            "value": 2.622
           },
           {
             "index": 40,
@@ -2051,7 +2223,7 @@
         ],
         "EQLevel": 2,
         "EQStat": "Off",
-        "Name": "xxxxxx xxxxxxx",
+        "Name": "xxxxxxxx",
         "channelMode": "Stereo",
         "pluginURI": "http://moddevices.com/plugins/caps/EqNp",
         "source_name": "xxxxxxx",
@@ -2061,7 +2233,7 @@
     },
     {
       "command": "getChannelBalance",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=getChannelBalance",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getChannelBalance",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
@@ -2071,7 +2243,7 @@
     },
     {
       "command": "getChannelMode",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=getChannelMode",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getChannelMode",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
@@ -2081,7 +2253,7 @@
     },
     {
       "command": "getSubLPF",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=getSubLPF",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getSubLPF",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
@@ -2089,7 +2261,7 @@
       "body": {
         "cross": 90,
         "delay_main_sub": "1.0",
-        "level": 0,
+        "level": 0.0,
         "linein_delay": 0.0,
         "main_filter": 1,
         "mix_sub": 1,
@@ -2097,14 +2269,14 @@
         "phase": 0,
         "plugged": 1,
         "status": 1,
-        "sub_delay": -5.479,
+        "sub_delay": -4.292,
         "sub_filter": 1
       },
       "summary": "Get subwoofer LPF"
     },
     {
       "command": "getMRMSubLPF:0.0.0.0",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=getMRMSubLPF:0.0.0.0",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getMRMSubLPF:0.0.0.0",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
@@ -2114,7 +2286,7 @@
           {
             "SubLPF": {
               "cross": 90,
-              "level": 0,
+              "level": 0.0,
               "main_filter": 1,
               "mix_sub": 1,
               "phase": 0,
@@ -2122,7 +2294,7 @@
               "sub_filter": 1
             },
             "type": "wireless",
-            "uuid": "FF98F3597E21BAE38D6E1163"
+            "uuid": "FF98F7F4075B5A90FA9572C3"
           }
         ],
         "version": "1.0"
@@ -2131,7 +2303,7 @@
     },
     {
       "command": "getAudioOutMax32bit",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=getAudioOutMax32bit",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getAudioOutMax32bit",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
@@ -2141,28 +2313,141 @@
     },
     {
       "command": "getAudioOutputVrmsSupportList",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=getAudioOutputVrmsSupportList",
-      "attempts": 1,
-      "outcome": "ok",
-      "http_status": 200,
-      "format": "text",
-      "body": "Failed",
-      "unsupported": true,
-      "summary": "Get list of audio outputs that support VRMS"
-    },
-    {
-      "command": "getAuxAutoSenseEnable",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=getAuxAutoSenseEnable",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getAudioOutputVrmsSupportList",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
       "format": "json",
-      "body": 1,
+      "body": {
+        "ver": "1.0",
+        "voltage": [
+          {
+            "mode": "AUDIO_OUTPUT_AUX_MODE",
+            "setting": [
+              {
+                "args": [
+                  "i2cset -f -y 1 0x49 0x11 0xff",
+                  "i2cset -f -y 1 0x49 0x12 0xff",
+                  "i2cset -f -y 1 0x49 0x13 0xff",
+                  "i2cset -f -y 1 0x49 0x14 0x3e"
+                ],
+                "index": 1,
+                "value": "1000mV"
+              },
+              {
+                "args": [
+                  "i2cset -f -y 1 0x49 0x11 0xff",
+                  "i2cset -f -y 1 0x49 0x12 0xff",
+                  "i2cset -f -y 1 0x49 0x13 0xff",
+                  "i2cset -f -y 1 0x49 0x14 0x7e"
+                ],
+                "index": 2,
+                "value": "2000mV"
+              },
+              {
+                "args": [
+                  "i2cset -f -y 1 0x49 0x11 0xff",
+                  "i2cset -f -y 1 0x49 0x12 0xff",
+                  "i2cset -f -y 1 0x49 0x13 0x9f",
+                  "i2cset -f -y 1 0x49 0x14 0x31"
+                ],
+                "index": 3,
+                "value": "800mV"
+              },
+              {
+                "args": [
+                  "i2cset -f -y 1 0x49 0x11 0xff",
+                  "i2cset -f -y 1 0x49 0x12 0xff",
+                  "i2cset -f -y 1 0x49 0x13 0xff",
+                  "i2cset -f -y 1 0x49 0x14 0x1e"
+                ],
+                "index": 4,
+                "value": "500mV"
+              },
+              {
+                "args": [
+                  "i2cset -f -y 1 0x49 0x11 0xff",
+                  "i2cset -f -y 1 0x49 0x12 0xff",
+                  "i2cset -f -y 1 0x49 0x13 0x60",
+                  "i2cset -f -y 1 0x49 0x14 0x0c"
+                ],
+                "index": 5,
+                "value": "200mV"
+              }
+            ]
+          },
+          {
+            "mode": "AUDIO_OUTPUT_PHONE_JACK_MODE",
+            "setting": [
+              {
+                "args": [
+                  "i2cset -f -y 1 0x49 0x11 0xff",
+                  "i2cset -f -y 1 0x49 0x12 0xff",
+                  "i2cset -f -y 1 0x49 0x13 0xff",
+                  "i2cset -f -y 1 0x49 0x14 0x3e"
+                ],
+                "index": 1,
+                "value": "1000mV"
+              },
+              {
+                "args": [
+                  "i2cset -f -y 1 0x49 0x11 0xff",
+                  "i2cset -f -y 1 0x49 0x12 0xff",
+                  "i2cset -f -y 1 0x49 0x13 0xff",
+                  "i2cset -f -y 1 0x49 0x14 0x7e"
+                ],
+                "index": 2,
+                "value": "2000mV"
+              },
+              {
+                "args": [
+                  "i2cset -f -y 1 0x49 0x11 0xff",
+                  "i2cset -f -y 1 0x49 0x12 0xff",
+                  "i2cset -f -y 1 0x49 0x13 0x9f",
+                  "i2cset -f -y 1 0x49 0x14 0x31"
+                ],
+                "index": 3,
+                "value": "800mV"
+              },
+              {
+                "args": [
+                  "i2cset -f -y 1 0x49 0x11 0xff",
+                  "i2cset -f -y 1 0x49 0x12 0xff",
+                  "i2cset -f -y 1 0x49 0x13 0xff",
+                  "i2cset -f -y 1 0x49 0x14 0x1e"
+                ],
+                "index": 4,
+                "value": "500mV"
+              },
+              {
+                "args": [
+                  "i2cset -f -y 1 0x49 0x11 0xff",
+                  "i2cset -f -y 1 0x49 0x12 0xff",
+                  "i2cset -f -y 1 0x49 0x13 0x60",
+                  "i2cset -f -y 1 0x49 0x14 0x0c"
+                ],
+                "index": 5,
+                "value": "200mV"
+              }
+            ]
+          }
+        ]
+      },
+      "summary": "Get list of audio outputs that support VRMS"
+    },
+    {
+      "command": "getAuxAutoSenseEnable",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getAuxAutoSenseEnable",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "json",
+      "body": 0,
       "summary": "Get AUX auto-sense enable status"
     },
     {
       "command": "getAuxInMaxCap",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=getAuxInMaxCap",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getAuxInMaxCap",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
@@ -2172,47 +2457,97 @@
     },
     {
       "command": "getCoaxOutMaxCap",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=getCoaxOutMaxCap",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getCoaxOutMaxCap",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
       "format": "text",
-      "body": "48000:16:0",
+      "body": "192000:24:0",
       "summary": "Get the maximum capabilities of the coaxial output"
     },
     {
       "command": "getDigitalFilterType",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=getDigitalFilterType",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getDigitalFilterType",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
       "format": "json",
-      "body": 1,
+      "body": 7,
       "summary": "Get current digital filter type"
     },
     {
       "command": "getDigitalFilterTypeSupportList",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=getDigitalFilterTypeSupportList",
-      "attempts": 1,
-      "outcome": "ok",
-      "http_status": 200,
-      "format": "text",
-      "body": "no parameters",
-      "summary": "Get list of supported digital filter types"
-    },
-    {
-      "command": "getHDMIAutoSenseEnable",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=getHDMIAutoSenseEnable",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getDigitalFilterTypeSupportList",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
       "format": "json",
-      "body": 1,
+      "body": [
+        {
+          "args": [
+            "amixer cset name='ES9038 DigiFilt' 0"
+          ],
+          "index": 1,
+          "value": "Brick Wall Filter"
+        },
+        {
+          "args": [
+            "amixer cset name='ES9038 DigiFilt' 1"
+          ],
+          "index": 2,
+          "value": "Corrected Minimum Phase Fast Roll-Off Filter"
+        },
+        {
+          "args": [
+            "amixer cset name='ES9038 DigiFilt' 2"
+          ],
+          "index": 3,
+          "value": "Apodizing Fast Roll-Off Filter"
+        },
+        {
+          "args": [
+            "amixer cset name='ES9038 DigiFilt' 3"
+          ],
+          "index": 4,
+          "value": "Minimum Phase Slow Roll-Off Filter"
+        },
+        {
+          "args": [
+            "amixer cset name='ES9038 DigiFilt' 4"
+          ],
+          "index": 5,
+          "value": "Minimum Phase Fast Roll-Off Filter"
+        },
+        {
+          "args": [
+            "amixer cset name='ES9038 DigiFilt' 5"
+          ],
+          "index": 6,
+          "value": "Linear Phase Slow Roll-Off Filter"
+        },
+        {
+          "args": [
+            "amixer cset name='ES9038 DigiFilt' 6"
+          ],
+          "index": 7,
+          "value": "Linear Phase Fast Roll-Off Filter"
+        }
+      ],
+      "summary": "Get list of supported digital filter types"
+    },
+    {
+      "command": "getHDMIAutoSenseEnable",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getHDMIAutoSenseEnable",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "json",
+      "body": 0,
       "summary": "Get HDMI auto-sense enable"
     },
     {
       "command": "getLineInMaxCap",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=getLineInMaxCap",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getLineInMaxCap",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
@@ -2222,7 +2557,7 @@
     },
     {
       "command": "getNewAudioOutputHardwareMode",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=getNewAudioOutputHardwareMode",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getNewAudioOutputHardwareMode",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
@@ -2236,18 +2571,131 @@
     },
     {
       "command": "getOutputDigitalFilterTypeSupportList",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=getOutputDigitalFilterTypeSupportList",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getOutputDigitalFilterTypeSupportList",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
-      "format": "text",
-      "body": "Failed",
-      "unsupported": true,
+      "format": "json",
+      "body": {
+        "filterType": [
+          {
+            "defaultType": 2,
+            "mode": "AUDIO_OUTPUT_AUX_MODE",
+            "setting": [
+              {
+                "args": [
+                  "amixer cset name='ES9038 DigiFilt' 0"
+                ],
+                "index": 1,
+                "value": "Brick Wall Filter"
+              },
+              {
+                "args": [
+                  "amixer cset name='ES9038 DigiFilt' 1"
+                ],
+                "index": 2,
+                "value": "Corrected Minimum Phase Fast Roll-Off Filter"
+              },
+              {
+                "args": [
+                  "amixer cset name='ES9038 DigiFilt' 2"
+                ],
+                "index": 3,
+                "value": "Apodizing Fast Roll-Off Filter"
+              },
+              {
+                "args": [
+                  "amixer cset name='ES9038 DigiFilt' 3"
+                ],
+                "index": 4,
+                "value": "Minimum Phase Slow Roll-Off Filter"
+              },
+              {
+                "args": [
+                  "amixer cset name='ES9038 DigiFilt' 4"
+                ],
+                "index": 5,
+                "value": "Minimum Phase Fast Roll-Off Filter"
+              },
+              {
+                "args": [
+                  "amixer cset name='ES9038 DigiFilt' 5"
+                ],
+                "index": 6,
+                "value": "Linear Phase Slow Roll-Off Filter"
+              },
+              {
+                "args": [
+                  "amixer cset name='ES9038 DigiFilt' 6"
+                ],
+                "index": 7,
+                "value": "Linear Phase Fast Roll-Off Filter"
+              }
+            ]
+          },
+          {
+            "defaultType": 2,
+            "mode": "AUDIO_OUTPUT_PHONE_JACK_MODE",
+            "setting": [
+              {
+                "args": [
+                  "amixer cset name='ES9038 DigiFilt' 0"
+                ],
+                "index": 1,
+                "value": "Brick Wall Filter"
+              },
+              {
+                "args": [
+                  "amixer cset name='ES9038 DigiFilt' 1"
+                ],
+                "index": 2,
+                "value": "Corrected Minimum Phase Fast Roll-Off Filter"
+              },
+              {
+                "args": [
+                  "amixer cset name='ES9038 DigiFilt' 2"
+                ],
+                "index": 3,
+                "value": "Apodizing Fast Roll-Off Filter"
+              },
+              {
+                "args": [
+                  "amixer cset name='ES9038 DigiFilt' 3"
+                ],
+                "index": 4,
+                "value": "Minimum Phase Slow Roll-Off Filter"
+              },
+              {
+                "args": [
+                  "amixer cset name='ES9038 DigiFilt' 4"
+                ],
+                "index": 5,
+                "value": "Minimum Phase Fast Roll-Off Filter"
+              },
+              {
+                "args": [
+                  "amixer cset name='ES9038 DigiFilt' 5"
+                ],
+                "index": 6,
+                "value": "Linear Phase Slow Roll-Off Filter"
+              },
+              {
+                "args": [
+                  "amixer cset name='ES9038 DigiFilt' 6"
+                ],
+                "index": 7,
+                "value": "Linear Phase Fast Roll-Off Filter"
+              }
+            ]
+          }
+        ],
+        "ver": "1.0"
+      },
       "summary": "Get list of supported output digital filter types"
     },
     {
       "command": "getOutputVoltage",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=getOutputVoltage",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getOutputVoltage",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
@@ -2257,72 +2705,67 @@
     },
     {
       "command": "getOutputDigitalFilterType:AUDIO_OUTPUT_COAX_MODE",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=getOutputDigitalFilterType:AUDIO_OUTPUT_COAX_MODE",
-      "attempts": 1,
-      "outcome": "ok",
-      "http_status": 200,
-      "format": "text",
-      "body": "Failed",
-      "unsupported": true,
-      "summary": "Get digital filter for COAX output (should be 0)"
-    },
-    {
-      "command": "getOutputDigitalFilterType:AUDIO_OUTPUT_SPDIF_MODE",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=getOutputDigitalFilterType:AUDIO_OUTPUT_SPDIF_MODE",
-      "attempts": 1,
-      "outcome": "ok",
-      "http_status": 200,
-      "format": "text",
-      "body": "Failed",
-      "unsupported": true,
-      "summary": "Get digital filter for SPDIF output (should be 0)"
-    },
-    {
-      "command": "getOutputDigitalFilterType:AUDIO_OUTPUT_AUX_MODE",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=getOutputDigitalFilterType:AUDIO_OUTPUT_AUX_MODE",
-      "attempts": 1,
-      "outcome": "ok",
-      "http_status": 200,
-      "format": "text",
-      "body": "Failed",
-      "unsupported": true,
-      "summary": "Get digital filter for main analog output"
-    },
-    {
-      "command": "getOutputDigitalFilterType:AUDIO_OUTPUT_PHONE_JACK_MODE",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=getOutputDigitalFilterType:AUDIO_OUTPUT_PHONE_JACK_MODE",
-      "attempts": 1,
-      "outcome": "ok",
-      "http_status": 200,
-      "format": "text",
-      "body": "Failed",
-      "unsupported": true,
-      "summary": "Get digital filter for headphone analog output"
-    },
-    {
-      "command": "getOutputDigitalFilterType:AUDIO_OUTPUT_UAC_CARD_MODE",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=getOutputDigitalFilterType:AUDIO_OUTPUT_UAC_CARD_MODE",
-      "attempts": 1,
-      "outcome": "ok",
-      "http_status": 200,
-      "format": "text",
-      "body": "Failed",
-      "unsupported": true,
-      "summary": "Get digital filter for USB output (should be 0)"
-    },
-    {
-      "command": "getSpdifAutoSenseEnable",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=getSpdifAutoSenseEnable",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getOutputDigitalFilterType:AUDIO_OUTPUT_COAX_MODE",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
       "format": "json",
       "body": 0,
+      "summary": "Get digital filter for COAX output (should be 0)"
+    },
+    {
+      "command": "getOutputDigitalFilterType:AUDIO_OUTPUT_SPDIF_MODE",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getOutputDigitalFilterType:AUDIO_OUTPUT_SPDIF_MODE",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "json",
+      "body": 0,
+      "summary": "Get digital filter for SPDIF output (should be 0)"
+    },
+    {
+      "command": "getOutputDigitalFilterType:AUDIO_OUTPUT_AUX_MODE",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getOutputDigitalFilterType:AUDIO_OUTPUT_AUX_MODE",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "json",
+      "body": 7,
+      "summary": "Get digital filter for main analog output"
+    },
+    {
+      "command": "getOutputDigitalFilterType:AUDIO_OUTPUT_PHONE_JACK_MODE",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getOutputDigitalFilterType:AUDIO_OUTPUT_PHONE_JACK_MODE",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "json",
+      "body": 2,
+      "summary": "Get digital filter for headphone analog output"
+    },
+    {
+      "command": "getOutputDigitalFilterType:AUDIO_OUTPUT_UAC_CARD_MODE",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getOutputDigitalFilterType:AUDIO_OUTPUT_UAC_CARD_MODE",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "json",
+      "body": 0,
+      "summary": "Get digital filter for USB output (should be 0)"
+    },
+    {
+      "command": "getSpdifAutoSenseEnable",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getSpdifAutoSenseEnable",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "json",
+      "body": 1,
       "summary": "Get SPDIF auto-sense enable status"
     },
     {
       "command": "getSpdifInNoiseRemove",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=getSpdifInNoiseRemove",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getSpdifInNoiseRemove",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
@@ -2332,17 +2775,17 @@
     },
     {
       "command": "getSpdifOutMaxCap",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=getSpdifOutMaxCap",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getSpdifOutMaxCap",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
       "format": "text",
-      "body": "48000:16:0",
+      "body": "192000:24:0",
       "summary": "Get SPDIF output maximum capabilities"
     },
     {
       "command": "getSpdifOutSwitchDelayMs",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=getSpdifOutSwitchDelayMs",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getSpdifOutSwitchDelayMs",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
@@ -2352,7 +2795,7 @@
     },
     {
       "command": "getUacOutMaxCap",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=getUacOutMaxCap",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getUacOutMaxCap",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
@@ -2362,7 +2805,7 @@
     },
     {
       "command": "getSoundCardModeSupportList",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=getSoundCardModeSupportList",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getSoundCardModeSupportList",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
@@ -2374,7 +2817,48 @@
           "soundCard": {
             "cardId": "hw:0,1",
             "cardName": "AMLAUGESOUND",
-            "devName": "Speaker Out"
+            "devName": "Line Out",
+            "supportDigitalFilter": 1,
+            "supportVrmsChange": 1
+          }
+        },
+        {
+          "index": 2,
+          "mode": "AUDIO_OUTPUT_SPDIF_MODE",
+          "soundCard": {
+            "HiFiSRCVersion": "1.1",
+            "cardId": "hw:0,1",
+            "cardName": "AMLAUGESOUND",
+            "coexistMode": [
+              "AUDIO_OUTPUT_AUX_MODE"
+            ],
+            "devName": "Optical Out",
+            "supportSampleRateSwitchLatency": 1
+          }
+        },
+        {
+          "index": 3,
+          "mode": "AUDIO_OUTPUT_COAX_MODE",
+          "soundCard": {
+            "HiFiSRCVersion": "1.1",
+            "cardId": "hw:0,1",
+            "cardName": "AMLAUGESOUND",
+            "coexistMode": [
+              "AUDIO_OUTPUT_AUX_MODE"
+            ],
+            "devName": "COAX Out",
+            "supportSampleRateSwitchLatency": 1
+          }
+        },
+        {
+          "index": 4,
+          "mode": "AUDIO_OUTPUT_PHONE_JACK_MODE",
+          "soundCard": {
+            "cardId": "hw:0,1",
+            "cardName": "AMLAUGESOUND",
+            "devName": "Headphone Out",
+            "supportDigitalFilter": 1,
+            "supportVrmsChange": 1
           }
         }
       ],
@@ -2382,19 +2866,17 @@
     },
     {
       "command": "GetAirplayExtraDelay",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=GetAirplayExtraDelay",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=GetAirplayExtraDelay",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
-      "format": "json",
-      "body": {
-        "AirplayExtraDelay": -10
-      },
+      "format": "text",
+      "body": "",
       "summary": "Get AirPlay extra delay"
     },
     {
       "command": "GetFadeFeature",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=GetFadeFeature",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=GetFadeFeature",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
@@ -2406,19 +2888,19 @@
     },
     {
       "command": "GetSyncPlayExtraDelay",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=GetSyncPlayExtraDelay",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=GetSyncPlayExtraDelay",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
       "format": "json",
       "body": {
-        "SyncPlayExtraDelay": 0.0
+        "SyncPlayExtraDelay": 3.312
       },
       "summary": "Get sync play extra delay (multiroom audio sync timing)"
     },
     {
       "command": "PHONO_MODE_SWITCH_GET",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=PHONO_MODE_SWITCH_GET",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=PHONO_MODE_SWITCH_GET",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
@@ -2428,7 +2910,7 @@
     },
     {
       "command": "getActiveSoundCardOutputMode",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=getActiveSoundCardOutputMode",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getActiveSoundCardOutputMode",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
@@ -2437,7 +2919,7 @@
         "audioCast": "0",
         "btSource": "0",
         "cardId": "hw:0,1",
-        "devName": "xxxxxxx xxx",
+        "devName": "xxxx xxx",
         "index": "1",
         "mode": "AUDIO_OUTPUT_AUX_MODE"
       },
@@ -2445,7 +2927,7 @@
     },
     {
       "command": "getAutoSenseEnable",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=getAutoSenseEnable",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getAutoSenseEnable",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
@@ -2455,37 +2937,88 @@
     },
     {
       "command": "getAuxVoltageSupportList",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=getAuxVoltageSupportList",
-      "attempts": 1,
-      "outcome": "ok",
-      "http_status": 200,
-      "format": "text",
-      "body": "no parameters",
-      "summary": "Get auxiliary voltage support list"
-    },
-    {
-      "command": "getCecPowerCtrl",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=getCecPowerCtrl",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getAuxVoltageSupportList",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
       "format": "json",
-      "body": 0,
+      "body": [
+        {
+          "args": [
+            "i2cset -f -y 1 0x49 0x11 0xff",
+            "i2cset -f -y 1 0x49 0x12 0xff",
+            "i2cset -f -y 1 0x49 0x13 0xff",
+            "i2cset -f -y 1 0x49 0x14 0x3e"
+          ],
+          "index": 1,
+          "value": "1000mV"
+        },
+        {
+          "args": [
+            "i2cset -f -y 1 0x49 0x11 0xff",
+            "i2cset -f -y 1 0x49 0x12 0xff",
+            "i2cset -f -y 1 0x49 0x13 0xff",
+            "i2cset -f -y 1 0x49 0x14 0x7e"
+          ],
+          "index": 2,
+          "value": "2000mV"
+        },
+        {
+          "args": [
+            "i2cset -f -y 1 0x49 0x11 0xff",
+            "i2cset -f -y 1 0x49 0x12 0xff",
+            "i2cset -f -y 1 0x49 0x13 0x9f",
+            "i2cset -f -y 1 0x49 0x14 0x31"
+          ],
+          "index": 3,
+          "value": "800mV"
+        },
+        {
+          "args": [
+            "i2cset -f -y 1 0x49 0x11 0xff",
+            "i2cset -f -y 1 0x49 0x12 0xff",
+            "i2cset -f -y 1 0x49 0x13 0xff",
+            "i2cset -f -y 1 0x49 0x14 0x1e"
+          ],
+          "index": 4,
+          "value": "500mV"
+        },
+        {
+          "args": [
+            "i2cset -f -y 1 0x49 0x11 0xff",
+            "i2cset -f -y 1 0x49 0x12 0xff",
+            "i2cset -f -y 1 0x49 0x13 0x60",
+            "i2cset -f -y 1 0x49 0x14 0x0c"
+          ],
+          "index": 5,
+          "value": "200mV"
+        }
+      ],
+      "summary": "Get auxiliary voltage support list"
+    },
+    {
+      "command": "getCecPowerCtrl",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getCecPowerCtrl",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "json",
+      "body": 1,
       "summary": "Get HDMI-CEC power control status"
     },
     {
       "command": "getDigitalInputAudioTypeSupport",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=getDigitalInputAudioTypeSupport",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getDigitalInputAudioTypeSupport",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
       "format": "text",
-      "body": "0x1",
+      "body": "0x3",
       "summary": "Get supported digital input audio types"
     },
     {
       "command": "getInputModeSupportList",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=getInputModeSupportList",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getInputModeSupportList",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
@@ -2495,7 +3028,7 @@
     },
     {
       "command": "getLMPFilterCapability",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=getLMPFilterCapability",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getLMPFilterCapability",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
@@ -2507,7 +3040,7 @@
     },
     {
       "command": "getMQAReceiverCap",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=getMQAReceiverCap",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getMQAReceiverCap",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
@@ -2517,7 +3050,7 @@
     },
     {
       "command": "getMainSubExtraDelay",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=getMainSubExtraDelay",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getMainSubExtraDelay",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
@@ -2536,18 +3069,20 @@
     },
     {
       "command": "getModeRename",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=getModeRename",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getModeRename",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
-      "format": "text",
-      "body": "Failed",
-      "unsupported": true,
+      "format": "json",
+      "body": {
+        "SPDIF-In": "PC",
+        "optical": "PC"
+      },
       "summary": "Get input mode rename information"
     },
     {
       "command": "getPlayModeGainConfig",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=getPlayModeGainConfig",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getPlayModeGainConfig",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
@@ -2578,6 +3113,11 @@
             "gain": "0.0",
             "mode": 49,
             "name": "HDMI"
+          },
+          {
+            "gain": "0.0",
+            "mode": 54,
+            "name": "phono"
           }
         ],
         "enable": 0,
@@ -2588,56 +3128,27 @@
     },
     {
       "command": "getPlayModeVolumeEnable",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=getPlayModeVolumeEnable",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getPlayModeVolumeEnable",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
       "format": "json",
-      "body": 1,
+      "body": 0,
       "summary": "Get play mode volume enable"
     },
     {
       "command": "getPlayModeVolumeValue",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=getPlayModeVolumeValue",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getPlayModeVolumeValue",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
-      "format": "json",
-      "body": [
-        {
-          "active": 1,
-          "mode": 10,
-          "name": "wifi",
-          "stored": 1,
-          "volume": 38
-        },
-        {
-          "active": 0,
-          "mode": 40,
-          "name": "line-in",
-          "stored": 1,
-          "volume": 29
-        },
-        {
-          "active": 0,
-          "mode": 43,
-          "name": "optical",
-          "stored": 1,
-          "volume": 29
-        },
-        {
-          "active": 0,
-          "mode": 49,
-          "name": "HDMI",
-          "stored": 1,
-          "volume": 29
-        }
-      ],
+      "format": "text",
+      "body": "",
       "summary": "Get play mode volume value"
     },
     {
       "command": "getSoftMute",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=getSoftMute",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getSoftMute",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
@@ -2648,20 +3159,20 @@
     },
     {
       "command": "get_button_volume_step",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=get_button_volume_step",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=get_button_volume_step",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
       "format": "json",
       "body": {
-        "button_volume_step": 3,
+        "button_volume_step": 2,
         "status": "OK"
       },
       "summary": "Get the volume step of the buttons"
     },
     {
       "command": "get_remote_volume_step",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=get_remote_volume_step",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=get_remote_volume_step",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
@@ -2674,17 +3185,17 @@
     },
     {
       "command": "Button_Enable_GET",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=Button_Enable_GET",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=Button_Enable_GET",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
       "format": "json",
-      "body": 1,
+      "body": 0,
       "summary": "Get button enable status"
     },
     {
       "command": "LED_SWITCH_GET",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=LED_SWITCH_GET",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=LED_SWITCH_GET",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
@@ -2694,7 +3205,7 @@
     },
     {
       "command": "Reload_Button_GET",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=Reload_Button_GET",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=Reload_Button_GET",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
@@ -2728,7 +3239,7 @@
     },
     {
       "command": "getblediscoveryresult",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=getblediscoveryresult",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getblediscoveryresult",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
@@ -2741,7 +3252,7 @@
     },
     {
       "command": "multiroom:getSlaveList",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=multiroom:getSlaveList",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=multiroom:getSlaveList",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
@@ -2756,7 +3267,7 @@
     },
     {
       "command": "multiroom:getnamegrouplist",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=multiroom:getnamegrouplist",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=multiroom:getnamegrouplist",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
@@ -2769,7 +3280,7 @@
     },
     {
       "command": "multiroom:ConfigGet:leadtime",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=multiroom:ConfigGet:leadtime",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=multiroom:ConfigGet:leadtime",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
@@ -2782,7 +3293,7 @@
     },
     {
       "command": "multiroom:ConfigGet:realtime_cache_limit",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=multiroom:ConfigGet:realtime_cache_limit",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=multiroom:ConfigGet:realtime_cache_limit",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
@@ -2795,7 +3306,7 @@
     },
     {
       "command": "multiroom:subwooferGetPairInfo",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=multiroom:subwooferGetPairInfo",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=multiroom:subwooferGetPairInfo",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
@@ -2807,27 +3318,27 @@
     },
     {
       "command": "getblehidstatus",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=getblehidstatus",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getblehidstatus",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
       "format": "json",
       "body": {
-        "battery": 0,
+        "battery": 100,
         "doubleclickdisable": 0,
         "error": 0,
         "mac": "xx:xx:xx:xx:xx:xx",
-        "name": "",
+        "name": "xxxx xxxxx xxxxxx",
         "powerstatus": 0,
-        "rssi": 0,
-        "status": "notconnect",
-        "ver": ""
+        "rssi": -70,
+        "status": "connected",
+        "ver": "0054"
       },
       "summary": "Get BLE HID status"
     },
     {
       "command": "getbtstatus",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=getbtstatus",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getbtstatus",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
@@ -2838,26 +3349,26 @@
           "name": "",
           "pairing": 0
         },
-        "server": 76,
+        "server": 68,
         "status": 6
       },
       "summary": "Get Bluetooth status"
     },
     {
       "command": "getbtpairstatus",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=getbtpairstatus",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getbtpairstatus",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
       "format": "json",
       "body": {
-        "result": 1
+        "result": 0
       },
       "summary": "Get Bluetooth pairing status"
     },
     {
       "command": "getbthistory",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=getbthistory",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getbthistory",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
@@ -2870,7 +3381,7 @@
     },
     {
       "command": "getbtPairDevStat",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=getbtPairDevStat",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getbtPairDevStat",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
@@ -2881,7 +3392,7 @@
     },
     {
       "command": "getbtdiscoveryresult",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=getbtdiscoveryresult",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getbtdiscoveryresult",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
@@ -2894,7 +3405,7 @@
     },
     {
       "command": "getDebugInfo",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=getDebugInfo",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getDebugInfo",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
@@ -2909,29 +3420,29 @@
         "asr_region": "en_us",
         "asr_tts_crash": "0",
         "bt_play_status": "1",
-        "capture_play_status": "2",
+        "capture_play_status": "5",
         "connecting_type": "0",
         "device_status": "0",
         "ezlink_active": "0",
         "gapless": "0",
-        "imuzop_pid": "0",
+        "imuzop_pid": "1",
         "mcu_crash": "0",
         "pause_flag_for_alexa": "0",
-        "play_mode": "-1",
-        "play_status": "0",
+        "play_mode": "43",
+        "play_status": "1",
         "plm_notify_flag": "0",
-        "power_ticks": "6000502",
+        "power_ticks": "12764165",
         "priv_languages": "4588",
         "process_deadlock": "x",
         "retail_mode": "0",
         "slave": "0",
         "slave_default_latency": "0",
-        "slave_latency": "0",
+        "slave_latency": "3312",
         "slave_num": "0",
         "slave_playing": "0",
         "slave_status": "0",
         "smplay_skip_silence": "0",
-        "spotify_play_status": "0",
+        "spotify_play_status": "2",
         "system_ready": "x",
         "time_sync_ready": "x",
         "upnp_action_lost0": "0",
@@ -2942,17 +3453,17 @@
         "upnp_action_remain1": "0",
         "upnp_action_remain2": "0",
         "upnp_action_remain3": "0",
-        "upnp_action_total0": "115",
-        "upnp_action_total1": "115",
-        "upnp_action_total2": "115",
-        "upnp_action_total3": "115",
+        "upnp_action_total0": "528",
+        "upnp_action_total1": "529",
+        "upnp_action_total2": "528",
+        "upnp_action_total3": "528",
         "wifi_abort_date": ""
       },
       "summary": "Get device debug information"
     },
     {
       "command": "getDeviceNameChangeable",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=getDeviceNameChangeable",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getDeviceNameChangeable",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
@@ -2962,30 +3473,33 @@
     },
     {
       "command": "getHwErrorInfo",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=getHwErrorInfo",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getHwErrorInfo",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
       "format": "json",
       "body": {
+        "adcError": 0,
         "badBlockNum": 4,
         "ethError": 0,
+        "expanderIOError": 0,
         "flashSpaceError": 0,
         "hdmiError": 0,
         "ledError": 0,
+        "lightSensorError": 0,
         "mfiChipError": 0,
         "soundCardHwError": {
-          "es9018": 0,
-          "pcm5121": 0
+          "es9038": 0,
+          "pcm5121": 0,
+          "pcm9211": 0
         },
-        "temperatureSensorError": 0,
         "totalBlockNum": 2000
       },
       "summary": "Get hardware error information"
     },
     {
       "command": "getFirmwareVersion",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=getFirmwareVersion",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getFirmwareVersion",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
@@ -2996,7 +3510,7 @@
     },
     {
       "command": "getFeatureCapbility",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=getFeatureCapbility",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getFeatureCapbility",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
@@ -3007,7 +3521,7 @@
     },
     {
       "command": "getNetwork",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=getNetwork",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getNetwork",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
@@ -3018,31 +3532,38 @@
     },
     {
       "command": "getNetworkHealth",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=getNetworkHealth",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getNetworkHealth",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
       "format": "json",
       "body": {
         "disconnectedCount": 1,
-        "ethDhcpTime": 2,
-        "ethDisconnectedCount": 0,
+        "ethDhcpTime": 0,
+        "ethDisconnectedCount": 1,
         "ethIsStaticIp": 0,
         "ethNotReady": 0,
-        "lastDisconnectedMsg": "",
-        "lastDisconnectedTime": 1,
+        "lastDisconnectedMsg": "2026-07-06 07:31:35 <3>CTRL-EVENT-DISCONNECTED bssid=bc:fc:e7:2b:9e:4e reason=3 locally_generated=1",
+        "lastDisconnectedTime": 21,
         "pingCheckFailedCount": 0,
         "wlanAbnormalRebootTimes": 0,
         "wlanBand": 1,
-        "wlanConnectTime": 0,
-        "wlanDhcpTime": 0,
-        "wlanEssid": "",
+        "wlanConnectTime": 18,
+        "wlanDhcpTime": 1,
+        "wlanEssid": "xxxxxxxxxxxxxxxxxxxx",
         "wlanHistoryNum": 1,
         "wlanIpChanged": 0,
         "wlanIsStaticIp": 0,
         "wlanMeshApInfo": {
-          "meshInfo": [],
-          "res": 0
+          "meshInfo": [
+            {
+              "auth": "WPA3SAE",
+              "bssid": "bc:fc:e7:2b:9e:4e",
+              "channel": "36",
+              "rssi": "-62"
+            }
+          ],
+          "res": 1
         },
         "wlanRoamingOn": 0
       },
@@ -3050,17 +3571,17 @@
     },
     {
       "command": "wlanGetConnectState",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=wlanGetConnectState",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=wlanGetConnectState",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
       "format": "text",
-      "body": "FAIL",
+      "body": "OK",
       "summary": "Get the connection status"
     },
     {
       "command": "GetCurrentWirelessConnect",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=GetCurrentWirelessConnect",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=GetCurrentWirelessConnect",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
@@ -3071,7 +3592,7 @@
     },
     {
       "command": "streamServicesCapability",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=streamServicesCapability",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=streamServicesCapability",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
@@ -3086,7 +3607,7 @@
               "HD",
               "UHD"
             ],
-            "version": "1.4"
+            "version": "1.5"
           },
           {
             "id": "Tidal",
@@ -3113,7 +3634,7 @@
           },
           {
             "brand": "WiiM",
-            "hw": "WiiM AMP",
+            "hw": "WiiM Ultra",
             "id": "Deezer2",
             "quality": [
               "LOW",
@@ -3192,13 +3713,17 @@
             "version": "1.0"
           },
           {
+            "id": "WiiMRadio",
+            "version": "1.0"
+          },
+          {
             "active": true,
             "configurable": true,
             "id": "SpotifyConnect",
             "version": "1.3"
           },
           {
-            "active": false,
+            "active": true,
             "configurable": true,
             "id": "TidalConnect",
             "version": "1.0"
@@ -3228,9 +3753,15 @@
             "version": "1.0"
           },
           {
-            "active": false,
+            "active": true,
             "configurable": true,
             "id": "QobuzConnect",
+            "version": "1.0"
+          },
+          {
+            "active": true,
+            "configurable": true,
+            "id": "AudioCast",
             "version": "1.0"
           },
           {
@@ -3240,7 +3771,7 @@
           {
             "brand": "WiiM",
             "id": "YouTubeMusic",
-            "model": "Amp",
+            "model": "Ultra",
             "version": "1.0"
           }
         ],
@@ -3250,7 +3781,7 @@
     },
     {
       "command": "getbatteryval",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=getbatteryval",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getbatteryval",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
@@ -3261,7 +3792,7 @@
     },
     {
       "command": "getAlarmClock:0",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=getAlarmClock:0",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getAlarmClock:0",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
@@ -3273,7 +3804,7 @@
     },
     {
       "command": "getAlarmClock:1",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=getAlarmClock:1",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getAlarmClock:1",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
@@ -3285,7 +3816,7 @@
     },
     {
       "command": "getAlarmClock:2",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=getAlarmClock:2",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getAlarmClock:2",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
@@ -3297,7 +3828,7 @@
     },
     {
       "command": "getWeatherInfo",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=getWeatherInfo",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getWeatherInfo",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
@@ -3308,35 +3839,208 @@
     },
     {
       "command": "getLightOperationBrightConfig",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=getLightOperationBrightConfig",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getLightOperationBrightConfig",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
-      "format": "text",
-      "body": "unknown command",
-      "unsupported": true,
+      "format": "json",
+      "body": {
+        "auto_sense_enable": 1,
+        "auto_sense_step": 9,
+        "default_bright": 8,
+        "disable": 0,
+        "wakeup_by_touch": 1
+      },
       "summary": "Get light operation brightness configuration (WiiM Ultra screen)"
     },
     {
       "command": "get_ui_config",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=get_ui_config",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=get_ui_config",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
-      "format": "text",
-      "body": "unknown command",
-      "unsupported": true,
+      "format": "json",
+      "body": {
+        "behavior": {
+          "clock_24_hours": 0,
+          "clock_font": [
+            {
+              "clock_color": "ffffff",
+              "clock_view": 0
+            },
+            {
+              "clock_color": "ffffff",
+              "clock_view": 4
+            }
+          ],
+          "hidden_sub_cover_view_icon": 1,
+          "language": "English",
+          "playing_default_page": 1,
+          "screen_on": 1,
+          "standby_turn_off_screen": 1
+        },
+        "input_config": {
+          "auxIn": {
+            "prefer_config": {
+              "main_music_view": 0,
+              "playing_default_page": 0,
+              "screen_on": 1,
+              "sub_cover_view": 0,
+              "sub_music_view": 0
+            },
+            "supported_views": {
+              "eq_view": 10,
+              "main_music_view": 1,
+              "sub_music_view": 13,
+              "uvmeter_view": 31
+            }
+          },
+          "bluetooth": {
+            "prefer_config": {
+              "eq_view": 0,
+              "main_music_view": 0,
+              "playing_default_page": 0,
+              "screen_on": 1,
+              "sub_music_view": 2
+            },
+            "supported_views": {
+              "eq_view": 15,
+              "main_music_view": 1,
+              "sub_music_view": 13,
+              "uvmeter_view": 31
+            }
+          },
+          "hdmi": {
+            "prefer_config": {
+              "main_music_view": 0,
+              "playing_default_page": 0,
+              "screen_on": 1,
+              "sub_cover_view": 0,
+              "sub_music_view": 0
+            },
+            "supported_views": {
+              "eq_view": 10,
+              "main_music_view": 1,
+              "sub_music_view": 13,
+              "uvmeter_view": 31
+            }
+          },
+          "lineIn": {
+            "prefer_config": {
+              "main_music_view": 0,
+              "playing_default_page": 0,
+              "screen_on": 1,
+              "sub_cover_view": 0,
+              "sub_music_view": 0
+            },
+            "supported_views": {
+              "eq_view": 10,
+              "main_music_view": 1,
+              "sub_music_view": 13,
+              "uvmeter_view": 31
+            }
+          },
+          "optical": {
+            "prefer_config": {
+              "eq_view": 1,
+              "main_music_view": 0,
+              "playing_default_page": 0,
+              "screen_on": 1,
+              "sub_music_view": 2
+            },
+            "supported_views": {
+              "eq_view": 10,
+              "main_music_view": 1,
+              "sub_music_view": 13,
+              "uvmeter_view": 31
+            }
+          },
+          "phono": {
+            "prefer_config": {
+              "main_music_view": 0,
+              "playing_default_page": 0,
+              "screen_on": 1,
+              "sub_cover_view": 0,
+              "sub_music_view": 0
+            },
+            "supported_views": {
+              "eq_view": 10,
+              "main_music_view": 1,
+              "sub_music_view": 13,
+              "uvmeter_view": 31
+            }
+          },
+          "wifi": {
+            "prefer_config": {
+              "main_music_view": 0,
+              "playing_default_page": 1,
+              "screen_on": 1,
+              "sub_cover_view": 2,
+              "sub_music_view": 0
+            },
+            "supported_views": {
+              "eq_view": 15,
+              "main_music_view": 15,
+              "sub_cover_view": 15,
+              "sub_music_view": 13,
+              "uvmeter_view": 31
+            }
+          }
+        },
+        "view_features": {
+          "clock_view": 27,
+          "eq_view": 15,
+          "screen_switch_supported": 1,
+          "specific_feature": 6,
+          "standby_view": 143,
+          "sub_cover_view": 15,
+          "sub_music_view": 13,
+          "uvmeter_view": 31
+        },
+        "view_type": {
+          "clock_view": 3,
+          "eq_view": 1,
+          "main_music_view": 0,
+          "standby_view": 0,
+          "sub_cover_view": 2,
+          "sub_music_view": 0,
+          "uvmeter_view": 0
+        }
+      },
       "summary": "Get UI config"
     },
     {
       "command": "get_ui_wallpaper_list",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=get_ui_wallpaper_list",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=get_ui_wallpaper_list",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
-      "format": "text",
-      "body": "unknown command",
-      "unsupported": true,
+      "format": "json",
+      "body": {
+        "max_number": 14,
+        "resolution": {
+          "height": 320,
+          "width": 480
+        },
+        "wallpaper_list": {
+          "current": [
+            "home_bg_1.bmp",
+            "home_bg_2.bmp",
+            "home_bg_3.bmp",
+            "home_bg_4.bmp",
+            "home_bg_5.bmp",
+            "home_bg_6.bmp",
+            "home_bg_7.bmp",
+            "home_bg_8.bmp",
+            "home_bg_9.bmp",
+            "home_bg_10.bmp",
+            "home_bg_11.bmp",
+            "home_bg_12.bmp",
+            "home_bg_13.bmp",
+            "home_bg_14.bmp"
+          ]
+        }
+      },
       "summary": "Get UI wallpaper list"
     }
   ],
@@ -3349,15 +4053,14 @@
   ],
   "skipped_not_destructive": [],
   "upnp": {
-    "ssdp_response": "HTTP/1.1 200 OK\r\nCONNECTION: keep-alive\r\nCACHE-CONTROL: max-age=1800\r\nDATE: Sun, 05 Jul 2026 21:05:08 GMT\r\nEXT:\r\nLOCATION: http://192.168.1.184:49152/description.xml\r\nBOOTID.UPNP.ORG: 449e1ea0-1dd2-11b2-9353-9a200a8c8dfc\r\nSERVER: Linux\r\nST: urn:schemas-upnp-org:device:MediaRenderer:1\r\nUSN: uuid:FF98F359-7E21-BAE3-8D6E-1163FF98F359::urn:schemas-upnp-org:device:MediaRenderer:1\r\n\r\n",
-    "location": "http://xxx.xxx.x.xxx:49152/description.xml",
-    "description_url": "http://xxx.xxx.x.xxx:49152/description.xml",
+    "ssdp_error": "timed out waiting for an SSDP response",
+    "description_url": "http://xx.x.x.xx:49152/description.xml",
     "description": {
       "format": "xml",
-      "body": "<?xml version=\"1.0\"?>\r\n<root xmlns=\"urn:schemas-upnp-org:device-1-0\" xmlns:dlna=\"urn:schemas-dlna-org:device-1-0\">\r\n<specVersion>\r\n<major>1</major>\r\n<minor>0</minor>\r\n</specVersion>\r\n<device>\r\n<dlna:X_DLNADOC>DMR-1.50</dlna:X_DLNADOC>\r\n<deviceType>urn:schemas-upnp-org:device:MediaRenderer:1</deviceType>\r\n<friendlyName>Office WiiM</friendlyName>\r\n<manufacturer>Linkplay Technology Inc.</manufacturer>\r\n<manufacturerURL>https://wiimhome.com</manufacturerURL>\r\n<modelDescription>WiiM Amp</modelDescription>\r\n<modelName>WiiM Amp</modelName>\r\n<modelURL>https://wiimhome.com</modelURL>\r\n<UDN>xxxx:xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx</UDN>\r\n<modelNumber>V01-May 19 2026\r\n</modelNumber>\r\n<serialNumber>00001</serialNumber>\r\n<ssidName>xxxx xxx-xxxx</ssidName>\r\n<uuid>xxxxxxxxxxxxxxxxxxxxxxxx</uuid>\r\n<qq:X_QPlay_SoftwareCapability xmlns:qq=\"http://www.tencent.com\">QPlay:2</qq:X_QPlay_SoftwareCapability>\r\n<iconList>\r\n<icon>\r\n<mimetype>image/png</mimetype>\r\n<width>48</width>\r\n<height>48</height>\r\n<depth>24</depth>\r\n<url>/upnp/grender-48x48.png</url>\r\n</icon>\r\n<icon>\r\n<mimetype>image/png</mimetype>\r\n<width>120</width>\r\n<height>120</height>\r\n<depth>24</depth>\r\n<url>/upnp/grender-120x120.png</url>\r\n</icon>\r\n<icon>\r\n<mimetype>image/jpeg</mimetype>\r\n<width>48</width>\r\n<height>48</height>\r\n<depth>24</depth>\r\n<url>/upnp/grender-48x48.jpg</url>\r\n</icon>\r\n<icon>\r\n<mimetype>image/jpeg</mimetype>\r\n<width>120</width>\r\n<height>120</height>\r\n<depth>24</depth>\r\n<url>/upnp/grender-120x120.jpg</url>\r\n</icon>\r\n</iconList>\r\n<serviceList>\r\n<service>\r\n<serviceType>urn:schemas-upnp-org:service:AVTransport:1</serviceType>\r\n<serviceId>urn:upnp-org:serviceId:AVTransport</serviceId>\r\n<SCPDURL>/upnp/rendertransportSCPD.xml</SCPDURL>\r\n<controlURL>/upnp/control/rendertransport1</controlURL>\r\n<eventSubURL>/upnp/event/rendertransport1</eventSubURL>\r\n</service>\r\n<service>\r\n<serviceType>urn:schemas-upnp-org:service:ConnectionManager:1</serviceType>\r\n<serviceId>urn:upnp-org:serviceId:ConnectionManager</serviceId>\r\n<SCPDURL>/upnp/renderconnmgrSCPD.xml</SCPDURL>\r\n<controlURL>/upnp/control/renderconnmgr1</controlURL>\r\n<eventSubURL>/upnp/event/renderconnmgr1</eventSubURL>\r\n</service>\r\n<service>\r\n<serviceType>urn:schemas-upnp-org:service:RenderingControl:1</serviceType>\r\n<serviceId>urn:upnp-org:serviceId:RenderingControl</serviceId>\r\n<SCPDURL>/upnp/rendercontrolSCPD.xml</SCPDURL>\r\n<controlURL>/upnp/control/rendercontrol1</controlURL>\r\n<eventSubURL>/upnp/event/rendercontrol1</eventSubURL>\r\n</service>\r\n<service>\r\n<serviceType>urn:schemas-wiimu-com:service:PlayQueue:1</serviceType>\r\n<serviceId>urn:wiimu-com:serviceId:PlayQueue</serviceId>\r\n<SCPDURL>/upnp/PlayQueueSCPD.xml</SCPDURL>\r\n<controlURL>/upnp/control/PlayQueue1</controlURL>\r\n<eventSubURL>/upnp/event/PlayQueue1</eventSubURL>\r\n</service>\r\n<service>\r\n<serviceType>urn:schemas-tencent-com:service:QPlay:1</serviceType>\r\n<serviceId>urn:tencent-com:serviceId:QPlay</serviceId>\r\n<SCPDURL>/upnp/QPlaySCPD.xml</SCPDURL>\r\n<controlURL>/upnp/control/QPlay1</controlURL>\r\n<eventSubURL>/upnp/event/QPlay1</eventSubURL>\r\n</service>\r\n</serviceList>\r\n</device>\r\n</root>\r\n"
+      "body": "<?xml version=\"1.0\"?>\r\n<root xmlns=\"urn:schemas-upnp-org:device-1-0\" xmlns:dlna=\"urn:schemas-dlna-org:device-1-0\">\r\n<specVersion>\r\n<major>1</major>\r\n<minor>0</minor>\r\n</specVersion>\r\n<device>\r\n<dlna:X_DLNADOC>DMR-1.50</dlna:X_DLNADOC>\r\n<deviceType>urn:schemas-upnp-org:device:MediaRenderer:1</deviceType>\r\n<friendlyName>WiiM WorkBu</friendlyName>\r\n<manufacturer>Linkplay Technology Inc.</manufacturer>\r\n<manufacturerURL>https://wiimhome.com</manufacturerURL>\r\n<modelDescription>WiiM Ultra Receiver</modelDescription>\r\n<modelName>WiiM Ultra Receiver</modelName>\r\n<modelURL>https://wiimhome.com</modelURL>\r\n<UDN>xxxx:xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx</UDN>\r\n<modelNumber>V01-Jul  3 2026\r\n</modelNumber>\r\n<serialNumber>00001</serialNumber>\r\n<ssidName>xxxx xxxxx-xxxx</ssidName>\r\n<uuid>xxxxxxxxxxxxxxxxxxxxxxxx</uuid>\r\n<qq:X_QPlay_SoftwareCapability xmlns:qq=\"http://www.tencent.com\">QPlay:2</qq:X_QPlay_SoftwareCapability>\r\n<iconList>\r\n<icon>\r\n<mimetype>image/png</mimetype>\r\n<width>48</width>\r\n<height>48</height>\r\n<depth>24</depth>\r\n<url>/upnp/grender-48x48.png</url>\r\n</icon>\r\n<icon>\r\n<mimetype>image/png</mimetype>\r\n<width>120</width>\r\n<height>120</height>\r\n<depth>24</depth>\r\n<url>/upnp/grender-120x120.png</url>\r\n</icon>\r\n<icon>\r\n<mimetype>image/jpeg</mimetype>\r\n<width>48</width>\r\n<height>48</height>\r\n<depth>24</depth>\r\n<url>/upnp/grender-48x48.jpg</url>\r\n</icon>\r\n<icon>\r\n<mimetype>image/jpeg</mimetype>\r\n<width>120</width>\r\n<height>120</height>\r\n<depth>24</depth>\r\n<url>/upnp/grender-120x120.jpg</url>\r\n</icon>\r\n</iconList>\r\n<serviceList>\r\n<service>\r\n<serviceType>urn:schemas-upnp-org:service:AVTransport:1</serviceType>\r\n<serviceId>urn:upnp-org:serviceId:AVTransport</serviceId>\r\n<SCPDURL>/upnp/rendertransportSCPD.xml</SCPDURL>\r\n<controlURL>/upnp/control/rendertransport1</controlURL>\r\n<eventSubURL>/upnp/event/rendertransport1</eventSubURL>\r\n</service>\r\n<service>\r\n<serviceType>urn:schemas-upnp-org:service:ConnectionManager:1</serviceType>\r\n<serviceId>urn:upnp-org:serviceId:ConnectionManager</serviceId>\r\n<SCPDURL>/upnp/renderconnmgrSCPD.xml</SCPDURL>\r\n<controlURL>/upnp/control/renderconnmgr1</controlURL>\r\n<eventSubURL>/upnp/event/renderconnmgr1</eventSubURL>\r\n</service>\r\n<service>\r\n<serviceType>urn:schemas-upnp-org:service:RenderingControl:1</serviceType>\r\n<serviceId>urn:upnp-org:serviceId:RenderingControl</serviceId>\r\n<SCPDURL>/upnp/rendercontrolSCPD.xml</SCPDURL>\r\n<controlURL>/upnp/control/rendercontrol1</controlURL>\r\n<eventSubURL>/upnp/event/rendercontrol1</eventSubURL>\r\n</service>\r\n<service>\r\n<serviceType>urn:schemas-wiimu-com:service:PlayQueue:1</serviceType>\r\n<serviceId>urn:wiimu-com:serviceId:PlayQueue</serviceId>\r\n<SCPDURL>/upnp/PlayQueueSCPD.xml</SCPDURL>\r\n<controlURL>/upnp/control/PlayQueue1</controlURL>\r\n<eventSubURL>/upnp/event/PlayQueue1</eventSubURL>\r\n</service>\r\n<service>\r\n<serviceType>urn:schemas-tencent-com:service:QPlay:1</serviceType>\r\n<serviceId>urn:tencent-com:serviceId:QPlay</serviceId>\r\n<SCPDURL>/upnp/QPlaySCPD.xml</SCPDURL>\r\n<controlURL>/upnp/control/QPlay1</controlURL>\r\n<eventSubURL>/upnp/event/QPlay1</eventSubURL>\r\n</service>\r\n</serviceList>\r\n</device>\r\n</root>\r\n"
     },
-    "friendly_name": "Office WiiM",
-    "model_name": "WiiM Amp",
+    "friendly_name": "WiiM WorkBu",
+    "model_name": "WiiM Ultra Receiver",
     "udn": "xxxx:xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
     "service_types": [
       "urn:schemas-upnp-org:service:AVTransport:1",
@@ -3373,51 +4076,62 @@
       {
         "service": "urn:schemas-upnp-org:service:AVTransport:1",
         "action": "GetTransportInfo",
-        "control_url": "http://xxx.xxx.x.xxx:49152/upnp/control/rendertransport1",
+        "control_url": "http://xx.x.x.xx:49152/upnp/control/rendertransport1",
         "outcome": "ok",
         "http_status": 200,
         "response": {
           "format": "xml",
-          "body": "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\"><s:Body>\n<u:GetTransportInfoResponse xmlns:u=\"urn:schemas-upnp-org:service:AVTransport:1\">\r\n<CurrentTransportState>NO_MEDIA_PRESENT</CurrentTransportState>\r\n<CurrentTransportStatus>OK</CurrentTransportStatus>\r\n<CurrentSpeed>1</CurrentSpeed>\r\n</u:GetTransportInfoResponse>\r\n</s:Body> </s:Envelope>"
+          "body": "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\"><s:Body>\n<u:GetTransportInfoResponse xmlns:u=\"urn:schemas-upnp-org:service:AVTransport:1\">\r\n<CurrentTransportState>PLAYING</CurrentTransportState>\r\n<CurrentTransportStatus>OK</CurrentTransportStatus>\r\n<CurrentSpeed>1</CurrentSpeed>\r\n</u:GetTransportInfoResponse>\r\n</s:Body> </s:Envelope>"
         }
       },
       {
         "service": "urn:schemas-upnp-org:service:AVTransport:1",
         "action": "GetPositionInfo",
-        "control_url": "http://xxx.xxx.x.xxx:49152/upnp/control/rendertransport1",
+        "control_url": "http://xx.x.x.xx:49152/upnp/control/rendertransport1",
         "outcome": "ok",
         "http_status": 200,
         "response": {
           "format": "xml",
-          "body": "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\"><s:Body>\n<u:GetPositionInfoResponse xmlns:u=\"urn:schemas-upnp-org:service:AVTransport:1\">\r\n<Track>0</Track>\r\n<TrackDuration>00:00:00</TrackDuration>\r\n<TrackMetaData></TrackMetaData>\r\n<TrackURI></TrackURI>\r\n<RelTime>00:00:00</RelTime>\r\n<AbsTime>NOT_IMPLEMENTED</AbsTime>\r\n<RelCount>2147483647</RelCount>\r\n<AbsCount>2147483647</AbsCount>\r\n</u:GetPositionInfoResponse>\r\n</s:Body> </s:Envelope>"
+          "body": "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\"><s:Body>\n<u:GetPositionInfoResponse xmlns:u=\"urn:schemas-upnp-org:service:AVTransport:1\">\r\n<Track>0</Track>\r\n<TrackDuration>00:00:00</TrackDuration>\r\n<TrackMetaData>&lt;?xml version=&quot;1.0&quot; encoding=&quot;UTF-8&quot;?&gt;\r\n&lt;DIDL-Lite xmlns:dc=&quot;http://purl.org/dc/elements/1.1/&quot; xmlns:upnp=&quot;urn:schemas-upnp-org:metadata-1-0/upnp/&quot; xmlns:song=&quot;www.wiimu.com/song/&quot; xmlns=&quot;urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/&quot;&gt;\r\n&lt;upnp:class&gt;object.item.audioItem.musicTrack&lt;/upnp:class&gt;\r\n&lt;item id=&quot;0&quot;&gt;\r\n&lt;song:subid&gt;&lt;/song:subid&gt;\r\n&lt;song:description&gt;&lt;/song:description&gt;\r\n&lt;song:skiplimit&gt;0&lt;/song:skiplimit&gt;\r\n&lt;song:id&gt;0&lt;/song:id&gt;\r\n&lt;song:like&gt;0&lt;/song:like&gt;\r\n&lt;song:singerid&gt;0&lt;/song:singerid&gt;\r\n&lt;song:albumid&gt;0&lt;/song:albumid&gt;\r\n&lt;res protocolInfo=&quot;http-get:*:audio/mpeg:DLNA.ORG_PN=MP3;DLNA.ORG_OP=01;&quot; duration=&quot;00:00:00.000&quot;&gt;&lt;/res&gt;\r\n&lt;dc:title&gt;&lt;/dc:title&gt;\r\n&lt;dc:creator&gt;&lt;/dc:creator&gt;\r\n&lt;upnp:artist&gt;&lt;/upnp:artist&gt;\r\n&lt;upnp:album&gt;&lt;/upnp:album&gt;\r\n&lt;upnp:albumArtURI&gt;un_known&lt;/upnp:albumArtURI&gt;\r\n&lt;/item&gt;\r\n&lt;/DIDL-Lite&gt;\r\n</TrackMetaData>\r\n<TrackURI>OPTICAL</TrackURI>\r\n<RelTime>00:00:00</RelTime>\r\n<AbsTime>NOT_IMPLEMENTED</AbsTime>\r\n<RelCount>2147483647</RelCount>\r\n<AbsCount>2147483647</AbsCount>\r\n</u:GetPositionInfoResponse>\r\n</s:Body> </s:Envelope>"
         }
       },
       {
         "service": "urn:schemas-upnp-org:service:AVTransport:1",
         "action": "GetMediaInfo",
-        "control_url": "http://xxx.xxx.x.xxx:49152/upnp/control/rendertransport1",
+        "control_url": "http://xx.x.x.xx:49152/upnp/control/rendertransport1",
         "outcome": "ok",
         "http_status": 200,
         "response": {
           "format": "xml",
-          "body": "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\"><s:Body>\n<u:GetMediaInfoResponse xmlns:u=\"urn:schemas-upnp-org:service:AVTransport:1\">\r\n<NrTracks>0</NrTracks>\r\n<MediaDuration>00:00:00</MediaDuration>\r\n<CurrentURI></CurrentURI>\r\n<CurrentURIMetaData></CurrentURIMetaData>\r\n<NextURI></NextURI>\r\n<NextURIMetaData></NextURIMetaData>\r\n<TrackSource></TrackSource>\r\n<PlayMedium>NONE</PlayMedium>\r\n<RecordMedium>NOT_IMPLEMENTED</RecordMedium>\r\n<WriteStatus>NOT_IMPLEMENTED</WriteStatus>\r\n</u:GetMediaInfoResponse>\r\n</s:Body> </s:Envelope>"
+          "body": "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\"><s:Body>\n<u:GetMediaInfoResponse xmlns:u=\"urn:schemas-upnp-org:service:AVTransport:1\">\r\n<NrTracks>0</NrTracks>\r\n<MediaDuration>00:00:00</MediaDuration>\r\n<CurrentURI>OPTICAL</CurrentURI>\r\n<CurrentURIMetaData>&lt;?xml version=&quot;1.0&quot; encoding=&quot;UTF-8&quot;?&gt;\r\n&lt;DIDL-Lite xmlns:dc=&quot;http://purl.org/dc/elements/1.1/&quot; xmlns:upnp=&quot;urn:schemas-upnp-org:metadata-1-0/upnp/&quot; xmlns:song=&quot;www.wiimu.com/song/&quot; xmlns=&quot;urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/&quot;&gt;\r\n&lt;upnp:class&gt;object.item.audioItem.musicTrack&lt;/upnp:class&gt;\r\n&lt;item id=&quot;0&quot;&gt;\r\n&lt;song:subid&gt;&lt;/song:subid&gt;\r\n&lt;song:description&gt;&lt;/song:description&gt;\r\n&lt;song:skiplimit&gt;0&lt;/song:skiplimit&gt;\r\n&lt;song:id&gt;0&lt;/song:id&gt;\r\n&lt;song:like&gt;0&lt;/song:like&gt;\r\n&lt;song:singerid&gt;0&lt;/song:singerid&gt;\r\n&lt;song:albumid&gt;0&lt;/song:albumid&gt;\r\n&lt;res protocolInfo=&quot;http-get:*:audio/mpeg:DLNA.ORG_PN=MP3;DLNA.ORG_OP=01;&quot; duration=&quot;00:00:00.000&quot;&gt;&lt;/res&gt;\r\n&lt;dc:title&gt;&lt;/dc:title&gt;\r\n&lt;dc:creator&gt;&lt;/dc:creator&gt;\r\n&lt;upnp:artist&gt;&lt;/upnp:artist&gt;\r\n&lt;upnp:album&gt;&lt;/upnp:album&gt;\r\n&lt;upnp:albumArtURI&gt;un_known&lt;/upnp:albumArtURI&gt;\r\n&lt;/item&gt;\r\n&lt;/DIDL-Lite&gt;\r\n</CurrentURIMetaData>\r\n<NextURI>http://10.1.1.10:8097/single/JWHeZZDk/wiim_uuid:FF98F7F4-075B-5A90-FA95-72C3FF98F7F4/892f94714acf4fe8a0601f70bfbe8f34/wiim_uuid:FF98F7F4-075B-5A90-FA95-72C3FF98F7F4.flac</NextURI>\r\n<NextURIMetaData>&lt;DIDL-Lite xmlns:dc=&quot;http://purl.org/dc/elements/1.1/&quot; xmlns:upnp=&quot;urn:schemas-upnp-org:metadata-1-0/upnp/&quot; xmlns=&quot;urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/&quot; xmlns:r=&quot;urn:schemas-rinconnetworks-com:metadata-1-0/&quot;&gt;&lt;item id=&quot;892f94714acf4fe8a0601f70bfbe8f34&quot; restricted=&quot;true&quot; parentID=&quot;wiim_uuid:FF98F7F4-075B-5A90-FA95-72C3FF98F7F4&quot;&gt;&lt;dc:title&gt;Corcovado (Quiet Nights Of Quiet Stars)&lt;/dc:title&gt;&lt;dc:creator&gt;Stan Getz/Jo&amp;#227;o Gilberto/Astrud Gilberto/Antonio Carlos Jobim&lt;/dc:creator&gt;&lt;upnp:album&gt;Getz/Gilberto&lt;/upnp:album&gt;&lt;upnp:artist&gt;Stan Getz/Jo&amp;#227;o Gilberto/Astrud Gilberto/Antonio Carlos Jobim&lt;/upnp:artist&gt;&lt;dc:queueItemId&gt;892f94714acf4fe8a0601f70bfbe8f34&lt;/dc:queueItemId&gt;&lt;dc:description&gt;Music Assistant&lt;/dc:description&gt;&lt;upnp:albumArtURI&gt;http://10.1.1.10:8097/imageproxy/19b9acca5e5314c50ccd7f08c57ef4c71b015879f2670c04f8a6df0ab39b21ff?size=512&amp;amp;fmt=jpeg&lt;/upnp:albumArtURI&gt;&lt;upnp:class&gt;object.item.audioItem.musicTrack&lt;/upnp:class&gt;&lt;res duration=&quot;00:04:17&quot; protocolInfo=&quot;http-get:*:audio/flac:DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01500000000000000000000000000000&quot;&gt;http://10.1.1.10:8097/single/JWHeZZDk/wiim_uuid:FF98F7F4-075B-5A90-FA95-72C3FF98F7F4/892f94714acf4fe8a0601f70bfbe8f34/wiim_uuid:FF98F7F4-075B-5A90-FA95-72C3FF98F7F4.flac&lt;/res&gt;&lt;desc id=&quot;cdudn&quot; nameSpace=&quot;urn:schemas-rinconnetworks-com:metadata-1-0/&quot;&gt;RINCON_AssociatedZPUDN&lt;/desc&gt;&lt;/item&gt;&lt;/DIDL-Lite&gt;</NextURIMetaData>\r\n<TrackSource></TrackSource>\r\n<PlayMedium>OPTICAL</PlayMedium>\r\n<PreSwitchMode>optical</PreSwitchMode>\r\n<RecordMedium>NOT_IMPLEMENTED</RecordMedium>\r\n<WriteStatus>NOT_IMPLEMENTED</WriteStatus>\r\n</u:GetMediaInfoResponse>\r\n</s:Body> </s:Envelope>"
+        }
+      },
+      {
+        "service": "urn:schemas-upnp-org:service:AVTransport:1",
+        "action": "GetInfoEx",
+        "control_url": "http://xx.x.x.xx:49152/upnp/control/rendertransport1",
+        "outcome": "ok",
+        "http_status": 200,
+        "response": {
+          "format": "xml",
+          "body": "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\"><s:Body>\n<u:GetInfoExResponse xmlns:u=\"urn:schemas-upnp-org:service:AVTransport:1\">\r\n<CurrentTransportState>PLAYING</CurrentTransportState>\r\n<CurrentTransportStatus>OK</CurrentTransportStatus>\r\n<CurrentSpeed>1</CurrentSpeed>\r\n<Track>0</Track>\r\n<TrackDuration>00:00:00</TrackDuration>\r\n<TrackMetaData>&lt;?xml version=&quot;1.0&quot; encoding=&quot;UTF-8&quot;?&gt;\r\n&lt;DIDL-Lite xmlns:dc=&quot;http://purl.org/dc/elements/1.1/&quot; xmlns:upnp=&quot;urn:schemas-upnp-org:metadata-1-0/upnp/&quot; xmlns:song=&quot;www.wiimu.com/song/&quot; xmlns=&quot;urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/&quot;&gt;\r\n&lt;upnp:class&gt;object.item.audioItem.musicTrack&lt;/upnp:class&gt;\r\n&lt;item id=&quot;0&quot;&gt;\r\n&lt;song:subid&gt;&lt;/song:subid&gt;\r\n&lt;song:description&gt;&lt;/song:description&gt;\r\n&lt;song:skiplimit&gt;0&lt;/song:skiplimit&gt;\r\n&lt;song:id&gt;0&lt;/song:id&gt;\r\n&lt;song:like&gt;0&lt;/song:like&gt;\r\n&lt;song:singerid&gt;0&lt;/song:singerid&gt;\r\n&lt;song:albumid&gt;0&lt;/song:albumid&gt;\r\n&lt;res protocolInfo=&quot;http-get:*:audio/mpeg:DLNA.ORG_PN=MP3;DLNA.ORG_OP=01;&quot; duration=&quot;00:00:00.000&quot;&gt;&lt;/res&gt;\r\n&lt;dc:title&gt;&lt;/dc:title&gt;\r\n&lt;dc:creator&gt;&lt;/dc:creator&gt;\r\n&lt;upnp:artist&gt;&lt;/upnp:artist&gt;\r\n&lt;upnp:album&gt;&lt;/upnp:album&gt;\r\n&lt;upnp:albumArtURI&gt;un_known&lt;/upnp:albumArtURI&gt;\r\n&lt;/item&gt;\r\n&lt;/DIDL-Lite&gt;\r\n</TrackMetaData>\r\n<TrackURI>OPTICAL</TrackURI>\r\n<RelTime>00:00:00</RelTime>\r\n<AbsTime>NOT_IMPLEMENTED</AbsTime>\r\n<RelCount>2147483647</RelCount>\r\n<AbsCount>2147483647</AbsCount>\r\n<CurrentVolume>17</CurrentVolume>\r\n<CurrentMute>0</CurrentMute>\r\n<CurrentChannel>0</CurrentChannel>\r\n<LoopMode>4</LoopMode>\r\n<PlayType>43</PlayType>\r\n<PreSwitchMode>optical</PreSwitchMode>\r\n<SlaveFlag>0</SlaveFlag>\r\n<MasterUUID></MasterUUID>\r\n<SlaveList>{ &quot;slaves&quot;: 0, &quot;wmrm_version&quot;: &quot;4.3&quot;, &quot;surround&quot;: 0, &quot;group_type&quot;: -1 }</SlaveList>\r\n<PlayMedium>OPTICAL</PlayMedium>\r\n<TrackSource></TrackSource>\r\n<InternetAccess>1</InternetAccess>\r\n<VerUpdateFlag>0</VerUpdateFlag>\r\n<VerUpdateStatus>20</VerUpdateStatus>\r\n<BatteryFlag>0</BatteryFlag>\r\n<BatteryPercent>0</BatteryPercent>\r\n<AlarmFlag>0</AlarmFlag>\r\n<TimeStamp>12769583</TimeStamp>\r\n<SubNum>0</SubNum>\r\n<SpotifyActive>0</SpotifyActive>\r\n</u:GetInfoExResponse>\r\n</s:Body> </s:Envelope>"
         }
       },
       {
         "service": "urn:schemas-upnp-org:service:RenderingControl:1",
         "action": "GetVolume",
-        "control_url": "http://xxx.xxx.x.xxx:49152/upnp/control/rendercontrol1",
+        "control_url": "http://xx.x.x.xx:49152/upnp/control/rendercontrol1",
         "outcome": "ok",
         "http_status": 200,
         "response": {
           "format": "xml",
-          "body": "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\"><s:Body>\n<u:GetVolumeResponse xmlns:u=\"urn:schemas-upnp-org:service:RenderingControl:1\">\r\n<CurrentVolume>38</CurrentVolume>\r\n</u:GetVolumeResponse>\r\n</s:Body> </s:Envelope>"
+          "body": "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\"><s:Body>\n<u:GetVolumeResponse xmlns:u=\"urn:schemas-upnp-org:service:RenderingControl:1\">\r\n<CurrentVolume>17</CurrentVolume>\r\n</u:GetVolumeResponse>\r\n</s:Body> </s:Envelope>"
         }
       },
       {
         "service": "urn:schemas-upnp-org:service:RenderingControl:1",
         "action": "GetMute",
-        "control_url": "http://xxx.xxx.x.xxx:49152/upnp/control/rendercontrol1",
+        "control_url": "http://xx.x.x.xx:49152/upnp/control/rendercontrol1",
         "outcome": "ok",
         "http_status": 200,
         "response": {
