@@ -62,70 +62,79 @@ You can pretty-print this file using `target/debug/wiim-capdump`. I would apprec
   * 0.2.0 - 2026-06-25
     * Sorry, had to rebase ! Initial commit had to be fixed up.
     * Significant internal refactoring, code is a lot cleaner now, smaller
-	  functions, better abstractions, better detection of device capabilities,
-	  inputs and outputs etc... Should work better with other devices.
+      functions, better abstractions, better detection of device capabilities,
+      inputs and outputs etc... Should work better with other devices.
 
   * 0.3.0 - 2026-06-27
     * New mini-window mode
-	* Various GUI cleanups, fixes and improvements
-	* Support using system themes or our custom dark theme via a (primitive) settings dialog
-	* Rate limit some API calls and add retries on request failures caused by disconnections
+    * Various GUI cleanups, fixes and improvements
+    * Support using system themes or our custom dark theme via a (primitive) settings dialog
+    * Rate limit some API calls and add retries on request failures caused by disconnections
     * Additional implementation cleanups, still plenty of AI slop but slowly getting better
 
   * 0.4.0 - 2026-06-30
     * A whole lot of internal shuffling and cleaning up, various bug fixes, etc...
-	* There is now a "Devices list" window. It will be displayed on launch in absence of
-	  existing opened window in the config, and can be opened via the menu otherwise. It
-	  replaces the old device selection popover. As a result it is now possible to open
-	  multiple device windows. Each device entry has a "pin" button (currently a star but
-	  that might change). This forces the device to remain listed even if it is not
-	  responding on the network. There is a + button to add devices via manual IP entry
-	  (they will be pinned by default).
+    * There is now a "Devices list" window. It will be displayed on launch in absence of
+      existing opened window in the config, and can be opened via the menu otherwise. It
+      replaces the old device selection popover. As a result it is now possible to open
+      multiple device windows. Each device entry has a "pin" button (currently a star but
+      that might change). This forces the device to remain listed even if it is not
+      responding on the network. There is a + button to add devices via manual IP entry
+      (they will be pinned by default).
     * Song title, album & artist fields are now scrollable. When they are too big to fit
-	  the window they will slowly scroll.
+      the window they will slowly scroll.
     * Note: There have been significant changes to the config file format, it's unlikely
-	  that previous settings will be preserved.
+      that previous settings will be preserved.
 
   * 0.4.1 - 2026-06-30
     * Fix (again, maybe for real now ?) refresh of all windows when changing theme
-	  [EDIT: FAIL ! It didn't fix it]
+      [EDIT: FAIL ! It didn't fix it]
 
   * 0.4.2 - 2026-06-30
     * Really fix the refresh of all windows and widgets on theme switch ! So far it does
-	  seem to work even when starting the app with the custom dark theme.
+      seem to work even when starting the app with the custom dark theme.
     * Various small cosmetic and UI behaviour adjustments
-	* Fix auto-reopening on windows for non-pinned devices
+    * Fix auto-reopening on windows for non-pinned devices
 
   * 0.4.3 - 2026-06-30
     * Fix name/model display in device list for non pinned devices
 
   * 0.5.0 - 2026-07-02
     * Small cosmetic improvements (volume button, rendering glitches, slightly
-	  bigger fonts and less dim text).
+      bigger fonts and less dim text).
     * Should properly fix stale artwork when switching to a song with no artwork
-	* A whole lot of internal implementation cleanups, optimisations and fixes.
+    * A whole lot of internal implementation cleanups, optimisations and fixes.
 
   * 0.6.0 - 2026-07-02
     * Add animations (song transitions and side panel open/close)
-	* Add a new "modern" theme with blurry art background and transparency
-	* A few cosmetic tweaks here or there
-	* Hammer the WiiM a bit less on poll
-	* Mini window is horizontally resizable
+    * Add a new "modern" theme with blurry art background and transparency
+    * A few cosmetic tweaks here or there
+    * Hammer the WiiM a bit less on poll
+    * Mini window is horizontally resizable
 
   * 0.6.1 - 2026-07-03
     * Rework mini-window resize to avoid compositor maximization (side effect: it
-	  can only be resized from the right hand edge, not the left hand one).
+      can only be resized from the right hand edge, not the left hand one).
     * Add key shortcuts (left & right for prev & next, space for play/pause, up & down
-	  for volume and M for minimize/maximize).
+      for volume and M for minimize/maximize).
     * When closing the last window, don't save it as closed. The app will quit and
-	  will be re-launched with that window opened instead of the device-list now.
+      will be re-launched with that window opened instead of the device-list now.
 
   * 0.6.2 - 2026-07-04
     * Make modern theme the default
-	* Add wiim-capture and wiim-capdump for creating/viewing command capture files
+    * Add wiim-capture and wiim-capdump for creating/viewing command capture files
 
   * 0.6.3 - 2026-07-05
     * Remove remaining target_ip field from capture files
+
+  * 0.6.4 - 2026-07-06
+    * Add basic wiim-simulator (work in progress) for testing purposes
+    * Major cleanup of the handling of the player state to better abstract the
+      backend from the UI, some prep work towards being able to use UPnP for
+      player status which seems to be what the WiiM official app does.
+    * Fix WiiM Amp Ultra detection and outputs handling
+    * Fix name and icon for "Speaker" output for other "Amps" models
+
 
 ## Screenshots ##
 
