@@ -1145,22 +1145,27 @@ impl DeviceState {
     /// source-ID *string* (e.g. "bluetooth", from `sw.ids`/
     /// `capabilities::detect_inputs()`) — there's no clean, unambiguous
     /// integer to derive from it up front (several raw modes can map to the
-    /// same canonical ID, e.g. 11/42/51 all mean "udisk"). The previous
-    /// "optimistic" write here was confirmed dead in practice anyway:
-    /// nothing calls `update_input_display()`/`update_artwork()` (the only
-    /// readers of `current_mode()`) between this method returning and the
-    /// next real poll tick correcting the value via `input-changed` — the
-    /// dropdown itself already reflects the click immediately regardless,
-    /// being the widget the user just interacted with. So this is a
-    /// behavior-preserving simplification, not a functional regression; if
-    /// genuine optimistic artwork-icon feedback is ever wanted, it would
-    /// need the caller (the dropdown's `connect_selected_notify` handler in
-    /// `ui/mod.rs`) to explicitly trigger a UI refresh, not a write here.
+    /// same canonical ID, e.g. 11/42/51 all mean "udisk"). No optimistic
+    /// write of the *new* value here — instead `current_mode` is reset to
+    /// `-1` (the same "unknown" sentinel used before the first poll ever
+    /// arrives), which *invalidates* rather than guesses. `process_poll()`
+    /// only re-decodes/signals a field when it differs from the cached
+    /// value, so if the device silently rejects the switch (wrong string
+    /// case, unsupported source, etc.) and its real mode never actually
+    /// changes, comparing against the *old* correct value would never
+    /// detect a difference — `input-changed` would never fire again, and
+    /// the dropdown would stay stuck showing whatever the user just picked
+    /// forever, out of sync with the real device. Invalidating instead of
+    /// leaving the old value in place guarantees the very next poll tick
+    /// differs from `-1` regardless of which mode the device is actually
+    /// on, forcing exactly one `input-changed` re-sync — to the new mode on
+    /// success, or back to the unchanged real one on failure.
     pub fn switch_input(&self, src: String) {
         let client = match self.imp().inner.borrow().client.clone() {
             Some(c) => c,
             None    => return,
         };
+        self.imp().inner.borrow_mut().current_mode = -1;
         self.rt().spawn(async move { let _ = client.switch_input(&src).await; });
     }
 
