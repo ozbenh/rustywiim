@@ -12,6 +12,10 @@
 /// * `output-changed`   — audio output selection changed
 /// * `outputs-changed`  — supported output list updated (rebuild menu)
 /// * `network-changed`  — netstat or RSSI changed
+/// * `remote-changed`   — BLE remote presence/battery/RSSI changed — kept
+///                        separate from `network-changed` since it's a
+///                        different physical thing (a battery-powered
+///                        accessory, not the device's own network link)
 /// * `presets-changed`  — preset list (re)loaded; UI should re-read `presets()`
 
 /// Bitmask values for the `playback-changed` signal parameter.
@@ -55,6 +59,14 @@ fn dbg(msg: &str) {
     if DEBUG_STATE.load(Ordering::Relaxed) {
         println!("[state] {msg}");
     }
+}
+
+/// Parse `getStatusEx`'s `BleRemoteConnected` ("1"/"0") into a tri-state:
+/// `None` when the field is empty (device has no BLE remote hardware at
+/// all, or the response didn't include it), `Some(true)`/`Some(false)`
+/// otherwise.
+fn parse_remote_connected(raw: &str) -> Option<bool> {
+    if raw.is_empty() { None } else { Some(raw == "1") }
 }
 
 use super::api::{
@@ -144,6 +156,24 @@ async fn run_slow_poll_phase(
 
 // ── Cached device state ───────────────────────────────────────────────────────
 
+/// BLE remote presence/battery/RSSI, from `getStatusEx`'s `BleRemote*`
+/// fields. All-`Copy` and read-only to the outside world, so unlike
+/// `PlayerStatus`/`PlaybackState` (which hold owned `String`/`Rc` data and
+/// need `.clone()`/`Rc` treatment to hand out cheaply) this is just returned
+/// by value straight out of `Inner` — no cloning ceremony needed.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct RemoteInfo {
+    /// `None` until the first `getStatusEx` result, or if the device has no
+    /// BLE remote hardware at all (field absent from the response).
+    pub connected: Option<bool>,
+    /// Battery percentage.  `None` until first `getStatusEx`, or if no
+    /// remote is connected.
+    pub battery:   Option<u32>,
+    /// Remote's own radio RSSI in dBm.  `None` until first `getStatusEx`, or
+    /// if no remote is connected.
+    pub rssi:      Option<i32>,
+}
+
 struct Inner {
     client:          Option<WiimClient>,
     /// IP the current `client` was built for.  Used to detect when a fresh
@@ -186,6 +216,8 @@ struct Inner {
     netstat:          Option<u32>,
     /// Last known wifi RSSI in dBm.  `None` until first `getStatusEx` result.
     rssi:             Option<i32>,
+    /// BLE remote presence/battery/RSSI, from the last `getStatusEx` result.
+    remote:           RemoteInfo,
     /// Resolved preset slots (1–12), cached from the last successful fetch.
     presets:          Vec<PresetEntry>,
     /// Fingerprint of the last fetched preset list (used to skip re-fetches).
@@ -227,6 +259,7 @@ impl Default for Inner {
             current_mode:    -1,
             netstat:          None,
             rssi:             None,
+            remote:           RemoteInfo::default(),
             connection_state: ConnectionState::Disconnected,
             presets:          Vec::new(),
             preset_fp:        String::new(),
@@ -293,6 +326,7 @@ mod imp {
                     Signal::builder("output-changed").build(),
                     Signal::builder("outputs-changed").build(),
                     Signal::builder("network-changed").build(),
+                    Signal::builder("remote-changed").build(),
                     Signal::builder("presets-changed").build(),
                 ]
             })
@@ -424,6 +458,11 @@ impl DeviceState {
                 let mut inner = ds.imp().inner.borrow_mut();
                 inner.netstat           = info.netstat.parse().ok();
                 inner.rssi              = info.rssi.parse().ok();
+                inner.remote = RemoteInfo {
+                    connected: parse_remote_connected(&info.ble_remote_connected),
+                    battery:   info.ble_remote_battery.parse().ok(),
+                    rssi:      info.ble_remote_rssi.parse().ok(),
+                };
                 inner.capabilities      = Some(caps);
                 inner.device_info       = Some(info);
                 // output_status is left None (Inner::default()) — the
@@ -867,7 +906,7 @@ impl DeviceState {
         };
         dbg("slow poll: getStatusEx ok");
 
-        let (prev_fw, prev_uuid, prev_name, prev_netstat, prev_rssi) = {
+        let (prev_fw, prev_uuid, prev_name, prev_netstat, prev_rssi, prev_remote) = {
             let inner = self.imp().inner.borrow();
             let di = inner.device_info.as_ref();
             (
@@ -876,6 +915,7 @@ impl DeviceState {
                 di.map(|i| i.device_name.clone()).unwrap_or_default(),
                 inner.netstat,
                 inner.rssi,
+                inner.remote,
             )
         };
 
@@ -908,15 +948,23 @@ impl DeviceState {
 
         let new_netstat: Option<u32> = new_info.netstat.parse().ok();
         let new_rssi:    Option<i32> = new_info.rssi.parse().ok();
+        let new_remote = RemoteInfo {
+            connected: parse_remote_connected(&new_info.ble_remote_connected),
+            battery:   new_info.ble_remote_battery.parse().ok(),
+            rssi:      new_info.ble_remote_rssi.parse().ok(),
+        };
 
         let network_changed =
             new_netstat != prev_netstat ||
             new_rssi    != prev_rssi;
 
+        let remote_changed = new_remote != prev_remote;
+
         {
             let mut inner = self.imp().inner.borrow_mut();
             inner.netstat = new_netstat;
             inner.rssi    = new_rssi;
+            inner.remote  = new_remote;
             inner.slow_poll_failures = 0;
             if identity_changed {
                 dbg(&format!(
@@ -937,6 +985,10 @@ impl DeviceState {
                 self.imp().inner.borrow().rssi.unwrap_or(0),
             ));
             self.emit_by_name::<()>("network-changed", &[]);
+        }
+        if remote_changed {
+            dbg(&format!("signal: remote changed: {:?}", self.imp().inner.borrow().remote));
+            self.emit_by_name::<()>("remote-changed", &[]);
         }
     }
 
@@ -1359,6 +1411,13 @@ impl DeviceState {
         })
     }
 
+    pub fn connect_remote_changed<F: Fn(&Self) + 'static>(&self, f: F) -> glib::SignalHandlerId {
+        self.connect_local("remote-changed", false, move |args| {
+            f(&args[0].get::<Self>().unwrap());
+            None
+        })
+    }
+
     pub fn outputs(&self) -> Vec<OutputEntry> {
         self.imp().inner.borrow().capabilities.as_ref()
             .map(|c| c.outputs.clone())
@@ -1375,6 +1434,10 @@ impl DeviceState {
 
     pub fn rssi(&self) -> Option<i32> {
         self.imp().inner.borrow().rssi
+    }
+
+    pub fn remote_info(&self) -> RemoteInfo {
+        self.imp().inner.borrow().remote
     }
 
     pub fn presets(&self) -> Vec<PresetEntry> {

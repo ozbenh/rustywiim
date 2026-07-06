@@ -12,6 +12,7 @@
 .panel-dropdown { font-size: 12px; min-width: 0; }
 .device-info  { font-size: 11px; }
 .net-icon { opacity: 0.5; }
+.remote-icon { opacity: 1.0; }
 .transport-btn {
     min-width: 36px; min-height: 36px;
     padding: 0; -gtk-icon-size: 16px;

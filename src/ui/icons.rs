@@ -24,6 +24,10 @@ static OPTICAL_INOUT_SVG: &[u8] = include_bytes!("../icons/optical-inout.svg");
 /// Coax connector icon
 static COAX_INOUT_SVG: &[u8] = include_bytes!("../icons/coax-inout.svg");
 
+/// WiiM BLE remote icon, used in the main window's bottom status bar when a
+/// remote is connected.
+static WIIM_REMOTE_SVG: &[u8] = include_bytes!("../icons/wiim-remote.svg");
+
 
 // ── Internal loaders ──────────────────────────────────────────────────────────
 
@@ -57,6 +61,9 @@ pub struct IconSet {
     outputs: HashMap<&'static str, gdk::Paintable>,
     /// Returned by `output_paintable` when the mode is not in `outputs`.
     output_fallback: gdk::Paintable,
+
+    /// BLE remote icon, shown in the main window's bottom status bar.
+    remote: gdk::Paintable,
 }
 
 impl IconSet {
@@ -114,7 +121,10 @@ impl IconSet {
         let output_fallback = try_texture(AUDIO_OUTPUT_SVG)
             .unwrap_or_else(|| theme_icon(&theme, "audio-speakers-symbolic"));
 
-        Self { sources, source_fallback, outputs, output_fallback }
+        let remote = try_texture(WIIM_REMOTE_SVG)
+            .unwrap_or_else(|| theme_icon(&theme, "input-gaming-symbolic"));
+
+        Self { sources, source_fallback, outputs, output_fallback, remote }
     }
 
     // ── Accessors ─────────────────────────────────────────────────────────────
@@ -131,5 +141,10 @@ impl IconSet {
     /// output fallback (currently the custom audio-output SVG).
     pub fn output_paintable(&self, id: &str) -> &gdk::Paintable {
         self.outputs.get(id).unwrap_or(&self.output_fallback)
+    }
+
+    /// The BLE remote icon (`icons/wiim-remote.svg`).
+    pub fn remote_paintable(&self) -> &gdk::Paintable {
+        &self.remote
     }
 }

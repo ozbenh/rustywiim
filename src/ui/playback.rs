@@ -121,6 +121,7 @@ impl DeviceWindowInner {
     pub(super) fn populate_all(&self) {
         use crate::device::state::playback_changed;
         self.update_network_icon();
+        self.update_remote_display();
         if self.ds.device_info().is_some() {
             self.apply_device_info();
             self.on_presets_changed();
@@ -236,15 +237,63 @@ impl DeviceWindowInner {
         match self.ds.netstat() {
             Some(0) => {
                 self.net_icon.set_icon_name(Some("network-wired-symbolic"));
+                self.net_icon.set_tooltip_text(None);
                 self.net_icon.set_visible(true);
             }
             Some(2) => {
                 let rssi = self.ds.rssi().unwrap_or(0);
                 self.net_icon.set_icon_name(Some(wifi_icon_for_rssi(rssi)));
+                let ssid = self.ds.device_info().map(|i| i.ssid_decoded()).unwrap_or_default();
+                let tooltip = if ssid.is_empty() {
+                    format!("Signal: {rssi} dBm")
+                } else {
+                    format!("Network: {ssid}\nSignal: {rssi} dBm")
+                };
+                self.net_icon.set_tooltip_text(Some(&tooltip));
                 self.net_icon.set_visible(true);
             }
             _ => { self.net_icon.set_visible(false); }
         }
+    }
+
+    /// BLE remote presence/battery, bottom-left of the main window. Visible
+    /// whenever `getStatusEx` has ever answered the question at all
+    /// (`remote_info().connected.is_some()`) — including "known but
+    /// currently disconnected" — and hidden only when we truly don't know
+    /// (field absent from every response so far, e.g. no BLE remote
+    /// hardware exists on this model). Hovering shows battery/signal detail,
+    /// or "disconnected" when not currently connected.
+    pub(super) fn update_remote_display(&self) {
+        let info = self.ds.remote_info();
+        let Some(connected) = info.connected else {
+            self.remote_icon.set_visible(false);
+            self.remote_label.set_visible(false);
+            return;
+        };
+
+        let battery_text = if connected {
+            info.battery.map(|pct| format!("{pct}%")).unwrap_or_default()
+        } else {
+            String::new()
+        };
+        let tooltip = if connected {
+            format!(
+                "Battery: {}\nSignal: {}",
+                info.battery.map(|pct| format!("{pct}%")).unwrap_or_else(|| "unknown".to_string()),
+                info.rssi.map(|r| format!("{r} dBm")).unwrap_or_else(|| "unknown".to_string()),
+            )
+        } else {
+            "disconnected".to_string()
+        };
+
+        self.remote_label.set_label(&battery_text);
+        self.remote_icon.set_tooltip_text(Some(&tooltip));
+        self.remote_label.set_tooltip_text(Some(&tooltip));
+
+        self.remote_icon.set_visible(true);
+        self.remote_icon.queue_resize();
+        self.remote_label.set_visible(!battery_text.is_empty());
+        self.remote_label.queue_resize();
     }
 
     pub(super) fn apply_device_info(&self) {

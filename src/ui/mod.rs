@@ -302,6 +302,8 @@ struct DeviceWindowInner {
     dev_info_label: Label,
     ip_label:       Label,
     net_icon:       gtk::Image,
+    remote_icon:    gtk::Image,
+    remote_label:   Label,
     icons:          Rc<icons::IconSet>,
     vol_scale:      Scale,
     ui_state:       PlaybackUiState,
@@ -543,7 +545,35 @@ impl DeviceWindow {
         bottom_end.append(&ip_label);
         bottom_end.append(&net_icon);
 
+        // BLE remote presence/battery — left-hand side of the bottom bar,
+        // hidden until the first `getStatusEx` result confirms a remote is
+        // actually connected (see `update_remote_display()`).
+        let remote_icon = gtk::Image::from_paintable(Some(icons.remote_paintable()));
+        // 21px: net_icon's IconSize::Normal (16px) plus 2px, then a further
+        // +3px per request.
+        remote_icon.set_pixel_size(28);
+        remote_icon.add_css_class("remote-icon");
+        remote_icon.set_margin_start(8);
+        remote_icon.set_margin_top(4);
+        remote_icon.set_margin_bottom(4);
+        remote_icon.set_visible(false);
+
+        // Same classes as ip_label above (not just "dim-label") so it's
+        // displayed identically — "ip-label" is specifically what fixes
+        // modern.css's top-row clipping/fade that plain "dim-label" alone
+        // doesn't (see ip_label's own comment above).
+        let remote_label = Label::builder()
+            .css_classes(["dim-label", "ip-label"])
+            .margin_start(4).margin_top(4).margin_bottom(4)
+            .visible(false)
+            .build();
+
+        let bottom_start = GtkBox::new(Orientation::Horizontal, 0);
+        bottom_start.append(&remote_icon);
+        bottom_start.append(&remote_label);
+
         let bottom_bar = gtk::CenterBox::new();
+        bottom_bar.set_start_widget(Some(&bottom_start));
         bottom_bar.set_center_widget(Some(&dev_info_label));
         bottom_bar.set_end_widget(Some(&bottom_end));
 
@@ -599,6 +629,8 @@ impl DeviceWindow {
             dev_info_label,
             ip_label,
             net_icon,
+            remote_icon,
+            remote_label,
             icons,
             vol_scale,
             ui_state,
@@ -633,6 +665,11 @@ impl DeviceWindow {
         ds.connect_network_changed({
             let i = Rc::downgrade(&inner);
             move |_| { if let Some(i) = i.upgrade() { i.update_network_icon(); } }
+        });
+
+        ds.connect_remote_changed({
+            let i = Rc::downgrade(&inner);
+            move |_| { if let Some(i) = i.upgrade() { i.update_remote_display(); } }
         });
 
         ds.connect_playback_changed({

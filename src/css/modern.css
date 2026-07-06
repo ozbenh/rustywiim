@@ -110,6 +110,11 @@ window.player-window headerbar {
     color: #eeeeee;
     opacity: 0.65;
 }
+/* .remote-icon is a full-colour SVG texture, not a symbolic icon — unlike
+   .net-icon just above, `color` has no effect on it, only opacity dims it. */
+.remote-icon {
+    opacity: 1.0;
+}
 
 /* ip-label (alongside dim-label — see ui/mod.rs) matches device-info's
    font-size. dim-label's own 12px (shared with the pos/dur time labels) was

@@ -320,6 +320,12 @@ pub struct DeviceInfo {
     pub device_name: String,
     #[serde(default)]
     pub ssid: String,
+    /// Hex-encoded AP SSID (same LinkPlay convention as `getPlayerStatusEx`'s
+    /// `Title`/`Artist`/`Album` — hex bytes, decoded as UTF-8 — used because
+    /// an SSID can contain arbitrary/non-ASCII characters). Use
+    /// `ssid_decoded()` rather than reading this directly.
+    #[serde(default)]
+    pub essid: String,
     #[serde(default)]
     pub firmware: String,
     #[serde(default)]
@@ -348,6 +354,17 @@ pub struct DeviceInfo {
     /// "4.2" → Gen2+.  Used for Gen1 detection in capability profiles.
     #[serde(default)]
     pub wmrm_version: String,
+    /// Whether a BLE remote is currently paired/present: "1"/"0". Absent
+    /// entirely on devices with no BLE remote hardware.
+    #[serde(default, rename = "BleRemoteConnected")]
+    pub ble_remote_connected: String,
+    /// BLE remote battery level, percentage as a string (e.g. "100").
+    #[serde(default, rename = "BleRemoteBatterylevel")]
+    pub ble_remote_battery: String,
+    /// BLE remote RSSI in dBm as a string (e.g. "-73") — same shape as the
+    /// top-level `RSSI` field, just for the remote's own radio link.
+    #[serde(default, rename = "BleRemoteRSSI")]
+    pub ble_remote_rssi: String,
 }
 
 impl DeviceInfo {
@@ -368,6 +385,28 @@ impl DeviceInfo {
             s.parse::<u64>().unwrap_or(0)
         }
     }
+
+    /// Decoded AP SSID from `essid` (hex → UTF-8), falling back to the raw
+    /// `essid` string if it doesn't decode cleanly (matches linkplay-cli's
+    /// own `_decode_string` fallback behavior for this exact field).
+    pub fn ssid_decoded(&self) -> String {
+        hex_decode_utf8(&self.essid).unwrap_or_else(|| self.essid.clone())
+    }
+}
+
+/// Decode a hex-encoded UTF-8 string — LinkPlay's convention for fields that
+/// might contain non-ASCII characters (`getPlayerStatusEx`'s `Title`/
+/// `Artist`/`Album`, `getStatusEx`'s `essid`). `None` if `s` isn't
+/// even-length all-hex-digits, or doesn't decode to valid UTF-8.
+fn hex_decode_utf8(s: &str) -> Option<String> {
+    if s.is_empty() || s.len() % 2 != 0 || !s.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let bytes: Option<Vec<u8>> = (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok())
+        .collect();
+    bytes.and_then(|b| String::from_utf8(b).ok())
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
