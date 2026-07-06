@@ -93,7 +93,7 @@ impl IconSet {
             ("bluetooth", "bluetooth-symbolic"),
             ("phono",     "media-record-symbolic"),
             ("udisk",     "drive-harddisk-usb-symbolic"),
-            ("HDMI",      "tv-symbolic"),
+            ("hdmi",      "tv-symbolic"),
         ];
         let adwaita_outputs: &[(&'static str, &str)] = &[
             ("bluetooth-out", "bluetooth-symbolic"),

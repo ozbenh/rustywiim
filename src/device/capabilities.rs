@@ -912,7 +912,15 @@ pub async fn detect_capabilities(client: &WiimClient) -> Option<(DeviceInfo, Dev
         Some(entries) => {
             dbg(&format!("audio input enable: {:?}", entries));
             for e in &entries {
-                if let Some(existing) = caps.inputs.iter_mut().find(|i| i.id == e.mode) {
+                // Real devices don't match our canonical (lowercase) casing —
+                // e.g. a WiiM Ultra/Amp reports `mode: "HDMI"` where every
+                // static ID here is `"hdmi"`. Comparing/storing case-sensitively
+                // used to silently append a second, differently-cased entry
+                // instead of updating the existing one (visible as a duplicate
+                // input in the UI, and with a different icon since icon lookup
+                // is also ID-keyed).
+                let mode = e.mode.to_ascii_lowercase();
+                if let Some(existing) = caps.inputs.iter_mut().find(|i| i.id == mode) {
                     existing.enabled = e.is_enabled();
                 } else {
                     eprintln!(
@@ -920,7 +928,7 @@ pub async fn detect_capabilities(client: &WiimClient) -> Option<(DeviceInfo, Dev
                          static input list for this device — adding it",
                         e.mode,
                     );
-                    caps.inputs.push(InputEntry { id: e.mode.clone(), enabled: e.is_enabled() });
+                    caps.inputs.push(InputEntry { id: mode, enabled: e.is_enabled() });
                 }
             }
         }
