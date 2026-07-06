@@ -185,6 +185,10 @@ struct Inner {
     capabilities:    Option<DeviceCapabilities>,
     /// Raw wire-shaped responses, cached purely as a diffing baseline for
     /// next tick — the UI never reads these directly; see `playback` below.
+    /// `player_status` in particular must stay read-only outside
+    /// `process_poll()`'s `inner.player_status = Some(st)` assignment: an
+    /// optimistic command write here would make the next real poll's diff
+    /// see no change and silently skip updating `playback` to match.
     player_status:   Option<PlayerStatus>,
     metadata:        Option<MetaData>,
     /// Canonical, backend-independent playback state — updated in place,
@@ -1008,10 +1012,25 @@ impl DeviceState {
         if let Some(st) = status {
             // 1. Borrow: diff against previous status, compute everything we
             //    need from `inner` before it's dropped.
-            let (mode_changed, prev_mode, volume_changed, timing_valid, time_changed, other_changed) = {
+            let (mode_changed, prev_mode, mute_changed, vol_changed, timing_valid, time_changed, other_changed) = {
                 let inner = self.imp().inner.borrow();
                 let prev = inner.player_status.as_ref();
-                let volume_changed = prev.map_or(true, |p| p.vol != st.vol || p.mute != st.mute);
+                let mute_changed = prev.map_or(true, |p| p.mute != st.mute);
+                // Volume is the one field with an optimistic write
+                // (`do_set_volume`, for slider responsiveness while
+                // dragging), so a plain diff against the *previous* raw
+                // response isn't enough: if a `SetVolume` command silently
+                // failed to stick device-side, the device's own answer
+                // never changes between polls, so that diff would never
+                // fire and `playback.volume` would stay wrong forever.
+                // Instead, resync straight against the device's answer
+                // whenever nothing we sent is still in flight
+                // (`target_volume < 0`) — this self-heals a rejected/
+                // clamped command exactly the same way it picks up a
+                // genuine remote change (physical remote, another app,
+                // slave-speaker sync): both look like "device says X,
+                // canonical state says Y" from here.
+                let vol_changed = inner.target_volume < 0 && st.vol != inner.playback.volume;
                 let timing_valid = playback::timing_looks_valid(st.curpos, st.totlen);
                 let time_changed = timing_valid
                     && prev.map_or(true, |p| p.curpos != st.curpos || p.totlen != st.totlen);
@@ -1019,12 +1038,12 @@ impl DeviceState {
                     p.status != st.status || p.loop_mode != st.loop_mode || p.vendor != st.vendor
                 });
                 let prev_mode = inner.current_mode;
-                (st.mode != prev_mode, prev_mode, volume_changed, timing_valid, time_changed, other_changed)
+                (st.mode != prev_mode, prev_mode, mute_changed, vol_changed, timing_valid, time_changed, other_changed)
             };
 
-            if volume_changed { playback_mask |= playback_changed::VOLUME; }
-            if time_changed   { playback_mask |= playback_changed::TIME; }
-            if other_changed  { playback_mask |= playback_changed::OTHER; }
+            if mute_changed || vol_changed { playback_mask |= playback_changed::VOLUME; }
+            if time_changed                { playback_mask |= playback_changed::TIME; }
+            if other_changed               { playback_mask |= playback_changed::OTHER; }
 
             if mode_changed {
                 dbg(&format!(
@@ -1064,10 +1083,8 @@ impl DeviceState {
                         }
                     }
                 }
-                if volume_changed {
-                    inner.playback.volume = st.vol;
-                    inner.playback.muted  = st.mute;
-                }
+                if mute_changed { inner.playback.muted  = st.mute; }
+                if vol_changed  { inner.playback.volume = st.vol;  }
                 if time_changed {
                     let (pos, dur) = playback::decode_timing_http(st.curpos, st.totlen, st.mode);
                     inner.playback.position = pos;
@@ -1225,19 +1242,14 @@ impl DeviceState {
 
     pub fn do_set_mute(&self, muted: bool) {
         let Some(client) = self.imp().inner.borrow().client.clone() else { return };
-        if let Some(ref mut st) = self.imp().inner.borrow_mut().player_status {
-            st.mute = muted;
-        }
-        self.emit_by_name::<()>("playback-changed", &[&playback_changed::VOLUME]);
         self.rt().spawn(async move { let _ = client.set_mute(muted).await; });
+        self.trigger_poll_after(400);
     }
 
     pub fn do_set_volume(&self, vol: u32) {
         let mut inner = self.imp().inner.borrow_mut();
-        // Optimistic cached update so the UI stays responsive.
-        if let Some(ref mut st) = inner.player_status {
-            st.vol = vol;
-        }
+        // Optimistic update of playback.volume to avoid slider glitches
+        inner.playback.volume = vol;
         let now = Instant::now();
         let since_last = inner.last_volume_cmd
             .map_or(VOLUME_DEBOUNCE, |t| now.duration_since(t));
@@ -1342,14 +1354,13 @@ impl DeviceState {
         self.imp().inner.borrow().playback.muted
     }
 
-    /// Return the effective volume: the pending target if a rate-limited command
-    /// is queued, otherwise the last server-reported value.
+    /// Return the effective volume, straight from canonical state — `None`
+    /// only until the first poll response ever arrives, so the slider
+    /// doesn't snap to a false 0 before then.
     pub fn get_vol(&self) -> Option<u32> {
         let inner = self.imp().inner.borrow();
-        if inner.target_volume >= 0 {
-            return Some(inner.target_volume as u32);
-        }
-        Some(inner.player_status.as_ref()?.vol)
+        inner.player_status.as_ref()?;
+        Some(inner.playback.volume)
     }
 
     pub fn output_status(&self) -> Option<AudioOutputStatus> {
