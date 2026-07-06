@@ -847,8 +847,17 @@ impl DeviceCapabilities {
                 }
                 false
             }
-            Some(list) => {
+            Some(mut list) => {
                 self.outputs_probe_failures = 0;
+                // The raw API call (`WiimClient::get_sound_card_mode_support_list()`)
+                // has no notion of per-device profiles, so it always returns
+                // `icon_canon == canon` — the `line_out_is_speaker` quirk must be
+                // (re)applied here on every probe, not just the initial one in
+                // `detect_capabilities()`, or a corrected icon from connect time
+                // gets clobbered back to the wrong one on the very next slow poll.
+                for e in &mut list {
+                    e.icon_canon = icon_canon_for_output(e.canon, self.device_id);
+                }
                 if list != self.outputs {
                     self.outputs = list;
                     true
