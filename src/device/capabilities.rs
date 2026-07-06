@@ -295,14 +295,15 @@ static FAMILY_LINKPLAY_GENERIC: FamilyProfile = FamilyProfile {
 #[repr(usize)]
 pub enum DeviceId {
     // WiiM
-    WiimMini    = 0,
-    WiimPro     = 1,
-    WiimProPlus = 2,
-    WiimAmp     = 3,
-    WiimAmpPro  = 4,
-    WiimUltra   = 5,
-    WiimSound   = 6,
-    WiimGeneric = 7,
+    WiimMini     = 0,
+    WiimPro      = 1,
+    WiimProPlus  = 2,
+    WiimAmp      = 3,
+    WiimAmpPro   = 4,
+    WiimAmpUltra = 5,
+    WiimUltra    = 6,
+    WiimSound    = 7,
+    WiimGeneric  = 8,
 
     // Arylic / Up2Stream
     ArylicUp2StreamAmp = 100,
@@ -331,16 +332,17 @@ impl DeviceId {
         let p = normalize_project(project);
 
         // WiiM — compound names before simple substrings
-        if p.contains("wiim_ultra")    { return Self::WiimUltra;   }
-        if p.contains("wiim_amp_pro")  { return Self::WiimAmpPro;  }
-        if p.contains("wiim_amp")      { return Self::WiimAmp;     }
-        if p.contains("wiim_pro_plus") { return Self::WiimProPlus; }
-        if p.contains("wiim_pro")      { return Self::WiimPro;     }
+        if p.contains("wiim_ultra")     { return Self::WiimUltra;    }
+        if p.contains("wiim_amp_ultra") { return Self::WiimAmpUltra; }
+        if p.contains("wiim_amp_pro")   { return Self::WiimAmpPro;   }
+        if p.contains("wiim_amp")       { return Self::WiimAmp;      }
+        if p.contains("wiim_pro_plus")  { return Self::WiimProPlus;  }
+        if p.contains("wiim_pro")       { return Self::WiimPro;      }
         if p.contains("wiim_mini") || p == "muzo_mini" {
             return Self::WiimMini;
         }
-        if p.contains("wiim_sound")    { return Self::WiimSound;   }
-        if p.contains("wiim")          { return Self::WiimGeneric; }
+        if p.contains("wiim_sound")     { return Self::WiimSound;   }
+        if p.contains("wiim")           { return Self::WiimGeneric; }
 
         // Arylic / Up2Stream — compound before simple
         if p.contains("up2stream_amp") { return Self::ArylicUp2StreamAmp; }
@@ -388,8 +390,8 @@ impl DeviceId {
     pub fn vendor(self) -> Vendor {
         match self {
             Self::WiimMini | Self::WiimPro | Self::WiimProPlus
-            | Self::WiimAmp | Self::WiimAmpPro | Self::WiimUltra
-            | Self::WiimSound | Self::WiimGeneric => Vendor::WiiM,
+            | Self::WiimAmp | Self::WiimAmpPro | Self::WiimAmpUltra
+            | Self::WiimUltra | Self::WiimSound | Self::WiimGeneric => Vendor::WiiM,
 
             Self::ArylicUp2StreamAmp | Self::ArylicH50
             | Self::ArylicGeneric                 => Vendor::Arylic,
@@ -423,8 +425,8 @@ impl DeviceId {
     pub fn family_profile(self) -> &'static FamilyProfile {
         match self {
             Self::WiimMini | Self::WiimPro | Self::WiimProPlus | Self::WiimAmp
-            | Self::WiimAmpPro | Self::WiimUltra | Self::WiimSound
-            | Self::WiimGeneric                    => &FAMILY_WIIM,
+            | Self::WiimAmpPro | Self::WiimAmpUltra | Self::WiimUltra
+            | Self::WiimSound | Self::WiimGeneric  => &FAMILY_WIIM,
 
             Self::ArylicUp2StreamAmp | Self::ArylicH50
             | Self::ArylicGeneric                  => &FAMILY_ARYLIC,
@@ -462,7 +464,7 @@ pub struct DeviceProfile {
 // Each array is indexed by (DeviceId as usize - vendor_base).
 // DeviceId::profile() dispatches to the right array by numeric range.
 
-static WIIM_PROFILES: [DeviceProfile; 8] = [
+static WIIM_PROFILES: [DeviceProfile; 9] = [
     /* 0 WiimMini */ DeviceProfile {
         model_name:      Some("WiiM Mini"),
         ignore_plm_bits: &[5],        // Coaxial not present
@@ -493,19 +495,25 @@ static WIIM_PROFILES: [DeviceProfile; 8] = [
         extra_inputs:    &["bluetooth", "line-in", "optical", "udisk"],
         outputs:         &["line-out", "usb-out"],
     },
-    /* 5 WiimUltra */ DeviceProfile {
+    /* 5 WiimAmpUltra */ DeviceProfile {
+        model_name:      Some("WiiM Amp Ultra"),
+        ignore_plm_bits: &[],
+        extra_inputs:    &["bluetooth", "line-in", "optical", "udisk", "hdmi"],
+        outputs:         &["speaker-out"],
+    },
+    /* 6 WiimUltra */ DeviceProfile {
         model_name:      Some("WiiM Ultra"),
         ignore_plm_bits: &[],
         extra_inputs:    &["bluetooth", "line-in", "optical", "coaxial", "udisk", "hdmi", "phono"],
         outputs:         &["line-out", "optical-out", "coax-out", "headphone-out", "usb-out"],
     },
-    /* 6 WiimSound */ DeviceProfile {
+    /* 7 WiimSound */ DeviceProfile {
         model_name:      Some("WiiM Sound"),
         ignore_plm_bits: &[2, 3, 5],  // No USB, Optical, or Coaxial
         extra_inputs:    &["bluetooth", "line-in"],
         outputs:         &[],          // Internal speakers only
     },
-    /* 7 WiimGeneric */ DeviceProfile {
+    /* 8 WiimGeneric */ DeviceProfile {
         model_name:      None,
         ignore_plm_bits: &[],
         extra_inputs:    &["bluetooth", "line-in", "optical"],
@@ -1134,7 +1142,7 @@ pub fn output_canon_to_mode(name: &str) -> Option<u32> {
         "coax-out"      => Some(3),
         "headphone-out" => Some(4),
         "bluetooth-out" => Some(4),
-        "hdmi-out"      => Some(7),
+        "speaker-out"   => Some(7),
         "usb-out"       => Some(8),
         _               => None,
     }
@@ -1147,7 +1155,7 @@ pub fn output_display_name(name: &str) -> &'static str {
         "line-out"      => "Line Out",
         "coax-out"      => "Coax Out",
         "headphone-out" => "Headphone Out",
-        "hdmi-out"      => "HDMI Out",
+        "speaker-out"   => "Speaker Out",
         "usb-out"       => "USB Out",
         "bluetooth-out" => "Bluetooth Out",
         _               => "Unknown",
@@ -1190,13 +1198,17 @@ pub fn mode_to_input_source(mode: i32) -> &'static str {
 
 /// Translate a numerical output mode (from `getAudioOutputInfo` `hardware`
 /// field) to a canonical output name.  Inverse of `output_canon_to_mode`.
+/// This numbering matches the authoritative LinkPlay-maintained `wiim` SDK's
+/// `AudioOutputHwMode` enum (`cmd` values), confirmed against a real WiiM Amp
+/// Ultra capture reporting `hardware: "7"` while its only output — the
+/// built-in amp speakers — was selected.
 pub fn canon_mode_output_name(mode: u32) -> &'static str {
     match mode {
         1 => "optical-out",
         2 => "line-out",
         3 => "coax-out",
         4 => "headphone-out",
-        7 => "hdmi-out",
+        7 => "speaker-out",
         8 => "usb-out",
         _ => "unknown",
     }
@@ -1212,6 +1224,7 @@ pub fn canon_new_output_name(mode: &str) -> &'static str {
         "AUDIO_OUTPUT_AUX_MODE"        => "line-out",
         "AUDIO_OUTPUT_PHONE_JACK_MODE" => "headphone-out",
         "AUDIO_OUTPUT_UAC_CARD_MODE"   => "usb-out",
+        "AUDIO_OUTPUT_SPEAKER_MODE"    => "speaker-out",
         _                              => "unknown",
     }
 }

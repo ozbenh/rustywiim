@@ -99,7 +99,7 @@ impl IconSet {
             ("bluetooth-out", "bluetooth-symbolic"),
             ("headphone-out", "audio-headphones-symbolic"),
             ("usb-out",       "drive-harddisk-usb-symbolic"),
-            ("hdmi-out",      "video-display-symbolic"),
+            ("speaker-out",   "audio-speakers-symbolic"),
         ];
         for &(id, name) in adwaita_sources {
             sources.entry(id).or_insert_with(|| theme_icon(&theme, name));
