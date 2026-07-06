@@ -4,6 +4,11 @@
 /// broadcasts and a separate ephemeral socket to send periodic M-SEARCH
 /// queries.  Each new IP is probed asynchronously via the WiiM HTTP API;
 /// device identity is confirmed with `DeviceId::detect()` from capabilities.
+/// An IP that fails `NON_API_FAIL_THRESHOLD` consecutive probes (e.g. a
+/// Samsung TV or Chromecast that also answers `MediaRenderer:1` SSDP
+/// searches) is treated as confirmed non-WiiM and skipped on further SSDP
+/// re-announcements for the rest of this run, rather than being re-probed
+/// forever — session-only, never persisted, so a restart always retries.
 ///
 /// Emits `discovery-updated` (on the GTK main thread) whenever the discovered
 /// device list changes.
@@ -49,11 +54,17 @@ struct Inner {
     devices: HashMap<String, DiscoveredDevice>,
     /// IPs currently being probed — prevents duplicate probe tasks.
     probing: HashSet<String>,
+    /// Consecutive `identify_device()` failure count per IP. Once an IP
+    /// reaches `NON_API_FAIL_THRESHOLD` it's treated as confirmed
+    /// non-WiiM/LinkPlay and skipped on future SSDP re-announcements —
+    /// session-only (never persisted to `config.json`), so an app restart
+    /// or a fresh IP always gets a clean retry.
+    failures: HashMap<String, u32>,
 }
 
 impl Default for Inner {
     fn default() -> Self {
-        Self { devices: HashMap::new(), probing: HashSet::new() }
+        Self { devices: HashMap::new(), probing: HashSet::new(), failures: HashMap::new() }
     }
 }
 
@@ -63,6 +74,11 @@ const SSDP_ADDR:        &str     = "239.255.255.250:1900";
 const SSDP_IP:          Ipv4Addr = Ipv4Addr::new(239, 255, 255, 250);
 const MSEARCH_INTERVAL: Duration = Duration::from_secs(60);
 const PROBE_TIMEOUT:    Duration = Duration::from_secs(3);
+/// Consecutive `identify_device()` failures (each of which already tries
+/// every `PROBE_MODES` entry plus the description.xml fallback) before an IP
+/// is treated as confirmed non-WiiM/LinkPlay and skipped on future SSDP
+/// re-announcements for the rest of this run.
+const NON_API_FAIL_THRESHOLD: u32 = 3;
 
 const SEARCH_MSGS: &[&str] = &[
     "M-SEARCH * HTTP/1.1\r\n\
@@ -238,7 +254,12 @@ impl DiscoveryService {
                     // Already known by UUID or IP key?
                     let key = device_key(&uuid, &ip);
                     let already_known = inner.devices.contains_key(&key);
-                    if already_known || inner.probing.contains(&ip) {
+                    let confirmed_non_api = inner.failures.get(&ip)
+                        .is_some_and(|&n| n >= NON_API_FAIL_THRESHOLD);
+                    if already_known || inner.probing.contains(&ip) || confirmed_non_api {
+                        if confirmed_non_api {
+                            dbg(&format!("alive: skipping {ip} (confirmed non-API this run)"));
+                        }
                         false
                     } else {
                         inner.probing.insert(ip.clone());
@@ -262,13 +283,23 @@ impl DiscoveryService {
         let mut inner = self.imp().inner.borrow_mut();
         inner.probing.remove(&ip);
         if let Some(dev) = result {
+            inner.failures.remove(&ip);
             dbg(&format!("probe ok: {} ({}) uuid={:?}", dev.name, dev.ip, dev.uuid));
             let key = device_key(&dev.uuid, &dev.ip);
             inner.devices.insert(key, dev);
             drop(inner);
             self.emit_by_name::<()>("discovery-updated", &[]);
         } else {
-            dbg(&format!("probe failed: {ip}"));
+            let count = inner.failures.entry(ip.clone()).or_insert(0);
+            *count += 1;
+            if *count >= NON_API_FAIL_THRESHOLD {
+                dbg(&format!(
+                    "probe failed: {ip} ({count}/{NON_API_FAIL_THRESHOLD}) — giving up \
+                     on this IP for the rest of this run"
+                ));
+            } else {
+                dbg(&format!("probe failed: {ip} ({count}/{NON_API_FAIL_THRESHOLD})"));
+            }
         }
     }
 }
