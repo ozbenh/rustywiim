@@ -393,8 +393,17 @@ pub struct AudioOutputStatus {
 /// One entry in the device's supported-outputs list.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OutputEntry {
-    /// Canonical internal name (e.g. `"line-out"`, `"usb-out"`).
+    /// Canonical internal name (e.g. `"line-out"`, `"usb-out"`) — drives
+    /// mode-setting (`output_canon_to_mode`) and hardware-value matching;
+    /// never adjusted for display/icon purposes, so it always resolves to
+    /// the correct wire value.
     pub canon: &'static str,
+    /// Canonical name to use for *icon lookup only* — equal to `canon`
+    /// except where `DeviceProfile.line_out_is_speaker` applies (some
+    /// Amp-family devices report their built-in speaker output through the
+    /// generic `"line-out"` slot), in which case it's corrected to
+    /// `"speaker-out"`. Set by `capabilities::detect_capabilities()`.
+    pub icon_canon: &'static str,
     /// User-visible label derived from the `getSoundCardModeSupportList` response,
     /// falling back to `output_display_name()` when the API fields give nothing useful.
     pub name: String,
@@ -763,7 +772,10 @@ impl WiimClient {
                 let card_name = v["soundCard"]["cardName"].as_str().unwrap_or("");
                 let dev_name  = v["soundCard"]["devName"].as_str().unwrap_or("");
                 let name = soundcard_display_name(canon, card_name, dev_name);
-                Some(OutputEntry { canon, name })
+                // `icon_canon` is filled in by `capabilities::detect_capabilities()`,
+                // which knows the device's profile; this method only talks to
+                // the wire format.
+                Some(OutputEntry { canon, icon_canon: canon, name })
             })
             .collect();
         Some(outputs)

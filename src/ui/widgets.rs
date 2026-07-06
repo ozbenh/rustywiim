@@ -30,6 +30,11 @@ pub(crate) struct OutputWidgets {
     pub section:     GtkBox,
     pub modes:       Rc<RefCell<Vec<u32>>>,
     pub canon_names: Rc<RefCell<Vec<&'static str>>>,
+    /// Icon-lookup key per entry, parallel to `canon_names` — equal to it
+    /// except where `OutputEntry.icon_canon` overrides it (see
+    /// `capabilities::icon_canon_for_output`). `canon_names` itself must
+    /// stay untouched for mode-setting/hardware-match to keep working.
+    pub icon_names:  Rc<RefCell<Vec<&'static str>>>,
     pub updating:    Rc<RefCell<bool>>,
 }
 
@@ -300,6 +305,7 @@ pub(super) fn build_output_widgets(icons: &Rc<icons::IconSet>) -> OutputWidgets 
             .orientation(Orientation::Vertical).spacing(4).visible(false).build(),
         modes:       Rc::new(RefCell::new(Vec::new())),
         canon_names: Rc::new(RefCell::new(Vec::new())),
+        icon_names:  Rc::new(RefCell::new(Vec::new())),
         updating:    Rc::new(RefCell::new(false)),
     };
     ow.dropdown.add_css_class("panel-dropdown");
@@ -318,7 +324,7 @@ pub(super) fn build_output_widgets(icons: &Rc<icons::IconSet>) -> OutputWidgets 
         let Some(item) = obj.downcast_ref::<gtk::ListItem>() else { return };
         let pos  = item.position() as usize;
         if let Some(hbox) = item.child().and_downcast::<GtkBox>() {
-            let names = ow.canon_names.borrow();
+            let names = ow.icon_names.borrow();
             let canon = names.get(pos).copied().unwrap_or("");
             if let Some(img) = hbox.first_child().and_downcast::<gtk::Image>() {
                 img.set_paintable(Some(icons.output_paintable(canon)));

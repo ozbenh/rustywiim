@@ -191,6 +191,7 @@ impl DeviceWindowInner {
             self.ow.section.set_visible(false);
             *self.ow.modes.borrow_mut()       = Vec::new();
             *self.ow.canon_names.borrow_mut() = Vec::new();
+            *self.ow.icon_names.borrow_mut()  = Vec::new();
             *self.ow.updating.borrow_mut()    = false;
             return;
         }
@@ -204,6 +205,7 @@ impl DeviceWindowInner {
 
         *self.ow.modes.borrow_mut()       = modes;
         *self.ow.canon_names.borrow_mut() = output_names.iter().map(|e| e.canon).collect();
+        *self.ow.icon_names.borrow_mut()  = output_names.iter().map(|e| e.icon_canon).collect();
         *self.ow.updating.borrow_mut()    = true;
         self.ow.dropdown.set_model(Some(&gtk::StringList::new(&out_labels)));
         self.ow.section.set_visible(true);
@@ -472,6 +474,7 @@ impl DeviceWindowInner {
     pub(super) fn on_presets_changed(&self) {
         use crate::device::api::PresetKind;
         let presets = self.ds.presets();
+        let device_id = self.ds.capabilities().map(|c| c.device_id);
 
         // Clear all slots first.
         for btn in self.pp.btns.iter() { btn.set_visible(false); }
@@ -511,7 +514,10 @@ impl DeviceWindowInner {
                         pic.set_pixel_size(26);
                         pic.add_css_class("preset-art-small");
                         let canon = capabilities::canon_new_output_name(output_id);
-                        pic.set_paintable(Some(self.icons.output_paintable(canon)));
+                        let icon_canon = device_id
+                            .map(|id| capabilities::icon_canon_for_output(canon, id))
+                            .unwrap_or(canon);
+                        pic.set_paintable(Some(self.icons.output_paintable(icon_canon)));
                     }
                     PresetKind::OtherRoutine => {
                         pic.set_pixel_size(26);
