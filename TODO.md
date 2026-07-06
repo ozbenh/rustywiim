@@ -6,6 +6,24 @@ investigation detail if any of these need re-digging into later.
 
 ## Bugs
 
+* **Switching to HDMI input may send the wrong wire value.**
+  `switch_input()` (`state.rs:1159-1164` → `api.rs:746-748`) sends the
+  canonical input ID verbatim as `setPlayerCmd:switchmode:{id}` — no
+  translation layer. Every canonical ID is lowercase (`"wifi"`,
+  `"bluetooth"`, `"line-in"`, `"optical"`, `"phono"`, `"hdmi"`), but the
+  authoritative `wiim` SDK's own `InputMode` enum (`consts.py:225-231`) has
+  `HDMI = (16, "TV", "HDMI")` — every other entry's wire command name is
+  lowercase, HDMI's specifically isn't. The OpenAPI catalog's
+  `setPlayerCmd:switchmode:{mode}` enum agrees:
+  `['line-in', 'bluetooth', 'optical', 'udisk', 'wifi', 'HDMI']`. If the
+  firmware does exact string matching (plausible — nothing else in this API
+  is case-insensitive), switching to HDMI from our dropdown may never have
+  actually worked. Found while investigating the duplicate-HDMI-entry bug
+  below; unrelated to and not fixed by that change. Unverified against real
+  hardware — needs testing before deciding whether/how to special-case it
+  (a case-preserving mapping just for the switchmode wire value, keeping
+  the canonical ID lowercase everywhere else for consistency/icons).
+
 * **`getAudioOutputStatus` legacy fallback not probed.** `api.rs`'s
   `get_audio_output()` only calls `getNewAudioOutputHardwareMode`. pywiim
   falls back to the older `getAudioOutputStatus` when that fails (per
@@ -15,38 +33,33 @@ investigation detail if any of these need re-digging into later.
   outputs/inputs probing already in `capabilities::detect_capabilities()`.
 
 * **Discovery keeps re-probing devices confirmed non-WiiM** (e.g. a Samsung
-  TV answering SSDP). `discovery.rs`'s `identify_device()`/`probe_api()`
-  re-runs the full `getStatusEx` probe across all 3 `PROBE_MODES` every time
-  a non-WiiM IP reappears (every 60s M-SEARCH cycle, every `ssdp:alive`),
-  forever. Two complementary fixes, checked against how other projects
-  handle this:
-  * **Cheaper, do this first**: pywiim filters out *confirmed*-non-LinkPlay
-    devices using only the **raw SSDP response headers it already has in
-    hand** — `is_likely_non_linkplay()` matches the `SERVER`/`ST` headers
-    against an explicit denylist (`"Sonos"`, `"Chromecast"`, `"Samsung"`,
-    `"SmartThings"`, `ZonePlayer`/`roku`/`dial` service-type URNs, etc.),
-    applied *before* any HTTP probe at all — zero extra network round-trips,
-    since the SSDP packet is already received. Deliberately conservative
-    (only catches devices that self-identify unambiguously; Arylic/Audio
-    Pro often send a generic `"Linux"` `SERVER` header and fall through to
-    a full probe anyway, same as today) but would catch exactly the
-    reported Samsung TV case for free. Our own `parse_ssdp_packet()`
-    (`discovery.rs:347`) doesn't capture `SERVER`/`ST` yet — needed first.
-  * **Fallback for the rest**: `description.xml`'s `<manufacturer>`/
-    `<modelName>` (what the authoritative `wiim` SDK actually gates on —
-    `_is_supported_wiim_device()` checks `device.manufacturer` before ever
-    attempting the HTTP API) is already fetched by us today, but only as a
-    last-resort fallback *after* every `getStatusEx` probe already failed —
-    check it early instead, for devices the SSDP-header filter above didn't
-    catch. Costs one extra HTTP GET per candidate IP, unlike the header
-    filter. `linkplay-cli`, for reference, does neither — it has no
-    pre-filter at all and relies purely on `getStatusEx` success/failure,
-    same weakness we have now.
-  * Plus, independently, a simple consecutive-failure counter as a
-    backstop regardless of which signal is used.
-  * Must live in `DiscoveryService`'s in-memory state only, never
-    persisted to `config.json` — a DHCP reassignment or app restart should
-    always get a clean retry.
+  TV, a Chromecast). Two of the three planned layers are now **implemented**
+  in `discovery.rs`, both session-only (in-memory `Inner` state, never
+  persisted to `config.json` — a DHCP reassignment or app restart always
+  gets a clean retry):
+  * **Done**: `is_likely_non_linkplay()` matches the SSDP `SERVER`/`ST`/`NT`
+    headers (now captured by `parse_ssdp_packet()`) against a conservative,
+    certain-negatives-only denylist (ported from pywiim's
+    `NON_LINKPLAY_SERVER_PATTERNS`/`NON_LINKPLAY_ST_PATTERNS` —
+    `"sonos"`/`"chromecast"`/`"samsung"`/`"smartthings"`/etc., and
+    `ZonePlayer`/`roku`/`dial`/Samsung service-type URNs), applied *before*
+    any HTTP probe — zero extra network round-trips. Devices with a generic
+    `SERVER: Linux` header (common on Arylic/Audio Pro) don't match and fall
+    through to a real probe, same as always. Needs testing against a real
+    Samsung TV/Chromecast to confirm their actual SSDP headers hit the list.
+  * **Done**: a consecutive-failure counter (`NON_API_FAIL_THRESHOLD = 3`)
+    for whatever slips through the header filter — after 3 full
+    `identify_device()` failures (each already trying every `PROBE_MODES`
+    entry + the description.xml fallback) an IP is treated as confirmed
+    non-API and skipped on further SSDP re-announcements for the rest of
+    the run.
+  * **Still open**: the `description.xml` `<manufacturer>`/`<modelName>`
+    check (what the authoritative `wiim` SDK actually gates on) as an
+    *earlier* check than the failure counter, for devices the header
+    denylist doesn't catch — it's already fetched today, but only as a
+    last-resort fallback *after* every `getStatusEx` probe has failed.
+    Costs one extra HTTP GET per candidate IP, unlike the header filter.
+    Lower priority now that the two cheaper layers exist.
 
 ## Tech debt / clarity
 

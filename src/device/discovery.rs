@@ -4,11 +4,16 @@
 /// broadcasts and a separate ephemeral socket to send periodic M-SEARCH
 /// queries.  Each new IP is probed asynchronously via the WiiM HTTP API;
 /// device identity is confirmed with `DeviceId::detect()` from capabilities.
-/// An IP that fails `NON_API_FAIL_THRESHOLD` consecutive probes (e.g. a
-/// Samsung TV or Chromecast that also answers `MediaRenderer:1` SSDP
-/// searches) is treated as confirmed non-WiiM and skipped on further SSDP
-/// re-announcements for the rest of this run, rather than being re-probed
-/// forever — session-only, never persisted, so a restart always retries.
+/// Two layers keep a non-WiiM device (e.g. a Samsung TV or Chromecast that
+/// also answers `MediaRenderer:1`/`ssdp:all` SSDP searches) from being
+/// probed forever: `is_likely_non_linkplay()` matches its `SERVER`/`ST`/`NT`
+/// SSDP headers against a conservative, certain-negatives-only denylist and
+/// skips it before any network call at all; anything that slips through
+/// (generic `SERVER: Linux` headers, common on Arylic/Audio Pro) still gets
+/// a real API probe, but after `NON_API_FAIL_THRESHOLD` consecutive
+/// failures it's treated as confirmed non-WiiM and skipped on further
+/// re-announcements too. Both are session-only in-memory state, never
+/// persisted, so a restart always retries.
 ///
 /// Emits `discovery-updated` (on the GTK main thread) whenever the discovered
 /// device list changes.
@@ -95,6 +100,50 @@ const SEARCH_MSGS: &[&str] = &[
      \r\n",
 ];
 
+/// SSDP `SERVER` header substrings that certainly indicate a non-LinkPlay
+/// device (ported from pywiim's `NON_LINKPLAY_SERVER_PATTERNS`) — matched
+/// case-insensitively before any API probe is attempted, so a Samsung TV or
+/// Chromecast answering `MediaRenderer:1`/`ssdp:all` never costs a network
+/// round-trip at all. Deliberately conservative: only patterns confirmed to
+/// appear in real non-LinkPlay SSDP responses. Devices with a generic
+/// `SERVER` header (Arylic/Audio Pro often send plain "Linux") won't match
+/// and fall through to the normal API probe, same as today.
+const NON_LINKPLAY_SERVER_PATTERNS: &[&str] = &[
+    "chromecast",
+    "denon-heos",
+    "mint-x",       // Sony devices
+    "knos",         // Kodi/OSMC
+    "sonos",
+    "samsung",
+    "sec_hhp",      // Samsung Electronics
+    "smartthings",
+];
+
+/// SSDP `NT` (NOTIFY)/`ST` (M-SEARCH response) service-type substrings that
+/// certainly indicate a non-LinkPlay device (ported from pywiim's
+/// `NON_LINKPLAY_ST_PATTERNS`) — same conservative, certain-negatives-only
+/// spirit as the `SERVER` list above.
+const NON_LINKPLAY_ST_PATTERNS: &[&str] = &[
+    "schemas-upnp-org:device:zoneplayer",       // Sonos
+    "schemas-upnp-org:service:zonegrouptopology", // Sonos
+    "schemas-upnp-org:service:grouprenderingcontrol", // Sonos
+    "roku-com:device",
+    "dial-multiscreen-org:device:dial",         // Chromecast et al.
+    "samsung.com:device",
+    "samsung.com:service",
+];
+
+/// True if the SSDP headers *certainly* identify a non-LinkPlay device —
+/// never a false positive on a real WiiM/LinkPlay device, but also won't
+/// catch every non-LinkPlay one (generic `SERVER: Linux` headers pass
+/// through and rely on the API-probe failure counter instead).
+fn is_likely_non_linkplay(server: &str, st: &str) -> bool {
+    let server_lc = server.to_ascii_lowercase();
+    let st_lc     = st.to_ascii_lowercase();
+    NON_LINKPLAY_SERVER_PATTERNS.iter().any(|p| server_lc.contains(p))
+        || NON_LINKPLAY_ST_PATTERNS.iter().any(|p| st_lc.contains(p))
+}
+
 const PROBE_MODES: &[TlsMode] = &[
     TlsMode::HttpsWiiM,
     TlsMode::HttpsAudioPro,
@@ -104,7 +153,7 @@ const PROBE_MODES: &[TlsMode] = &[
 // ── SSDP event (tokio → GTK thread) ──────────────────────────────────────────
 
 enum SsdpEvent {
-    Alive  { ip: String, uuid: String, location: String },
+    Alive  { ip: String, uuid: String, location: String, server: String, st: String },
     Byebye { uuid: String, ip: String },
 }
 
@@ -248,7 +297,19 @@ impl DiscoveryService {
                     self.emit_by_name::<()>("discovery-updated", &[]);
                 }
             }
-            SsdpEvent::Alive { ip, uuid, location } => {
+            SsdpEvent::Alive { ip, uuid, location, server, st } => {
+                // Cheapest check first: SSDP headers we already have in hand,
+                // no network round-trip needed. Never a false positive on a
+                // real WiiM/LinkPlay device, so this is safe to apply on
+                // every re-announcement, not just the first.
+                if is_likely_non_linkplay(&server, &st) {
+                    dbg(&format!(
+                        "alive: skipping {ip} (SSDP headers indicate non-LinkPlay device: \
+                         SERVER={server:?} ST/NT={st:?})"
+                    ));
+                    return;
+                }
+
                 let should_probe = {
                     let mut inner = self.imp().inner.borrow_mut();
                     // Already known by UUID or IP key?
@@ -384,6 +445,13 @@ fn parse_ssdp_packet(pkt: &str, src_ip: &str) -> Option<SsdpEvent> {
     let nts      = extract_header(pkt, "NTS").unwrap_or_default();
     let location = extract_header(pkt, "LOCATION").unwrap_or_default();
     let usn      = extract_header(pkt, "USN").unwrap_or_default();
+    let server   = extract_header(pkt, "SERVER").unwrap_or_default();
+    // NOTIFY packets carry the service/device type in `NT`; M-SEARCH 200 OK
+    // responses carry it in `ST` — never both on the same packet, so either
+    // one (whichever is present) is the "service type" signal for filtering.
+    let st = extract_header(pkt, "ST")
+        .or_else(|| extract_header(pkt, "NT"))
+        .unwrap_or_default();
 
     let uuid = extract_uuid_from_usn(&usn);
     // Prefer the IP from the LOCATION header (authoritative) over src_ip.
@@ -398,7 +466,7 @@ fn parse_ssdp_packet(pkt: &str, src_ip: &str) -> Option<SsdpEvent> {
     } else if is_ok_resp || nts == "ssdp:alive" || nts == "ssdp:update" {
         // Alive/response with no LOCATION is useless — skip.
         if location.is_empty() { return None; }
-        Some(SsdpEvent::Alive { ip, uuid, location })
+        Some(SsdpEvent::Alive { ip, uuid, location, server, st })
     } else {
         None
     }
