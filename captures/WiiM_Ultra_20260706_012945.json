@@ -1,5 +1,5 @@
 {
-  "captured_at": "2026-07-06T01:13:02.442274844+00:00",
+  "captured_at": "2026-07-06T01:29:28.895341358+00:00",
   "gave_up": false,
   "model": "WiiM Ultra",
   "model_source": "getStatusEx",
@@ -25,7 +25,7 @@
         "BleRemoteControl": "1",
         "BleRemoteException": "0",
         "BleRemoteNewVersion": "",
-        "BleRemoteRSSI": "-74",
+        "BleRemoteRSSI": "-72",
         "BleRemoteVersion": "0054",
         "BleRemote_dev_state": "normal",
         "BleRemote_has_new": "0",
@@ -44,7 +44,7 @@
         "ModuleColorString": "",
         "NewVer": "0",
         "PCB_version": "4",
-        "RSSI": "-62",
+        "RSSI": "-64",
         "Release": "20260703",
         "VersionUpdate": "0",
         "WifiChannel": "0",
@@ -125,7 +125,7 @@
         "streams_all": "0xedf33fc",
         "temp_uuid": "xxxxxxxxxxxxxxxx",
         "tidal_version": "2.0",
-        "time": "01:13:02",
+        "time": "01:29:28",
         "tp_type": "4",
         "tz": "10.0",
         "tz_info_ver": "1.0",
@@ -145,7 +145,7 @@
         "wlanDataRate": "292",
         "wlanFreq": "5180",
         "wlanNoise": "-92",
-        "wlanSnr": "31",
+        "wlanSnr": "28",
         "wmrm_capability": 63,
         "wmrm_sub_ver": "7",
         "wmrm_version": "4.3"
@@ -159,12 +159,12 @@
       "http_status": 200,
       "format": "json",
       "body": {
-        "Album": "5468652056656C76657420556E64657267726F756E642026616D703B204E69636F203435746820416E6E6976657273617279",
-        "Artist": "5468652056656C76657420556E64657267726F756E64",
-        "Title": "56656E757320496E2046757273",
+        "Album": "506879736963616C204772616666697469202844656C7578652045646974696F6E29",
+        "Artist": "4C6564205A657070656C696E",
+        "Title": "486F75736573206F662074686520486F6C79202852656D617374657229",
         "alarmflag": "0",
         "ch": "0",
-        "curpos": "3220",
+        "curpos": "16904",
         "eq": "0",
         "loop": "4",
         "mode": "32",
@@ -173,15 +173,15 @@
         "plicount": "0",
         "plicurr": "0",
         "status": "play",
-        "totlen": "312253",
+        "totlen": "244686",
         "type": "0",
         "vendor": "Tidal",
-        "vol": "24"
+        "vol": "21"
       },
       "decoded": {
-        "Album": "The Velvet Underground & Nico 45th Anniversary",
-        "Artist": "The Velvet Underground",
-        "Title": "Venus In Furs"
+        "Album": "Physical Graffiti (Deluxe Edition)",
+        "Artist": "Led Zeppelin",
+        "Title": "Houses of the Holy (Remaster)"
       },
       "summary": "Get the playback status (extended) — this app's primary status poll"
     },
@@ -366,14 +366,14 @@
       "format": "json",
       "body": {
         "metaData": {
-          "album": "The Velvet Underground & Nico 45th Anniversary",
-          "albumArtURI": "https://resources.tidal.com/images/30a5deb8/23c9/4208/b0c5/271229e4d3a5/1280x1280.jpg",
-          "artist": "The Velvet Underground",
+          "album": "Physical Graffiti (Deluxe Edition)",
+          "albumArtURI": "https://resources.tidal.com/images/7780d8fb/be62/4026/80d3/b85b67a8bf9b/1280x1280.jpg",
+          "artist": "Led Zeppelin",
           "bitDepth": "16",
-          "bitRate": "822",
+          "bitRate": "935",
           "sampleRate": "44100",
           "subtitle": "unknow",
-          "title": "Venus In Furs",
+          "title": "Houses of the Holy (Remaster)",
           "trackId": "unknow"
         }
       },
@@ -387,12 +387,12 @@
       "http_status": 200,
       "format": "json",
       "body": {
-        "Album": "5468652056656C76657420556E64657267726F756E642026616D703B204E69636F203435746820416E6E6976657273617279",
-        "Artist": "5468652056656C76657420556E64657267726F756E64",
-        "Title": "56656E757320496E2046757273",
+        "Album": "506879736963616C204772616666697469202844656C7578652045646974696F6E29",
+        "Artist": "4C6564205A657070656C696E",
+        "Title": "486F75736573206F662074686520486F6C79202852656D617374657229",
         "alarmflag": "0",
         "ch": "0",
-        "curpos": "4335",
+        "curpos": "17786",
         "eq": "0",
         "loop": "4",
         "mode": "32",
@@ -401,15 +401,15 @@
         "plicount": "0",
         "plicurr": "0",
         "status": "play",
-        "totlen": "312253",
+        "totlen": "244686",
         "type": "0",
         "vendor": "Tidal",
-        "vol": "24"
+        "vol": "21"
       },
       "decoded": {
-        "Album": "The Velvet Underground & Nico 45th Anniversary",
-        "Artist": "The Velvet Underground",
-        "Title": "Venus In Furs"
+        "Album": "Physical Graffiti (Deluxe Edition)",
+        "Artist": "Led Zeppelin",
+        "Title": "Houses of the Holy (Remaster)"
       },
       "summary": "Get the playback status"
     },
@@ -3330,7 +3330,7 @@
         "mac": "xx:xx:xx:xx:xx:xx",
         "name": "xxxx xxxxx xxxxxx",
         "powerstatus": 0,
-        "rssi": -74,
+        "rssi": -71,
         "status": "connected",
         "ver": "0054"
       },
@@ -3431,7 +3431,7 @@
         "play_mode": "32",
         "play_status": "1",
         "plm_notify_flag": "0",
-        "power_ticks": "222905393",
+        "power_ticks": "223891706",
         "priv_languages": "4588",
         "process_deadlock": "x",
         "retail_mode": "0",
@@ -3453,10 +3453,10 @@
         "upnp_action_remain1": "0",
         "upnp_action_remain2": "0",
         "upnp_action_remain3": "0",
-        "upnp_action_total0": "3586",
-        "upnp_action_total1": "3587",
-        "upnp_action_total2": "3587",
-        "upnp_action_total3": "3586",
+        "upnp_action_total0": "3623",
+        "upnp_action_total1": "3624",
+        "upnp_action_total2": "3624",
+        "upnp_action_total3": "3623",
         "wifi_abort_date": ""
       },
       "summary": "Get device debug information"
@@ -4092,7 +4092,7 @@
         "http_status": 200,
         "response": {
           "format": "xml",
-          "body": "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\"><s:Body>\n<u:GetPositionInfoResponse xmlns:u=\"urn:schemas-upnp-org:service:AVTransport:1\">\r\n<Track>0</Track>\r\n<TrackDuration>00:05:12</TrackDuration>\r\n<TrackMetaData>&lt;?xml version=&quot;1.0&quot; encoding=&quot;UTF-8&quot;?&gt;\n&lt;DIDL-Lite xmlns:dc=&quot;http://purl.org/dc/elements/1.1/&quot; xmlns:upnp=&quot;urn:schemas-upnp-org:metadata-1-0/upnp/&quot; xmlns:song=&quot;www.wiimu.com/song/&quot; xmlns=&quot;urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/&quot;&gt;\n&lt;upnp:class&gt;object.item.audioItem.musicTrack&lt;/upnp:class&gt;\n&lt;item id=&quot;0&quot;&gt;\n&lt;song:actualQuality&gt;LOSSLESS&lt;/song:actualQuality&gt;\n&lt;song:rate_hz&gt;44100&lt;/song:rate_hz&gt;\n&lt;song:format_s&gt;16&lt;/song:format_s&gt;\n&lt;song:bitrate&gt;822&lt;/song:bitrate&gt;\n&lt;res protocolInfo=&quot;http-get:*:*:*&quot; duration=&quot;312000&quot;&gt;&lt;/res&gt;\n&lt;dc:title&gt;Venus In Furs&lt;/dc:title&gt;\n&lt;upnp:artist&gt;The Velvet Underground&lt;/upnp:artist&gt;\n&lt;upnp:album&gt;The Velvet Underground &amp;amp; Nico 45th Anniversary&lt;/upnp:album&gt;\n&lt;upnp:albumArtURI&gt;https://resources.tidal.com/images/30a5deb8/23c9/4208/b0c5/271229e4d3a5/1280x1280.jpg&lt;/upnp:albumArtURI&gt;\n&lt;/item&gt;\n&lt;/DIDL-Lite&gt;\n</TrackMetaData>\r\n<TrackURI></TrackURI>\r\n<RelTime>00:00:19</RelTime>\r\n<AbsTime>NOT_IMPLEMENTED</AbsTime>\r\n<RelCount>2147483647</RelCount>\r\n<AbsCount>2147483647</AbsCount>\r\n</u:GetPositionInfoResponse>\r\n</s:Body> </s:Envelope>"
+          "body": "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\"><s:Body>\n<u:GetPositionInfoResponse xmlns:u=\"urn:schemas-upnp-org:service:AVTransport:1\">\r\n<Track>0</Track>\r\n<TrackDuration>00:04:05</TrackDuration>\r\n<TrackMetaData>&lt;?xml version=&quot;1.0&quot; encoding=&quot;UTF-8&quot;?&gt;\n&lt;DIDL-Lite xmlns:dc=&quot;http://purl.org/dc/elements/1.1/&quot; xmlns:upnp=&quot;urn:schemas-upnp-org:metadata-1-0/upnp/&quot; xmlns:song=&quot;www.wiimu.com/song/&quot; xmlns=&quot;urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/&quot;&gt;\n&lt;upnp:class&gt;object.item.audioItem.musicTrack&lt;/upnp:class&gt;\n&lt;item id=&quot;0&quot;&gt;\n&lt;song:actualQuality&gt;LOSSLESS&lt;/song:actualQuality&gt;\n&lt;song:rate_hz&gt;44100&lt;/song:rate_hz&gt;\n&lt;song:format_s&gt;16&lt;/song:format_s&gt;\n&lt;song:bitrate&gt;935&lt;/song:bitrate&gt;\n&lt;res protocolInfo=&quot;http-get:*:*:*&quot; duration=&quot;245000&quot;&gt;&lt;/res&gt;\n&lt;dc:title&gt;Houses of the Holy (Remaster)&lt;/dc:title&gt;\n&lt;upnp:artist&gt;Led Zeppelin&lt;/upnp:artist&gt;\n&lt;upnp:album&gt;Physical Graffiti (Deluxe Edition)&lt;/upnp:album&gt;\n&lt;upnp:albumArtURI&gt;https://resources.tidal.com/images/7780d8fb/be62/4026/80d3/b85b67a8bf9b/1280x1280.jpg&lt;/upnp:albumArtURI&gt;\n&lt;/item&gt;\n&lt;/DIDL-Lite&gt;\n</TrackMetaData>\r\n<TrackURI></TrackURI>\r\n<RelTime>00:00:32</RelTime>\r\n<AbsTime>NOT_IMPLEMENTED</AbsTime>\r\n<RelCount>2147483647</RelCount>\r\n<AbsCount>2147483647</AbsCount>\r\n</u:GetPositionInfoResponse>\r\n</s:Body> </s:Envelope>"
         }
       },
       {
@@ -4103,7 +4103,18 @@
         "http_status": 200,
         "response": {
           "format": "xml",
-          "body": "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\"><s:Body>\n<u:GetMediaInfoResponse xmlns:u=\"urn:schemas-upnp-org:service:AVTransport:1\">\r\n<NrTracks>0</NrTracks>\r\n<MediaDuration>00:05:12</MediaDuration>\r\n<CurrentURI></CurrentURI>\r\n<CurrentURIMetaData>&lt;?xml version=&quot;1.0&quot; encoding=&quot;UTF-8&quot;?&gt;\n&lt;DIDL-Lite xmlns:dc=&quot;http://purl.org/dc/elements/1.1/&quot; xmlns:upnp=&quot;urn:schemas-upnp-org:metadata-1-0/upnp/&quot; xmlns:song=&quot;www.wiimu.com/song/&quot; xmlns=&quot;urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/&quot;&gt;\n&lt;upnp:class&gt;object.item.audioItem.musicTrack&lt;/upnp:class&gt;\n&lt;item id=&quot;0&quot;&gt;\n&lt;song:actualQuality&gt;LOSSLESS&lt;/song:actualQuality&gt;\n&lt;song:rate_hz&gt;44100&lt;/song:rate_hz&gt;\n&lt;song:format_s&gt;16&lt;/song:format_s&gt;\n&lt;song:bitrate&gt;822&lt;/song:bitrate&gt;\n&lt;res protocolInfo=&quot;http-get:*:*:*&quot; duration=&quot;312000&quot;&gt;&lt;/res&gt;\n&lt;dc:title&gt;Venus In Furs&lt;/dc:title&gt;\n&lt;upnp:artist&gt;The Velvet Underground&lt;/upnp:artist&gt;\n&lt;upnp:album&gt;The Velvet Underground &amp;amp; Nico 45th Anniversary&lt;/upnp:album&gt;\n&lt;upnp:albumArtURI&gt;https://resources.tidal.com/images/30a5deb8/23c9/4208/b0c5/271229e4d3a5/1280x1280.jpg&lt;/upnp:albumArtURI&gt;\n&lt;/item&gt;\n&lt;/DIDL-Lite&gt;\n</CurrentURIMetaData>\r\n<NextURI></NextURI>\r\n<NextURIMetaData></NextURIMetaData>\r\n<TrackSource>Tidal</TrackSource>\r\n<PlayMedium>TIDAL_CONNECT</PlayMedium>\r\n<PreSwitchMode>tidal</PreSwitchMode>\r\n<RecordMedium>NOT_IMPLEMENTED</RecordMedium>\r\n<WriteStatus>NOT_IMPLEMENTED</WriteStatus>\r\n</u:GetMediaInfoResponse>\r\n</s:Body> </s:Envelope>"
+          "body": "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\"><s:Body>\n<u:GetMediaInfoResponse xmlns:u=\"urn:schemas-upnp-org:service:AVTransport:1\">\r\n<NrTracks>0</NrTracks>\r\n<MediaDuration>00:04:05</MediaDuration>\r\n<CurrentURI></CurrentURI>\r\n<CurrentURIMetaData>&lt;?xml version=&quot;1.0&quot; encoding=&quot;UTF-8&quot;?&gt;\n&lt;DIDL-Lite xmlns:dc=&quot;http://purl.org/dc/elements/1.1/&quot; xmlns:upnp=&quot;urn:schemas-upnp-org:metadata-1-0/upnp/&quot; xmlns:song=&quot;www.wiimu.com/song/&quot; xmlns=&quot;urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/&quot;&gt;\n&lt;upnp:class&gt;object.item.audioItem.musicTrack&lt;/upnp:class&gt;\n&lt;item id=&quot;0&quot;&gt;\n&lt;song:actualQuality&gt;LOSSLESS&lt;/song:actualQuality&gt;\n&lt;song:rate_hz&gt;44100&lt;/song:rate_hz&gt;\n&lt;song:format_s&gt;16&lt;/song:format_s&gt;\n&lt;song:bitrate&gt;935&lt;/song:bitrate&gt;\n&lt;res protocolInfo=&quot;http-get:*:*:*&quot; duration=&quot;245000&quot;&gt;&lt;/res&gt;\n&lt;dc:title&gt;Houses of the Holy (Remaster)&lt;/dc:title&gt;\n&lt;upnp:artist&gt;Led Zeppelin&lt;/upnp:artist&gt;\n&lt;upnp:album&gt;Physical Graffiti (Deluxe Edition)&lt;/upnp:album&gt;\n&lt;upnp:albumArtURI&gt;https://resources.tidal.com/images/7780d8fb/be62/4026/80d3/b85b67a8bf9b/1280x1280.jpg&lt;/upnp:albumArtURI&gt;\n&lt;/item&gt;\n&lt;/DIDL-Lite&gt;\n</CurrentURIMetaData>\r\n<NextURI></NextURI>\r\n<NextURIMetaData></NextURIMetaData>\r\n<TrackSource>Tidal</TrackSource>\r\n<PlayMedium>TIDAL_CONNECT</PlayMedium>\r\n<PreSwitchMode>tidal</PreSwitchMode>\r\n<RecordMedium>NOT_IMPLEMENTED</RecordMedium>\r\n<WriteStatus>NOT_IMPLEMENTED</WriteStatus>\r\n</u:GetMediaInfoResponse>\r\n</s:Body> </s:Envelope>"
+        }
+      },
+      {
+        "service": "urn:schemas-upnp-org:service:AVTransport:1",
+        "action": "GetInfoEx",
+        "control_url": "http://xx.x.x.xx:49152/upnp/control/rendertransport1",
+        "outcome": "ok",
+        "http_status": 200,
+        "response": {
+          "format": "xml",
+          "body": "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\"><s:Body>\n<u:GetInfoExResponse xmlns:u=\"urn:schemas-upnp-org:service:AVTransport:1\">\r\n<CurrentTransportState>PLAYING</CurrentTransportState>\r\n<CurrentTransportStatus>OK</CurrentTransportStatus>\r\n<CurrentSpeed>1</CurrentSpeed>\r\n<Track>0</Track>\r\n<TrackDuration>00:04:05</TrackDuration>\r\n<TrackMetaData>&lt;?xml version=&quot;1.0&quot; encoding=&quot;UTF-8&quot;?&gt;\n&lt;DIDL-Lite xmlns:dc=&quot;http://purl.org/dc/elements/1.1/&quot; xmlns:upnp=&quot;urn:schemas-upnp-org:metadata-1-0/upnp/&quot; xmlns:song=&quot;www.wiimu.com/song/&quot; xmlns=&quot;urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/&quot;&gt;\n&lt;upnp:class&gt;object.item.audioItem.musicTrack&lt;/upnp:class&gt;\n&lt;item id=&quot;0&quot;&gt;\n&lt;song:actualQuality&gt;LOSSLESS&lt;/song:actualQuality&gt;\n&lt;song:rate_hz&gt;44100&lt;/song:rate_hz&gt;\n&lt;song:format_s&gt;16&lt;/song:format_s&gt;\n&lt;song:bitrate&gt;935&lt;/song:bitrate&gt;\n&lt;res protocolInfo=&quot;http-get:*:*:*&quot; duration=&quot;245000&quot;&gt;&lt;/res&gt;\n&lt;dc:title&gt;Houses of the Holy (Remaster)&lt;/dc:title&gt;\n&lt;upnp:artist&gt;Led Zeppelin&lt;/upnp:artist&gt;\n&lt;upnp:album&gt;Physical Graffiti (Deluxe Edition)&lt;/upnp:album&gt;\n&lt;upnp:albumArtURI&gt;https://resources.tidal.com/images/7780d8fb/be62/4026/80d3/b85b67a8bf9b/1280x1280.jpg&lt;/upnp:albumArtURI&gt;\n&lt;/item&gt;\n&lt;/DIDL-Lite&gt;\n</TrackMetaData>\r\n<TrackURI></TrackURI>\r\n<RelTime>00:00:32</RelTime>\r\n<AbsTime>NOT_IMPLEMENTED</AbsTime>\r\n<RelCount>2147483647</RelCount>\r\n<AbsCount>2147483647</AbsCount>\r\n<CurrentVolume>21</CurrentVolume>\r\n<CurrentMute>0</CurrentMute>\r\n<CurrentChannel>0</CurrentChannel>\r\n<LoopMode>4</LoopMode>\r\n<PlayType>32</PlayType>\r\n<PreSwitchMode>tidal</PreSwitchMode>\r\n<SlaveFlag>0</SlaveFlag>\r\n<MasterUUID></MasterUUID>\r\n<SlaveList>{ &quot;slaves&quot;: 0, &quot;wmrm_version&quot;: &quot;4.3&quot;, &quot;surround&quot;: 0, &quot;group_type&quot;: -1 }</SlaveList>\r\n<PlayMedium>TIDAL_CONNECT</PlayMedium>\r\n<TrackSource>Tidal</TrackSource>\r\n<InternetAccess>1</InternetAccess>\r\n<VerUpdateFlag>0</VerUpdateFlag>\r\n<VerUpdateStatus>20</VerUpdateStatus>\r\n<BatteryFlag>0</BatteryFlag>\r\n<BatteryPercent>0</BatteryPercent>\r\n<AlarmFlag>0</AlarmFlag>\r\n<TimeStamp>223897083</TimeStamp>\r\n<SubNum>0</SubNum>\r\n<SpotifyActive>0</SpotifyActive>\r\n</u:GetInfoExResponse>\r\n</s:Body> </s:Envelope>"
         }
       },
       {
@@ -4114,7 +4125,7 @@
         "http_status": 200,
         "response": {
           "format": "xml",
-          "body": "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\"><s:Body>\n<u:GetVolumeResponse xmlns:u=\"urn:schemas-upnp-org:service:RenderingControl:1\">\r\n<CurrentVolume>24</CurrentVolume>\r\n</u:GetVolumeResponse>\r\n</s:Body> </s:Envelope>"
+          "body": "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\"><s:Body>\n<u:GetVolumeResponse xmlns:u=\"urn:schemas-upnp-org:service:RenderingControl:1\">\r\n<CurrentVolume>21</CurrentVolume>\r\n</u:GetVolumeResponse>\r\n</s:Body> </s:Envelope>"
         }
       },
       {
