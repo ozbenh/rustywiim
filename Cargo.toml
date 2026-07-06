@@ -27,8 +27,6 @@ tar = "0.4"
 tiny_http = { version = "0.12", default-features = false, features = ["ssl-openssl"] }
 rcgen = "0.14"
 
-# See RELEASEPROCESS.md for the full packaging plan; `make deb`/`make rpm`/
-# `make package` (Makefile at repo root) drive these locally.
 [package.metadata.deb]
 maintainer = "Benjamin Herrenschmidt <benh@kernel.crashing.org>"
 copyright = "2026, Benjamin Herrenschmidt"

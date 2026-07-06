@@ -186,8 +186,8 @@ fn init_css(theme: ThemeMode) {
 /// `rustywiim.gresource.xml` (`glib-compile-resources`) — embedded directly
 /// rather than shipped as a separate file, so the icon is available even
 /// for a bare `cargo run`/unpackaged binary with no system icon-theme
-/// install. A real packaged install (see `RELEASEPROCESS.md`) additionally
-/// installs `icons/rustywiim-icon.svg` into the standard hicolor theme
+/// install. A real packaged installadditionally installs
+/// `icons/rustywiim-icon.svg` into the standard hicolor theme
 /// path — that copy is what desktop launchers/window switchers resolve via
 /// the `.desktop` file's `Icon=` key; this GResource copy is only for
 /// in-process lookups (the About dialog, the default window icon) that
