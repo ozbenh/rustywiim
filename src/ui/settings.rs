@@ -480,7 +480,7 @@ fn build_advanced_page(ds: &DeviceState) -> adw::PreferencesPage {
     let defaults = ds.capabilities().map(|c| c.playback_access()).unwrap_or(AccessMethod::Http);
 
     let player_status_row = build_access_row(
-        "Player Status", "Status/timing/volume/metadata/artwork/source",
+        "Player Status", "Playback informations",
         defaults, over,
     );
     wire_access_row(&player_status_row, uuid.clone(), ds.clone());
@@ -488,8 +488,8 @@ fn build_advanced_page(ds: &DeviceState) -> adw::PreferencesPage {
     let group = adw::PreferencesGroup::builder()
         .title("Playback Access Method")
         .description(
-            "Field diagnostics: override which backend supplies playback \
-             state. Leave this on \"Default\" unless you're troubleshooting \
+            "Override which backend supplies playback state. \
+             Leave this on \"Default\" unless you're troubleshooting \
              a specific problem."
         )
         .build();
