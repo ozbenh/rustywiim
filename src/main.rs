@@ -82,16 +82,18 @@ fn main() -> glib::ExitCode {
                     "state"     => { device::state::DEBUG_STATE.store(true, Ordering::Relaxed); }
                     "device"    => { device::capabilities::DEBUG_DEVICE.store(true, Ordering::Relaxed); }
                     "discovery" => { device::discovery::DEBUG_DISCOVERY.store(true, Ordering::Relaxed); }
+                    "upnp"      => { device::upnp::DEBUG_UPNP.store(true, Ordering::Relaxed); }
                     "ui"        => { ui::DEBUG_UI.store(true, Ordering::Relaxed); }
                     "all"       => {
                         device::api::DEBUG.store(true, Ordering::Relaxed);
                         device::state::DEBUG_STATE.store(true, Ordering::Relaxed);
                         device::capabilities::DEBUG_DEVICE.store(true, Ordering::Relaxed);
                         device::discovery::DEBUG_DISCOVERY.store(true, Ordering::Relaxed);
+                        device::upnp::DEBUG_UPNP.store(true, Ordering::Relaxed);
                         ui::DEBUG_UI.store(true, Ordering::Relaxed);
                     }
                     other => {
-                        eprintln!("rustywiim: unknown debug token {:?} (valid: api, state, device, discovery, ui, all)", other);
+                        eprintln!("rustywiim: unknown debug token {:?} (valid: api, state, device, discovery, upnp, ui, all)", other);
                     }
                 }
             }

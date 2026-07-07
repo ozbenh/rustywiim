@@ -9,13 +9,17 @@ use std::time::Duration;
 
 pub static DEBUG: AtomicBool = AtomicBool::new(false);
 
-fn debug(cmd: &str, resp: &str) {
+// `pub(crate)`, not private: `upnp.rs` reuses these directly so its own
+// SOAP request/response tracing shows up under the same `--debug=api` flag
+// and `[API]` prefix as this module's HTTP calls, rather than a second,
+// differently-gated log format for what is still fundamentally "the API".
+pub(crate) fn debug(cmd: &str, resp: &str) {
     if DEBUG.load(Ordering::Relaxed) {
         println!("[API] {cmd} → {resp}");
     }
 }
 
-fn debug_info(msg: &str) {
+pub(crate) fn debug_info(msg: &str) {
     if DEBUG.load(Ordering::Relaxed) {
         println!("[API] {msg}");
     }

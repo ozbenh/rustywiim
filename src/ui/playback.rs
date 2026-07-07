@@ -32,9 +32,11 @@ fn format_status_line(status: &PlaybackStatus, source_name: Option<&str>) -> Str
     }
 }
 
-/// "320 kbps / 44.1 kHz / 16-bit" style string. Presentation only — the
-/// numeric parsing already happened in `device::playback::decode_quality_http`.
-fn format_quality_line(q: &AudioQuality) -> String {
+/// "FLAC · 1571 kbps / 48.0 kHz / 24-bit" style string. The codec/quality
+/// badge prefix is only ever present when the UPnP backend supplied it (see
+/// `device::playback::decode_quality_upnp`) — presentation only, all the
+/// numeric parsing already happened in `decode_quality_http`/`decode_quality_upnp`.
+fn format_quality_line(q: &AudioQuality, codec_label: Option<&str>) -> String {
     let mut parts = Vec::new();
     if let Some(kbps) = q.bit_rate_kbps {
         parts.push(format!("{kbps:.0} kbps"));
@@ -45,7 +47,12 @@ fn format_quality_line(q: &AudioQuality) -> String {
     if let Some(bd) = q.bit_depth {
         parts.push(format!("{bd}-bit"));
     }
-    parts.join(" / ")
+    let line = parts.join(" / ");
+    match codec_label {
+        Some(label) if !line.is_empty() => format!("{label} · {line}"),
+        Some(label)                     => label.to_string(),
+        None                             => line,
+    }
 }
 
 fn vol_icon(muted: bool, vol: f64) -> &'static str {
@@ -341,18 +348,12 @@ impl DeviceWindowInner {
     ) {
         // Fetch the authoritative volume first; used for both the slider position
         // and the icon so they stay consistent even when set_value is inhibited.
-        let device_vol = self.ds.get_vol();
+        let device_vol = self.ds.get_vol() as f64;
         if self.ui_state.drag_timer.borrow().is_none() {
-            if let Some(v) = device_vol {
-                scale.set_value(v as f64);
-            }
+            scale.set_value(device_vol);
         }
-        // Use device_vol for the icon rather than scale.value() so that a scale
-        // that hasn't been initialised yet (value = 0) doesn't produce a false
-        // muted icon.  Fall back to scale.value() only when there is no data.
-        let display_vol = device_vol.map(|v| v as f64).unwrap_or_else(|| scale.value());
-        vol_icon_img.set_icon_name(Some(vol_icon(muted, display_vol)));
-        vol_label.set_label(&format!("{}", display_vol as u32));
+        vol_icon_img.set_icon_name(Some(vol_icon(muted, device_vol)));
+        vol_label.set_label(&format!("{}", device_vol as u32));
         mute_btn.set_icon_name(if muted { "audio-volume-muted-symbolic" } else { "audio-volume-high-symbolic" });
     }
 
@@ -383,7 +384,7 @@ impl DeviceWindowInner {
     /// same UI sync + rate-limited device command + drag-protection timer as
     /// a manual slider drag.
     pub(super) fn step_volume(&self, delta: i32) {
-        let current = self.ds.get_vol().unwrap_or(0) as i32;
+        let current = self.ds.get_vol() as i32;
         let new_vol = (current + delta).clamp(0, 100);
         self.on_vol_changed(new_vol as f64);
     }
@@ -437,7 +438,7 @@ impl DeviceWindowInner {
             if mask & PC::OTHER != 0 {
                 // Never hidden — see the comment on PlaybackWidgets::quality's
                 // construction. An empty label keeps the same reserved height.
-                let q = ps.quality.map(|q| format_quality_line(&q)).unwrap_or_default();
+                let q = ps.quality.map(|q| format_quality_line(&q, ps.codec_label.as_deref())).unwrap_or_default();
                 self.pw.quality.set_label(&q);
             }
         }

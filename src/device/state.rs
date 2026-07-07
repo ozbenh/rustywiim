@@ -80,6 +80,7 @@ use super::api::{
 use super::capabilities::{self, DeviceCapabilities};
 use super::playback;
 use super::playback::{AccessMethod, PlaybackState};
+use super::upnp::{self, UpnpClient};
 
 // ── Connection state ──────────────────────────────────────────────────────────
 
@@ -94,9 +95,15 @@ pub enum ConnectionState {
 
 // ── Poll payload ──────────────────────────────────────────────────────────────
 
-struct PollData {
-    status: Option<PlayerStatus>,
-    meta:   Option<MetaData>,
+/// A fast-poll tick's result — HTTP and UPnP are mutually exclusive per
+/// tick, never both: `dispatch_fast_poll()` decides which single backend to
+/// hit *before* firing anything, based on `access`, rather than always
+/// fetching HTTP as a baseline and optionally layering UPnP on top. No HTTP
+/// fallback when `UpnpPolled` is selected but no `UpnpClient` has been
+/// discovered yet — see `dispatch_fast_poll`'s doc comment.
+enum PollData {
+    Http { status: Option<PlayerStatus>, meta: Option<MetaData> },
+    Upnp { info: Option<upnp::InfoEx> },
 }
 
 // ── Slow poll ─────────────────────────────────────────────────────────────────
@@ -158,6 +165,26 @@ async fn run_slow_poll_phase(
     }
 }
 
+/// The HTTP fast poll: `getPlayerStatusEx` + `getMetaInfo`. Only called by
+/// `dispatch_fast_poll`/`trigger_poll` when `access == AccessMethod::Http`
+/// — a `UpnpPolled` device never runs this (see `PollData`'s doc comment),
+/// so `inner.player_status`/`inner.metadata` simply stop updating while
+/// UPnP is selected.
+async fn fetch_http_fast_poll(client: WiimClient) -> (Option<PlayerStatus>, Option<MetaData>) {
+    let status = client.get_status().await.ok();
+    let meta   = client.get_meta_info().await.ok();
+    (status, meta)
+}
+
+/// The UPnP fast poll: `GetInfoEx` on an already-discovered `UpnpClient`.
+/// The caller (`dispatch_fast_poll`/`trigger_poll`) only ever calls this
+/// once it has confirmed a client exists — HTTP and UPnP are mutually
+/// exclusive per tick, so there's no HTTP call running alongside this one
+/// to worry about serializing against.
+async fn fetch_upnp_fast_poll(upnp_client: UpnpClient) -> Option<upnp::InfoEx> {
+    upnp_client.get_info_ex().await.ok()
+}
+
 // ── Cached device state ───────────────────────────────────────────────────────
 
 /// BLE remote presence/battery/RSSI, from `getStatusEx`'s `BleRemote*`
@@ -195,6 +222,19 @@ struct Inner {
     /// see no change and silently skip updating `playback` to match.
     player_status:   Option<PlayerStatus>,
     metadata:        Option<MetaData>,
+    /// UPnP `AVTransport` client, lazily discovered once any field group in
+    /// `access` resolves to `AccessMethod::UpnpPolled` (see
+    /// `ensure_upnp_client`/`recompute_access`). `None` until discovery
+    /// succeeds; re-attempted on every `recompute_access()` call while still
+    /// wanted and not yet obtained (no backoff/retry-limit — this is an
+    /// opt-in diagnostic path, not the default connect flow).
+    upnp_client:      Option<UpnpClient>,
+    /// True while a `UpnpClient::discover()` attempt is in flight, so
+    /// `ensure_upnp_client` doesn't fire a second concurrent discovery.
+    upnp_discovery_in_flight: bool,
+    /// Raw UPnP `GetInfoEx` response, cached purely as a diffing baseline
+    /// for next tick — parallel to `player_status`/`metadata` above.
+    upnp_info:        Option<upnp::InfoEx>,
     /// Canonical, backend-independent playback state — updated in place,
     /// field by field, by `process_poll()` rather than rebuilt and diffed
     /// wholesale every tick.
@@ -211,12 +251,7 @@ struct Inner {
     access_override: Option<AccessMethod>,
     output_status:   Option<AudioOutputStatus>,
     mode_renames:    HashMap<String, String>,
-    /// Raw wire `mode` value from the last poll; -1 = not yet known (see
-    /// `de_i32_or_neg1`'s doc comment in api.rs). Purely the polled value —
-    /// `switch_input()` no longer writes an optimistic value here (it used
-    /// to hold a canonical source-ID string instead, which doesn't fit an
-    /// integer field; see that method's doc comment for why that write was
-    /// dropped rather than converted).
+    /// Raw wire `mode` value from the last poll; -1 = not known
     current_mode:    i32,
     connection_state: ConnectionState,
     /// Last known network connection type (0=ethernet, 2=wifi).
@@ -265,6 +300,9 @@ impl Default for Inner {
             capabilities:    None,
             player_status:   None,
             metadata:        None,
+            upnp_client:      None,
+            upnp_discovery_in_flight: false,
+            upnp_info:        None,
             playback:        PlaybackState::default(),
             access:          AccessMethod::Http,
             access_override: None,
@@ -538,20 +576,67 @@ impl DeviceState {
     /// `access_override`). Called whenever either input changes: after
     /// capabilities are (re)detected, and from `set_playback_access_override`.
     fn recompute_access(&self) {
-        let mut inner = self.imp().inner.borrow_mut();
-        let base = inner.capabilities.as_ref()
-            .map(|c| c.playback_access())
-            .unwrap_or(AccessMethod::Http);
-        inner.access = inner.access_override.unwrap_or(base);
-        // Debug-only visibility aid: not implemented yet, falls back
-        // silently to HTTP in the poll loop otherwise, which would be
-        // surprising without this note.
-        if DEBUG_STATE.load(Ordering::Relaxed) && inner.access == AccessMethod::UpnpPolled {
-            dbg(
-                "access config: set to UpnpPolled, which isn't implemented \
-                 yet — falling back to the HTTP default"
-            );
+        let wants_upnp = {
+            let mut inner = self.imp().inner.borrow_mut();
+            let base = inner.capabilities.as_ref()
+                .map(|c| c.playback_access())
+                .unwrap_or(AccessMethod::Http);
+            inner.access = inner.access_override.unwrap_or(base);
+            // Debug-only visibility aid for diagnosing a device where UPnP
+            // discovery/`GetInfoEx` never succeeds (playback state silently
+            // stays on whatever it last held, since the poll loop only
+            // overwrites it when a `GetInfoEx` response actually arrives).
+            if DEBUG_STATE.load(Ordering::Relaxed) && inner.access == AccessMethod::UpnpPolled {
+                dbg("access config: set to UpnpPolled");
+            }
+            inner.access == AccessMethod::UpnpPolled
+        };
+        if wants_upnp {
+            self.ensure_upnp_client();
         }
+    }
+
+    /// Kick off `UpnpClient::discover()` if `access` currently wants
+    /// `AccessMethod::UpnpPolled` and we don't have a client yet (and one
+    /// isn't already in flight). Fire-and-forget, using the same
+    /// spawn-on-`rt()`-then-channel-back-to-GTK-thread bridge as every
+    /// other async operation in this file (see `start_art_loader` for the
+    /// closest parallel) — a fresh one-shot channel per attempt, since
+    /// discovery is rare enough not to need a long-lived processor task.
+    fn ensure_upnp_client(&self) {
+        let ip = {
+            let inner = self.imp().inner.borrow();
+            if inner.upnp_client.is_some() || inner.upnp_discovery_in_flight {
+                return;
+            }
+            inner.ip.clone()
+        };
+        if ip.is_empty() {
+            return;
+        }
+        self.imp().inner.borrow_mut().upnp_discovery_in_flight = true;
+        dbg("upnp: starting control-URL discovery");
+
+        let (tx, rx) = async_channel::bounded(1);
+        self.rt().spawn(async move {
+            let result = UpnpClient::discover(&ip).await;
+            let _ = tx.send(result).await;
+        });
+
+        let ds = self.downgrade();
+        glib::spawn_future_local(async move {
+            let Ok(result) = rx.recv().await else { return };
+            let Some(ds) = ds.upgrade() else { return };
+            let mut inner = ds.imp().inner.borrow_mut();
+            inner.upnp_discovery_in_flight = false;
+            match result {
+                Ok(client) => {
+                    dbg("upnp: discovery succeeded");
+                    inner.upnp_client = Some(client);
+                }
+                Err(e) => dbg(&format!("upnp: discovery failed: {e}")),
+            }
+        });
     }
 
     /// Push a field-diagnostics override (from Settings' "Device -> Advanced"
@@ -733,26 +818,45 @@ impl DeviceState {
         }
     }
 
-    /// Fast poll — status + metadata, every tick this function is called
-    /// (i.e. whenever a client exists and this tick isn't a reconnect
-    /// attempt; see `do_poll()`). Deliberately unconditional rather than
-    /// checking `inner.access`: the only real fetch path today is HTTP —
-    /// `AccessMethod::UpnpPolled` has no fetch implementation in
-    /// `device/upnp.rs` yet and would have to fall back to these same two
-    /// calls regardless (see `recompute_access()`'s debug warning). So
-    /// there is currently no real second branch for `access` to select
-    /// between — add one here once `upnp.rs` can actually fetch something,
-    /// rather than introducing a branch now that would just call the exact
-    /// same two functions either way.
+    /// Fast poll — exactly one of HTTP (`getPlayerStatusEx`+`getMetaInfo`)
+    /// or UPnP (`GetInfoEx`) per tick, decided by `access`, never both: a
+    /// device on `AccessMethod::Http` only ever hits HTTP; a device on
+    /// `UpnpPolled` only ever hits UPnP, once a `UpnpClient` has actually
+    /// been discovered. **Deliberately no HTTP fallback** when `UpnpPolled`
+    /// is selected but discovery hasn't succeeded yet — this tick is
+    /// skipped entirely (playback state stays stale until a client shows
+    /// up) rather than silently substituting HTTP, which would contradict
+    /// the point of the choice. (An HTTP-fallback mode was considered and
+    /// deferred as unnecessary complexity for what's currently an opt-in
+    /// diagnostic path, not the default.)
     fn dispatch_fast_poll(&self, client: &WiimClient, poll_tx: &async_channel::Sender<PollData>) {
-        self.imp().inner.borrow_mut().last_poll = Some(Instant::now());
-        let cp = client.clone();
-        let tx = poll_tx.clone();
-        self.rt().spawn(async move {
-            let status = cp.get_status().await.ok();
-            let meta   = cp.get_meta_info().await.ok();
-            let _ = tx.send(PollData { status, meta }).await;
-        });
+        let (wants_upnp, upnp_client) = {
+            let inner = self.imp().inner.borrow();
+            (inner.access == AccessMethod::UpnpPolled, inner.upnp_client.clone())
+        };
+
+        match (wants_upnp, upnp_client) {
+            (true, None) => {
+                // Selected but not ready yet — see doc comment above.
+            }
+            (true, Some(uc)) => {
+                self.imp().inner.borrow_mut().last_poll = Some(Instant::now());
+                let tx = poll_tx.clone();
+                self.rt().spawn(async move {
+                    let info = fetch_upnp_fast_poll(uc).await;
+                    let _ = tx.send(PollData::Upnp { info }).await;
+                });
+            }
+            (false, _) => {
+                self.imp().inner.borrow_mut().last_poll = Some(Instant::now());
+                let cp = client.clone();
+                let tx = poll_tx.clone();
+                self.rt().spawn(async move {
+                    let (status, meta) = fetch_http_fast_poll(cp).await;
+                    let _ = tx.send(PollData::Http { status, meta }).await;
+                });
+            }
+        }
     }
 
     /// Slow poll — this tick's phase, if the rotation is active
@@ -843,6 +947,30 @@ impl DeviceState {
             }
         }
         inner.playback.artwork = new;
+    }
+
+    /// Shared by `process_poll_http()`/`process_poll_upnp()`'s `mode_changed`
+    /// handling — identical either way, only the raw mode value's source
+    /// differs (HTTP `mode` vs. UPnP `PlayType`, confirmed byte-identical).
+    /// Updates `current_mode`, clears stale artwork for the incoming track,
+    /// and self-corrects a capability snapshot that claims this input is
+    /// disabled despite demonstrably being in active use right now.
+    fn apply_mode_change(inner: &mut Inner, new_mode: i32) {
+        inner.current_mode = new_mode;
+        Self::replace_artwork(inner, None);
+        inner.playback.art_url = None;
+        let active_id = capabilities::mode_to_input_source(new_mode);
+        if let Some(caps) = inner.capabilities.as_mut() {
+            if let Some(entry) = caps.inputs.iter_mut().find(|i| i.id == active_id) {
+                if !entry.enabled {
+                    eprintln!(
+                        "[state] input {active_id:?} reported disabled but is \
+                         actively in use; marking enabled",
+                    );
+                    entry.enabled = true;
+                }
+            }
+        }
     }
 
     fn start_slow_poll_processor(&self, rx: async_channel::Receiver<SlowPollResult>) {
@@ -1043,17 +1171,32 @@ impl DeviceState {
         }
     }
 
-    /// Diffs the raw per-backend responses against the cached baseline
-    /// *before* any decoding happens (plain field/value comparisons — this
-    /// is also the `playback_changed` bitmask computation), then decodes
-    /// only the field groups whose bit came out set, writing straight into
-    /// `inner.playback` in place. An unchanged `title` never gets re-run
-    /// through metadata decoding, an unchanged `mode`/`vendor` pair never
-    /// re-runs the source-name lookup, an unchanged `curpos`/`totlen` never
-    /// re-runs the ms/µs heuristic — decode cost is paid only when the raw
-    /// diff already told us something changed.
+    /// Dispatch to whichever backend actually produced this tick's data —
+    /// `PollData::Http`/`PollData::Upnp` are mutually exclusive (see
+    /// `PollData`'s doc comment), so exactly one of these runs per tick,
+    /// never both.
     fn process_poll(&self, data: PollData, art_tx: &async_channel::Sender<Vec<u8>>) {
-        let PollData { status, meta } = data;
+        match data {
+            PollData::Http { status, meta } => self.process_poll_http(status, meta, art_tx),
+            PollData::Upnp { info } => self.process_poll_upnp(info, art_tx),
+        }
+    }
+
+    /// Diffs the raw HTTP responses against the cached baseline *before* any
+    /// decoding happens (plain field/value comparisons — this is also the
+    /// `playback_changed` bitmask computation), then decodes only the field
+    /// groups whose bit came out set, writing straight into `inner.playback`
+    /// in place. An unchanged `title` never gets re-run through metadata
+    /// decoding, an unchanged `mode`/`vendor` pair never re-runs the
+    /// source-name lookup, an unchanged `curpos`/`totlen` never re-runs the
+    /// ms/µs heuristic — decode cost is paid only when the raw diff already
+    /// told us something changed.
+    fn process_poll_http(
+        &self,
+        status: Option<PlayerStatus>,
+        meta:   Option<MetaData>,
+        art_tx: &async_channel::Sender<Vec<u8>>,
+    ) {
         let mut playback_mask: u32 = 0;
 
         if let Some(st) = status {
@@ -1109,26 +1252,7 @@ impl DeviceState {
             {
                 let mut inner = self.imp().inner.borrow_mut();
                 if mode_changed {
-                    inner.current_mode = st.mode;
-                    Self::replace_artwork(&mut inner, None);
-                    inner.playback.art_url = None;
-                    // Self-correct: an input actively in use can't really be
-                    // "disabled" — a capability snapshot (static guess or a
-                    // one-time getAudioInputEnable probe) claiming otherwise
-                    // is stale/wrong, not something to keep believing over
-                    // what the device is demonstrably doing right now.
-                    let active_id = capabilities::mode_to_input_source(st.mode);
-                    if let Some(caps) = inner.capabilities.as_mut() {
-                        if let Some(entry) = caps.inputs.iter_mut().find(|i| i.id == active_id) {
-                            if !entry.enabled {
-                                eprintln!(
-                                    "[state] input {active_id:?} reported disabled but is \
-                                     actively in use; marking enabled",
-                                );
-                                entry.enabled = true;
-                            }
-                        }
-                    }
+                    Self::apply_mode_change(&mut inner, st.mode);
                 }
                 if mute_changed { inner.playback.muted  = st.mute; }
                 if vol_changed  { inner.playback.volume = st.vol;  }
@@ -1186,6 +1310,14 @@ impl DeviceState {
                 if other_changed {
                     inner.playback.quality =
                         playback::decode_quality_http(&m.bit_rate, &m.sample_rate, &m.bit_depth);
+                    // HTTP has no codec-badge equivalent at all — always clear
+                    // here so switching `metadata`'s access method back to
+                    // HTTP (from a Settings override) doesn't leave a stale
+                    // UPnP-sourced badge on screen forever. If `metadata` is
+                    // actually still `UpnpPolled` and this tick also carries a
+                    // fresh `GetInfoEx` result, the UPnP block below runs
+                    // right after this and sets it again.
+                    inner.playback.codec_label = None;
                 }
                 if url_changed {
                     inner.playback.art_url =
@@ -1214,6 +1346,156 @@ impl DeviceState {
             }
         }
 
+        if playback_mask != 0 {
+            dbg(&format!("signal: playback-changed mask={:#x}", playback_mask));
+            self.emit_by_name::<()>("playback-changed", &[&playback_mask]);
+        }
+    }
+
+    /// UPnP counterpart to `process_poll_http()` — decodes a `GetInfoEx`
+    /// response straight into `inner.playback`, unconditionally (the
+    /// mutually-exclusive dispatch in `dispatch_fast_poll()`/`trigger_poll()`
+    /// already guarantees this is only ever called for a device actually
+    /// configured for `AccessMethod::UpnpPolled`). Ported from the HTTP path
+    /// rather than left as "whatever GetInfoEx happens to cover":
+    /// - **Mode/input-change detection** (`info.play_type`, confirmed
+    ///   byte-identical to HTTP `mode` — see `InfoEx::play_type`'s doc
+    ///   comment) drives the same art-clear + capability self-correction +
+    ///   `input-changed` signal `process_poll_http()`'s `mode_changed` block
+    ///   does, since nothing else runs on a tick that only fetched UPnP.
+    /// - **Volume self-heal**: `SetVolume` still goes over HTTP regardless
+    ///   of which backend supplies reads (see `do_set_volume`), so the same
+    ///   "don't clobber an in-flight optimistic write" guard
+    ///   (`target_volume < 0`) applies here too.
+    /// - **Per-field diffing**, not a coarse "did the whole response change
+    ///   at all" check: `GetInfoEx` includes `RelTime`, which changes every
+    ///   second regardless of anything the user cares about, so a coarse
+    ///   check would be true almost every tick and flood the UI with
+    ///   redundant redraws.
+    fn process_poll_upnp(&self, info: Option<upnp::InfoEx>, art_tx: &async_channel::Sender<Vec<u8>>) {
+        let Some(info) = info else { return };
+        let mut playback_mask: u32 = 0;
+
+        // 1. Borrow: diff each field group against the previous response.
+        let (
+            mode_changed, prev_mode,
+            status_changed, time_changed, mute_changed, vol_changed,
+            source_changed, title_changed, artist_changed, album_changed, quality_changed,
+        ) = {
+            let inner = self.imp().inner.borrow();
+            let prev = inner.upnp_info.as_ref();
+            let prev_mode = inner.current_mode;
+            let status_changed = prev.map_or(true, |p| {
+                p.transport_state != info.transport_state || p.loop_mode != info.loop_mode
+            });
+            let time_changed = prev.map_or(true, |p| {
+                p.rel_time != info.rel_time || p.track_duration != info.track_duration
+            });
+            let mute_changed = prev.map_or(true, |p| p.current_mute != info.current_mute);
+            // Same self-heal reasoning as process_poll_http()'s vol_changed
+            // — see its doc comment. `SetVolume` still goes over HTTP
+            // regardless of poll backend, so the debounce/`target_volume`
+            // state is shared between both paths.
+            let vol_changed = inner.target_volume < 0 && info.current_volume != inner.playback.volume;
+            let source_changed = prev.map_or(true, |p| {
+                p.play_medium != info.play_medium || p.track_source != info.track_source
+            });
+            let title_changed  = prev.map_or(true, |p| p.title != info.title);
+            let artist_changed = prev.map_or(true, |p| p.artist != info.artist);
+            let album_changed  = prev.map_or(true, |p| p.album != info.album);
+            let quality_changed = prev.map_or(true, |p| {
+                p.actual_quality != info.actual_quality || p.bitrate != info.bitrate
+                    || p.format_s != info.format_s || p.rate_hz != info.rate_hz
+                    || p.protocol_info != info.protocol_info
+            });
+            (
+                info.play_type != prev_mode, prev_mode,
+                status_changed, time_changed, mute_changed, vol_changed,
+                source_changed, title_changed, artist_changed, album_changed, quality_changed,
+            )
+        };
+
+        if mute_changed || vol_changed { playback_mask |= playback_changed::VOLUME; }
+        if time_changed                { playback_mask |= playback_changed::TIME; }
+        if status_changed || source_changed || quality_changed { playback_mask |= playback_changed::OTHER; }
+        if title_changed  { playback_mask |= playback_changed::TITLE; }
+        if artist_changed { playback_mask |= playback_changed::ARTIST; }
+        if album_changed  { playback_mask |= playback_changed::ALBUM; }
+
+        if mode_changed {
+            dbg(&format!("input changed (upnp): mode {prev_mode} → {}", info.play_type));
+        }
+
+        let mut art_url_for_fetch: Option<String> = None;
+        let mut art_cleared = false;
+
+        // 2. Borrow_mut: decode only what changed, straight into `playback`.
+        {
+            let mut inner = self.imp().inner.borrow_mut();
+            if mode_changed {
+                Self::apply_mode_change(&mut inner, info.play_type);
+            }
+            if status_changed {
+                inner.playback.status = playback::decode_status_upnp(&info.transport_state);
+                let (shuffle, repeat) = playback::decode_loop_mode_http(info.loop_mode);
+                inner.playback.shuffle = shuffle;
+                inner.playback.repeat  = repeat;
+            }
+            if time_changed {
+                inner.playback.position = playback::decode_hms_duration(&info.rel_time);
+                inner.playback.duration = playback::decode_hms_duration(&info.track_duration);
+            }
+            // See doc comment above: don't clobber a pending optimistic write.
+            if vol_changed  { inner.playback.volume = info.current_volume; }
+            if mute_changed { inner.playback.muted  = info.current_mute; }
+            if source_changed {
+                inner.playback.source_name =
+                    playback::decode_source_name_upnp(&info.play_medium, &info.track_source);
+            }
+            if title_changed  { inner.playback.title  = Rc::from(info.title.as_str()); }
+            if artist_changed { inner.playback.artist = Rc::from(info.artist.as_str()); }
+            if album_changed  { inner.playback.album  = Rc::from(info.album.as_str()); }
+            if quality_changed {
+                let (quality, codec_label) = playback::decode_quality_upnp(
+                    info.actual_quality.as_deref(),
+                    &info.bitrate, &info.format_s, &info.rate_hz,
+                    info.protocol_info.as_deref(),
+                    &info.play_medium,
+                );
+                inner.playback.quality     = quality;
+                inner.playback.codec_label = codec_label;
+            }
+
+            let art_url = info.album_art_uri.clone().unwrap_or_default();
+            let cached = inner.playback.art_url.as_deref().unwrap_or("");
+            if art_url != cached {
+                inner.playback.art_url = if art_url.is_empty() {
+                    None
+                } else {
+                    Some(Rc::from(art_url.as_str()))
+                };
+                Self::replace_artwork(&mut inner, None);
+                if art_url.is_empty() {
+                    dbg("upnp art url cleared: current track has no artwork");
+                    art_cleared = true;
+                } else {
+                    art_url_for_fetch = Some(art_url);
+                }
+            }
+
+            inner.upnp_info = Some(info);
+        }
+
+        // 3. Side effects, after the borrow is dropped.
+        if mode_changed {
+            dbg("signal: input-changed");
+            self.emit_by_name::<()>("input-changed", &[]);
+        }
+        if art_cleared { playback_mask |= playback_changed::ARTWORK; }
+        if let Some(url) = art_url_for_fetch {
+            dbg(&format!("upnp art url changed: {url}"));
+            self.fetch_art(url, art_tx);
+        }
         if playback_mask != 0 {
             dbg(&format!("signal: playback-changed mask={:#x}", playback_mask));
             self.emit_by_name::<()>("playback-changed", &[&playback_mask]);
@@ -1256,26 +1538,8 @@ impl DeviceState {
 
     /// Request an input source switch.
     ///
-    /// `current_mode` is now a plain `i32` (the raw wire `mode` value —
-    /// see `process_poll`), so it can no longer hold `src`, a canonical
-    /// source-ID *string* (e.g. "bluetooth", from `sw.ids`/
-    /// `capabilities::detect_inputs()`) — there's no clean, unambiguous
-    /// integer to derive from it up front (several raw modes can map to the
-    /// same canonical ID, e.g. 11/42/51 all mean "udisk"). No optimistic
-    /// write of the *new* value here — instead `current_mode` is reset to
-    /// `-1` (the same "unknown" sentinel used before the first poll ever
-    /// arrives), which *invalidates* rather than guesses. `process_poll()`
-    /// only re-decodes/signals a field when it differs from the cached
-    /// value, so if the device silently rejects the switch (wrong string
-    /// case, unsupported source, etc.) and its real mode never actually
-    /// changes, comparing against the *old* correct value would never
-    /// detect a difference — `input-changed` would never fire again, and
-    /// the dropdown would stay stuck showing whatever the user just picked
-    /// forever, out of sync with the real device. Invalidating instead of
-    /// leaving the old value in place guarantees the very next poll tick
-    /// differs from `-1` regardless of which mode the device is actually
-    /// on, forcing exactly one `input-changed` re-sync — to the new mode on
-    /// success, or back to the unchanged real one on failure.
+    /// `current_mode` is set to -1 during a switch. This will force a refresh and
+    /// signal one the next poll.
     pub fn switch_input(&self, src: String) {
         let client = match self.imp().inner.borrow().client.clone() {
             Some(c) => c,
@@ -1283,6 +1547,7 @@ impl DeviceState {
         };
         self.imp().inner.borrow_mut().current_mode = -1;
         self.rt().spawn(async move { let _ = client.switch_input(&src).await; });
+        // TODO: trigger_poll()
     }
 
     // ── Volume / mute commands ────────────────────────────────────────────────
@@ -1321,7 +1586,10 @@ impl DeviceState {
     pub fn do_play_pause(&self) {
         let inner = self.imp().inner.borrow();
         let Some(client) = inner.client.clone() else { return };
-        let playing = inner.player_status.as_ref().map(|s| s.status == "play").unwrap_or(false);
+        // Canonical `playback.status`, not the raw HTTP `player_status`
+        // cache — the latter never updates on a tick that only polled UPnP,
+        // which would make this always send `play` on a UpnpPolled device.
+        let playing = inner.playback.status == playback::PlaybackStatus::Playing;
         drop(inner);
         self.rt().spawn(async move {
             if playing { let _ = client.pause().await; } else { let _ = client.play().await; }
@@ -1365,17 +1633,30 @@ impl DeviceState {
         let rt = self.rt();
         glib::timeout_add_local_once(delay, move || {
             let Some(ds) = ds.upgrade() else { return };
-            let client = ds.imp().inner.borrow().client.clone();
-            if let Some(c) = client {
-                ds.imp().inner.borrow_mut().last_poll = Some(Instant::now());
-                // Same "unconditional, no real second branch yet" reasoning
-                // as the main fast-poll dispatch in `start_unified_timer` —
-                // see that comment.
-                rt.spawn(async move {
-                    let status = c.get_status().await.ok();
-                    let meta   = c.get_meta_info().await.ok();
-                    let _ = tx.send(PollData { status, meta }).await;
-                });
+            let (wants_upnp, upnp_client, client) = {
+                let inner = ds.imp().inner.borrow();
+                (inner.access == AccessMethod::UpnpPolled, inner.upnp_client.clone(), inner.client.clone())
+            };
+            // Same either/or dispatch shape (and same "no HTTP fallback"
+            // rule) as the main fast-poll in `dispatch_fast_poll` — see
+            // that comment.
+            match (wants_upnp, upnp_client) {
+                (true, None) => {}
+                (true, Some(uc)) => {
+                    ds.imp().inner.borrow_mut().last_poll = Some(Instant::now());
+                    rt.spawn(async move {
+                        let info = fetch_upnp_fast_poll(uc).await;
+                        let _ = tx.send(PollData::Upnp { info }).await;
+                    });
+                }
+                (false, _) => {
+                    let Some(c) = client else { return };
+                    ds.imp().inner.borrow_mut().last_poll = Some(Instant::now());
+                    rt.spawn(async move {
+                        let (status, meta) = fetch_http_fast_poll(c).await;
+                        let _ = tx.send(PollData::Http { status, meta }).await;
+                    });
+                }
             }
         });
     }
@@ -1414,13 +1695,8 @@ impl DeviceState {
         self.imp().inner.borrow().playback.muted
     }
 
-    /// Return the effective volume, straight from canonical state — `None`
-    /// only until the first poll response ever arrives, so the slider
-    /// doesn't snap to a false 0 before then.
-    pub fn get_vol(&self) -> Option<u32> {
-        let inner = self.imp().inner.borrow();
-        inner.player_status.as_ref()?;
-        Some(inner.playback.volume)
+    pub fn get_vol(&self) -> u32 {
+        self.imp().inner.borrow().playback.volume
     }
 
     pub fn output_status(&self) -> Option<AudioOutputStatus> {
