@@ -48,6 +48,10 @@ const SLOW_POLL_FAIL_THRESHOLD: u32 = 3;
 const SLOW_POLL_FAIL_RETRY: Duration = Duration::from_secs(1);
 /// Volume commands are rate-limited: at most one per this interval.
 const VOLUME_DEBOUNCE: Duration = Duration::from_millis(500);
+/// `trigger_poll()`'s one-shot follow-up poll is spaced at least this long
+/// after whichever poll happened most recently — long enough that a real
+/// device has almost certainly applied the command that prompted it.
+const POLL_SETTLE_DELAY: Duration = Duration::from_millis(400);
 
 use glib::prelude::*;
 use glib::subclass::prelude::*;
@@ -236,6 +240,12 @@ struct Inner {
     /// When the current/most recent slow-poll cycle started (None = never;
     /// triggers a new cycle immediately).
     last_slow_poll:   Option<Instant>,
+    /// When the last fast (status/metadata) poll was dispatched — either a
+    /// regular 1s-tick poll or a `trigger_poll()` one-shot. Used to space
+    /// `trigger_poll()`'s one-shot polls at least `POLL_SETTLE_DELAY` after
+    /// whichever poll happened most recently, rather than always waiting a
+    /// fixed delay from "now".
+    last_poll:        Option<Instant>,
     /// `true` while a slow-poll cycle is actively rotating through phases
     /// (one per tick); `false` while idle between cycles.
     slow_poll_active: bool,
@@ -271,6 +281,7 @@ impl Default for Inner {
             target_volume:    -1,
             last_volume_cmd:  None,
             last_slow_poll:   None,
+            last_poll:        None,
             slow_poll_active: false,
             slow_poll_phase:  SlowPollPhase::FIRST,
             slow_poll_failures: 0,
@@ -699,6 +710,7 @@ impl DeviceState {
     /// actually fetch something, rather than introducing a branch now that
     /// would just call the exact same two functions either way.
     fn dispatch_fast_poll(&self, client: &WiimClient, poll_tx: &async_channel::Sender<PollData>) {
+        self.imp().inner.borrow_mut().last_poll = Some(Instant::now());
         let cp = client.clone();
         let tx = poll_tx.clone();
         self.rt().spawn(async move {
@@ -1243,7 +1255,7 @@ impl DeviceState {
     pub fn do_set_mute(&self, muted: bool) {
         let Some(client) = self.imp().inner.borrow().client.clone() else { return };
         self.rt().spawn(async move { let _ = client.set_mute(muted).await; });
-        self.trigger_poll_after(400);
+        self.trigger_poll();
     }
 
     pub fn do_set_volume(&self, vol: u32) {
@@ -1279,35 +1291,48 @@ impl DeviceState {
         self.rt().spawn(async move {
             if playing { let _ = client.pause().await; } else { let _ = client.play().await; }
         });
-        self.trigger_poll_after(400);
+        self.trigger_poll();
     }
 
     pub fn do_prev(&self) {
         let Some(client) = self.imp().inner.borrow().client.clone() else { return };
         self.rt().spawn(async move { let _ = client.prev().await; });
-        self.trigger_poll_after(400);
+        self.trigger_poll();
     }
 
     pub fn do_next(&self) {
         let Some(client) = self.imp().inner.borrow().client.clone() else { return };
         self.rt().spawn(async move { let _ = client.next().await; });
-        self.trigger_poll_after(400);
+        self.trigger_poll();
     }
 
     pub fn do_set_loop_mode(&self, mode: i32) {
         let Some(client) = self.imp().inner.borrow().client.clone() else { return };
         self.rt().spawn(async move { let _ = client.set_loop_mode(mode).await; });
-        self.trigger_poll_after(400);
+        self.trigger_poll();
     }
 
-    fn trigger_poll_after(&self, delay_ms: u64) {
+    /// Trigger a one-shot status/metadata poll after issuing a device
+    /// command, instead of waiting for the next regular ~1s tick. Spaced at
+    /// least `POLL_SETTLE_DELAY` after whichever poll happened most
+    /// recently (regular tick or a previous `trigger_poll()`) — e.g. if the
+    /// last poll was 200ms ago, this fires in 200ms, not a full
+    /// `POLL_SETTLE_DELAY` from now; if it's already been longer than that,
+    /// this fires on the next main-loop iteration.
+    fn trigger_poll(&self) {
+        let now   = Instant::now();
+        let delay = match self.imp().inner.borrow().last_poll {
+            Some(t) => POLL_SETTLE_DELAY.saturating_sub(now.duration_since(t)),
+            None    => Duration::ZERO,
+        };
         let Some(tx) = self.imp().poll_tx.borrow().clone() else { return };
         let ds = self.downgrade();
         let rt = self.rt();
-        glib::timeout_add_local_once(Duration::from_millis(delay_ms), move || {
+        glib::timeout_add_local_once(delay, move || {
             let Some(ds) = ds.upgrade() else { return };
             let client = ds.imp().inner.borrow().client.clone();
             if let Some(c) = client {
+                ds.imp().inner.borrow_mut().last_poll = Some(Instant::now());
                 // Same "unconditional, no real second branch yet" reasoning
                 // as the main fast-poll dispatch in `start_unified_timer` —
                 // see that comment.
