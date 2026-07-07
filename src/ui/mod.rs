@@ -360,9 +360,25 @@ struct DeviceWindowInner {
     /// Deferred config-save timer: cancelled and rescheduled on every
     /// state change so only one disk write happens after a burst of events.
     config_save_timer:   Rc<RefCell<Option<glib::SourceId>>>,
-    /// SSID for which window state was last applied; guards against
-    /// re-applying on every device-changed fire for the same device.
+    /// UUID this window is/was for — pre-seeded at construction with the
+    /// *expected* UUID (from `config`, before any live connection) so
+    /// `DeviceWindow::uuid()` can dedup windows even before the device has
+    /// answered its first API call; updated to the live UUID once known.
+    /// **Not** by itself a record of "has window state actually been
+    /// applied yet" — see `window_state_loaded`, which exists precisely
+    /// because for any already-known device this starts out equal to the
+    /// live UUID it will later be compared against, so it can't answer
+    /// that question on its own.
     applied_window_key: RefCell<String>,
+    /// Whether `apply_device_window_state()`'s body has actually run yet
+    /// for the current connection. Starts `false` regardless of what
+    /// `applied_window_key` was pre-seeded with, specifically so the very
+    /// first real call for an already-known device (where
+    /// `applied_window_key` already equals the incoming UUID from
+    /// construction) doesn't get mistaken for "already applied" and
+    /// silently skip loading the saved window size/panel state/
+    /// `playback_access_override` — a real bug this field fixes.
+    window_state_loaded: Cell<bool>,
     /// Guards `cleanup()` so its body only actually runs once, even though
     /// it's invoked from both `close-request` and `connect_destroy` for a
     /// single user-initiated close. Nothing in `cleanup()` benefits from
@@ -509,7 +525,10 @@ impl DeviceWindow {
         let init_dev_cfg = config::with(|cfg| cfg.device(&cfg_uuid));
 
         let ds = match device_spec.as_ref() {
-            Some(spec) => device_manager.get(&spec.uuid, &spec.ip, spec.tls_mode),
+            Some(spec) => device_manager.get(
+                &spec.uuid, &spec.ip, spec.tls_mode,
+                init_dev_cfg.playback_access_override,
+            ),
             None => {
                 // No device spec: create a standalone state that isn't wired to
                 // any device yet; polling still starts so the UI can be shown.
@@ -678,6 +697,7 @@ impl DeviceWindow {
             settle_timer,
             config_save_timer,
             applied_window_key: RefCell::new(cfg_uuid.clone()),
+            window_state_loaded: Cell::new(false),
             cleaned_up: Cell::new(false),
             mini,
             mini_mode:         RefCell::new(false),

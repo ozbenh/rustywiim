@@ -79,7 +79,7 @@ use super::api::{
 };
 use super::capabilities::{self, DeviceCapabilities};
 use super::playback;
-use super::playback::{PlaybackAccessConfig, PlaybackAccessOverrideRef, PlaybackState};
+use super::playback::{AccessMethod, PlaybackState};
 
 // ── Connection state ──────────────────────────────────────────────────────────
 
@@ -199,16 +199,16 @@ struct Inner {
     /// field by field, by `process_poll()` rather than rebuilt and diffed
     /// wholesale every tick.
     playback:        PlaybackState,
-    /// Effective per-field-group backend selection for this device:
-    /// capability-profile default with any `access_override` applied on top.
-    /// Recomputed by `recompute_access()`.
-    access:          PlaybackAccessConfig,
-    /// Last override pushed in via `set_playback_access_override()` (from
-    /// Settings' Advanced panel, via `config::DeviceConfig::
-    /// playback_access_override`) — kept so `recompute_access()` can
+    /// Backend selection for this device: capability-profile default with
+    /// `access_override` applied on top, if set. Recomputed by
+    /// `recompute_access()`.
+    access:          AccessMethod,
+    /// Access method override pushed in via `set_playback_access_override()`
+    /// (from Settings' Advanced panel) — kept so `recompute_access()` can
     /// re-derive `access` when capabilities change without the caller
-    /// needing to resupply it.
-    access_override: PlaybackAccessOverrideRef,
+    /// needing to resupply it. `None` means "use the device profile's
+    /// default".
+    access_override: Option<AccessMethod>,
     output_status:   Option<AudioOutputStatus>,
     mode_renames:    HashMap<String, String>,
     /// Raw wire `mode` value from the last poll; -1 = not yet known (see
@@ -266,8 +266,8 @@ impl Default for Inner {
             player_status:   None,
             metadata:        None,
             playback:        PlaybackState::default(),
-            access:          PlaybackAccessConfig::default(),
-            access_override: PlaybackAccessOverrideRef::default(),
+            access:          AccessMethod::Http,
+            access_override: None,
             output_status:   None,
             mode_renames:    HashMap::new(),
             current_mode:    -1,
@@ -364,16 +364,33 @@ impl DeviceState {
 
     // ── Connection ────────────────────────────────────────────────────────────
 
-    /// Switch to a new device IP.  Clears all cached state, saves config,
-    /// emits `device-changed` immediately (with cleared state so the UI can
-    /// show "Connecting…"), then fetches device info asynchronously and emits
+    /// Switch to a new device IP.  Clears all cached state, emits
+    /// `device-changed` immediately (with cleared state so the UI can show
+    /// "Connecting…"), then fetches device info asynchronously and emits
     /// `device-changed` again when the data arrives.
     ///
     /// `expected_uuid` — when `Some`, the UUID reported by the device must
     /// match; on mismatch the connection is aborted and state reverts to
     /// `Disconnected` so the caller can try a different IP.  Pass `None` for
     /// user-initiated connects where the right device is already known.
-    pub fn set_device(&self, ip: &str, tls: TlsMode, expected_uuid: Option<&str>) {
+    ///
+    /// `access_override` is established here, up front — not via a separate,
+    /// later call to `set_playback_access_override()` that has to land
+    /// before the first poll tick to matter. There's no window where this
+    /// `DeviceState` exists with the wrong override, because there's no
+    /// point at which it exists without one at all. Since this resets
+    /// *everything* (`*inner = Inner::default()`), including whatever
+    /// override an already-connected `DeviceState` had, a caller
+    /// reconnecting an existing instance (`DeviceManager::update_ip()`)
+    /// must read the current value first (`playback_access_override()`)
+    /// and pass it back in, not just a fresh default.
+    pub fn set_device(
+        &self,
+        ip: &str,
+        tls: TlsMode,
+        expected_uuid: Option<&str>,
+        access_override: Option<AccessMethod>,
+    ) {
         // Apply --tls CLI override if set; otherwise use the caller-supplied mode.
         let tls = {
             let global = TlsMode::from_usize(TLS_MODE.load(Ordering::Relaxed));
@@ -387,7 +404,9 @@ impl DeviceState {
             inner.ip                = ip.to_string();
             inner.connection_state = ConnectionState::Connecting;
             inner.expected_uuid    = expected_uuid.map(String::from);
+            inner.access_override  = access_override;
         }
+        self.recompute_access();
         dbg("signal: device-changed (connecting)");
         self.emit_by_name::<()>("device-changed", &[]);
         self.fetch_device_info();
@@ -514,27 +533,45 @@ impl DeviceState {
 
     // ── Playback access-method configuration ─────────────────────────────────
 
-    /// Recompute the effective `PlaybackAccessConfig` from this device's
-    /// capability profile plus whatever override is currently stored (see
+    /// Recompute the effective `AccessMethod` from this device's capability
+    /// profile plus whatever override is currently stored (see
     /// `access_override`). Called whenever either input changes: after
     /// capabilities are (re)detected, and from `set_playback_access_override`.
     fn recompute_access(&self) {
         let mut inner = self.imp().inner.borrow_mut();
         let base = inner.capabilities.as_ref()
             .map(|c| c.playback_access())
-            .unwrap_or_default();
-        let over = inner.access_override;
-        inner.access = base.with_overrides(over);
-        inner.access.warn_unimplemented();
+            .unwrap_or(AccessMethod::Http);
+        inner.access = inner.access_override.unwrap_or(base);
+        // Debug-only visibility aid: not implemented yet, falls back
+        // silently to HTTP in the poll loop otherwise, which would be
+        // surprising without this note.
+        if DEBUG_STATE.load(Ordering::Relaxed) && inner.access == AccessMethod::UpnpPolled {
+            dbg(
+                "access config: set to UpnpPolled, which isn't implemented \
+                 yet — falling back to the HTTP default"
+            );
+        }
     }
 
     /// Push a field-diagnostics override (from Settings' "Device -> Advanced"
     /// panel, sourced from `config::DeviceConfig::playback_access_override`)
     /// in and recompute the effective access config immediately, so a change
-    /// takes effect on the next poll tick without reconnecting.
-    pub fn set_playback_access_override(&self, over: PlaybackAccessOverrideRef) {
+    /// takes effect on the next poll tick without reconnecting. For the
+    /// *initial* value, prefer passing it to `set_device()` directly instead
+    /// — this method remains for live changes to an already-connected device.
+    pub fn set_playback_access_override(&self, over: Option<AccessMethod>) {
         self.imp().inner.borrow_mut().access_override = over;
         self.recompute_access();
+    }
+
+    /// Current access-method override, as last established by `set_device()`
+    /// or `set_playback_access_override()`. Read by
+    /// `DeviceManager::update_ip()` so reconnecting to a new IP (device
+    /// moved) doesn't lose it — `set_device()`'s full state reset would
+    /// otherwise wipe it back to `None`.
+    pub fn playback_access_override(&self) -> Option<AccessMethod> {
+        self.imp().inner.borrow().access_override
     }
 
     // ── Polling ───────────────────────────────────────────────────────────────
@@ -699,16 +736,14 @@ impl DeviceState {
     /// Fast poll — status + metadata, every tick this function is called
     /// (i.e. whenever a client exists and this tick isn't a reconnect
     /// attempt; see `do_poll()`). Deliberately unconditional rather than
-    /// checking `inner.access` (the resolved `PlaybackAccessConfig`): every
-    /// field group's only real fetch path today is HTTP —
+    /// checking `inner.access`: the only real fetch path today is HTTP —
     /// `AccessMethod::UpnpPolled` has no fetch implementation in
     /// `device/upnp.rs` yet and would have to fall back to these same two
-    /// calls regardless of which group selected it (see
-    /// `PlaybackAccessConfig::warn_unimplemented()`, called from
-    /// `recompute_access()`). So there is currently no real second branch
-    /// for `access` to select between — add one here once `upnp.rs` can
-    /// actually fetch something, rather than introducing a branch now that
-    /// would just call the exact same two functions either way.
+    /// calls regardless (see `recompute_access()`'s debug warning). So
+    /// there is currently no real second branch for `access` to select
+    /// between — add one here once `upnp.rs` can actually fetch something,
+    /// rather than introducing a branch now that would just call the exact
+    /// same two functions either way.
     fn dispatch_fast_poll(&self, client: &WiimClient, poll_tx: &async_channel::Sender<PollData>) {
         self.imp().inner.borrow_mut().last_poll = Some(Instant::now());
         let cp = client.clone();

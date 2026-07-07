@@ -5,24 +5,15 @@
 /// - The canonical `PlaybackState` struct + its component enums, built once
 ///   per device and updated in place by `state.rs` (never rebuilt/diffed
 ///   wholesale — see `state.rs::process_poll`).
-/// - `AccessMethod`/`PlaybackAccessConfig`: per-field-group backend
-///   selection, driven by device capability profiles and optionally
-///   overridden per-device via Settings' Advanced panel.
+/// - `AccessMethod`: which backend supplies playback state for a device,
+///   driven by device capability profiles and optionally overridden
+///   per-device via Settings' Advanced panel.
 /// - The `decode_*_http` functions: LinkPlay wire format -> canonical fields.
 ///   Presentation (turning canonical values into display strings/icons)
 ///   stays in `ui/playback.rs`.
 
 use std::rc::Rc;
-use std::sync::atomic::Ordering;
 use std::time::Duration;
-
-use super::state::DEBUG_STATE;
-
-fn dbg(msg: &str) {
-    if DEBUG_STATE.load(Ordering::Relaxed) {
-        println!("[playback] {msg}");
-    }
-}
 
 // ── Canonical playback state ──────────────────────────────────────────────────
 
@@ -124,127 +115,30 @@ pub struct AudioQuality {
     pub bit_depth:       Option<u32>,
 }
 
-// ── Access method / per-field backend selection ───────────────────────────────
+// ── Access method ─────────────────────────────────────────────────────────────
 
+/// The AccessMethod indicates whether the player status is obtained from
+/// the HTTP(S) LinkPlay API or via UPnP `GetInfoEx`.
+///
+/// In the current implementation, it's all one or the other. If we find
+/// devices that really need some kind of mix & match, we'll add specific
+/// variant to this enumeration (there are hints that some AudioPro devices
+/// might but I don't have access to one nor have API captures yet).
+///
+/// We might complement this with UPnP GENA events in the future.
+///
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AccessMethod {
     /// `getPlayerStatusEx` (or whichever of `getPlayerStatusEx`/
     /// `getPlayerStatus`/`getStatusEx` `WiimClient::get_status()` resolves to
     /// — that fallback probing already lives in `api.rs` and is reused
-    /// as-is, not duplicated here) — today's only source for
-    /// status/timing/volume/mute/source.
-    HttpPlayerStatusEx,
-    /// `getMetaInfo` — today's only source for metadata/artwork.
-    HttpMetaInfo,
-    /// Not yet implemented — accepted by config/UI plumbing so the choice is
-    /// persisted and visible, but `state.rs`'s poll loop has no UPnP fetch
-    /// path yet and falls back to the HTTP default with a debug warning if
-    /// selected.
+    /// as-is, not duplicated here) plus `getMetaInfo` — today's only source
+    /// for all of playback state.
+    Http,
+    /// UPnP `GetInfoEx` — a single fat action that, on WiiM hardware, covers
+    /// everything the two HTTP calls above cover combined.
     UpnpPolled,
-}
-
-/// Per-device-profile choice of which backend supplies each field group of
-/// `PlaybackState`. Static — decided once from the device's capability
-/// profile (optionally overridden per-device via Settings' Advanced panel),
-/// not re-arbitrated live between two concurrently-running transports.
-///
-/// Grouped rather than one flag per struct field: `getPlayerStatusEx`
-/// returns status/volume/mute/position/duration/mode/vendor in one call, and
-/// no prior-art project was found splitting position from duration, or
-/// volume from mute, across different sources — so those fold into `timing`
-/// and `volume`. `source` stays independent rather than folded into `status`
-/// or `metadata`: the natural bundling differs by backend (HTTP: rides with
-/// `status`; UPnP: rides with `metadata`), and it's unverified whether
-/// `getMetaInfo` might carry better source-identifying info than
-/// `getPlayerStatusEx`'s `mode`/`vendor`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PlaybackAccessConfig {
-    pub status:   AccessMethod,
-    pub timing:   AccessMethod,
-    pub volume:   AccessMethod,
-    pub metadata: AccessMethod,
-    pub artwork:  AccessMethod,
-    pub source:   AccessMethod,
-}
-
-impl PlaybackAccessConfig {
-    /// Today's actual behavior, with the two HTTP endpoints named explicitly
-    /// instead of a single generic `Http`. `const fn` (not just `Default`)
-    /// so `capabilities.rs`'s `static FamilyProfile` table entries can use
-    /// it directly.
-    pub const fn all_http() -> Self {
-        Self {
-            status:   AccessMethod::HttpPlayerStatusEx,
-            timing:   AccessMethod::HttpPlayerStatusEx,
-            volume:   AccessMethod::HttpPlayerStatusEx,
-            metadata: AccessMethod::HttpMetaInfo,
-            artwork:  AccessMethod::HttpMetaInfo,
-            source:   AccessMethod::HttpPlayerStatusEx,
-        }
-    }
-}
-
-impl Default for PlaybackAccessConfig {
-    fn default() -> Self {
-        Self::all_http()
-    }
-}
-
-impl PlaybackAccessConfig {
-    /// Apply a per-device override (`None` entries mean "keep the profile
-    /// default"), producing the effective config for this device. See
-    /// `config::PlaybackAccessOverride` — deliberately never the other way
-    /// around (never resolve an override's `None` into a concrete value
-    /// before *saving* it back to config; that's a config.rs/settings.rs
-    /// concern, not this function's).
-    pub fn with_overrides(mut self, over: PlaybackAccessOverrideRef) -> Self {
-        if let Some(v) = over.status   { self.status   = v; }
-        if let Some(v) = over.timing   { self.timing   = v; }
-        if let Some(v) = over.volume   { self.volume   = v; }
-        if let Some(v) = over.metadata { self.metadata = v; }
-        if let Some(v) = over.artwork  { self.artwork  = v; }
-        if let Some(v) = over.source   { self.source   = v; }
-        self
-    }
-
-    /// Debug-log (gated on `DEBUG_STATE`) any field group set to
-    /// `AccessMethod::UpnpPolled` — not implemented yet, falls back silently
-    /// to HTTP in the poll loop otherwise, which would be surprising without
-    /// this note.
-    pub fn warn_unimplemented(&self) {
-        if !DEBUG_STATE.load(Ordering::Relaxed) {
-            return;
-        }
-        let groups: &[(&str, AccessMethod)] = &[
-            ("status", self.status), ("timing", self.timing),
-            ("volume", self.volume), ("metadata", self.metadata),
-            ("artwork", self.artwork), ("source", self.source),
-        ];
-        for (name, method) in groups {
-            if *method == AccessMethod::UpnpPolled {
-                dbg(&format!(
-                    "access config: {name} set to UpnpPolled, which isn't \
-                     implemented yet — falling back to the HTTP default"
-                ));
-            }
-        }
-    }
-}
-
-/// Plain-field mirror of `config::PlaybackAccessOverride`, used so this
-/// module doesn't need to depend on `config` (which lives in the main
-/// binary crate, not this library crate) just to apply an override.
-/// `config.rs` builds one of these from its own `PlaybackAccessOverride`
-/// when resolving the effective config for a device.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct PlaybackAccessOverrideRef {
-    pub status:   Option<AccessMethod>,
-    pub timing:   Option<AccessMethod>,
-    pub volume:   Option<AccessMethod>,
-    pub metadata: Option<AccessMethod>,
-    pub artwork:  Option<AccessMethod>,
-    pub source:   Option<AccessMethod>,
 }
 
 // ── HTTP (LinkPlay getPlayerStatusEx / getMetaInfo) decoders ──────────────────

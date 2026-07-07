@@ -21,6 +21,7 @@ use glib::clone::Downgrade;
 use gtk::glib;
 
 use crate::device::api::TlsMode;
+use crate::device::playback::AccessMethod;
 use crate::device::state::DeviceState;
 
 struct Inner {
@@ -43,12 +44,26 @@ impl DeviceManager {
     /// Return a live `DeviceState` for `uuid` + `ip` + `tls`.
     ///
     /// * **Existing entry**: if a live `DeviceState` for this UUID is already
-    ///   held by a consumer, that same object is returned.  The `ip`/`tls`
-    ///   arguments are ignored (the device is already connected).
-    /// * **New / stale entry**: a fresh `DeviceState` is created, connected,
-    ///   polling is started, and a weak reference is stored.
+    ///   held by a consumer, that same object is returned.  The `ip`/`tls`/
+    ///   `access_override` arguments are ignored (the device is already
+    ///   connected and configured).
+    /// * **New / stale entry**: a fresh `DeviceState` is created, given
+    ///   `access_override` up front (before polling starts, so the very
+    ///   first poll tick already uses it, not just ones after some later
+    ///   caller happens to push it in), connected, polling is started, and
+    ///   a weak reference is stored.
     /// * **Empty UUID**: creates an uncached standalone `DeviceState`.
-    pub fn get(&self, uuid: &str, ip: &str, tls: TlsMode) -> DeviceState {
+    ///
+    /// `access_override` takes the same `Option<AccessMethod>` shape
+    /// `DeviceState::set_playback_access_override()` already uses — already
+    /// `config`-free on its own (this module can't depend on `config`,
+    /// main-binary-crate only, kept out of the reusable device layer the
+    /// CLI tools link against), so the caller (the only one there is:
+    /// `ui/mod.rs`'s `DeviceWindow::new_for_device()`, which already has
+    /// the per-device config in hand at this exact point) can pass
+    /// `config::DeviceConfig::playback_access_override` straight through
+    /// with no conversion step.
+    pub fn get(&self, uuid: &str, ip: &str, tls: TlsMode, access_override: Option<AccessMethod>) -> DeviceState {
         let mut states = self.0.states.borrow_mut();
         // Prune stale entries lazily so the map doesn't grow unboundedly.
         states.retain(|_, w| w.upgrade().is_some());
@@ -60,7 +75,7 @@ impl DeviceManager {
         }
 
         let ds = DeviceState::new(self.0.rt.clone());
-        ds.set_device(ip, tls, None);
+        ds.set_device(ip, tls, None, access_override);
         ds.start_polling();
 
         if !uuid.is_empty() {
@@ -92,7 +107,11 @@ impl DeviceManager {
         };
         if let Some(ds) = ds {
             if ds.ip() != ip {
-                ds.set_device(ip, tls, Some(uuid));
+                // Preserve the current override across the reconnect —
+                // set_device() resets everything else too, and a device
+                // simply moving to a new IP shouldn't lose it.
+                let access_override = ds.playback_access_override();
+                ds.set_device(ip, tls, Some(uuid), access_override);
             }
         }
     }

@@ -578,19 +578,38 @@ impl DeviceWindowInner {
         }
     }
 
-    /// Apply per-device window/panel state for the device identified by
-    /// `uuid`.  Guarded by `applied_window_key` so repeated device-changed
-    /// fires for the same device don't override the user's manual resizes.
+    /// Apply per-device window/panel state (size, maximized, panel
+    /// visibility/width, mini-window width) for the device identified by
+    /// `uuid`. Guarded by `window_state_loaded`/`applied_window_key` so
+    /// repeated device-changed fires for the same device don't override the
+    /// user's manual resizes. Deliberately *not* just `applied_window_key ==
+    /// uuid`: that field is pre-seeded at construction with the *expected*
+    /// UUID (for `DeviceWindow::uuid()`'s dedup, before any live connection
+    /// exists), so for an already-known device it already equals `uuid` on
+    /// the very first real call here — checking it alone would mistake
+    /// "this is the device we expected to connect to" for "we already
+    /// loaded this device's window state," and silently skip loading the
+    /// saved window size/panel state at launch.
+    ///
+    /// Does *not* handle `playback_access_override` — that's established
+    /// earlier, at connection time (`DeviceManager::get()` passes it to
+    /// `DeviceState::set_device()` directly), specifically so it doesn't
+    /// depend on this function (widget/window-focused, not device-state
+    /// config) running at the right time at all.
     pub(super) fn apply_device_window_state(&self, uuid: &str) {
         if uuid.is_empty() { return; }
+        let already_loaded = self.window_state_loaded.get();
         let prev_uuid = self.applied_window_key.borrow().clone();
-        if prev_uuid == uuid { return; }
+        if already_loaded && prev_uuid == uuid { return; }
+        self.window_state_loaded.set(true);
 
         // Save the previous device's window state before overwriting the layout.
         // We use prev_uuid directly rather than ds.device_info() because by the
         // time this is called from apply_device_info, device_info() already points
-        // to the new device.
-        if !prev_uuid.is_empty() {
+        // to the new device. Only if a device's state was actually loaded before
+        // (not just pre-seeded at construction) — otherwise there's nothing real
+        // to save yet.
+        if already_loaded && !prev_uuid.is_empty() {
             let maximized = self.window.is_maximized();
             config::update(|cfg| {
                 let dev = cfg.device_mut(&prev_uuid);
@@ -643,11 +662,6 @@ impl DeviceWindowInner {
         if dev_cfg.mini_window_width > 0 {
             self.mini_win.set_default_width(dev_cfg.mini_window_width);
         }
-
-        // Load this device's Advanced-panel access-method override, if any.
-        // Settings' Advanced page re-pushes this immediately on every
-        // change; this is just the "loaded with device state" half.
-        self.ds.set_playback_access_override(dev_cfg.playback_access_override.as_ref());
     }
 
     /// Immediately persist the current device's window/panel state.

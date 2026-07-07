@@ -14,7 +14,7 @@ use adw::prelude::*;
 use gtk::glib;
 use gtk::Orientation;
 
-use crate::config::{self, PlaybackAccessOverride, ThemeMode};
+use crate::config::{self, ThemeMode};
 use crate::device::playback::AccessMethod;
 use crate::device::state::DeviceState;
 use crate::ui::DEBUG_UI;
@@ -118,7 +118,7 @@ impl SettingsWindow {
             .hexpand(true)
             .build();
 
-        let (appearance_page, reset_btn) = build_appearance_page();
+        let appearance_page = build_appearance_page();
         content_stack.add_named(&appearance_page, Some("appearance"));
 
         if let Some(ref d) = ds {
@@ -174,19 +174,6 @@ impl SettingsWindow {
         let toolbar_view = adw::ToolbarView::new();
         toolbar_view.add_top_bar(&header);
         toolbar_view.set_content(Some(&paned));
-
-        // Reset lives in the window's own bottom bar, outside the Appearance
-        // page's scrollable PreferencesGroup card — a "reset everything"
-        // action doesn't belong visually grouped with the individual rows
-        // it resets, and a bottom bar is also where it'll stay findable if
-        // more (non-Appearance) settings pages get added later.
-        let bottom_bar = gtk::Box::builder()
-            .orientation(Orientation::Horizontal)
-            .halign(gtk::Align::End)
-            .margin_top(6).margin_bottom(6).margin_end(12)
-            .build();
-        bottom_bar.append(&reset_btn);
-        toolbar_view.add_bottom_bar(&bottom_bar);
 
         let initial_title = match ds.as_ref().and_then(|d| d.device_info()) {
             Some(i) => format!("Settings ({})", i.device_name),
@@ -300,7 +287,7 @@ fn build_theme_list_factory() -> gtk::SignalListItemFactory {
     factory
 }
 
-fn build_appearance_page() -> (adw::PreferencesPage, gtk::Button) {
+fn build_appearance_page() -> adw::PreferencesPage {
     let theme = config::with(|cfg| cfg.theme);
 
     let theme_names: Vec<&str> = THEMES.iter().map(|(name, _)| *name).collect();
@@ -377,13 +364,12 @@ fn build_appearance_page() -> (adw::PreferencesPage, gtk::Button) {
     // widget setters below then push those values into the controls, which
     // fires each control's own connect_*_notify handler and writes the same
     // values back — a no-op given config::update()'s diff-before-persist, so
-    // this can't drift the widgets and the persisted config apart. Placed in
-    // the window's bottom bar (see SettingsWindow::new), not in this page's
-    // PreferencesGroup card, so it reads as a window-level action rather
-    // than one more settings row.
+    // this can't drift the widgets and the persisted config apart. Lives in
+    // this page's own actions group (not the individual settings' card),
+    // specific to Appearance — it only ever resets these four rows.
     let reset_btn = gtk::Button::builder()
-        .label("Reset to Defaults")
-        .css_classes(["flat"])
+        .label("Reset")
+        .valign(gtk::Align::Center)
         .build();
     reset_btn.connect_clicked(glib::clone!(
         @weak theme_row, @weak mini_modern_row, @weak animations_row, @weak accent_button
@@ -409,28 +395,36 @@ fn build_appearance_page() -> (adw::PreferencesPage, gtk::Button) {
     group.add(&animations_row);
     group.add(&accent_row);
 
+    let actions_group = adw::PreferencesGroup::new();
+    let reset_row = adw::ActionRow::builder()
+        .title("Reset to Defaults")
+        .build();
+    reset_row.add_suffix(&reset_btn);
+    actions_group.add(&reset_row);
+
     let page = adw::PreferencesPage::new();
     page.add(&group);
-    (page, reset_btn)
+    page.add(&actions_group);
+    page
 }
 
-// ── Device -> Advanced (playback access-method overrides) ────────────────────
+// ── Device -> Advanced (playback access-method override) ─────────────────────
 //
 // Field diagnostics, not a supported end-user-facing feature. Lets a user
-// experiencing a playback-state bug on real hardware try forcing one field
-// group's AccessMethod away from the device profile's default and report
-// back what does/doesn't work.
+// experiencing a playback-state bug on real hardware try forcing playback
+// state as a whole away from the device profile's default backend and
+// report back what does/doesn't work.
 
 /// Display name paired with the override value it writes. `None` ("Default")
 /// must always stay index 0 and must always serialize as an absent field
-/// (`PlaybackAccessOverride`'s `skip_serializing_if`) — never resolve it to
-/// a concrete `AccessMethod` before saving, or a future version's changed
-/// defaults would stop reaching users who left this on "Default".
+/// (`config::DeviceConfig::playback_access_override`'s `skip_serializing_if`)
+/// — never resolve it to a concrete `AccessMethod` before saving, or a
+/// future version's changed default would stop reaching users who left
+/// this on "Default".
 const ACCESS_METHOD_CHOICES: &[(&str, Option<AccessMethod>)] = &[
-    ("Default",             None),
-    ("HTTP: Player Status", Some(AccessMethod::HttpPlayerStatusEx)),
-    ("HTTP: Meta Info",     Some(AccessMethod::HttpMetaInfo)),
-    ("UPnP (polled)",       Some(AccessMethod::UpnpPolled)),
+    ("Default",       None),
+    ("HTTP",          Some(AccessMethod::Http)),
+    ("UPnP (polled)", Some(AccessMethod::UpnpPolled)),
 ];
 
 fn access_method_index(v: Option<AccessMethod>) -> u32 {
@@ -438,7 +432,7 @@ fn access_method_index(v: Option<AccessMethod>) -> u32 {
 }
 
 /// Display name for a *resolved* (never "Default" itself) `AccessMethod` —
-/// used to show the device profile's actual default under each row, not to
+/// used to show the device profile's actual default under the row, not to
 /// populate the dropdown (that's `ACCESS_METHOD_CHOICES` directly).
 fn access_method_label(v: AccessMethod) -> &'static str {
     ACCESS_METHOD_CHOICES.iter()
@@ -447,11 +441,11 @@ fn access_method_label(v: AccessMethod) -> &'static str {
         .unwrap_or("?")
 }
 
-/// `default` is this device profile's actual resolved default for the field
-/// group (from `DeviceCapabilities::playback_access()`), appended to the
-/// description text — libadwaita's own subtitle styling already renders at
-/// small/dim weight, so no custom CSS is needed. Kept on one line rather
-/// than a `\n`-separated second line: `ComboRow`'s subtitle label may not be
+/// `default` is this device profile's actual resolved default (from
+/// `DeviceCapabilities::playback_access()`), appended to the description
+/// text — libadwaita's own subtitle styling already renders at small/dim
+/// weight, so no custom CSS is needed. Kept on one line rather than a
+/// `\n`-separated second line: `ComboRow`'s subtitle label may not be
 /// configured for multi-line wrapping, and this couldn't be visually
 /// verified here (no display server in this environment) — a guaranteed-
 /// safe single line beats an unverified assumption about wrapping.
@@ -466,20 +460,14 @@ fn build_access_row(title: &str, subtitle: &str, default: AccessMethod, current:
     row
 }
 
-/// Persist `row`'s selection into `setter`'s field of this device's
-/// `playback_access_override`, then push the recomputed override into `ds`
-/// immediately so it takes effect on the next poll tick.
-fn wire_access_row(
-    row:    &adw::ComboRow,
-    uuid:   String,
-    ds:     DeviceState,
-    setter: fn(&mut PlaybackAccessOverride, Option<AccessMethod>),
-) {
+/// Persist `row`'s selection into this device's `playback_access_override`,
+/// then push the recomputed override into `ds` immediately so it takes
+/// effect on the next poll tick.
+fn wire_access_row(row: &adw::ComboRow, uuid: String, ds: DeviceState) {
     row.connect_selected_notify(move |r| {
         let (_, method) = ACCESS_METHOD_CHOICES[r.selected() as usize];
-        config::update(|cfg| setter(&mut cfg.device_mut(&uuid).playback_access_override, method));
-        let over = config::with(|cfg| cfg.device(&uuid).playback_access_override);
-        ds.set_playback_access_override(over.as_ref());
+        config::update(|cfg| cfg.device_mut(&uuid).playback_access_override = method);
+        ds.set_playback_access_override(method);
     });
 }
 
@@ -487,68 +475,28 @@ fn build_advanced_page(ds: &DeviceState) -> adw::PreferencesPage {
     let uuid = ds.device_info().map(|i| i.uuid).unwrap_or_default();
     let over = config::with(|cfg| cfg.device(&uuid).playback_access_override);
     // This device's actual profile default (not just the global fallback) —
-    // every family currently resolves to the same `all_http()` set, but this
-    // stays correct if/once families diverge.
-    let defaults = ds.capabilities().map(|c| c.playback_access()).unwrap_or_default();
+    // every family currently resolves to the same `AccessMethod::Http`, but
+    // this stays correct if/once families diverge.
+    let defaults = ds.capabilities().map(|c| c.playback_access()).unwrap_or(AccessMethod::Http);
 
-    let status_row   = build_access_row("Status", "Play/pause/stop state", defaults.status, over.status);
-    let timing_row   = build_access_row("Timing", "Position + duration", defaults.timing, over.timing);
-    let volume_row   = build_access_row("Volume", "Volume + mute", defaults.volume, over.volume);
-    let metadata_row = build_access_row("Metadata", "Title/artist/album", defaults.metadata, over.metadata);
-    let artwork_row  = build_access_row("Artwork", "Cover art", defaults.artwork, over.artwork);
-    let source_row   = build_access_row("Source", "Decoded source label (e.g. \"Spotify\")", defaults.source, over.source);
-
-    wire_access_row(&status_row,   uuid.clone(), ds.clone(), |o, v| o.status   = v);
-    wire_access_row(&timing_row,   uuid.clone(), ds.clone(), |o, v| o.timing   = v);
-    wire_access_row(&volume_row,   uuid.clone(), ds.clone(), |o, v| o.volume   = v);
-    wire_access_row(&metadata_row, uuid.clone(), ds.clone(), |o, v| o.metadata = v);
-    wire_access_row(&artwork_row,  uuid.clone(), ds.clone(), |o, v| o.artwork  = v);
-    wire_access_row(&source_row,   uuid.clone(), ds.clone(), |o, v| o.source   = v);
+    let player_status_row = build_access_row(
+        "Player Status", "Status/timing/volume/metadata/artwork/source",
+        defaults, over,
+    );
+    wire_access_row(&player_status_row, uuid.clone(), ds.clone());
 
     let group = adw::PreferencesGroup::builder()
-        .title("Playback Access Methods")
+        .title("Playback Access Method")
         .description(
-            "Field diagnostics: override which backend supplies each part of \
-             playback state. Leave everything on \"Default\" unless you're \
-             troubleshooting a specific problem."
+            "Field diagnostics: override which backend supplies playback \
+             state. Leave this on \"Default\" unless you're troubleshooting \
+             a specific problem."
         )
         .build();
-    group.add(&status_row);
-    group.add(&timing_row);
-    group.add(&volume_row);
-    group.add(&metadata_row);
-    group.add(&artwork_row);
-    group.add(&source_row);
-
-    let actions_group = adw::PreferencesGroup::new();
-    let defaults_row = adw::ActionRow::builder()
-        .title("Reset all to Default")
-        .build();
-    let defaults_btn = gtk::Button::builder()
-        .label("Defaults")
-        .valign(gtk::Align::Center)
-        .build();
-    defaults_row.add_suffix(&defaults_btn);
-    actions_group.add(&defaults_row);
-
-    defaults_btn.connect_clicked(glib::clone!(
-        @strong ds, @strong uuid,
-        @weak status_row, @weak timing_row, @weak volume_row,
-        @weak metadata_row, @weak artwork_row, @weak source_row
-        => move |_| {
-            config::update(|cfg| {
-                cfg.device_mut(&uuid).playback_access_override = PlaybackAccessOverride::default();
-            });
-            ds.set_playback_access_override(PlaybackAccessOverride::default().as_ref());
-            for row in [&status_row, &timing_row, &volume_row, &metadata_row, &artwork_row, &source_row] {
-                row.set_selected(0);
-            }
-        }
-    ));
+    group.add(&player_status_row);
 
     let page = adw::PreferencesPage::new();
     page.add(&group);
-    page.add(&actions_group);
     page
 }
 

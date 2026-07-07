@@ -8,7 +8,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use super::api::{DeviceInfo, OutputEntry, WiimClient};
-use super::playback::PlaybackAccessConfig;
+use super::playback::AccessMethod;
 
 pub static DEBUG_DEVICE: AtomicBool = AtomicBool::new(false);
 
@@ -58,20 +58,6 @@ pub enum LoopModeScheme {
     Arylic,
 }
 
-// `StateSourceConfig` (per-field HTTP-vs-UPnP preference booleans) used to
-// live here as dead code — read only by a debug log line, never actually
-// consulted by anything that fetches data. It's been replaced by
-// `playback::PlaybackAccessConfig`, which gives that same intent a real
-// consumer (`DeviceState`'s effective access-config resolution) and a
-// Settings-UI-facing per-device override mechanism.
-//
-// Every family profile below defaults to `PlaybackAccessConfig::default()`
-// (all-HTTP) rather than reinstating the old MkII UPnP-preference values,
-// since `AccessMethod::UpnpPolled` has no real fetch implementation yet
-// (see `device/upnp.rs`) — setting it as a *default* today would silently
-// regress Audio Pro MkII rather than just leave it exactly as it behaves
-// now. Revisit once UPnP fetching actually exists.
-
 /// Connection and protocol settings.
 #[derive(Debug)]
 pub struct ConnectionConfig {
@@ -117,7 +103,7 @@ pub struct GroupingConfig {
 pub struct FamilyProfile {
     pub display_name:     &'static str,
     pub loop_mode_scheme: LoopModeScheme,
-    pub playback_access:  PlaybackAccessConfig,
+    pub playback_access:  AccessMethod,
     pub connection:       ConnectionConfig,
     pub endpoints:        EndpointConfig,
     pub grouping:         GroupingConfig,
@@ -128,7 +114,7 @@ pub struct FamilyProfile {
 static FAMILY_WIIM: FamilyProfile = FamilyProfile {
     display_name:     "WiiM",
     loop_mode_scheme: LoopModeScheme::WiiM,
-    playback_access: PlaybackAccessConfig::all_http(),
+    playback_access: AccessMethod::Http,
     connection: ConnectionConfig {
         requires_client_cert: false,
         // WiiM HTTPS:443 only; plain HTTP:80 is closed on WiiM hardware.
@@ -153,7 +139,7 @@ static FAMILY_WIIM: FamilyProfile = FamilyProfile {
 static FAMILY_ARYLIC: FamilyProfile = FamilyProfile {
     display_name:     "Arylic",
     loop_mode_scheme: LoopModeScheme::Arylic,
-    playback_access: PlaybackAccessConfig::all_http(),
+    playback_access: AccessMethod::Http,
     connection: ConnectionConfig {
         requires_client_cert: false,
         preferred_ports:      &[80, 443],
@@ -178,14 +164,11 @@ static FAMILY_ARYLIC: FamilyProfile = FamilyProfile {
 static FAMILY_AUDIO_PRO_MKII: FamilyProfile = FamilyProfile {
     display_name:     "Audio Pro MkII",
     loop_mode_scheme: LoopModeScheme::Arylic,
-    // NOTE: HTTP doesn't expose play state/volume/mute/position/duration/
-    // source on MkII at all (the old dead `StateSourceConfig` flagged this
-    // with `*_upnp: true` for exactly those fields) — but `AccessMethod::
-    // UpnpPolled` has no real fetch implementation yet, so defaulting to it
-    // here would make MkII strictly worse than today rather than neutral.
-    // Left as the all-HTTP default for now; flip these to `UpnpPolled` once
-    // `device/upnp.rs` actually implements fetching.
-    playback_access: PlaybackAccessConfig::all_http(),
+    // NOTE: From what we see in other projects, it seems like HTTP doesn't
+    // expose play state/volume/mute/position/duration/ source on MkII at all
+    // so we might need to set the access method to UPnP, but let's wait and
+    // see until we can access or get API captures from one of these devices
+    playback_access: AccessMethod::Http,
     connection: ConnectionConfig {
         requires_client_cert: true,
         preferred_ports:      &[4443, 8443, 443],
@@ -210,7 +193,7 @@ static FAMILY_AUDIO_PRO_MKII: FamilyProfile = FamilyProfile {
 static FAMILY_AUDIO_PRO_WGEN: FamilyProfile = FamilyProfile {
     display_name:     "Audio Pro W-Generation",
     loop_mode_scheme: LoopModeScheme::Arylic,
-    playback_access: PlaybackAccessConfig::all_http(),
+    playback_access: AccessMethod::Http,
     connection: ConnectionConfig {
         requires_client_cert: false,
         preferred_ports:      &[443, 8443, 80],
@@ -235,7 +218,7 @@ static FAMILY_AUDIO_PRO_WGEN: FamilyProfile = FamilyProfile {
 static FAMILY_AUDIO_PRO_ORIGINAL: FamilyProfile = FamilyProfile {
     display_name:     "Audio Pro Original",
     loop_mode_scheme: LoopModeScheme::Arylic,
-    playback_access: PlaybackAccessConfig::all_http(),
+    playback_access: AccessMethod::Http,
     connection: ConnectionConfig {
         requires_client_cert: false,
         preferred_ports:      &[80, 443],
@@ -261,7 +244,7 @@ static FAMILY_AUDIO_PRO_ORIGINAL: FamilyProfile = FamilyProfile {
 static FAMILY_LINKPLAY_GENERIC: FamilyProfile = FamilyProfile {
     display_name:     "LinkPlay Generic",
     loop_mode_scheme: LoopModeScheme::Arylic,
-    playback_access: PlaybackAccessConfig::all_http(),
+    playback_access: AccessMethod::Http,
     connection: ConnectionConfig {
         requires_client_cert: false,
         preferred_ports:      &[80, 443, 8080],
@@ -779,10 +762,7 @@ impl DeviceCapabilities {
                 caps.model, caps.loop_mode_scheme, caps.uses_wifi_direct));
             dbg(&format!("capabilities: presets={}  eq={}  peq={}",
                 caps.supports_presets, caps.supports_eq, caps.supports_peq));
-            dbg(&format!(
-                "playback_access: status={:?}  timing={:?}  volume={:?}  metadata={:?}  artwork={:?}  source={:?}",
-                pa.status, pa.timing, pa.volume, pa.metadata, pa.artwork, pa.source,
-            ));
+            dbg(&format!("playback_access: {pa:?}"));
             dbg(&format!(
                 "connection: ports={:?}  https_first={}  timeout={}ms  retries={}  client_cert={}",
                 c.preferred_ports, c.https_first, c.response_timeout_ms,
@@ -801,13 +781,13 @@ impl DeviceCapabilities {
         caps
     }
 
-    /// This device family's default `PlaybackAccessConfig` — the starting
-    /// point `DeviceState` applies any per-device `PlaybackAccessOverride`
-    /// on top of. Currently just the static per-family default
+    /// This device family's default `AccessMethod` — the starting point
+    /// `DeviceState` applies any per-device `playback_access_override` on
+    /// top of. Currently just the static per-family default
     /// (`self.family.playback_access`); once `detect_capabilities()` probes
     /// more than outputs, findings from that probing should feed into this
     /// too.
-    pub fn playback_access(&self) -> PlaybackAccessConfig {
+    pub fn playback_access(&self) -> AccessMethod {
         self.family.playback_access
     }
 
