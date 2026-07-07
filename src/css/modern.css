@@ -93,8 +93,8 @@ window.player-window headerbar {
 /* device-info's #686868 (dark.css) reads fine on the classic theme's flat
    black background but is too dark against the blur even with the shadow
    above — lighten it for this theme specifically. Same for track-album's
-   #707070. */
-.device-info {
+   #707070 and quality-label, which shares device-info's #686868. */
+.device-info, .quality-label {
     color: #b0b0b0;
 }
 .track-album {
