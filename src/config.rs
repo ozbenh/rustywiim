@@ -105,8 +105,26 @@ pub struct DeviceConfig {
     ///
     /// **Selecting "Default" in the UI must write `None`, so it remains
     /// the default even if what "default" means changes.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ///
+    /// Deserialized leniently (`deserialize_lenient_access_override`): older
+    /// pre-release builds stored this under different shapes (a nested
+    /// per-field-group object, then a `{"player_status": ...}` wrapper)
+    /// before it settled on a bare `Option<AccessMethod>`. A value left over
+    /// from one of those no longer matches this enum's variants at all, and
+    /// treating that as a hard parse error would nuke the *entire* config
+    /// file (every device, window position, pin) over one stale field in
+    /// one device entry — so an unrecognized value here is just discarded
+    /// back to `None` ("use the device profile's default") instead.
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "deserialize_lenient_access_override")]
     pub playback_access_override: Option<AccessMethod>,
+}
+
+fn deserialize_lenient_access_override<'de, D>(deserializer: D) -> Result<Option<AccessMethod>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value: Option<serde_json::Value> = Option::deserialize(deserializer)?;
+    Ok(value.and_then(|v| serde_json::from_value::<AccessMethod>(v).ok()))
 }
 
 impl Default for DeviceConfig {
@@ -376,4 +394,32 @@ pub fn reset_ui_settings() {
 /// mutation from persistence (e.g. to batch or delay saves).
 pub fn save() {
     CONFIG.with(|c| c.borrow().write_to_disk());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stale_playback_access_override_value_is_discarded_not_fatal() {
+        let json = r#"{
+            "devices": {
+                "some-uuid": {
+                    "name": "Living Room",
+                    "playback_access_override": "player_status"
+                }
+            }
+        }"#;
+        let cfg: Config = serde_json::from_str(json).expect("stale AccessMethod value must not fail the whole document");
+        let dev = cfg.devices.get("some-uuid").unwrap();
+        assert_eq!(dev.name.as_deref(), Some("Living Room"));
+        assert_eq!(dev.playback_access_override, None);
+    }
+
+    #[test]
+    fn current_playback_access_override_values_still_parse() {
+        let json = r#"{"devices": {"u": {"playback_access_override": "upnp_polled"}}}"#;
+        let cfg: Config = serde_json::from_str(json).unwrap();
+        assert_eq!(cfg.devices.get("u").unwrap().playback_access_override, Some(AccessMethod::UpnpPolled));
+    }
 }
