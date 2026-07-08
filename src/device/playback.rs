@@ -148,6 +148,34 @@ impl Default for SourceCapabilities {
     }
 }
 
+/// Coarse per-source shuffle/repeat/seek tier — modeled directly on
+/// `pywiim`'s `SourceCapability` bundles (`FULL_CONTROL`/`TRACK_CONTROL`/
+/// `NONE` in `player/source_capabilities.py`'s `SOURCE_CAPABILITIES`
+/// table), since that project's reasoning generalizes cleanly: `TrackOnly`
+/// is a source where the device is just forwarding transport commands
+/// to/from an external app (AirPlay, Bluetooth, DLNA, Chromecast, a
+/// multiroom follower routing to its master) — next/previous/seek still
+/// make sense as forwarded commands, but shuffle/repeat don't, since the
+/// device has no queue of its own to reorder. `None` is no queue and no
+/// forwarding target either (radio, physical inputs). `Full` is
+/// everything else — the device (or the connected streaming service)
+/// genuinely owns a queue.
+enum LoopTier {
+    Full,
+    TrackOnly,
+    None,
+}
+
+impl LoopTier {
+    fn shuffle_repeat_seek(self) -> (bool, bool, bool) {
+        match self {
+            Self::Full      => (true, true, true),
+            Self::TrackOnly => (false, false, true),
+            Self::None      => (false, false, false),
+        }
+    }
+}
+
 // ── Access method ─────────────────────────────────────────────────────────────
 
 /// The AccessMethod indicates whether the player status is obtained from
@@ -316,14 +344,8 @@ const TRACK_SOURCES_CTRL: &[&str] = &["Pandora2", "SoundMachine", "Soundtrack", 
 /// tier.
 pub fn decode_transport_caps_http(mode: i32, vendor: &str) -> SourceCapabilities {
     let (can_next, can_previous) = decode_next_prev_http(mode, vendor);
-    // For now disable shuffle/repeat/seek on physical inputs only
-    let physical = is_physical_input_http(mode);
-    SourceCapabilities {
-        can_next, can_previous,
-        can_shuffle: !physical,
-        can_repeat:  !physical,
-        can_seek:    !physical,
-    }
+    let (can_shuffle, can_repeat, can_seek) = loop_tier_http(mode, vendor).shuffle_repeat_seek();
+    SourceCapabilities { can_next, can_previous, can_shuffle, can_repeat, can_seek }
 }
 
 fn decode_next_prev_http(mode: i32, vendor: &str) -> (bool, bool) {
@@ -352,6 +374,43 @@ fn decode_next_prev_http(mode: i32, vendor: &str) -> (bool, bool) {
 /// its own physical-input case.
 fn is_physical_input_http(mode: i32) -> bool {
     matches!(mode, 40 | 60 | 43 | 44 | 49 | 54)
+}
+
+/// `pywiim`'s `SOURCE_CAPABILITIES` table, translated into HTTP's
+/// `mode`/`vendor` vocabulary — see `LoopTier`'s doc comment for the
+/// reasoning. `mode` 1/2/5/41/99 (AirPlay/DLNA/Chromecast/Bluetooth/
+/// Follower) are `pywiim`'s `"airplay"/"dlna"/"cast"/"bluetooth"/
+/// "multiroom"` entries, all `TRACK_CONTROL`. Spotify (`mode` 31)
+/// deliberately follows `pywiim`'s static `"spotify": FULL_CONTROL`
+/// as-is for now, same as everywhere else here — **known to be
+/// questionable**: the real free-tier `guibehavior` capture already on
+/// hand shows `loop`/`shuffle` both disabled there, contradicting this.
+/// Not corrected yet since HTTP has no `guibehavior` equivalent to know
+/// which tier a given session is in, and revisiting needs a free-account
+/// retest that hasn't happened yet.
+fn loop_tier_http(mode: i32, vendor: &str) -> LoopTier {
+    if is_physical_input_http(mode) {
+        return LoopTier::None;
+    }
+    if matches!(mode, 1 | 2 | 5 | 41 | 99) {
+        return LoopTier::TrackOnly;
+    }
+    if mode == 10 || mode == 20 {
+        let normalized = normalize_vendor(vendor);
+        if HTTP_RADIO_VENDORS.contains(&normalized.as_str()) {
+            return LoopTier::None;
+        }
+        // `pywiim` singles this one out as pure radio (`SourceCapability::NONE`)
+        // even though the `wiim` SDK's `TRACK_SOURCES_CTRL` (used for
+        // next/previous above) treats it as skip-forward-capable — the two
+        // heuristics disagree here and this function follows `pywiim`,
+        // since shuffle/repeat/seek is its own independent classification.
+        if normalized == "iheartradio" {
+            return LoopTier::None;
+        }
+        return LoopTier::Full;
+    }
+    LoopTier::Full
 }
 
 /// Vendor strings (normalized via `normalize_vendor`) confirmed to mean
@@ -584,15 +643,40 @@ pub fn decode_transport_caps_upnp(
     play_medium: &str, track_source: &str, gui_behavior: Option<GuiBehavior>,
 ) -> SourceCapabilities {
     let (can_next, can_previous) = decode_next_prev_upnp(play_medium, track_source, gui_behavior);
-    // For now disable shuffle/repeat/seek on physical inputs only
-    let physical = PHYSICAL_INPUTS_UPNP.contains(&play_medium);
-    SourceCapabilities {
-        can_next, can_previous,
-        can_shuffle: !physical,
-        can_repeat:  !physical,
-        can_seek:    !physical,
-    }
+    let (can_shuffle, can_repeat, can_seek) = loop_tier_upnp(play_medium, track_source).shuffle_repeat_seek();
+    SourceCapabilities { can_next, can_previous, can_shuffle, can_repeat, can_seek }
 }
+
+/// `pywiim`'s `SOURCE_CAPABILITIES` table, translated into UPnP's
+/// `play_medium`/`track_source` vocabulary — see `LoopTier`'s doc
+/// comment for the reasoning, and `loop_tier_http`'s doc comment for the
+/// Spotify caveat (identical here: follows `pywiim`'s static
+/// `"spotify": FULL_CONTROL` as-is, known-questionable given the
+/// contradicting real `guibehavior` capture, not corrected yet).
+fn loop_tier_upnp(play_medium: &str, track_source: &str) -> LoopTier {
+    if PHYSICAL_INPUTS_UPNP.contains(&play_medium) {
+        return LoopTier::None;
+    }
+    // RADIO-NETWORK/THIRD-DLNA already disable next/previous entirely
+    // (`PLAY_MEDIUMS_CTRL`) — no queue and no forwarding target either.
+    if play_medium == "RADIO-NETWORK" || play_medium == "THIRD-DLNA" {
+        return LoopTier::None;
+    }
+    if TRACK_CONTROL_ONLY_UPNP.contains(&play_medium) {
+        return LoopTier::TrackOnly;
+    }
+    // Same `pywiim`-vs-`wiim`-SDK disagreement on iHeartRadio specifically
+    // as `loop_tier_http` — see its doc comment.
+    if normalize_vendor(track_source) == "iheartradio" {
+        return LoopTier::None;
+    }
+    LoopTier::Full
+}
+
+/// `play_medium` values where the device is relaying commands to/from an
+/// external app rather than owning a queue — `pywiim`'s `"bluetooth"`/
+/// `"cast"` entries, both `TRACK_CONTROL`.
+const TRACK_CONTROL_ONLY_UPNP: &[&str] = &["BLUETOOTH", "CAST"];
 
 fn decode_next_prev_upnp(
     play_medium: &str, track_source: &str, gui_behavior: Option<GuiBehavior>,
@@ -718,8 +802,16 @@ mod tests {
 
     /// Same as `caps()`, for a fixed physical input — shuffle/repeat/seek
     /// are always disabled there, unlike every other case `caps()` covers.
-    fn caps_physical(can_next: bool, can_previous: bool) -> SourceCapabilities {
+    /// Same as `caps()`, for a `LoopTier::None` source (physical input or
+    /// radio) — shuffle/repeat/seek are always disabled there.
+    fn caps_none_tier(can_next: bool, can_previous: bool) -> SourceCapabilities {
         SourceCapabilities { can_next, can_previous, can_shuffle: false, can_repeat: false, can_seek: false }
+    }
+
+    /// `LoopTier::TrackOnly` — next/previous/seek stay whatever the
+    /// next/previous heuristic already gave, shuffle/repeat always false.
+    fn caps_track_only(can_next: bool, can_previous: bool) -> SourceCapabilities {
+        SourceCapabilities { can_next, can_previous, can_shuffle: false, can_repeat: false, can_seek: true }
     }
 
     #[test]
@@ -850,9 +942,9 @@ mod tests {
 
     #[test]
     fn transport_caps_upnp_no_skip_mediums_disable_both() {
-        assert_eq!(decode_transport_caps_upnp("RADIO-NETWORK", "newTuneIn", None), caps(false, false));
-        assert_eq!(decode_transport_caps_upnp("LINE-IN", "", None), caps_physical(false, false));
-        assert_eq!(decode_transport_caps_upnp("HDMI", "", None), caps_physical(false, false));
+        assert_eq!(decode_transport_caps_upnp("RADIO-NETWORK", "newTuneIn", None), caps_none_tier(false, false));
+        assert_eq!(decode_transport_caps_upnp("LINE-IN", "", None), caps_none_tier(false, false));
+        assert_eq!(decode_transport_caps_upnp("HDMI", "", None), caps_none_tier(false, false));
     }
 
     #[test]
@@ -902,12 +994,25 @@ mod tests {
     }
 
     #[test]
+    fn transport_caps_upnp_bluetooth_and_cast_are_track_control_only() {
+        assert_eq!(decode_transport_caps_upnp("BLUETOOTH", "", None), caps_track_only(true, true));
+        assert_eq!(decode_transport_caps_upnp("CAST", "", None), caps_track_only(true, true));
+    }
+
+    #[test]
+    fn transport_caps_upnp_iheartradio_track_source_is_pure_radio_for_loop() {
+        let result = decode_transport_caps_upnp("STATION-NETWORK", "iHeartRadio", None);
+        assert_eq!((result.can_next, result.can_previous), (true, false));
+        assert!(!result.can_shuffle && !result.can_repeat && !result.can_seek);
+    }
+
+    #[test]
     fn transport_caps_http_physical_inputs_and_idle_disable_both() {
-        assert_eq!(decode_transport_caps_http(40, ""), caps_physical(false, false)); // Line-In
-        assert_eq!(decode_transport_caps_http(49, ""), caps_physical(false, false)); // HDMI
-        assert_eq!(decode_transport_caps_http(43, ""), caps_physical(false, false)); // Optical
-        assert_eq!(decode_transport_caps_http(44, ""), caps_physical(false, false)); // RCA
-        assert_eq!(decode_transport_caps_http(54, ""), caps_physical(false, false)); // Phono
+        assert_eq!(decode_transport_caps_http(40, ""), caps_none_tier(false, false)); // Line-In
+        assert_eq!(decode_transport_caps_http(49, ""), caps_none_tier(false, false)); // HDMI
+        assert_eq!(decode_transport_caps_http(43, ""), caps_none_tier(false, false)); // Optical
+        assert_eq!(decode_transport_caps_http(44, ""), caps_none_tier(false, false)); // RCA
+        assert_eq!(decode_transport_caps_http(54, ""), caps_none_tier(false, false)); // Phono
         // Idle isn't a "fixed physical input" — shuffle/repeat/seek aren't
         // narrowed for it (yet), only next/previous.
         assert_eq!(decode_transport_caps_http(0,  ""), caps(false, false)); // Idle
@@ -931,26 +1036,45 @@ mod tests {
     fn transport_caps_http_unconfirmed_network_services_default_enabled() {
         // No positive reason to believe these lack transport control —
         // err toward enabling rather than disabling until proven otherwise.
+        // USB/TIDAL Connect/Lyrion/Qobuz genuinely own their own queue
+        // (LoopTier::Full); AirPlay/DLNA/Chromecast/Bluetooth are relayed
+        // to/from an external app (LoopTier::TrackOnly) — shuffle/repeat
+        // don't apply there even though next/previous still do.
         assert_eq!(decode_transport_caps_http(11, ""), caps(true, true)); // USB
-        assert_eq!(decode_transport_caps_http(1,  ""), caps(true, true)); // AirPlay
-        assert_eq!(decode_transport_caps_http(2,  ""), caps(true, true)); // DLNA
-        assert_eq!(decode_transport_caps_http(5,  ""), caps(true, true)); // Chromecast
+        assert_eq!(decode_transport_caps_http(1,  ""), caps_track_only(true, true)); // AirPlay
+        assert_eq!(decode_transport_caps_http(2,  ""), caps_track_only(true, true)); // DLNA
+        assert_eq!(decode_transport_caps_http(5,  ""), caps_track_only(true, true)); // Chromecast
         assert_eq!(decode_transport_caps_http(32, ""), caps(true, true)); // TIDAL Connect
         assert_eq!(decode_transport_caps_http(34, ""), caps(true, true)); // Lyrion
         assert_eq!(decode_transport_caps_http(36, ""), caps(true, true)); // Qobuz
-        assert_eq!(decode_transport_caps_http(41, ""), caps(true, true)); // Bluetooth
+        assert_eq!(decode_transport_caps_http(41, ""), caps_track_only(true, true)); // Bluetooth
     }
 
     #[test]
     fn transport_caps_http_wifi_bucket_uses_vendor() {
-        assert_eq!(decode_transport_caps_http(10, "newTuneIn"), caps(false, false));
-        assert_eq!(decode_transport_caps_http(10, "WiiMRadio"), caps(false, false));
-        assert_eq!(decode_transport_caps_http(10, "Linkplay Radio"), caps(false, false));
-        assert_eq!(decode_transport_caps_http(10, "vTuner"), caps(false, false));
-        assert_eq!(decode_transport_caps_http(10, "RadioParadise"), caps(false, false));
+        assert_eq!(decode_transport_caps_http(10, "newTuneIn"), caps_none_tier(false, false));
+        assert_eq!(decode_transport_caps_http(10, "WiiMRadio"), caps_none_tier(false, false));
+        assert_eq!(decode_transport_caps_http(10, "Linkplay Radio"), caps_none_tier(false, false));
+        assert_eq!(decode_transport_caps_http(10, "vTuner"), caps_none_tier(false, false));
+        assert_eq!(decode_transport_caps_http(10, "RadioParadise"), caps_none_tier(false, false));
+        // Pandora: next/previous per TRACK_SOURCES_CTRL (previous only
+        // disabled), but shuffle/repeat/seek all enabled (LoopTier::Full,
+        // per pywiim's "pandora" entry) since it isn't classified as pure
+        // radio the way iHeartRadio specifically is.
         assert_eq!(decode_transport_caps_http(10, "Pandora2"), caps(true, false));
         assert_eq!(decode_transport_caps_http(10, "UDiskLocal"), caps(true, true));
         assert_eq!(decode_transport_caps_http(10, ""), caps(true, true));
+    }
+
+    #[test]
+    fn transport_caps_http_iheartradio_is_pure_radio_for_loop_despite_track_sources_ctrl() {
+        // TRACK_SOURCES_CTRL (next/previous) says "previous disabled,
+        // next OK" for iHeartRadio, but pywiim's independent shuffle/
+        // repeat/seek classification treats it as pure radio (None tier)
+        // — the two heuristics deliberately disagree here.
+        let result = decode_transport_caps_http(10, "iHeartRadio");
+        assert_eq!((result.can_next, result.can_previous), (true, false));
+        assert!(!result.can_shuffle && !result.can_repeat && !result.can_seek);
     }
 
     #[test]
