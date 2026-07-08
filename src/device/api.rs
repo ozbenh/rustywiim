@@ -550,6 +550,54 @@ pub enum PresetKind {
     Empty,
 }
 
+/// Outcome of one preset-list fetch attempt, from whichever source
+/// (HTTP `getPresetInfo` or, for devices where that's confirmed
+/// unsupported, UPnP `GetKeyMapping` — see `upnp.rs`'s
+/// `get_key_mapping_presets()`). Both sources report through this same
+/// type so `state.rs` can react identically regardless of which one is
+/// active for a given device.
+#[derive(Debug)]
+pub enum PresetFetchOutcome {
+    /// The device doesn't support this call at all — confirmed via its
+    /// "unknown command"-style response (or, for UPnP, no `PlayQueue`
+    /// service advertised at all). A *final* answer: never re-tried, no
+    /// retry budget consulted. Distinct from `Failed` below, which is
+    /// merely inconclusive.
+    Unsupported,
+    /// The call itself didn't complete — a network/transport failure (or
+    /// a response that came back but didn't parse), not a device-reported
+    /// "unsupported" signal. Says nothing about whether the device
+    /// actually supports this call; `state.rs` retries a bounded number of
+    /// times (`PRESET_PROBE_FAIL_THRESHOLD`) before treating this the same
+    /// as a confirmed `Unsupported` — the same "don't give up on one
+    /// flaky miss" reasoning `capabilities.rs`'s `record_outputs_probe()`
+    /// already applies to `getSoundCardModeSupportList`.
+    Failed,
+    /// Fingerprint unchanged since the last call — nothing to rebuild.
+    Unchanged,
+    /// Fingerprint changed; here's the fresh list.
+    Changed(String, Vec<PresetEntry>),
+}
+
+/// LinkPlay's "not supported" signal: a 200 OK whose body is literally one
+/// of these strings (case-insensitive) rather than a real payload. Same
+/// sentinel `wiim-capture`'s own `is_unsupported_text()` checks for.
+fn is_unsupported_text(raw: &str) -> bool {
+    matches!(raw.trim().to_lowercase().as_str(), "unknown command" | "failed" | "unknown")
+}
+
+/// `get_presets()`'s own result, one layer below `PresetFetchOutcome` —
+/// distinguishes a confirmed-unsupported response (final) from the call
+/// simply not completing/parsing (inconclusive: connection error, timeout,
+/// or a 200 response that isn't valid `PresetResponse` JSON) so
+/// `fetch_presets()` can map the latter to `PresetFetchOutcome::Failed`
+/// rather than treating every non-response as "unsupported."
+enum GetPresetsResult {
+    Ok(PresetResponse),
+    Unsupported,
+    Failed,
+}
+
 /// A single resolved preset slot (1–12), ready for display.
 #[derive(Debug, Clone)]
 pub struct PresetEntry {
@@ -708,9 +756,21 @@ impl WiimClient {
         Ok(serde_json::from_str(&text).unwrap_or_default())
     }
 
-    pub async fn get_presets(&self) -> anyhow::Result<PresetResponse> {
-        let text = self.cmd("getPresetInfo").await?;
-        Ok(serde_json::from_str(&text).unwrap_or_default())
+    /// Fetches `getPresetInfo`, distinguishing a confirmed-unsupported
+    /// response from a merely-failed/inconclusive one — see
+    /// `GetPresetsResult`'s doc comment. `Ok(PresetResponse { preset_num: 0,
+    /// .. })` (a real device report of zero configured presets) is its own
+    /// distinct case from either.
+    async fn get_presets(&self) -> GetPresetsResult {
+        let text = match self.cmd("getPresetInfo").await {
+            Ok(t) => t,
+            Err(_) => return GetPresetsResult::Failed,
+        };
+        if is_unsupported_text(&text) { return GetPresetsResult::Unsupported; }
+        match serde_json::from_str(&text) {
+            Ok(p) => GetPresetsResult::Ok(p),
+            Err(_) => GetPresetsResult::Failed,
+        }
     }
 
     pub async fn get_audio_output(&self) -> anyhow::Result<AudioOutputStatus> {
@@ -855,14 +915,21 @@ impl WiimClient {
     /// filled in.
     ///
     /// Pass the fingerprint from the previous call as `old_fp`. If the
-    /// fingerprint is unchanged this returns `None` (no need to rebuild the
-    /// list at all). On a fresh connection pass an empty string.
-    pub async fn fetch_presets(&self, old_fp: &str) -> Option<(String, Vec<PresetEntry>)> {
+    /// fingerprint is unchanged this returns `Unchanged` (no need to
+    /// rebuild the list at all) *before* doing any of the more expensive
+    /// entry-building work below — the fingerprint is computed straight
+    /// from the raw `preset_list`/routines, not from already-built
+    /// `PresetEntry` values. On a fresh connection pass an empty string.
+    pub async fn fetch_presets(&self, old_fp: &str) -> PresetFetchOutcome {
         use std::collections::{BTreeSet, HashMap, HashSet};
 
         let (presets_result, routines) =
             tokio::join!(self.get_presets(), self.get_all_routines());
-        let presets      = presets_result.unwrap_or_default();
+        let presets = match presets_result {
+            GetPresetsResult::Ok(p)      => p,
+            GetPresetsResult::Unsupported => return PresetFetchOutcome::Unsupported,
+            GetPresetsResult::Failed      => return PresetFetchOutcome::Failed,
+        };
         let preset_total = presets.preset_num as usize;
 
         let mut routine_map: HashMap<usize, Routine> = HashMap::new();
@@ -902,7 +969,7 @@ impl WiimClient {
         // Skip entirely if nothing changed — including artwork: `state.rs`
         // reuses whatever it already has for a slot whose `picurl` hasn't
         // changed, so there's nothing to redo here either way.
-        if fp == old_fp { return None; }
+        if fp == old_fp { return PresetFetchOutcome::Unchanged; }
 
         // Build entries. Artwork is *not* fetched here — these URLs are on
         // external CDN hosts (Pandora, Spotify, etc.), not the embedded
@@ -940,7 +1007,7 @@ impl WiimClient {
         }
 
         entries.sort_by_key(|e| e.slot);
-        Some((fp, entries))
+        PresetFetchOutcome::Changed(fp, entries)
     }
 }
 

@@ -75,7 +75,7 @@ fn parse_remote_connected(raw: &str) -> Option<bool> {
 
 use super::api::{
     AudioOutputStatus, DeviceInfo, MetaData, OutputEntry, PlayerStatus,
-    PresetEntry, TlsMode, WiimClient, TLS_MODE,
+    PresetEntry, PresetFetchOutcome, TlsMode, WiimClient, TLS_MODE,
 };
 use super::capabilities::{self, DeviceCapabilities};
 use super::playback;
@@ -147,23 +147,190 @@ impl SlowPollPhase {
 }
 
 enum SlowPollResult {
-    /// `Some((fp, entries))` when the fingerprint changed; `None` when
-    /// unchanged.
-    Presets(Option<(String, Vec<PresetEntry>)>),
+    /// `source`/`probe_failures` are the resolved `PresetSource` and
+    /// consecutive-network-failure count to persist on `DeviceCapabilities`
+    /// (see `fetch_presets_with_fallback()`); `entries` is `Some((fp,
+    /// entries))` when the fingerprint changed, `None` when unchanged/still
+    /// retrying/unavailable.
+    Presets {
+        source:         capabilities::PresetSource,
+        probe_failures: u32,
+        entries:        Option<(String, Vec<PresetEntry>)>,
+    },
     /// `None` when the response wasn't a JSON array (API unsupported).
     Outputs(Option<Vec<OutputEntry>>),
     OutputStatus(Option<AudioOutputStatus>),
     DeviceInfo(Option<DeviceInfo>),
 }
 
+/// Consecutive `PresetFetchOutcome::Failed` results (network/transport
+/// failure, not a confirmed-unsupported response) tolerated for whichever
+/// backend is currently being attempted before giving up on it exactly as
+/// a confirmed-unsupported response would. Same reasoning/value as
+/// `capabilities.rs`'s `OUTPUTS_PROBE_FAIL_THRESHOLD` — these embedded
+/// HTTP/UPnP servers are flaky enough that a single miss shouldn't
+/// immediately be treated as "device doesn't support this."
+const PRESET_PROBE_FAIL_THRESHOLD: u32 = 3;
+
+/// Outcome of one single-backend preset-fetch attempt, already folding in
+/// the retry-budget decision (see `PRESET_PROBE_FAIL_THRESHOLD`).
+enum PresetProbeStep {
+    /// The call worked — `Some((fp, entries))` on a changed list, `None`
+    /// on an unchanged one.
+    Ok(Option<(String, Vec<PresetEntry>)>),
+    /// Confirmed unsupported, or `Failed` enough consecutive times to give
+    /// up as if it were — final either way, try the next fallback (or
+    /// `Unavailable` if there is none).
+    GaveUp,
+    /// Still within the retry budget (or no `UpnpClient` discovered yet
+    /// this tick) — try the same backend again next cycle with this
+    /// updated failure count.
+    Retry(u32),
+}
+
+/// Interprets one raw `PresetFetchOutcome` against the current retry
+/// budget — pure/sync so it's testable without a real network call. Shared
+/// by `probe_http`/`probe_upnp` so the threshold policy exists in exactly
+/// one place for both backends.
+fn resolve_preset_probe_step(outcome: PresetFetchOutcome, probe_failures: u32) -> PresetProbeStep {
+    match outcome {
+        PresetFetchOutcome::Unchanged            => PresetProbeStep::Ok(None),
+        PresetFetchOutcome::Changed(fp, entries) => PresetProbeStep::Ok(Some((fp, entries))),
+        PresetFetchOutcome::Unsupported          => PresetProbeStep::GaveUp,
+        PresetFetchOutcome::Failed => {
+            let failures = probe_failures + 1;
+            if failures >= PRESET_PROBE_FAIL_THRESHOLD { PresetProbeStep::GaveUp }
+            else { PresetProbeStep::Retry(failures) }
+        }
+    }
+}
+
+async fn probe_http(client: &WiimClient, old_fp: &str, probe_failures: u32) -> PresetProbeStep {
+    resolve_preset_probe_step(client.fetch_presets(old_fp).await, probe_failures)
+}
+
+async fn probe_upnp(upnp_client: Option<UpnpClient>, old_fp: &str, probe_failures: u32) -> PresetProbeStep {
+    let Some(uc) = upnp_client else {
+        // Not discovered yet this tick — neither a strike nor progress;
+        // try again later once discovery succeeds, same budget untouched.
+        return PresetProbeStep::Retry(probe_failures);
+    };
+    resolve_preset_probe_step(uc.get_key_mapping_presets(old_fp).await, probe_failures)
+}
+
+type PresetProbeResolution = (capabilities::PresetSource, u32, Option<(String, Vec<PresetEntry>)>);
+
+/// Turns one backend's `PresetProbeStep` into the `(source, probe_failures,
+/// entries)` triple to persist — pure/sync, shared by every
+/// `fetch_presets_via_*`/`fetch_presets_resolving_unknown` below so the
+/// same three-way mapping (success / still-retrying / gave-up) isn't
+/// repeated per backend. `retry_source` is what to persist while still
+/// within the retry budget (normally just `source`, the axis currently
+/// being tried); `ok_source` is what to persist on a genuine success.
+/// Returns `None` on `GaveUp` so the caller decides what happens next (a
+/// further fallback, or `Unavailable`) — that decision differs per caller,
+/// so it isn't folded into this function.
+fn resolve_preset_step(
+    step:         PresetProbeStep,
+    retry_source: capabilities::PresetSource,
+    ok_source:    capabilities::PresetSource,
+) -> Option<PresetProbeResolution> {
+    match step {
+        PresetProbeStep::Ok(entries)     => Some((ok_source, 0, entries)),
+        PresetProbeStep::Retry(failures) => Some((retry_source, failures, None)),
+        PresetProbeStep::GaveUp          => None,
+    }
+}
+
+/// `source == Http`: HTTP is the whole story — giving up (confirmed
+/// unsupported, or exhausted retries) goes straight to `Unavailable`,
+/// there's no further fallback once HTTP itself was the chosen backend.
+async fn fetch_presets_via_http(
+    client: &WiimClient, old_fp: &str, probe_failures: u32,
+) -> PresetProbeResolution {
+    use capabilities::PresetSource;
+    let step = probe_http(client, old_fp, probe_failures).await;
+    resolve_preset_step(step, PresetSource::Http, PresetSource::Http)
+        .unwrap_or((PresetSource::Unavailable, 0, None))
+}
+
+/// `source == Upnp`: same shape as `fetch_presets_via_http`, just the
+/// other backend — giving up here also means `Unavailable`.
+async fn fetch_presets_via_upnp(
+    upnp_client: Option<UpnpClient>, old_fp: &str, probe_failures: u32,
+) -> PresetProbeResolution {
+    use capabilities::PresetSource;
+    let step = probe_upnp(upnp_client, old_fp, probe_failures).await;
+    resolve_preset_step(step, PresetSource::Upnp, PresetSource::Upnp)
+        .unwrap_or((PresetSource::Unavailable, 0, None))
+}
+
+/// `source == Unknown`: try HTTP first (retry budget tracked against
+/// `Unknown` itself, so a later tick still lands back here rather than
+/// prematurely committing to `Http` while only mid-retry). Only once HTTP
+/// is confirmed unsupported or has exhausted its own retries does this
+/// fall through to trying UPnP — same tick, with a fresh retry budget of
+/// its own (a different backend, no strikes carried over), so a device
+/// that needs UPnP doesn't sit idle for a whole extra slow-poll cycle just
+/// to notice HTTP doesn't work.
+async fn fetch_presets_resolving_unknown(
+    client:         &WiimClient,
+    upnp_client:    Option<UpnpClient>,
+    old_fp:         &str,
+    probe_failures: u32,
+) -> PresetProbeResolution {
+    use capabilities::PresetSource;
+    let step = probe_http(client, old_fp, probe_failures).await;
+    match resolve_preset_step(step, PresetSource::Unknown, PresetSource::Http) {
+        Some(resolved) => resolved,
+        None => fetch_presets_via_upnp(upnp_client, old_fp, 0).await,
+    }
+}
+
+/// Resolves one preset-list fetch, dispatching to whichever backend
+/// `source` (the capability's last-persisted `PresetSource`, `Unknown` the
+/// first time) currently calls for. See `fetch_presets_via_http`/
+/// `fetch_presets_via_upnp`/`fetch_presets_resolving_unknown` for what
+/// each source actually does; all three retry a transient network failure
+/// up to `PRESET_PROBE_FAIL_THRESHOLD` times (`resolve_preset_step`) before
+/// treating it the same as a confirmed-unsupported response — a genuine
+/// "unknown command" is still immediate/final, never retried. Reports back
+/// the resolved `PresetSource` and failure count so the caller can persist
+/// them via `DeviceCapabilities::record_preset_probe()`.
+async fn fetch_presets_with_fallback(
+    client:         &WiimClient,
+    upnp_client:    Option<UpnpClient>,
+    source:         capabilities::PresetSource,
+    old_fp:         &str,
+    probe_failures: u32,
+) -> PresetProbeResolution {
+    use capabilities::PresetSource;
+    match source {
+        PresetSource::Http =>
+            fetch_presets_via_http(client, old_fp, probe_failures).await,
+        PresetSource::Upnp =>
+            fetch_presets_via_upnp(upnp_client, old_fp, probe_failures).await,
+        PresetSource::Unknown =>
+            fetch_presets_resolving_unknown(client, upnp_client, old_fp, probe_failures).await,
+        PresetSource::Unavailable => (PresetSource::Unavailable, 0, None),
+    }
+}
+
 async fn run_slow_poll_phase(
-    client:    WiimClient,
-    phase:     SlowPollPhase,
-    preset_fp: String,
+    client:         WiimClient,
+    phase:          SlowPollPhase,
+    preset_fp:      String,
+    upnp_client:    Option<UpnpClient>,
+    preset_source:  capabilities::PresetSource,
+    preset_probe_failures: u32,
 ) -> SlowPollResult {
     match phase {
-        SlowPollPhase::Presets =>
-            SlowPollResult::Presets(client.fetch_presets(&preset_fp).await),
+        SlowPollPhase::Presets => {
+            let (source, probe_failures, entries) = fetch_presets_with_fallback(
+                &client, upnp_client, preset_source, &preset_fp, preset_probe_failures,
+            ).await;
+            SlowPollResult::Presets { source, probe_failures, entries }
+        }
         SlowPollPhase::Outputs =>
             SlowPollResult::Outputs(client.get_sound_card_mode_support_list().await),
         SlowPollPhase::OutputStatus =>
@@ -273,6 +440,14 @@ struct Inner {
     presets:          Vec<PresetEntry>,
     /// Fingerprint of the last fetched preset list (used to skip re-fetches).
     preset_fp:        String,
+    /// Consecutive `PresetFetchOutcome::Failed` (network/transport
+    /// failure, not a confirmed-unsupported response) results for
+    /// whichever backend `capabilities.preset_source()` currently names.
+    /// Reset to 0 on any success/confirmed-unsupported/give-up — purely a
+    /// short-lived retry counter, not part of the device's identity, so
+    /// unlike `preset_source` it lives here rather than on
+    /// `DeviceCapabilities` (see `PRESET_PROBE_FAIL_THRESHOLD`).
+    preset_probe_failures: u32,
     /// Preset slots whose artwork still needs fetching (or re-fetching),
     /// keyed by slot rather than URL since display addresses slots, not
     /// URLs — `(url, attempts so far)`. Populated by
@@ -335,6 +510,7 @@ impl Default for Inner {
             connection_state: ConnectionState::Disconnected,
             presets:          Vec::new(),
             preset_fp:        String::new(),
+            preset_probe_failures: 0,
             pending_preset_art:  HashMap::new(),
             preset_art_inflight: HashSet::new(),
             expected_uuid:    None,
@@ -565,6 +741,7 @@ impl DeviceState {
                 inner.mode_renames      = renames;
                 // Reset preset data so the first slow-poll cycle re-fetches from scratch.
                 inner.preset_fp         = String::new();
+                inner.preset_probe_failures = 0;
                 inner.presets           = Vec::new();
                 inner.pending_preset_art.clear();
                 inner.preset_art_inflight.clear();
@@ -760,13 +937,19 @@ impl DeviceState {
         let dispatch_phase = self.advance_slow_poll_rotation(&mut inner, state, cycle_due, now);
 
         let client        = inner.client.clone();
-        // Read straight off `capabilities` rather than a separate cached
-        // bool in `Inner` — `supports_presets` was already purely
-        // static/redundant with capabilities, and `probes_outputs` now
-        // lives there too (set by `capabilities::detect_capabilities()`).
+        // `probes_outputs`/`preset_source` are read straight off
+        // `capabilities` (set by `capabilities::detect_capabilities()`/
+        // persisted there for the connection's lifetime); `preset_probe_failures`
+        // is a short-lived retry counter that isn't part of the device's
+        // identity, so it lives directly on `Inner` instead (see its doc
+        // comment) — `capabilities.rs` only ever records `preset_source`.
         let probe_outputs = inner.capabilities.as_ref().is_some_and(|c| c.probes_outputs);
-        let probe_presets = inner.capabilities.as_ref().is_some_and(|c| c.supports_presets);
+        let preset_source = inner.capabilities.as_ref()
+            .map(|c| c.preset_source())
+            .unwrap_or(capabilities::PresetSource::Unknown);
+        let preset_probe_failures = inner.preset_probe_failures;
         let preset_fp     = inner.preset_fp.clone();
+        let upnp_client   = inner.upnp_client.clone();
         drop(inner);
 
         // Reconnect when Failed and the interval has elapsed.
@@ -784,7 +967,10 @@ impl DeviceState {
         }
 
         self.dispatch_fast_poll(&client, poll_tx);
-        self.dispatch_slow_poll(&client, slow_tx, dispatch_phase, probe_outputs, probe_presets, preset_fp);
+        self.dispatch_slow_poll(
+            &client, slow_tx, dispatch_phase, probe_outputs,
+            preset_source, preset_probe_failures, preset_fp, upnp_client,
+        );
         self.dispatch_pending_preset_art(&client, poll_tx);
 
         glib::ControlFlow::Continue
@@ -890,17 +1076,19 @@ impl DeviceState {
     /// says this device doesn't support the phase's endpoint.
     fn dispatch_slow_poll(
         &self,
-        client:         &WiimClient,
-        slow_tx:        &async_channel::Sender<SlowPollResult>,
-        dispatch_phase: Option<SlowPollPhase>,
-        probe_outputs:  bool,
-        probe_presets:  bool,
-        preset_fp:      String,
+        client:                &WiimClient,
+        slow_tx:               &async_channel::Sender<SlowPollResult>,
+        dispatch_phase:        Option<SlowPollPhase>,
+        probe_outputs:         bool,
+        preset_source:         capabilities::PresetSource,
+        preset_probe_failures: u32,
+        preset_fp:             String,
+        upnp_client:           Option<UpnpClient>,
     ) {
         let Some(phase) = dispatch_phase else { return };
         let enabled = match phase {
             SlowPollPhase::Outputs => probe_outputs,
-            SlowPollPhase::Presets => probe_presets,
+            SlowPollPhase::Presets => preset_source != capabilities::PresetSource::Unavailable,
             SlowPollPhase::OutputStatus | SlowPollPhase::DeviceInfo => true,
         };
         if !enabled {
@@ -912,7 +1100,9 @@ impl DeviceState {
         let tx = slow_tx.clone();
         let dispatched_at = Instant::now();
         self.rt().spawn(async move {
-            let result = run_slow_poll_phase(cp, phase, preset_fp).await;
+            let result = run_slow_poll_phase(
+                cp, phase, preset_fp, upnp_client, preset_source, preset_probe_failures,
+            ).await;
             // Every phase here is one or two calls straight to the device
             // itself, so this should always be fast — logged (round-trip,
             // not just "dispatched") so a phase that's unexpectedly slow
@@ -1044,13 +1234,36 @@ impl DeviceState {
             while let Ok(result) = rx.recv().await {
                 let Some(ds) = ds_weak.upgrade() else { break };
                 match result {
-                    SlowPollResult::Presets(presets)     => ds.handle_slow_poll_presets(presets),
+                    SlowPollResult::Presets { source, probe_failures, entries } => {
+                        ds.handle_slow_poll_preset_source(source, probe_failures);
+                        ds.handle_slow_poll_presets(entries);
+                    }
                     SlowPollResult::Outputs(outputs)     => ds.handle_slow_poll_outputs(outputs),
                     SlowPollResult::OutputStatus(status) => ds.handle_slow_poll_output_status(status),
                     SlowPollResult::DeviceInfo(info)     => ds.handle_slow_poll_device_info(info),
                 }
             }
         });
+    }
+
+    /// Persist the resolved `PresetSource`/failure count from this tick's
+    /// fetch. `source` is the device's (effectively) one-way-door
+    /// capability record — `DeviceCapabilities::record_preset_source()` —
+    /// mirroring `handle_slow_poll_outputs()`'s `record_outputs_probe()`
+    /// pattern; `fetch_presets_with_fallback()` only ever resolves it away
+    /// from `Unknown`/back-and-forth between `Http`/`Upnp`/`Unavailable`
+    /// once it's either succeeded, been confirmed unsupported, or
+    /// exhausted its retry budget. `probe_failures` is a short-lived retry
+    /// counter, not part of the device's identity, so it's written
+    /// straight to `Inner` instead of through `capabilities` — see
+    /// `Inner::preset_probe_failures`'s doc comment. Neither write emits a
+    /// signal (unlike outputs, this isn't itself UI-visible) — just
+    /// updating what the next tick's `dispatch_slow_poll` reads.
+    fn handle_slow_poll_preset_source(&self, source: capabilities::PresetSource, probe_failures: u32) {
+        let mut inner = self.imp().inner.borrow_mut();
+        inner.preset_probe_failures = probe_failures;
+        let Some(caps) = inner.capabilities.as_mut() else { return };
+        caps.record_preset_source(source);
     }
 
     /// `fetch_presets()` never fetches artwork itself (see its doc
@@ -1948,6 +2161,87 @@ impl DeviceState {
             f(&args[0].get::<Self>().unwrap());
             None
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn is_ok_none(step: &PresetProbeStep) -> bool {
+        matches!(step, PresetProbeStep::Ok(None))
+    }
+    fn is_gave_up(step: &PresetProbeStep) -> bool {
+        matches!(step, PresetProbeStep::GaveUp)
+    }
+    fn retry_count(step: &PresetProbeStep) -> Option<u32> {
+        match step {
+            PresetProbeStep::Retry(n) => Some(*n),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn preset_probe_unsupported_gives_up_immediately_regardless_of_failure_count() {
+        // A confirmed "unknown command" is final on the very first attempt
+        // — no retry budget consulted at all, unlike `Failed`.
+        assert!(is_gave_up(&resolve_preset_probe_step(PresetFetchOutcome::Unsupported, 0)));
+        assert!(is_gave_up(&resolve_preset_probe_step(PresetFetchOutcome::Unsupported, PRESET_PROBE_FAIL_THRESHOLD - 1)));
+    }
+
+    #[test]
+    fn preset_probe_success_resets_regardless_of_prior_failures() {
+        assert!(is_ok_none(&resolve_preset_probe_step(PresetFetchOutcome::Unchanged, 2)));
+        match resolve_preset_probe_step(PresetFetchOutcome::Changed("fp".into(), Vec::new()), 2) {
+            PresetProbeStep::Ok(Some((fp, entries))) => {
+                assert_eq!(fp, "fp");
+                assert!(entries.is_empty());
+            }
+            _ => panic!("expected Ok(Some(..))"),
+        }
+    }
+
+    #[test]
+    fn preset_probe_failed_retries_below_threshold_then_gives_up_at_threshold() {
+        // Network/transient failures accumulate a strike count and are
+        // only treated as final once the threshold is reached — never on
+        // the first miss, unlike `Unsupported`.
+        let mut failures = 0;
+        for expected_next in 1..PRESET_PROBE_FAIL_THRESHOLD {
+            let step = resolve_preset_probe_step(PresetFetchOutcome::Failed, failures);
+            assert_eq!(retry_count(&step), Some(expected_next), "attempt {expected_next}");
+            failures = expected_next;
+        }
+        // One more failure hits the threshold — now final, same as a
+        // confirmed-unsupported response.
+        assert!(is_gave_up(&resolve_preset_probe_step(PresetFetchOutcome::Failed, failures)));
+    }
+
+    #[test]
+    fn resolve_preset_step_uses_retry_source_while_retrying_and_ok_source_on_success() {
+        use capabilities::PresetSource;
+
+        // Still-retrying: persist `retry_source`, not `ok_source` — this is
+        // what keeps a device resolving from `Unknown` from prematurely
+        // committing to `Http` mid-retry.
+        match resolve_preset_step(PresetProbeStep::Retry(1), PresetSource::Unknown, PresetSource::Http) {
+            Some((source, failures, None)) => {
+                assert_eq!(source, PresetSource::Unknown);
+                assert_eq!(failures, 1);
+            }
+            other => panic!("expected Some((Unknown, 1, None)), got a different shape: {}", other.is_some()),
+        }
+        // Success: persist `ok_source`, failure count resets to 0.
+        match resolve_preset_step(PresetProbeStep::Ok(None), PresetSource::Unknown, PresetSource::Http) {
+            Some((source, failures, None)) => {
+                assert_eq!(source, PresetSource::Http);
+                assert_eq!(failures, 0);
+            }
+            other => panic!("expected Some((Http, 0, None)), got a different shape: {}", other.is_some()),
+        }
+        // Gave up: `None` — the caller (not this function) decides what
+        // happens next.
+        assert!(resolve_preset_step(PresetProbeStep::GaveUp, PresetSource::Unknown, PresetSource::Http).is_none());
     }
 }
 

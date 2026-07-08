@@ -16,7 +16,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use super::api::{build_reqwest_client, TlsMode};
+use super::api::{build_reqwest_client, PresetEntry, PresetFetchOutcome, PresetKind, TlsMode};
 
 pub static DEBUG_UPNP: AtomicBool = AtomicBool::new(false);
 
@@ -32,6 +32,10 @@ fn dbg(msg: &str) {
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 const AV_TRANSPORT_SERVICE: &str = "urn:schemas-upnp-org:service:AVTransport:1";
+/// LinkPlay-proprietary service backing `GetKeyMapping` (this module's one
+/// use for it — see `get_key_mapping_presets()`) — the same service
+/// `wiim-capture`'s `capture_playqueue()` already discovered independently.
+const PLAY_QUEUE_SERVICE: &str = "urn:schemas-wiimu-com:service:PlayQueue:1";
 /// Candidate `description.xml` ports, same well-known LinkPlay UPnP ports
 /// `wiim-capture.rs`'s `fetch_description()` already probes.
 const DESCRIPTION_PORTS: &[u16] = &[49152, 59152];
@@ -99,12 +103,17 @@ pub struct GuiBehavior {
     pub prev: bool,
 }
 
-/// UPnP control-point client for one device's `AVTransport` service.
-/// Discovered once via `description.xml` (`UpnpClient::discover`) and reused
-/// for every subsequent `get_info_ex()` poll.
+/// UPnP control-point client for one device's `AVTransport` (and, when
+/// advertised, `PlayQueue`) service. Discovered once via `description.xml`
+/// (`UpnpClient::discover`) and reused for every subsequent `get_info_ex()`/
+/// `get_key_mapping_presets()` poll.
 #[derive(Debug, Clone)]
 pub struct UpnpClient {
     control_url: String,
+    /// `PlayQueue` service's control URL, when the device advertises it —
+    /// `None` for devices that don't, in which case
+    /// `get_key_mapping_presets()` always reports `PresetFetchOutcome::Unsupported`.
+    play_queue_control_url: Option<String>,
 }
 
 impl UpnpClient {
@@ -135,10 +144,13 @@ impl UpnpClient {
                     Ok(b) => b,
                     Err(e) => { last_err = Some(e.into()); continue; }
                 };
-                match extract_av_transport_control_url(&body, &url) {
+                match extract_control_url_for_service(&body, &url, ":service:AVTransport:") {
                     Some(control_url) => {
                         dbg(&format!("AVTransport control URL: {control_url}"));
-                        return Ok(Self { control_url });
+                        let play_queue_control_url =
+                            extract_control_url_for_service(&body, &url, "wiimu-com:service:PlayQueue");
+                        dbg(&format!("PlayQueue control URL: {play_queue_control_url:?}"));
+                        return Ok(Self { control_url, play_queue_control_url });
                     }
                     None => {
                         last_err = Some(anyhow::anyhow!(
@@ -154,6 +166,28 @@ impl UpnpClient {
     pub async fn get_info_ex(&self) -> anyhow::Result<InfoEx> {
         let body = soap_call(&self.control_url, AV_TRANSPORT_SERVICE, "GetInfoEx", "<InstanceID>0</InstanceID>").await?;
         parse_info_ex_response(&body)
+    }
+
+    /// Fetches `GetKeyMapping` (no arguments — confirmed against Arylic's
+    /// own `upnp_hack` reference scripts) and resolves it into the same
+    /// `PresetFetchOutcome` shape `WiimClient::fetch_presets()` uses, so
+    /// `state.rs` can treat this and the HTTP path identically. Reports
+    /// `Unsupported` if the device never advertised a `PlayQueue` service
+    /// at all (`discover()` found no control URL for it, a confirmed/final
+    /// fact about this device, not a transient one) — matching how a
+    /// genuine "unknown command" HTTP response is reported. A SOAP-call
+    /// failure (connection error, timeout) is `Failed` instead, not
+    /// `Unsupported` — it says nothing about whether the device actually
+    /// supports this action, so `state.rs` retries it a bounded number of
+    /// times before giving up the same way.
+    pub async fn get_key_mapping_presets(&self, old_fp: &str) -> PresetFetchOutcome {
+        let Some(control_url) = &self.play_queue_control_url else {
+            return PresetFetchOutcome::Unsupported;
+        };
+        match soap_call(control_url, PLAY_QUEUE_SERVICE, "GetKeyMapping", "").await {
+            Ok(body) => parse_key_mapping_presets(&body, old_fp),
+            Err(_) => PresetFetchOutcome::Failed,
+        }
     }
 }
 
@@ -267,10 +301,15 @@ fn resolve_url(description_url: &str, maybe_relative: &str) -> String {
     }
 }
 
-fn extract_av_transport_control_url(description_xml: &str, description_url: &str) -> Option<String> {
+/// Finds the `controlURL` of the first advertised service whose `serviceType`
+/// contains `service_type_substr`, resolved against `description_url`'s
+/// origin. Shared by AVTransport (required — `discover()` fails outright if
+/// absent) and PlayQueue (optional — presets simply aren't available via
+/// UPnP if a device doesn't advertise it).
+fn extract_control_url_for_service(description_xml: &str, description_url: &str, service_type_substr: &str) -> Option<String> {
     for block in extract_service_blocks(description_xml) {
         let Some(service_type) = extract_tag(&block, "serviceType") else { continue };
-        if !service_type.contains(":service:AVTransport:") { continue; }
+        if !service_type.contains(service_type_substr) { continue; }
         let control_url_raw = extract_tag(&block, "controlURL")?;
         return Some(resolve_url(description_url, &control_url_raw));
     }
@@ -287,6 +326,96 @@ fn unescape_xml_entities(s: &str) -> String {
         .replace("&quot;", "\"")
         .replace("&apos;", "'")
         .replace("&amp;", "&")
+}
+
+/// Strips LinkPlay's internal `_#~<timestamp>` uniquifying suffix off a
+/// `GetKeyMapping`/`BrowseQueue` `<Name>` value (e.g. `"My Mix 1_#~2026-
+/// 07-08 16:49:59"` → `"My Mix 1"`) — confirmed present on every named
+/// entry in two real captures from different device families
+/// (`AudioCastBu_20260708_095957.json`'s `GetKeyMapping`/`BrowseQueue`,
+/// `WiiM_Ultra_20260708_100034.json`'s equivalents), so this is the
+/// device's own internal disambiguator (likely so re-saving a preset under
+/// an unchanged display name still gets a distinct identity), not something
+/// meant to be shown. `"_#~"` itself never legitimately appears in a real
+/// display name in any capture seen so far, so a plain substring split is
+/// enough — no need to anchor it to a stricter timestamp-shaped pattern.
+fn strip_wiimu_name_suffix(name: &str) -> String {
+    match name.find("_#~") {
+        Some(idx) => name[..idx].to_string(),
+        None => name.to_string(),
+    }
+}
+
+/// Parses a `GetKeyMappingResponse` SOAP envelope into the same
+/// `PresetFetchOutcome` shape the HTTP `getPresetInfo` path uses. The real
+/// preset data sits inside `<QueueContext>`, escaped once (LinkPlay's own
+/// XML nested inside the outer SOAP XML) — confirmed against real
+/// `GetKeyMapping` captures (`captures/test-devices/AudioCastBu_20260708_095957.json`,
+/// `WiiM_Ultra_20260708_100034.json`): `<KeyList><Key1><Name>.../Name>
+/// <Source>...</Source><PicUrl>...</PicUrl></Key1>...</KeyList>`. `Key0` is
+/// always present-but-empty in both captures and never has a meaning here
+/// (WiiM has no concept of a "preset 0"), which the `1..=12` range already
+/// excludes without special-casing. A genuinely unconfigured slot has an
+/// entirely empty `<KeyN></KeyN>` (confirmed on a real AudioCast unit with
+/// only 2 of its slots configured — every other `KeyN` tag is empty, not
+/// just missing a `<Name>`) — that's treated the same as `getPresetInfo`
+/// simply not reporting a nonexistent slot: dropped from `entries`
+/// entirely, not turned into a `PresetKind::Empty` placeholder (which would
+/// otherwise show as a visible button with a generic icon and no name for
+/// every unused slot). Capped at slots 1–12 (same range `PresetEntry`/the
+/// UI's fixed preset panel already use for HTTP presets) even though
+/// `MaxNumber` can be much larger (33 in both captures) — there's no UI
+/// concept for more than 12 yet, and no evidence `KeyN` numbering beyond
+/// that even corresponds to a playable slot at all (see `TODO.md`'s open
+/// question on how a `GetKeyMapping`-sourced preset would actually be
+/// triggered — this only covers *listing* them). `Url`/`Metadata` (present
+/// for direct-URL presets like a TuneIn station, absent for a
+/// streaming-service Mix reference) aren't decoded here for the same
+/// reason — nothing yet needs them.
+///
+/// Fingerprint computed from the raw extracted `(slot, name, picurl)`
+/// triples *before* building any `PresetEntry` (and before filtering out
+/// empty slots), same discipline `WiimClient::fetch_presets()` uses — an
+/// unchanged list is detected without ever constructing the entries it
+/// would've produced.
+fn parse_key_mapping_presets(envelope: &str, old_fp: &str) -> PresetFetchOutcome {
+    let Some(queue_context) = extract_tag(envelope, "QueueContext") else {
+        return PresetFetchOutcome::Unsupported;
+    };
+    let key_list = unescape_xml_entities(&queue_context);
+
+    // `content` is `<KeyN>`'s full inner text, kept around (not just `name`)
+    // so an entirely-empty tag (`<Key3></Key3>`) can be told apart from one
+    // that has other fields but happens to lack `<Name>`.
+    let slots: Vec<(usize, String, String, String)> = (1..=12usize)
+        .map(|n| {
+            let content = extract_tag(&key_list, &format!("Key{n}")).unwrap_or_default();
+            let name = extract_tag(&content, "Name")
+                .filter(|s| !s.is_empty())
+                .map(|s| strip_wiimu_name_suffix(&s))
+                .unwrap_or_default();
+            let pic_url = extract_tag(&content, "PicUrl").unwrap_or_default();
+            (n, content, name, pic_url)
+        })
+        .collect();
+
+    let fp = {
+        let mut parts: Vec<String> = slots.iter()
+            .map(|(slot, _content, name, pic_url)| format!("{slot}:{name}:{pic_url}"))
+            .collect();
+        parts.sort();
+        parts.join("|")
+    };
+    if fp == old_fp { return PresetFetchOutcome::Unchanged; }
+
+    let entries = slots.into_iter()
+        .filter(|(_, content, _, _)| !content.trim().is_empty())
+        .map(|(slot, _content, name, picurl)| {
+            let kind = if name.is_empty() { PresetKind::Empty } else { PresetKind::Media };
+            PresetEntry { slot, name, kind, art_bytes: Vec::new(), picurl }
+        })
+        .collect();
+    PresetFetchOutcome::Changed(fp, entries)
 }
 
 /// Parses a `GetInfoExResponse` SOAP envelope. `TrackMetaData` is XML text
@@ -382,13 +511,31 @@ mod tests {
         blob_text(action.response.as_ref().expect("GetInfoEx has no response")).to_string()
     }
 
+    /// `captures/test-devices/*` fixtures, unlike `load_capture()`'s
+    /// `captures/test-sources/*` — same split `capabilities.rs`'s own tests
+    /// use.
+    fn load_device_capture(filename: &str) -> CaptureFile {
+        let path = format!("{}/captures/test-devices/{filename}", env!("CARGO_MANIFEST_DIR"));
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("reading fixture {path}: {e}"));
+        serde_json::from_str(&text)
+            .unwrap_or_else(|e| panic!("parsing fixture {path}: {e}"))
+    }
+
+    fn get_key_mapping_body(cap: &CaptureFile) -> String {
+        let upnp = cap.upnp.as_ref().expect("capture has no upnp section");
+        let action = upnp.actions.iter().find(|a| a.action == "GetKeyMapping")
+            .expect("capture has no GetKeyMapping action");
+        blob_text(action.response.as_ref().expect("GetKeyMapping has no response")).to_string()
+    }
+
     #[test]
     fn control_url_discovery_from_real_description_xml() {
         let cap = load_capture("WiiM_Ultra_20260706_075156.TidalConnect-FLAC.json");
         let upnp = cap.upnp.as_ref().unwrap();
         let description_url = upnp.description_url.as_deref().unwrap();
         let description_xml = blob_text(upnp.description.as_ref().unwrap());
-        let url = extract_av_transport_control_url(description_xml, description_url).unwrap();
+        let url = extract_control_url_for_service(description_xml, description_url, ":service:AVTransport:").unwrap();
         assert_eq!(url, "http://xx.x.x.xx:49152/upnp/control/rendertransport1");
     }
 
@@ -520,5 +667,42 @@ mod tests {
         let info = parse_info_ex_response(&get_info_ex_body(&cap)).unwrap();
         assert_eq!(info.play_medium, "SPOTIFY");
         assert_eq!(info.gui_behavior, Some(GuiBehavior { next: true, prev: true }));
+    }
+
+    /// Real iEAST AudioCast unit with only 2 of its slots actually
+    /// configured (`Key1`/`Key2`) — every other `KeyN` (including `Key0`
+    /// and everything from `Key3` through `Key33`) is a completely empty
+    /// tag, `<KeyN></KeyN>`, not just missing a `<Name>`. Confirms those
+    /// slots are dropped from `entries` entirely rather than turned into
+    /// `PresetKind::Empty` placeholders — otherwise every one of this
+    /// device's unused slots would show up as a visible preset button with
+    /// a generic icon and no name.
+    #[test]
+    fn key_mapping_empty_slots_are_dropped_not_placeholder_entries() {
+        let cap = load_device_capture("AudioCastBu_20260708_095957.json");
+        let body = get_key_mapping_body(&cap);
+        match parse_key_mapping_presets(&body, "") {
+            PresetFetchOutcome::Changed(_, entries) => {
+                assert_eq!(entries.len(), 2, "expected only the 2 configured slots: {entries:?}");
+                assert_eq!(entries[0].slot, 1);
+                // Also confirms the `_#~<timestamp>` internal-uniquifier
+                // suffix (`"My Mix 1_#~2026-07-08 16:49:59"` on the wire) is
+                // stripped for display, not shown verbatim.
+                assert_eq!(entries[0].name, "My Mix 1");
+                assert_eq!(entries[1].slot, 2);
+                assert_eq!(entries[1].name, "Radio National Sydney");
+                for e in &entries {
+                    assert_eq!(e.kind, PresetKind::Media);
+                }
+            }
+            other => panic!("expected Changed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn strip_wiimu_name_suffix_removes_hash_tilde_timestamp() {
+        assert_eq!(strip_wiimu_name_suffix("My Mix 1_#~2026-07-08 16:49:59"), "My Mix 1");
+        assert_eq!(strip_wiimu_name_suffix("Radio National Sydney"), "Radio National Sydney");
+        assert_eq!(strip_wiimu_name_suffix(""), "");
     }
 }

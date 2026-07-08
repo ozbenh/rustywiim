@@ -706,6 +706,33 @@ static LINKPLAY_PROFILES: [DeviceProfile; 1] = [
 
 // ── Capabilities ──────────────────────────────────────────────────────────────
 
+/// Which source device presets actually come from — learned at runtime,
+/// not a static per-vendor guess (unlike most other fields
+/// `static_playback_caps()` computes), and persisted on `DeviceCapabilities`
+/// for the connection's lifetime once determined, so a confirmed-
+/// unsupported HTTP `getPresetInfo` doesn't get retried every single
+/// slow-poll cycle forever. Every device starts at `Unknown` regardless of
+/// vendor: trying costs one extra round trip on first connect, then
+/// settles permanently — cheaper and more reliable than maintaining a
+/// static per-family guess for something this binary and directly
+/// discoverable at runtime (see `state.rs`'s `fetch_presets_with_fallback()`,
+/// the one place that actually decides what to try based on this value and
+/// reports the outcome back via `record_preset_source()`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PresetSource {
+    /// Not yet determined for this connection — try HTTP `getPresetInfo` first.
+    Unknown,
+    /// HTTP `getPresetInfo` works; keep using it.
+    Http,
+    /// HTTP confirmed unsupported; UPnP `GetKeyMapping` works instead.
+    Upnp,
+    /// Neither HTTP nor UPnP worked (or no `UpnpClient` ever became
+    /// available to try) — this device has no reachable preset source.
+    /// `state.rs` stops dispatching the slow-poll Presets phase entirely
+    /// once this is reached.
+    Unavailable,
+}
+
 #[derive(Debug, Clone)]
 pub struct DeviceCapabilities {
     pub device_id:          DeviceId,
@@ -720,7 +747,14 @@ pub struct DeviceCapabilities {
     /// Effective WiFi Direct flag.  Normally `family.grouping.uses_wifi_direct`,
     /// but overridden to `true` for Gen1 devices detected via `wmrm_version`.
     pub uses_wifi_direct:   bool,
-    pub supports_presets:   bool,
+    /// Private — see `PresetSource`'s doc comment and `preset_source()`/
+    /// `record_preset_source()`. The consecutive-network-failure retry
+    /// counter behind this determination is *not* stored here — it's a
+    /// short-lived, per-tick concern of `state.rs`'s
+    /// `fetch_presets_with_fallback()`, not part of the device's identity,
+    /// so it lives on `Inner` instead (`Inner::preset_probe_failures`).
+    /// `DeviceCapabilities` only ever records the final, resolved source.
+    preset_source:          PresetSource,
     pub supports_eq:        bool,
     /// Parametric EQ.  Cannot be determined statically; starts `false` and
     /// must be updated after a successful runtime probe.
@@ -828,8 +862,7 @@ impl DeviceCapabilities {
         let model = device_id.profile().model_name
             .map(|s| s.to_string())
             .unwrap_or_else(|| model_name_fallback(&project_lc, &info.device_name));
-        let (supports_presets, supports_eq, supports_peq) =
-            static_playback_caps(device_id);
+        let (supports_eq, supports_peq) = static_playback_caps(device_id);
 
         // Base input list — static, from plm_support + per-model profile.
         // `detect_capabilities()` may amend `enabled` (and append entries
@@ -843,7 +876,7 @@ impl DeviceCapabilities {
         let caps = Self {
             device_id, vendor, model, family,
             loop_mode_scheme, uses_wifi_direct,
-            supports_presets, supports_eq, supports_peq,
+            preset_source: PresetSource::Unknown, supports_eq, supports_peq,
             inputs,
             // Harmless placeholders — only `detect_capabilities()` (the real
             // probing entry point) sets these to something meaningful.
@@ -859,8 +892,8 @@ impl DeviceCapabilities {
 
             dbg(&format!("model: {:?}  loop_mode: {:?}  wifi_direct: {}",
                 caps.model, caps.loop_mode_scheme, caps.uses_wifi_direct));
-            dbg(&format!("capabilities: presets={}  eq={}  peq={}",
-                caps.supports_presets, caps.supports_eq, caps.supports_peq));
+            dbg(&format!("capabilities: preset_source={:?}  eq={}  peq={}",
+                caps.preset_source, caps.supports_eq, caps.supports_peq));
             dbg(&format!("playback_access: {pa:?}"));
             dbg(&format!(
                 "connection: ports={:?}  https_first={}  timeout={}ms  retries={}  client_cert={}",
@@ -945,6 +978,22 @@ impl DeviceCapabilities {
                 }
             }
         }
+    }
+
+    /// Current resolved preset-fetch source, or `Unknown` if not yet
+    /// determined for this connection — see `PresetSource`'s doc comment.
+    pub fn preset_source(&self) -> PresetSource {
+        self.preset_source
+    }
+
+    /// Persist a newly-resolved preset source (e.g. after `state.rs` learns
+    /// whether HTTP `getPresetInfo` or UPnP `GetKeyMapping` actually works
+    /// for this device, or gives up on one after exhausting its own retry
+    /// budget). Stays put for the life of the connection — see
+    /// `PresetSource`'s doc comment for why a *confirmed* result must never
+    /// be re-probed.
+    pub fn record_preset_source(&mut self, source: PresetSource) {
+        self.preset_source = source;
     }
 }
 
@@ -1197,37 +1246,25 @@ fn model_name_fallback(project: &str, device_name: &str) -> String {
         .join(" ")
 }
 
-/// Static capability defaults for (supports_presets, supports_eq, supports_peq).
+/// Static capability defaults for (supports_eq, supports_peq).
 /// Matches pywiim's detect_device_capabilities() per-vendor branches.
-/// PEQ is always `false` here — it requires a runtime probe.
-fn static_playback_caps(device_id: DeviceId) -> (bool, bool, bool) {
+/// PEQ is always `false` here — it requires a runtime probe. Presets have no
+/// static per-vendor guess any more — every device starts at
+/// `PresetSource::Unknown` and self-determines HTTP vs. UPnP vs. unavailable
+/// at runtime (see `PresetSource`'s doc comment).
+fn static_playback_caps(device_id: DeviceId) -> (bool, bool) {
     match device_id.vendor() {
-        Vendor::WiiM => (true, true, false),
+        Vendor::WiiM => (true, false),
 
         Vendor::AudioPro => match device_id {
-            DeviceId::AudioProMkII => (false, false, false),
-            DeviceId::AudioProWGen => (true,  true,  false),
-            _                      => (true,  false, false),
+            DeviceId::AudioProMkII => (false, false),
+            DeviceId::AudioProWGen => (true,  false),
+            _                      => (false, false),
         },
 
-        Vendor::Arylic => (true, false, false),
-
-        // iEAST AudioCast's `getPresetInfo` call confirmed returns "unknown
-        // command" (`AudioCastBu_20260708_095957.json`) — same reasoning as
-        // the `LinkPlayGeneric` arm below: getting the static default right
-        // matters more here since there's no live give-up mechanism for a
-        // wrong `supports_presets` guess.
-        Vendor::IEast => (false, false, false),
-
-        // Same reasoning as `LINKPLAY_PROFILES`'s empty extra_inputs/
-        // minimal outputs — a fully unidentified device has no confirmed
-        // basis to assume `getPresetInfo` works. Unlike outputs
-        // probing, there's no live give-up mechanism for a wrong
-        // `supports_presets` guess — `probe_presets` in `state.rs` just
-        // keeps dispatching `getPresetInfo` every slow-poll cycle
-        // forever — so getting the static default right matters more
-        // here, not less.
-        Vendor::LinkPlayGeneric => (false, false, false),
+        Vendor::Arylic => (false, false),
+        Vendor::IEast => (false, false),
+        Vendor::LinkPlayGeneric => (false, false),
     }
 }
 
@@ -1461,9 +1498,9 @@ mod tests {
     /// capability detection), yet `getPresetInfo` still replies "unknown
     /// command" — a genuine firmware limitation (confirmed unsupported by
     /// `wiim-capture`'s own detection), not an artifact of no preset
-    /// existing. `supports_presets` staying `false` is correct: there is no
-    /// working way to list this device's presets over HTTP, preset or no
-    /// preset.
+    /// existing — but that determination is now made at runtime (see
+    /// `PresetSource`'s doc comment), not guessed statically here, so
+    /// `from_device_info()` alone reports `PresetSource::Unknown` regardless.
     #[test]
     fn ieast_audiocast_real_capture_has_no_forced_inputs_or_extra_outputs() {
         let cap = load_capture("AudioCastBu_20260708_095957.json");
@@ -1482,7 +1519,7 @@ mod tests {
         assert_eq!(caps.inputs.len(), 1, "expected only wifi: {:?}", caps.inputs);
         assert_eq!(caps.inputs[0].id, "wifi");
         assert_eq!(caps.device_id.profile().outputs, &["line-out"]);
-        assert!(!caps.supports_presets);
+        assert_eq!(caps.preset_source(), PresetSource::Unknown);
 
         let preset_cmd = cap.commands.iter()
             .find(|c| c.command == "getPresetInfo")
