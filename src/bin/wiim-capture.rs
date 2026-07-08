@@ -746,7 +746,8 @@ const RC_SERVICE_TYPE: &str = "urn:schemas-upnp-org:service:RenderingControl:1";
 /// `capture_upnp()` already probes.
 fn known_upnp_action_service(action: &str) -> Option<&'static str> {
     match action {
-        "GetTransportInfo" | "GetPositionInfo" | "GetMediaInfo" | "GetInfoEx" => Some("AVTransport"),
+        "GetTransportInfo" | "GetPositionInfo" | "GetMediaInfo" | "GetInfoEx"
+            | "GetCurrentTransportActions" => Some("AVTransport"),
         "GetVolume" | "GetMute" => Some("RenderingControl"),
         _ => None,
     }
@@ -899,7 +900,18 @@ async fn capture_upnp(ip: &str) -> UpnpCapture {
         };
         let control_url = resolve_url(&description_url, &control_url_raw);
         if service_type.contains(":service:AVTransport:") {
-            for action in ["GetTransportInfo", "GetPositionInfo", "GetMediaInfo", "GetInfoEx"] {
+            for action in [
+                "GetTransportInfo", "GetPositionInfo", "GetMediaInfo", "GetInfoEx",
+                // Standard AVTransport action reporting which transport
+                // commands are currently valid (e.g. "Play,Stop,Pause,Seek,
+                // Next,Previous"). Not consumed by anything yet — added
+                // purely to capture what real WiiM hardware actually
+                // returns for it, since neither reference project checked
+                // (pywiim wraps it but only for a diagnostics-only
+                // snapshot, never its real state model) trusts it enough
+                // to rely on. See TODO.md's can_next/can_previous entry.
+                "GetCurrentTransportActions",
+            ] {
                 eprintln!("[wiim-capture] upnp: {action} on {service_type}");
                 upnp.actions.push(soap_call(&control_url, &service_type, action, "<InstanceID>0</InstanceID>", ip).await);
                 tokio::time::sleep(INTER_COMMAND_DELAY).await;
