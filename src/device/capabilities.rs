@@ -459,8 +459,8 @@ pub struct DeviceProfile {
 static WIIM_PROFILES: [DeviceProfile; 9] = [
     /* 0 WiimMini */ DeviceProfile {
         model_name:      Some("WiiM Mini"),
-        ignore_plm_bits: &[5],        // Coaxial not present
-        extra_inputs:    &["bluetooth", "line-in", "optical"],
+        ignore_plm_bits: &[2, 5],     // USB-C power only; Coaxial not present
+        extra_inputs:    &["bluetooth", "line-in"],
         outputs:         &["line-out", "optical-out"],
         line_out_is_speaker: false,
     },
@@ -1289,5 +1289,43 @@ pub fn icon_canon_for_output(canon: &'static str, device_id: DeviceId) -> &'stat
         "speaker-out"
     } else {
         canon
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::capture::format::CaptureFile;
+
+    fn load_capture(filename: &str) -> CaptureFile {
+        let path = format!("{}/captures/test-devices/{filename}", env!("CARGO_MANIFEST_DIR"));
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("reading fixture {path}: {e}"));
+        serde_json::from_str(&text)
+            .unwrap_or_else(|e| panic!("parsing fixture {path}: {e}"))
+    }
+
+    /// Real WiiM Mini unit (project "Muzo_Mini", hardware "ALLWINNER-R328")
+    /// confirmed to have only WiFi/Bluetooth/Line-In — no Optical, no USB
+    /// (its USB-C port is power-only) — despite `plm_support` (0x300006)
+    /// asserting bit 2 (USB) and the static profile previously force-adding
+    /// "optical" regardless of what the device actually reports. See the
+    /// `WIIM_PROFILES[0]` doc comment for the full investigation.
+    #[test]
+    fn wiim_mini_real_capture_has_no_optical_or_usb_input() {
+        let cap = load_capture("WiiM_Mini_20260708_045125.json");
+        let body = cap.commands.iter()
+            .find(|c| c.command == "getStatusEx")
+            .expect("capture has no getStatusEx")
+            .body.clone()
+            .expect("getStatusEx has no body");
+        let info: DeviceInfo = serde_json::from_value(body).expect("parsing DeviceInfo");
+        let caps = DeviceCapabilities::from_device_info(&info);
+        assert_eq!(caps.model, "WiiM Mini");
+        assert!(caps.inputs.iter().any(|i| i.id == "wifi"));
+        assert!(caps.inputs.iter().any(|i| i.id == "bluetooth"));
+        assert!(caps.inputs.iter().any(|i| i.id == "line-in"));
+        assert!(!caps.inputs.iter().any(|i| i.id == "optical"), "real unit has no optical input");
+        assert!(!caps.inputs.iter().any(|i| i.id == "udisk"), "real unit's USB-C is power-only");
     }
 }
