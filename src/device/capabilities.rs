@@ -599,8 +599,8 @@ static LINKPLAY_PROFILES: [DeviceProfile; 1] = [
     /* 9999 LinkPlayGeneric */ DeviceProfile {
         model_name:      None,
         ignore_plm_bits: &[],
-        extra_inputs:    &["bluetooth", "line-in", "optical"],
-        outputs:         &["optical-out", "line-out"],
+        extra_inputs:    &[],
+        outputs:         &["line-out"],
         line_out_is_speaker: false,
     },
 ];
@@ -1106,7 +1106,9 @@ fn static_playback_caps(device_id: DeviceId) -> (bool, bool, bool) {
             _                      => (true,  false, false),
         },
 
-        Vendor::Arylic | Vendor::LinkPlayGeneric => (true, false, false),
+        Vendor::Arylic => (true, false, false),
+
+        Vendor::LinkPlayGeneric => (false, false, false),
     }
 }
 
@@ -1327,5 +1329,29 @@ mod tests {
         assert!(caps.inputs.iter().any(|i| i.id == "line-in"));
         assert!(!caps.inputs.iter().any(|i| i.id == "optical"), "real unit has no optical input");
         assert!(!caps.inputs.iter().any(|i| i.id == "udisk"), "real unit's USB-C is power-only");
+    }
+
+    /// Real unidentified LinkPlay device (project "iEAST-02", a bare
+    /// network-audio adapter) confirmed to have no physical inputs at all
+    /// and a single line-out output, despite `LINKPLAY_PROFILES`'s fallback
+    /// entry previously force-adding three inputs and an extra output no
+    /// unidentified device is actually confirmed to have. See that
+    /// profile's doc comment.
+    #[test]
+    fn unidentified_linkplay_device_gets_no_forced_inputs_or_extra_outputs() {
+        let cap = load_capture("AudioCastBu_20260708_062004.json");
+        let body = cap.commands.iter()
+            .find(|c| c.command == "getStatusEx")
+            .expect("capture has no getStatusEx")
+            .body.clone()
+            .expect("getStatusEx has no body");
+        let info: DeviceInfo = serde_json::from_value(body).expect("parsing DeviceInfo");
+        let caps = DeviceCapabilities::from_device_info(&info);
+        assert_eq!(caps.device_id, DeviceId::LinkPlayGeneric);
+        assert_eq!(caps.inputs.len(), 1, "expected only wifi: {:?}", caps.inputs);
+        assert_eq!(caps.inputs[0].id, "wifi");
+        assert_eq!(caps.device_id.profile().outputs, &["line-out"]);
+        // getPresetInfo is also confirmed unsupported on this device.
+        assert!(!caps.supports_presets);
     }
 }
