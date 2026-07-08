@@ -46,13 +46,9 @@ pub struct PlaybackState {
     pub muted:       bool,
     pub shuffle:     bool,
     pub repeat:      RepeatMode,
-    /// Whether the transport/prev/next buttons should be enabled for the
-    /// current source. Best-effort, not device-guaranteed: see
-    /// `decode_transport_caps_http`/`decode_transport_caps_upnp`'s doc
-    /// comments for the actual rules and their known gaps. Defaults to
-    /// `true`
-    pub can_next:     bool,
-    pub can_previous: bool,
+    /// Which transport controls make sense for the current source — see
+    /// `SourceCapabilities`'s own doc comment.
+    pub caps:        SourceCapabilities,
     pub quality:     Option<AudioQuality>,
     /// WiiM-app-style codec/quality badge text ("FLAC"/"HIGH"/"mp3"/...),
     /// only ever populated by the UPnP backend (`decode_quality_upnp`) —
@@ -86,8 +82,7 @@ impl Default for PlaybackState {
             muted:       false,
             shuffle:     false,
             repeat:      RepeatMode::Off,
-            can_next:     true,
-            can_previous: true,
+            caps:        SourceCapabilities::default(),
             quality:     None,
             codec_label: None,
             art_url:     None,
@@ -132,6 +127,22 @@ pub struct AudioQuality {
     pub bit_rate_kbps:   Option<f64>,
     pub sample_rate_khz: Option<f64>,
     pub bit_depth:       Option<u32>,
+}
+
+/// Which transport controls make sense for the *current source* — dynamic,
+/// changes with what's playing, unlike `capabilities::DeviceCapabilities`
+/// (static, probed once per device). Modeled after `pywiim`'s
+/// `SourceCapability` flag set and `SOURCE_CAPABILITIES` table
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SourceCapabilities {
+    pub can_next:     bool,
+    pub can_previous: bool,
+}
+
+impl Default for SourceCapabilities {
+    fn default() -> Self {
+        Self { can_next: true, can_previous: true }
+    }
 }
 
 // ── Access method ─────────────────────────────────────────────────────────────
@@ -300,24 +311,25 @@ const TRACK_SOURCES_CTRL: &[&str] = &["Pandora2", "SoundMachine", "Soundtrack", 
 /// allow it) apart. Defaulting to enabled matches this function's general
 /// "err toward enabling" policy rather than assuming the more restrictive
 /// tier.
-pub fn decode_transport_caps_http(mode: i32, vendor: &str) -> (bool, bool) {
+pub fn decode_transport_caps_http(mode: i32, vendor: &str) -> SourceCapabilities {
+    let both = |can_next, can_previous| SourceCapabilities { can_next, can_previous };
     match mode {
-        31                          => return (true, true),   // Spotify
-        -1 | 0                      => return (false, false), // Idle
-        40 | 60 | 43 | 44 | 49 | 54 => return (false, false), // Line-In/Optical/RCA/HDMI/Phono
+        31                          => return both(true, true),   // Spotify
+        -1 | 0                      => return both(false, false), // Idle
+        40 | 60 | 43 | 44 | 49 | 54 => return both(false, false), // Line-In/Optical/RCA/HDMI/Phono
         _ => {}
     }
     if mode != 10 && mode != 20 {
-        return (true, true);
+        return both(true, true);
     }
     let normalized = normalize_vendor(vendor);
     if HTTP_RADIO_VENDORS.contains(&normalized.as_str()) {
-        return (false, false);
+        return both(false, false);
     }
     if TRACK_SOURCES_CTRL.contains(&vendor) {
-        return (true, false);
+        return both(true, false);
     }
-    (true, true)
+    both(true, true)
 }
 
 /// Vendor strings (normalized via `normalize_vendor`) confirmed to mean
@@ -548,20 +560,21 @@ const PLAY_MEDIUMS_CTRL: &[&str] = &["RADIO-NETWORK", "THIRD-DLNA", "LINE-IN", "
 /// capture — see `TRACK_SOURCES_CTRL`'s doc comment).
 pub fn decode_transport_caps_upnp(
     play_medium: &str, track_source: &str, gui_behavior: Option<GuiBehavior>,
-) -> (bool, bool) {
+) -> SourceCapabilities {
+    let both = |can_next, can_previous| SourceCapabilities { can_next, can_previous };
     if play_medium == "SPOTIFY" {
-        return (true, gui_behavior.map_or(false, |g| g.prev));
+        return both(true, gui_behavior.map_or(false, |g| g.prev));
     }
     if let Some(g) = gui_behavior {
-        return (g.next, g.prev);
+        return both(g.next, g.prev);
     }
     if PLAY_MEDIUMS_CTRL.contains(&play_medium) {
-        return (false, false);
+        return both(false, false);
     }
     if TRACK_SOURCES_CTRL.contains(&track_source) {
-        return (true, false);
+        return both(true, false);
     }
-    (true, true)
+    both(true, true)
 }
 
 /// Translates a non-empty `song:actualQuality` into the WiiM app's own
@@ -656,6 +669,10 @@ pub fn decode_quality_upnp(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn caps(can_next: bool, can_previous: bool) -> SourceCapabilities {
+        SourceCapabilities { can_next, can_previous }
+    }
 
     #[test]
     fn quality_badge_rule_hi_res_lossless_becomes_flac() {
@@ -785,14 +802,14 @@ mod tests {
 
     #[test]
     fn transport_caps_upnp_no_skip_mediums_disable_both() {
-        assert_eq!(decode_transport_caps_upnp("RADIO-NETWORK", "newTuneIn", None), (false, false));
-        assert_eq!(decode_transport_caps_upnp("LINE-IN", "", None), (false, false));
-        assert_eq!(decode_transport_caps_upnp("HDMI", "", None), (false, false));
+        assert_eq!(decode_transport_caps_upnp("RADIO-NETWORK", "newTuneIn", None), caps(false, false));
+        assert_eq!(decode_transport_caps_upnp("LINE-IN", "", None), caps(false, false));
+        assert_eq!(decode_transport_caps_upnp("HDMI", "", None), caps(false, false));
     }
 
     #[test]
     fn transport_caps_upnp_station_services_disable_previous_only() {
-        assert_eq!(decode_transport_caps_upnp("STATION-NETWORK", "Pandora2", None), (true, false));
+        assert_eq!(decode_transport_caps_upnp("STATION-NETWORK", "Pandora2", None), caps(true, false));
     }
 
     #[test]
@@ -801,7 +818,7 @@ mod tests {
         // display, both of which wrongly claim neither works) — `next` is
         // always forced true for Spotify; `prev` without a `gui_behavior`
         // reading defaults to the conservative (free-tier-like) `false`.
-        assert_eq!(decode_transport_caps_upnp("SPOTIFY", "spotify:playlist:37i9dQZF1EIZAuCHB2O9dH", None), (true, false));
+        assert_eq!(decode_transport_caps_upnp("SPOTIFY", "spotify:playlist:37i9dQZF1EIZAuCHB2O9dH", None), caps(true, false));
     }
 
     #[test]
@@ -809,7 +826,7 @@ mod tests {
         // Confirmed via a real free-tier capture: guibehavior claimed
         // next:false, but pressing the button actually skipped forward.
         let gb = GuiBehavior { next: false, prev: false };
-        assert_eq!(decode_transport_caps_upnp("SPOTIFY", "spotify:playlist:x", Some(gb)), (true, false));
+        assert_eq!(decode_transport_caps_upnp("SPOTIFY", "spotify:playlist:x", Some(gb)), caps(true, false));
     }
 
     #[test]
@@ -817,9 +834,9 @@ mod tests {
         // Confirmed via two real captures on the same playlist mechanism,
         // differing only by account tier.
         let free = GuiBehavior { next: false, prev: false };
-        assert_eq!(decode_transport_caps_upnp("SPOTIFY", "spotify:playlist:free", Some(free)), (true, false));
+        assert_eq!(decode_transport_caps_upnp("SPOTIFY", "spotify:playlist:free", Some(free)), caps(true, false));
         let premium = GuiBehavior { next: true, prev: true };
-        assert_eq!(decode_transport_caps_upnp("SPOTIFY", "spotify:playlist:premium", Some(premium)), (true, true));
+        assert_eq!(decode_transport_caps_upnp("SPOTIFY", "spotify:playlist:premium", Some(premium)), caps(true, true));
     }
 
     #[test]
@@ -827,56 +844,56 @@ mod tests {
         // A source the static heuristic would otherwise default-enable,
         // but guibehavior says otherwise for this specific track — trust it.
         let gb = GuiBehavior { next: false, prev: true };
-        assert_eq!(decode_transport_caps_upnp("TIDAL_CONNECT", "Tidal", Some(gb)), (false, true));
+        assert_eq!(decode_transport_caps_upnp("TIDAL_CONNECT", "Tidal", Some(gb)), caps(false, true));
     }
 
     #[test]
     fn transport_caps_upnp_unknown_medium_defaults_permissive() {
-        assert_eq!(decode_transport_caps_upnp("TIDAL_CONNECT", "Tidal", None), (true, true));
-        assert_eq!(decode_transport_caps_upnp("SONGLIST-LOCAL", "UPnPServer", None), (true, true));
+        assert_eq!(decode_transport_caps_upnp("TIDAL_CONNECT", "Tidal", None), caps(true, true));
+        assert_eq!(decode_transport_caps_upnp("SONGLIST-LOCAL", "UPnPServer", None), caps(true, true));
     }
 
     #[test]
     fn transport_caps_http_physical_inputs_and_idle_disable_both() {
-        assert_eq!(decode_transport_caps_http(40, ""), (false, false)); // Line-In
-        assert_eq!(decode_transport_caps_http(49, ""), (false, false)); // HDMI
-        assert_eq!(decode_transport_caps_http(43, ""), (false, false)); // Optical
-        assert_eq!(decode_transport_caps_http(44, ""), (false, false)); // RCA
-        assert_eq!(decode_transport_caps_http(54, ""), (false, false)); // Phono
-        assert_eq!(decode_transport_caps_http(0,  ""), (false, false)); // Idle
-        assert_eq!(decode_transport_caps_http(-1, ""), (false, false)); // Idle (sentinel)
+        assert_eq!(decode_transport_caps_http(40, ""), caps(false, false)); // Line-In
+        assert_eq!(decode_transport_caps_http(49, ""), caps(false, false)); // HDMI
+        assert_eq!(decode_transport_caps_http(43, ""), caps(false, false)); // Optical
+        assert_eq!(decode_transport_caps_http(44, ""), caps(false, false)); // RCA
+        assert_eq!(decode_transport_caps_http(54, ""), caps(false, false)); // Phono
+        assert_eq!(decode_transport_caps_http(0,  ""), caps(false, false)); // Idle
+        assert_eq!(decode_transport_caps_http(-1, ""), caps(false, false)); // Idle (sentinel)
     }
 
     #[test]
     fn transport_caps_http_unconfirmed_network_services_default_enabled() {
         // No positive reason to believe these lack transport control —
         // err toward enabling rather than disabling until proven otherwise.
-        assert_eq!(decode_transport_caps_http(11, ""), (true, true)); // USB
-        assert_eq!(decode_transport_caps_http(1,  ""), (true, true)); // AirPlay
-        assert_eq!(decode_transport_caps_http(2,  ""), (true, true)); // DLNA
-        assert_eq!(decode_transport_caps_http(5,  ""), (true, true)); // Chromecast
-        assert_eq!(decode_transport_caps_http(32, ""), (true, true)); // TIDAL Connect
-        assert_eq!(decode_transport_caps_http(34, ""), (true, true)); // Lyrion
-        assert_eq!(decode_transport_caps_http(36, ""), (true, true)); // Qobuz
-        assert_eq!(decode_transport_caps_http(41, ""), (true, true)); // Bluetooth
+        assert_eq!(decode_transport_caps_http(11, ""), caps(true, true)); // USB
+        assert_eq!(decode_transport_caps_http(1,  ""), caps(true, true)); // AirPlay
+        assert_eq!(decode_transport_caps_http(2,  ""), caps(true, true)); // DLNA
+        assert_eq!(decode_transport_caps_http(5,  ""), caps(true, true)); // Chromecast
+        assert_eq!(decode_transport_caps_http(32, ""), caps(true, true)); // TIDAL Connect
+        assert_eq!(decode_transport_caps_http(34, ""), caps(true, true)); // Lyrion
+        assert_eq!(decode_transport_caps_http(36, ""), caps(true, true)); // Qobuz
+        assert_eq!(decode_transport_caps_http(41, ""), caps(true, true)); // Bluetooth
     }
 
     #[test]
     fn transport_caps_http_wifi_bucket_uses_vendor() {
-        assert_eq!(decode_transport_caps_http(10, "newTuneIn"), (false, false));
-        assert_eq!(decode_transport_caps_http(10, "WiiMRadio"), (false, false));
-        assert_eq!(decode_transport_caps_http(10, "Linkplay Radio"), (false, false));
-        assert_eq!(decode_transport_caps_http(10, "vTuner"), (false, false));
-        assert_eq!(decode_transport_caps_http(10, "RadioParadise"), (false, false));
-        assert_eq!(decode_transport_caps_http(10, "Pandora2"), (true, false));
-        assert_eq!(decode_transport_caps_http(10, "UDiskLocal"), (true, true));
-        assert_eq!(decode_transport_caps_http(10, ""), (true, true));
+        assert_eq!(decode_transport_caps_http(10, "newTuneIn"), caps(false, false));
+        assert_eq!(decode_transport_caps_http(10, "WiiMRadio"), caps(false, false));
+        assert_eq!(decode_transport_caps_http(10, "Linkplay Radio"), caps(false, false));
+        assert_eq!(decode_transport_caps_http(10, "vTuner"), caps(false, false));
+        assert_eq!(decode_transport_caps_http(10, "RadioParadise"), caps(false, false));
+        assert_eq!(decode_transport_caps_http(10, "Pandora2"), caps(true, false));
+        assert_eq!(decode_transport_caps_http(10, "UDiskLocal"), caps(true, true));
+        assert_eq!(decode_transport_caps_http(10, ""), caps(true, true));
     }
 
     #[test]
     fn transport_caps_http_spotify_defaults_fully_enabled_tier_unknown() {
         // HTTP has no guibehavior-equivalent signal to distinguish free
         // from premium accounts, unlike UPnP — default permissive.
-        assert_eq!(decode_transport_caps_http(31, ""), (true, true));
+        assert_eq!(decode_transport_caps_http(31, ""), caps(true, true));
     }
 }
