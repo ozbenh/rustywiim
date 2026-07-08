@@ -884,17 +884,43 @@ impl WiimClient {
         // Skip artwork fetch if nothing changed.
         if fp == old_fp { return None; }
 
-        // Build entries, fetching artwork only for media presets.
-        let mut entries: Vec<PresetEntry> = Vec::new();
-
-        for p in &presets.preset_list {
+        // Build entries, fetching artwork only for media presets. These URLs
+        // are on external CDN hosts (Pandora, Spotify, etc.), not the
+        // embedded device itself, so the "never parallelize calls to the
+        // same device" rule doesn't apply here — fetched concurrently via
+        // `JoinSet` rather than one `.await` at a time, since up to 12 of
+        // these in sequence turned "presets loaded" into a multi-second (or,
+        // against an unreachable/slow CDN, multi-*ten*-second) wait even
+        // though the device's own two calls above (`get_presets`/
+        // `get_all_routines`) had long since returned.
+        let mut art_fetches = tokio::task::JoinSet::new();
+        for (i, p) in presets.preset_list.iter().enumerate() {
             let slot = p.number as usize;
             if !(1..=12).contains(&slot) { continue; }
-            let art_bytes = if !p.picurl.is_empty() {
-                self.fetch_bytes(&p.picurl).await.unwrap_or_default()
-            } else {
-                Vec::new()
-            };
+            let http = self.http.clone();
+            let picurl = p.picurl.clone();
+            art_fetches.spawn(async move {
+                let bytes = if picurl.is_empty() {
+                    Vec::new()
+                } else {
+                    match http.get(&picurl).send().await {
+                        Ok(resp) => resp.bytes().await.map(|b| b.to_vec()).unwrap_or_default(),
+                        Err(_)   => Vec::new(),
+                    }
+                };
+                (i, bytes)
+            });
+        }
+        let mut art_by_index: HashMap<usize, Vec<u8>> = HashMap::new();
+        while let Some(res) = art_fetches.join_next().await {
+            if let Ok((i, bytes)) = res { art_by_index.insert(i, bytes); }
+        }
+
+        let mut entries: Vec<PresetEntry> = Vec::new();
+        for (i, p) in presets.preset_list.iter().enumerate() {
+            let slot = p.number as usize;
+            if !(1..=12).contains(&slot) { continue; }
+            let art_bytes = art_by_index.remove(&i).unwrap_or_default();
             entries.push(PresetEntry { slot, name: p.name.clone(), kind: PresetKind::Media, art_bytes });
         }
 
