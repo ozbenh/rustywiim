@@ -592,11 +592,20 @@ impl DeviceWindowInner {
     /// loaded this device's window state," and silently skip loading the
     /// saved window size/panel state at launch.
     ///
-    /// Does *not* handle `playback_access_override` — that's established
-    /// earlier, at connection time (`DeviceManager::get()` passes it to
-    /// `DeviceState::set_device()` directly), specifically so it doesn't
-    /// depend on this function (widget/window-focused, not device-state
-    /// config) running at the right time at all.
+    /// Also (re-)establishes `playback_access_override` for the resolved
+    /// `uuid` — normally already done at connection time
+    /// (`DeviceManager::get()` passes it straight to
+    /// `DeviceState::set_device()`), but a manually-connected device
+    /// (`--connect`, or any freshly-added device the same way) has no real
+    /// uuid yet at that point (`getStatusEx` hasn't answered), so
+    /// `DeviceManager::get()` is called with an empty uuid and looks up
+    /// nothing. This is the first point after construction where the real
+    /// uuid is known, so it's also the first point config for that uuid can
+    /// actually be found — this call is what makes a saved access-method
+    /// override for a manually-connected device take effect at all, rather
+    /// than silently staying on the HTTP default forever. A no-op re-push
+    /// for an already-known device (same uuid, same config, already applied
+    /// at construction).
     pub(super) fn apply_device_window_state(&self, uuid: &str) {
         if uuid.is_empty() { return; }
         let already_loaded = self.window_state_loaded.get();
@@ -637,6 +646,7 @@ impl DeviceWindowInner {
             "apply_device_window_state: uuid={uuid:?} playback_access_override={:?}",
             dev_cfg.playback_access_override,
         ));
+        self.ds.set_playback_access_override(dev_cfg.playback_access_override);
 
         let panel_width = if dev_cfg.paned_position > 0 { dev_cfg.paned_position } else { 200 };
         *self.saved_panel_width.borrow_mut() = panel_width;
