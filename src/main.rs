@@ -112,8 +112,15 @@ fn main() -> glib::ExitCode {
         if opts.lookup::<bool>("no-config").ok().flatten().unwrap_or(false) {
             config::set_no_config(true);
         }
-        if let Ok(Some(path)) = opts.lookup::<String>("config-file") {
-            config::set_config_path_override(std::path::PathBuf::from(path));
+        // `OptionArg::Filename` options surface as a GVariant bytestring
+        // ("ay"), not a UTF-8 string ("s") — looking this up as `String`
+        // (as every other string-valued option here does) silently never
+        // matches the stored variant's type, so `lookup` always returned
+        // `Ok(None)` and this override never took effect at all, no matter
+        // how `--config-file` was spelled. `PathBuf` has the matching
+        // `FromVariant` impl (via `g_variant_get_bytestring`).
+        if let Ok(Some(path)) = opts.lookup::<std::path::PathBuf>("config-file") {
+            config::set_config_path_override(path);
         }
         if let Ok(Some(url)) = opts.lookup::<String>("connect") {
             match parse_connect_url(&url) {
