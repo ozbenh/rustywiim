@@ -49,6 +49,12 @@ window { background-color: #0a0a0a; }
 .loop-btn     { min-width: 36px; min-height: 36px; padding: 0; -gtk-icon-size: 16px; background-color: transparent; color: #909090; }
 .loop-btn:hover { background-color: #2a2a2a; color: #ffffff; }
 .loop-active  { color: @rustywiim_accent; }
+/* .loop-btn:hover's own `color: #ffffff` (above) has higher specificity
+   (class + pseudo-class) than plain `.loop-active` (one class), so it wins
+   while hovering and masks the accent color that's supposed to show
+   shuffle/repeat is active — the icon looked "off" on hover even when on.
+   This compound selector (two classes + pseudo-class) outranks it. */
+.loop-btn.loop-active:hover { color: @rustywiim_accent; }
 .vol-btn { background-color: transparent; color: #cccccc; border-radius: 6px; padding: 0 8px; min-width: 0; }
 .vol-btn:hover { background-color: #2a2a2a; }
 .vol-pop trough   { min-width: 3px; border-radius: 2px; background-color: #2a2a2a; }
