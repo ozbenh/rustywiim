@@ -885,8 +885,20 @@ impl DeviceState {
         dbg(&format!("slow poll: phase {phase:?}"));
         let cp = client.clone();
         let tx = slow_tx.clone();
+        let dispatched_at = Instant::now();
         self.rt().spawn(async move {
             let result = run_slow_poll_phase(cp, phase, preset_fp).await;
+            // Presets in particular can take much longer than the other
+            // phases: unlike Outputs/OutputStatus/DeviceInfo (one call each,
+            // to the device itself), a changed preset list fetches artwork
+            // from each preset's external CDN URL — see `fetch_presets()`'s
+            // doc comment. Logged here (round-trip, not just "dispatched")
+            // since that's what actually explains a slow-to-appear preset
+            // list, not the dispatch itself (which always fires promptly).
+            let elapsed = dispatched_at.elapsed();
+            if elapsed > Duration::from_secs(1) {
+                dbg(&format!("slow poll: phase {phase:?} took {elapsed:?} (slower than usual)"));
+            }
             let _ = tx.send(result).await;
         });
     }

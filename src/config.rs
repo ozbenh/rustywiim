@@ -22,6 +22,14 @@ static NO_CONFIG: AtomicBool = AtomicBool::new(false);
 /// requirement as `NO_CONFIG` above.
 static CONFIG_PATH_OVERRIDE: OnceLock<PathBuf> = OnceLock::new();
 
+pub static DEBUG_CONFIG: AtomicBool = AtomicBool::new(false);
+
+fn dbg(msg: &str) {
+    if DEBUG_CONFIG.load(Ordering::Relaxed) {
+        println!("[config] {msg}");
+    }
+}
+
 pub fn set_no_config(v: bool) {
     NO_CONFIG.store(v, Ordering::Relaxed);
 }
@@ -275,6 +283,7 @@ impl Config {
             return Self::default();
         }
         let path = config_path();
+        dbg(&format!("loading from {}", path.display()));
         let text = match fs::read_to_string(&path) {
             Ok(s) => s,
             Err(e) => {
@@ -286,7 +295,10 @@ impl Config {
         };
         let cleaned = strip_trailing_commas(&text);
         match serde_json::from_str::<Self>(&cleaned) {
-            Ok(cfg) => cfg,
+            Ok(cfg) => {
+                dbg(&format!("loaded {} device(s): {:?}", cfg.devices.len(), cfg.devices.keys().collect::<Vec<_>>()));
+                cfg
+            }
             Err(e) => {
                 eprintln!("[config] failed to parse {}: {e}", path.display());
                 eprintln!("[config] file contents:\n{text}");

@@ -633,6 +633,10 @@ impl DeviceWindowInner {
         *self.applied_window_key.borrow_mut() = uuid.to_string();
 
         let dev_cfg = config::with(|cfg| cfg.device(uuid));
+        super::dbg_ui(&format!(
+            "apply_device_window_state: uuid={uuid:?} playback_access_override={:?}",
+            dev_cfg.playback_access_override,
+        ));
 
         let panel_width = if dev_cfg.paned_position > 0 { dev_cfg.paned_position } else { 200 };
         *self.saved_panel_width.borrow_mut() = panel_width;
