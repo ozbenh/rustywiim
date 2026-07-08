@@ -137,11 +137,14 @@ pub struct AudioQuality {
 pub struct SourceCapabilities {
     pub can_next:     bool,
     pub can_previous: bool,
+    pub can_shuffle:  bool,
+    pub can_repeat:   bool,
+    pub can_seek:     bool,
 }
 
 impl Default for SourceCapabilities {
     fn default() -> Self {
-        Self { can_next: true, can_previous: true }
+        Self { can_next: true, can_previous: true, can_shuffle: true, can_repeat: true, can_seek: true }
     }
 }
 
@@ -312,24 +315,43 @@ const TRACK_SOURCES_CTRL: &[&str] = &["Pandora2", "SoundMachine", "Soundtrack", 
 /// "err toward enabling" policy rather than assuming the more restrictive
 /// tier.
 pub fn decode_transport_caps_http(mode: i32, vendor: &str) -> SourceCapabilities {
-    let both = |can_next, can_previous| SourceCapabilities { can_next, can_previous };
+    let (can_next, can_previous) = decode_next_prev_http(mode, vendor);
+    // For now disable shuffle/repeat/seek on physical inputs only
+    let physical = is_physical_input_http(mode);
+    SourceCapabilities {
+        can_next, can_previous,
+        can_shuffle: !physical,
+        can_repeat:  !physical,
+        can_seek:    !physical,
+    }
+}
+
+fn decode_next_prev_http(mode: i32, vendor: &str) -> (bool, bool) {
     match mode {
-        31                          => return both(true, true),   // Spotify
-        -1 | 0                      => return both(false, false), // Idle
-        40 | 60 | 43 | 44 | 49 | 54 => return both(false, false), // Line-In/Optical/RCA/HDMI/Phono
+        31                          => return (true, true),   // Spotify
+        -1 | 0                      => return (false, false), // Idle
+        40 | 60 | 43 | 44 | 49 | 54 => return (false, false), // Line-In/Optical/RCA/HDMI/Phono
         _ => {}
     }
     if mode != 10 && mode != 20 {
-        return both(true, true);
+        return (true, true);
     }
     let normalized = normalize_vendor(vendor);
     if HTTP_RADIO_VENDORS.contains(&normalized.as_str()) {
-        return both(false, false);
+        return (false, false);
     }
     if TRACK_SOURCES_CTRL.contains(&vendor) {
-        return both(true, false);
+        return (true, false);
     }
-    both(true, true)
+    (true, true)
+}
+
+/// `mode` values that are fixed physical audio-passthrough inputs — no
+/// application/service behind them at all, so shuffle/repeat/seek are
+/// meaningless by construction. Same set `decode_next_prev_http` uses for
+/// its own physical-input case.
+fn is_physical_input_http(mode: i32) -> bool {
+    matches!(mode, 40 | 60 | 43 | 44 | 49 | 54)
 }
 
 /// Vendor strings (normalized via `normalize_vendor`) confirmed to mean
@@ -561,21 +583,41 @@ const PLAY_MEDIUMS_CTRL: &[&str] = &["RADIO-NETWORK", "THIRD-DLNA", "LINE-IN", "
 pub fn decode_transport_caps_upnp(
     play_medium: &str, track_source: &str, gui_behavior: Option<GuiBehavior>,
 ) -> SourceCapabilities {
-    let both = |can_next, can_previous| SourceCapabilities { can_next, can_previous };
+    let (can_next, can_previous) = decode_next_prev_upnp(play_medium, track_source, gui_behavior);
+    // For now disable shuffle/repeat/seek on physical inputs only
+    let physical = PHYSICAL_INPUTS_UPNP.contains(&play_medium);
+    SourceCapabilities {
+        can_next, can_previous,
+        can_shuffle: !physical,
+        can_repeat:  !physical,
+        can_seek:    !physical,
+    }
+}
+
+fn decode_next_prev_upnp(
+    play_medium: &str, track_source: &str, gui_behavior: Option<GuiBehavior>,
+) -> (bool, bool) {
     if play_medium == "SPOTIFY" {
-        return both(true, gui_behavior.map_or(false, |g| g.prev));
+        return (true, gui_behavior.map_or(false, |g| g.prev));
     }
     if let Some(g) = gui_behavior {
-        return both(g.next, g.prev);
+        return (g.next, g.prev);
     }
     if PLAY_MEDIUMS_CTRL.contains(&play_medium) {
-        return both(false, false);
+        return (false, false);
     }
     if TRACK_SOURCES_CTRL.contains(&track_source) {
-        return both(true, false);
+        return (true, false);
     }
-    both(true, true)
+    (true, true)
 }
+
+/// `PlayMedium` values that are fixed physical audio-passthrough inputs —
+/// the subset of `PLAY_MEDIUMS_CTRL` that's an actual physical jack, not
+/// e.g. `RADIO-NETWORK`/`THIRD-DLNA` (which have no shuffle/repeat/seek
+/// concept for a different reason — a live/externally-pushed stream, not
+/// a lack of any application layer at all).
+const PHYSICAL_INPUTS_UPNP: &[&str] = &["LINE-IN", "OPTICAL", "HDMI", "PHONO"];
 
 /// Translates a non-empty `song:actualQuality` into the WiiM app's own
 /// display vocabulary. Only two mappings are confirmed from real captures —
@@ -671,7 +713,13 @@ mod tests {
     use super::*;
 
     fn caps(can_next: bool, can_previous: bool) -> SourceCapabilities {
-        SourceCapabilities { can_next, can_previous }
+        SourceCapabilities { can_next, can_previous, ..Default::default() }
+    }
+
+    /// Same as `caps()`, for a fixed physical input — shuffle/repeat/seek
+    /// are always disabled there, unlike every other case `caps()` covers.
+    fn caps_physical(can_next: bool, can_previous: bool) -> SourceCapabilities {
+        SourceCapabilities { can_next, can_previous, can_shuffle: false, can_repeat: false, can_seek: false }
     }
 
     #[test]
@@ -803,8 +851,8 @@ mod tests {
     #[test]
     fn transport_caps_upnp_no_skip_mediums_disable_both() {
         assert_eq!(decode_transport_caps_upnp("RADIO-NETWORK", "newTuneIn", None), caps(false, false));
-        assert_eq!(decode_transport_caps_upnp("LINE-IN", "", None), caps(false, false));
-        assert_eq!(decode_transport_caps_upnp("HDMI", "", None), caps(false, false));
+        assert_eq!(decode_transport_caps_upnp("LINE-IN", "", None), caps_physical(false, false));
+        assert_eq!(decode_transport_caps_upnp("HDMI", "", None), caps_physical(false, false));
     }
 
     #[test]
@@ -855,13 +903,28 @@ mod tests {
 
     #[test]
     fn transport_caps_http_physical_inputs_and_idle_disable_both() {
-        assert_eq!(decode_transport_caps_http(40, ""), caps(false, false)); // Line-In
-        assert_eq!(decode_transport_caps_http(49, ""), caps(false, false)); // HDMI
-        assert_eq!(decode_transport_caps_http(43, ""), caps(false, false)); // Optical
-        assert_eq!(decode_transport_caps_http(44, ""), caps(false, false)); // RCA
-        assert_eq!(decode_transport_caps_http(54, ""), caps(false, false)); // Phono
+        assert_eq!(decode_transport_caps_http(40, ""), caps_physical(false, false)); // Line-In
+        assert_eq!(decode_transport_caps_http(49, ""), caps_physical(false, false)); // HDMI
+        assert_eq!(decode_transport_caps_http(43, ""), caps_physical(false, false)); // Optical
+        assert_eq!(decode_transport_caps_http(44, ""), caps_physical(false, false)); // RCA
+        assert_eq!(decode_transport_caps_http(54, ""), caps_physical(false, false)); // Phono
+        // Idle isn't a "fixed physical input" — shuffle/repeat/seek aren't
+        // narrowed for it (yet), only next/previous.
         assert_eq!(decode_transport_caps_http(0,  ""), caps(false, false)); // Idle
         assert_eq!(decode_transport_caps_http(-1, ""), caps(false, false)); // Idle (sentinel)
+    }
+
+    #[test]
+    fn transport_caps_shuffle_repeat_seek_disabled_only_for_physical_inputs() {
+        let non_physical = decode_transport_caps_http(11, ""); // USB
+        assert!(non_physical.can_shuffle && non_physical.can_repeat && non_physical.can_seek);
+        let physical = decode_transport_caps_http(54, ""); // Phono
+        assert!(!physical.can_shuffle && !physical.can_repeat && !physical.can_seek);
+
+        let non_physical = decode_transport_caps_upnp("TIDAL_CONNECT", "Tidal", None);
+        assert!(non_physical.can_shuffle && non_physical.can_repeat && non_physical.can_seek);
+        let physical = decode_transport_caps_upnp("OPTICAL", "", None);
+        assert!(!physical.can_shuffle && !physical.can_repeat && !physical.can_seek);
     }
 
     #[test]

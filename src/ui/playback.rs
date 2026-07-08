@@ -424,6 +424,9 @@ impl DeviceWindowInner {
                 apply_repeat_ui(&self.pw.repeat, ps.repeat);
                 self.pw.btn_prev.set_sensitive(ps.caps.can_previous);
                 self.pw.btn_next.set_sensitive(ps.caps.can_next);
+                self.pw.shuffle.set_sensitive(ps.caps.can_shuffle);
+                self.pw.repeat.set_sensitive(ps.caps.can_repeat);
+                self.pw.seek.set_sensitive(ps.caps.can_seek);
             }
         }
 
