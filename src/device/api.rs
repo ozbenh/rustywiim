@@ -550,8 +550,17 @@ pub struct PresetEntry {
     pub slot:      usize,
     pub name:      String,
     pub kind:      PresetKind,
-    /// Artwork bytes for `Media` presets; empty for all other kinds.
+    /// Artwork bytes for `Media` presets; empty for all other kinds, and
+    /// initially empty even for a `Media` preset until `state.rs`'s
+    /// per-tick preset-art dispatch fetches it (or reuses it from the
+    /// previous list, if `picurl` didn't change) — `fetch_presets()` below
+    /// never fetches artwork itself.
     pub art_bytes: Vec<u8>,
+    /// Source URL for `art_bytes`, empty for all non-`Media` kinds. Not
+    /// meaningful for display — only used to know what to fetch and to
+    /// detect when a slot's artwork actually needs re-fetching (URL
+    /// changed) versus can be reused (URL unchanged).
+    pub picurl:    String,
 }
 
 impl PresetEntry {
@@ -834,11 +843,14 @@ impl WiimClient {
         Ok(bytes.to_vec())
     }
 
-    /// Fetch and resolve the full preset list (metadata + artwork).
+    /// Fetch and resolve the preset list's metadata (name/kind/picurl per
+    /// slot) — artwork bytes are always empty in the returned entries; see
+    /// `PresetEntry::art_bytes`'s doc comment for where those actually get
+    /// filled in.
     ///
-    /// Pass the fingerprint from the previous call as `old_fp`.  If the
-    /// fingerprint is unchanged this returns `None` (expensive artwork
-    /// downloads are skipped).  On a fresh connection pass an empty string.
+    /// Pass the fingerprint from the previous call as `old_fp`. If the
+    /// fingerprint is unchanged this returns `None` (no need to rebuild the
+    /// list at all). On a fresh connection pass an empty string.
     pub async fn fetch_presets(&self, old_fp: &str) -> Option<(String, Vec<PresetEntry>)> {
         use std::collections::{BTreeSet, HashMap, HashSet};
 
@@ -881,47 +893,27 @@ impl WiimClient {
             parts.join("|")
         };
 
-        // Skip artwork fetch if nothing changed.
+        // Skip entirely if nothing changed — including artwork: `state.rs`
+        // reuses whatever it already has for a slot whose `picurl` hasn't
+        // changed, so there's nothing to redo here either way.
         if fp == old_fp { return None; }
 
-        // Build entries, fetching artwork only for media presets. These URLs
-        // are on external CDN hosts (Pandora, Spotify, etc.), not the
-        // embedded device itself, so the "never parallelize calls to the
-        // same device" rule doesn't apply here — fetched concurrently via
-        // `JoinSet` rather than one `.await` at a time, since up to 12 of
-        // these in sequence turned "presets loaded" into a multi-second (or,
-        // against an unreachable/slow CDN, multi-*ten*-second) wait even
-        // though the device's own two calls above (`get_presets`/
-        // `get_all_routines`) had long since returned.
-        let mut art_fetches = tokio::task::JoinSet::new();
-        for (i, p) in presets.preset_list.iter().enumerate() {
-            let slot = p.number as usize;
-            if !(1..=12).contains(&slot) { continue; }
-            let http = self.http.clone();
-            let picurl = p.picurl.clone();
-            art_fetches.spawn(async move {
-                let bytes = if picurl.is_empty() {
-                    Vec::new()
-                } else {
-                    match http.get(&picurl).send().await {
-                        Ok(resp) => resp.bytes().await.map(|b| b.to_vec()).unwrap_or_default(),
-                        Err(_)   => Vec::new(),
-                    }
-                };
-                (i, bytes)
-            });
-        }
-        let mut art_by_index: HashMap<usize, Vec<u8>> = HashMap::new();
-        while let Some(res) = art_fetches.join_next().await {
-            if let Ok((i, bytes)) = res { art_by_index.insert(i, bytes); }
-        }
-
+        // Build entries. Artwork is *not* fetched here — these URLs are on
+        // external CDN hosts (Pandora, Spotify, etc.), not the embedded
+        // device itself, so fetching them doesn't belong in this
+        // device-API-call function at all: `state.rs` dispatches and
+        // collects those fetches itself, on the 1-second fast-poll tick
+        // rather than this (at-most-every-10-seconds) slow-poll phase, so a
+        // slow/throttled CDN request never holds up noticing an actual
+        // preset-list change on the device.
         let mut entries: Vec<PresetEntry> = Vec::new();
-        for (i, p) in presets.preset_list.iter().enumerate() {
+        for p in &presets.preset_list {
             let slot = p.number as usize;
             if !(1..=12).contains(&slot) { continue; }
-            let art_bytes = art_by_index.remove(&i).unwrap_or_default();
-            entries.push(PresetEntry { slot, name: p.name.clone(), kind: PresetKind::Media, art_bytes });
+            entries.push(PresetEntry {
+                slot, name: p.name.clone(), kind: PresetKind::Media,
+                art_bytes: Vec::new(), picurl: p.picurl.clone(),
+            });
         }
 
         for &n in &all_slots {
@@ -938,7 +930,7 @@ impl WiimClient {
                 PresetKind::Empty
             };
             let name = routine_map.get(&n).map(|r| r.name.clone()).unwrap_or_default();
-            entries.push(PresetEntry { slot: n, name, kind, art_bytes: Vec::new() });
+            entries.push(PresetEntry { slot: n, name, kind, art_bytes: Vec::new(), picurl: String::new() });
         }
 
         entries.sort_by_key(|e| e.slot);

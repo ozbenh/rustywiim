@@ -31,7 +31,7 @@ pub mod playback_changed {
 }
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -95,15 +95,23 @@ pub enum ConnectionState {
 
 // ── Poll payload ──────────────────────────────────────────────────────────────
 
-/// A fast-poll tick's result — HTTP and UPnP are mutually exclusive per
+/// A fast-poll tick's result. `Http`/`Upnp` are mutually exclusive per
 /// tick, never both: `dispatch_fast_poll()` decides which single backend to
 /// hit *before* firing anything, based on `access`, rather than always
 /// fetching HTTP as a baseline and optionally layering UPnP on top. No HTTP
 /// fallback when `UpnpPolled` is selected but no `UpnpClient` has been
 /// discovered yet — see `dispatch_fast_poll`'s doc comment.
+///
+/// `PresetArt` isn't part of that either/or choice at all — it's a preset
+/// slot's artwork download (an external CDN fetch, not a WiiM API call)
+/// completing. It rides the same channel/processor as the fast poll simply
+/// because that's the existing per-tick pipeline already available, not
+/// because it's genuinely a fast-poll backend result; see
+/// `dispatch_pending_preset_art()`.
 enum PollData {
     Http { status: Option<PlayerStatus>, meta: Option<MetaData> },
     Upnp { info: Option<upnp::InfoEx> },
+    PresetArt { slot: usize, url: String, bytes: Option<Vec<u8>> },
 }
 
 // ── Slow poll ─────────────────────────────────────────────────────────────────
@@ -265,6 +273,18 @@ struct Inner {
     presets:          Vec<PresetEntry>,
     /// Fingerprint of the last fetched preset list (used to skip re-fetches).
     preset_fp:        String,
+    /// Preset slots whose artwork still needs fetching (or re-fetching),
+    /// keyed by slot rather than URL since display addresses slots, not
+    /// URLs — `(url, attempts so far)`. Populated by
+    /// `handle_slow_poll_presets()` for any slot whose `picurl` isn't
+    /// already sitting in `presets` from the previous list; drained by
+    /// `dispatch_pending_preset_art()` as fetches succeed or exhaust
+    /// `PRESET_ART_MAX_ATTEMPTS`.
+    pending_preset_art:  HashMap<usize, (String, u32)>,
+    /// Slots with a fetch currently in flight, so a slow/throttled CDN
+    /// request doesn't get redispatched again on every subsequent tick
+    /// before it resolves.
+    preset_art_inflight: HashSet<usize>,
     /// Expected UUID for the current startup reconnect attempt.
     /// `None` means accept any device (user-initiated connect or already verified).
     expected_uuid:    Option<String>,
@@ -315,6 +335,8 @@ impl Default for Inner {
             connection_state: ConnectionState::Disconnected,
             presets:          Vec::new(),
             preset_fp:        String::new(),
+            pending_preset_art:  HashMap::new(),
+            preset_art_inflight: HashSet::new(),
             expected_uuid:    None,
             target_volume:    -1,
             last_volume_cmd:  None,
@@ -544,6 +566,8 @@ impl DeviceState {
                 // Reset preset data so the first slow-poll cycle re-fetches from scratch.
                 inner.preset_fp         = String::new();
                 inner.presets           = Vec::new();
+                inner.pending_preset_art.clear();
+                inner.preset_art_inflight.clear();
                 inner.connection_state  = ConnectionState::Connected;
                 inner.slow_poll_failures = 0;
             }
@@ -761,6 +785,7 @@ impl DeviceState {
 
         self.dispatch_fast_poll(&client, poll_tx);
         self.dispatch_slow_poll(&client, slow_tx, dispatch_phase, probe_outputs, probe_presets, preset_fp);
+        self.dispatch_pending_preset_art(&client, poll_tx);
 
         glib::ControlFlow::Continue
     }
@@ -888,19 +913,47 @@ impl DeviceState {
         let dispatched_at = Instant::now();
         self.rt().spawn(async move {
             let result = run_slow_poll_phase(cp, phase, preset_fp).await;
-            // Presets in particular can take much longer than the other
-            // phases: unlike Outputs/OutputStatus/DeviceInfo (one call each,
-            // to the device itself), a changed preset list fetches artwork
-            // from each preset's external CDN URL — see `fetch_presets()`'s
-            // doc comment. Logged here (round-trip, not just "dispatched")
-            // since that's what actually explains a slow-to-appear preset
-            // list, not the dispatch itself (which always fires promptly).
+            // Every phase here is one or two calls straight to the device
+            // itself, so this should always be fast — logged (round-trip,
+            // not just "dispatched") so a phase that's unexpectedly slow
+            // shows up rather than just being an unexplained delay.
             let elapsed = dispatched_at.elapsed();
             if elapsed > Duration::from_secs(1) {
                 dbg(&format!("slow poll: phase {phase:?} took {elapsed:?} (slower than usual)"));
             }
             let _ = tx.send(result).await;
         });
+    }
+
+    /// Dispatch a fetch for every preset slot in `pending_preset_art` not
+    /// already in flight. Called every fast-poll tick (`do_poll()`) rather
+    /// than gated behind the slow-poll rotation — these are external CDN
+    /// requests, not WiiM API calls, so they don't need to follow the
+    /// device's one-call-per-tick discipline, and shouldn't wait for a
+    /// `Presets` slow-poll phase to come around again either. Results ride
+    /// the fast-poll's own channel/processor (`PollData::PresetArt`) — see
+    /// that variant's doc comment for why.
+    fn dispatch_pending_preset_art(&self, client: &WiimClient, poll_tx: &async_channel::Sender<PollData>) {
+        let to_fetch: Vec<(usize, String)> = {
+            let mut inner = self.imp().inner.borrow_mut();
+            let out: Vec<(usize, String)> = inner.pending_preset_art.iter()
+                .filter(|(slot, _)| !inner.preset_art_inflight.contains(slot))
+                .map(|(&slot, (url, _))| (slot, url.clone()))
+                .collect();
+            for (slot, _) in &out {
+                inner.preset_art_inflight.insert(*slot);
+            }
+            out
+        };
+        for (slot, url) in to_fetch {
+            dbg(&format!("preset art: fetching slot {slot} ({url})"));
+            let cp = client.clone();
+            let tx = poll_tx.clone();
+            self.rt().spawn(async move {
+                let bytes = cp.fetch_bytes(&url).await.ok();
+                let _ = tx.send(PollData::PresetArt { slot, url, bytes }).await;
+            });
+        }
     }
 
     fn start_poll_processor(
@@ -1000,16 +1053,48 @@ impl DeviceState {
         });
     }
 
+    /// `fetch_presets()` never fetches artwork itself (see its doc
+    /// comment) — this reuses whatever's already sitting in the *previous*
+    /// `presets` list for a slot whose `picurl` hasn't changed, and queues
+    /// the rest into `pending_preset_art` for `dispatch_pending_preset_art()`
+    /// to pick up on a later fast-poll tick. The list itself (names/kinds,
+    /// with placeholder/reused art) is applied and signalled immediately —
+    /// artwork fills in progressively afterward, each arrival its own
+    /// `presets-changed` emission (see `process_preset_art_result()`).
     fn handle_slow_poll_presets(&self, presets: Option<(String, Vec<PresetEntry>)>) {
-        let Some((new_fp, entries)) = presets else {
+        let Some((new_fp, mut entries)) = presets else {
             dbg("slow poll: presets unchanged");
             return;
         };
         dbg(&format!("slow poll: presets updated: {} slots", entries.len()));
         {
             let mut inner = self.imp().inner.borrow_mut();
+            let mut needs_fetch: Vec<(usize, String)> = Vec::new();
+            for entry in entries.iter_mut() {
+                if entry.picurl.is_empty() { continue; }
+                if let Some(prev) = inner.presets.iter().find(|p| p.slot == entry.slot && p.picurl == entry.picurl) {
+                    entry.art_bytes = prev.art_bytes.clone();
+                }
+                if entry.art_bytes.is_empty() {
+                    needs_fetch.push((entry.slot, entry.picurl.clone()));
+                }
+            }
             inner.preset_fp = new_fp;
             inner.presets   = entries;
+            // Drop tracking for slots that no longer need a fetch (art was
+            // reused, or the slot no longer exists/isn't Media anymore).
+            let needed_slots: HashSet<usize> = needs_fetch.iter().map(|(slot, _)| *slot).collect();
+            inner.pending_preset_art.retain(|slot, _| needed_slots.contains(slot));
+            for (slot, url) in needs_fetch {
+                // Keep the existing attempt count if this slot was already
+                // pending the *same* URL (so a bounced-but-unrelated list
+                // refresh doesn't reset its retry budget); reset to 0 for a
+                // genuinely new/changed URL.
+                match inner.pending_preset_art.get(&slot) {
+                    Some((existing_url, _)) if *existing_url == url => {}
+                    _ => { inner.pending_preset_art.insert(slot, (url, 0)); }
+                }
+            }
         }
         dbg("signal: presets-changed");
         self.emit_by_name::<()>("presets-changed", &[]);
@@ -1191,6 +1276,47 @@ impl DeviceState {
         match data {
             PollData::Http { status, meta } => self.process_poll_http(status, meta, art_tx),
             PollData::Upnp { info } => self.process_poll_upnp(info, art_tx),
+            PollData::PresetArt { slot, url, bytes } => self.process_preset_art_result(slot, url, bytes),
+        }
+    }
+
+    /// Applies one preset slot's artwork fetch result (`dispatch_pending_preset_art`).
+    /// Up to `PRESET_ART_MAX_ATTEMPTS` failures are retried — one attempt
+    /// per fast-poll tick a slot remains pending, not an inline retry loop —
+    /// before giving up and leaving that slot on its placeholder (empty
+    /// `art_bytes`, which the UI already renders as a fallback icon).
+    fn process_preset_art_result(&self, slot: usize, url: String, bytes: Option<Vec<u8>>) {
+        const PRESET_ART_MAX_ATTEMPTS: u32 = 3;
+        let mut inner = self.imp().inner.borrow_mut();
+        inner.preset_art_inflight.remove(&slot);
+
+        // Stale result: the preset list moved on (different URL for this
+        // slot, or the slot no longer needs a fetch at all) while this one
+        // was in flight — discard rather than misapplying it.
+        let Some(&(ref tracked_url, attempts)) = inner.pending_preset_art.get(&slot) else { return };
+        if *tracked_url != url { return; }
+
+        match bytes {
+            Some(bytes) => {
+                inner.pending_preset_art.remove(&slot);
+                if let Some(entry) = inner.presets.iter_mut().find(|p| p.slot == slot) {
+                    entry.art_bytes = bytes;
+                }
+                drop(inner);
+                dbg(&format!("preset art: slot {slot} loaded ({url})"));
+                dbg("signal: presets-changed");
+                self.emit_by_name::<()>("presets-changed", &[]);
+            }
+            None => {
+                let attempts = attempts + 1;
+                if attempts >= PRESET_ART_MAX_ATTEMPTS {
+                    dbg(&format!("preset art: slot {slot} failed {attempts} times, giving up ({url})"));
+                    inner.pending_preset_art.remove(&slot);
+                } else {
+                    dbg(&format!("preset art: slot {slot} failed (attempt {attempts}/{PRESET_ART_MAX_ATTEMPTS}), will retry ({url})"));
+                    inner.pending_preset_art.insert(slot, (url, attempts));
+                }
+            }
         }
     }
 
