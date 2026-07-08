@@ -369,6 +369,12 @@ pub struct DeviceInfo {
     /// top-level `RSSI` field, just for the remote's own radio link.
     #[serde(default, rename = "BleRemoteRSSI")]
     pub ble_remote_rssi: String,
+    /// Max number of hardware preset slots the device supports, as a decimal
+    /// string (e.g. "6"). Not read anywhere yet — recovered so it's available
+    /// once something needs it, rather than needing another capture/parsing
+    /// round-trip later.
+    #[serde(default)]
+    pub preset_key: String,
 }
 
 impl DeviceInfo {
@@ -935,5 +941,35 @@ impl WiimClient {
 
         entries.sort_by_key(|e| e.slot);
         Some((fp, entries))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::capture::format::CaptureFile;
+
+    /// Real iEAST AudioCast unit, captured with one preset configured
+    /// device-side. `getStatusEx`'s `preset_key` reports the device's max
+    /// preset slot count regardless of whether `getPresetInfo` itself works
+    /// (it's confirmed unsupported on this device — see
+    /// `capabilities.rs`'s `ieast_audiocast_real_capture_has_no_forced_inputs_or_extra_outputs`).
+    #[test]
+    fn device_info_recovers_preset_key() {
+        let path = format!(
+            "{}/captures/test-devices/AudioCastBu_20260708_095957.json",
+            env!("CARGO_MANIFEST_DIR"),
+        );
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("reading fixture {path}: {e}"));
+        let cap: CaptureFile = serde_json::from_str(&text)
+            .unwrap_or_else(|e| panic!("parsing fixture {path}: {e}"));
+        let body = cap.commands.iter()
+            .find(|c| c.command == "getStatusEx")
+            .expect("capture has no getStatusEx")
+            .body.clone()
+            .expect("getStatusEx has no body");
+        let info: DeviceInfo = serde_json::from_value(body).expect("parsing DeviceInfo");
+        assert_eq!(info.preset_key, "6");
     }
 }

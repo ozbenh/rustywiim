@@ -25,6 +25,7 @@ pub enum Vendor {
     WiiM,
     Arylic,
     AudioPro,
+    IEast,
     LinkPlayGeneric,
 }
 
@@ -34,6 +35,7 @@ impl Vendor {
             Vendor::WiiM            => "WiiM",
             Vendor::Arylic          => "Arylic",
             Vendor::AudioPro        => "Audio Pro",
+            Vendor::IEast           => "iEAST",
             Vendor::LinkPlayGeneric => "LinkPlay",
         }
     }
@@ -265,14 +267,45 @@ static FAMILY_LINKPLAY_GENERIC: FamilyProfile = FamilyProfile {
     grouping: GroupingConfig { uses_wifi_direct: false },
 };
 
+/// iEAST AudioCast (project "iEAST-02"): a bare network-audio adapter with no
+/// physical inputs. No `getMetaInfo`, same as the rest of this shared OEM
+/// stack — but also the one family where we directly observed the device
+/// audibly stuttering while being polled over HTTP, not just missing
+/// artwork. Requires an mTLS client cert too (plain `curl -k` fails
+/// outright), same as Audio Pro MkII.
+static FAMILY_IEAST_AUDIOCAST: FamilyProfile = FamilyProfile {
+    display_name:     "iEAST AudioCast",
+    loop_mode_scheme: LoopModeScheme::Arylic,
+    playback_access: AccessMethod::UpnpPolled,
+    connection: ConnectionConfig {
+        requires_client_cert: true,
+        preferred_ports:      &[80, 443, 8080],
+        https_first:          false,
+        response_timeout_ms:  5000,
+        retry_count:          2,
+    },
+    endpoints: EndpointConfig {
+        supports_player_status_ex: true,
+        supports_get_meta_info:    false,
+        supports_eq:               true,
+        supports_eq_set:           true,
+        supports_alarms:           false,
+        supports_sleep_timer:      false,
+        status_endpoint:           "/httpapi.asp?command=getPlayerStatusEx",
+        reboot_command:            "reboot",
+    },
+    grouping: GroupingConfig { uses_wifi_direct: false },
+};
+
 // ── Device ID ─────────────────────────────────────────────────────────────────
 //
 // Discriminants are grouped by vendor with room to grow.  Each vendor block
 // maps to its own profile array; DeviceId::profile() dispatches by range.
-//   WiiM:          0–99
-//   Arylic:      100–199
-//   Audio Pro:   200–299
-//   LinkPlay:   9999
+//   WiiM:            0–99
+//   Arylic:        100–199
+//   Audio Pro:     200–299
+//   iEAST:         300–399
+//   LinkPlay:     9999
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(usize)]
@@ -301,6 +334,9 @@ pub enum DeviceId {
     AudioProMkII    = 203,
     AudioProWGen    = 204,
     AudioProOriginal = 205,
+
+    // iEAST
+    IEastAudioCast = 300,
 
     // Generic LinkPlay fallback
     LinkPlayGeneric = 9999,
@@ -348,6 +384,9 @@ impl DeviceId {
             return Self::detect_audio_pro_gen(&p, fw);
         }
 
+        // iEAST
+        if p == "ieast_02" { return Self::IEastAudioCast; }
+
         Self::LinkPlayGeneric
     }
 
@@ -383,6 +422,8 @@ impl DeviceId {
             | Self::AudioProMkII | Self::AudioProWGen
             | Self::AudioProOriginal              => Vendor::AudioPro,
 
+            Self::IEastAudioCast                   => Vendor::IEast,
+
             Self::LinkPlayGeneric                 => Vendor::LinkPlayGeneric,
         }
     }
@@ -394,6 +435,7 @@ impl DeviceId {
             0..=99   => &WIIM_PROFILES[id],
             100..=199 => &ARYLIC_PROFILES[id - 100],
             200..=299 => &AUDIO_PRO_PROFILES[id - 200],
+            300..=399 => &IEAST_PROFILES[id - 300],
             _         => &LINKPLAY_PROFILES[0],
         }
     }
@@ -421,6 +463,8 @@ impl DeviceId {
             Self::AudioProLink2 | Self::AudioProA28
             | Self::AudioProAddonC5
             | Self::AudioProOriginal               => &FAMILY_AUDIO_PRO_ORIGINAL,
+
+            Self::IEastAudioCast                    => &FAMILY_IEAST_AUDIOCAST,
 
             Self::LinkPlayGeneric                  => &FAMILY_LINKPLAY_GENERIC,
         }
@@ -591,6 +635,20 @@ static AUDIO_PRO_PROFILES: [DeviceProfile; 6] = [
         ignore_plm_bits: &[],
         extra_inputs:    &["bluetooth", "line-in", "optical"],
         outputs:         &[],
+        line_out_is_speaker: false,
+    },
+];
+
+static IEAST_PROFILES: [DeviceProfile; 1] = [
+    /* 300 IEastAudioCast */ DeviceProfile {
+        model_name:      Some("AudioCast"),
+        ignore_plm_bits: &[],
+        // Confirmed via a real capture (`captures/test-devices/
+        // AudioCastBu_20260708_095957.json`, project "iEAST-02"): a
+        // network-only audio adapter with no physical inputs and a single
+        // line-out, `plm_support` genuinely `0x0`.
+        extra_inputs:    &[],
+        outputs:         &["line-out"],
         line_out_is_speaker: false,
     },
 ];
@@ -1002,6 +1060,11 @@ fn detect_family_from_info(
         Vendor::WiiM            => &FAMILY_WIIM,
         Vendor::Arylic          => &FAMILY_ARYLIC,
         Vendor::AudioPro        => detect_audio_pro_family(project, fw_lc),
+        // `detect_vendor_extended()` never actually returns `IEast` (iEAST
+        // AudioCast is matched by exact project string in `DeviceId::detect()`
+        // before falling through to this name/firmware-based fallback path
+        // at all) — this arm only exists for match exhaustiveness.
+        Vendor::IEast           => &FAMILY_IEAST_AUDIOCAST,
         Vendor::LinkPlayGeneric => &FAMILY_LINKPLAY_GENERIC,
     }
 }
@@ -1108,6 +1171,12 @@ fn static_playback_caps(device_id: DeviceId) -> (bool, bool, bool) {
 
         Vendor::Arylic => (true, false, false),
 
+        // iEAST AudioCast's `getPresetInfo` call confirmed returns "unknown
+        // command" (`AudioCastBu_20260708_095957.json`) — same reasoning as
+        // the `LinkPlayGeneric` arm below: getting the static default right
+        // matters more here since there's no live give-up mechanism for a
+        // wrong `supports_presets` guess.
+        Vendor::IEast => (false, false, false),
         Vendor::LinkPlayGeneric => (false, false, false),
     }
 }
@@ -1331,15 +1400,23 @@ mod tests {
         assert!(!caps.inputs.iter().any(|i| i.id == "udisk"), "real unit's USB-C is power-only");
     }
 
-    /// Real unidentified LinkPlay device (project "iEAST-02", a bare
-    /// network-audio adapter) confirmed to have no physical inputs at all
-    /// and a single line-out output, despite `LINKPLAY_PROFILES`'s fallback
-    /// entry previously force-adding three inputs and an extra output no
-    /// unidentified device is actually confirmed to have. See that
-    /// profile's doc comment.
+    /// Real iEAST AudioCast unit (project "iEAST-02", a bare network-audio
+    /// adapter) confirmed to have no physical inputs at all and a single
+    /// line-out output. Was previously misidentified as the `LinkPlayGeneric`
+    /// fallback, which force-added three inputs and an extra output this
+    /// device doesn't have — it now gets its own identified profile
+    /// (`IEAST_PROFILES[0]`) instead. This capture also has a real preset
+    /// configured device-side (confirmed via its `PlayQueue`/`GetKeyMapping`
+    /// data — not read by this test, which only exercises the HTTP-side
+    /// capability detection), yet `getPresetInfo` still replies "unknown
+    /// command" — a genuine firmware limitation (confirmed unsupported by
+    /// `wiim-capture`'s own detection), not an artifact of no preset
+    /// existing. `supports_presets` staying `false` is correct: there is no
+    /// working way to list this device's presets over HTTP, preset or no
+    /// preset.
     #[test]
-    fn unidentified_linkplay_device_gets_no_forced_inputs_or_extra_outputs() {
-        let cap = load_capture("AudioCastBu_20260708_062004.json");
+    fn ieast_audiocast_real_capture_has_no_forced_inputs_or_extra_outputs() {
+        let cap = load_capture("AudioCastBu_20260708_095957.json");
         let body = cap.commands.iter()
             .find(|c| c.command == "getStatusEx")
             .expect("capture has no getStatusEx")
@@ -1347,11 +1424,19 @@ mod tests {
             .expect("getStatusEx has no body");
         let info: DeviceInfo = serde_json::from_value(body).expect("parsing DeviceInfo");
         let caps = DeviceCapabilities::from_device_info(&info);
-        assert_eq!(caps.device_id, DeviceId::LinkPlayGeneric);
+        assert_eq!(caps.device_id, DeviceId::IEastAudioCast);
+        assert_eq!(caps.vendor, Vendor::IEast);
+        assert_eq!(caps.model, "AudioCast");
+        assert_eq!(caps.family.playback_access, AccessMethod::UpnpPolled);
+        assert!(!caps.family.endpoints.supports_get_meta_info);
         assert_eq!(caps.inputs.len(), 1, "expected only wifi: {:?}", caps.inputs);
         assert_eq!(caps.inputs[0].id, "wifi");
         assert_eq!(caps.device_id.profile().outputs, &["line-out"]);
-        // getPresetInfo is also confirmed unsupported on this device.
         assert!(!caps.supports_presets);
+
+        let preset_cmd = cap.commands.iter()
+            .find(|c| c.command == "getPresetInfo")
+            .expect("capture has no getPresetInfo");
+        assert!(preset_cmd.unsupported);
     }
 }
