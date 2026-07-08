@@ -422,6 +422,8 @@ impl DeviceWindowInner {
                 self.pw.status.set_label(&format_status_line(&ps.status, ps.source_name.as_deref()));
                 apply_shuffle_ui(&self.pw.shuffle, ps.shuffle);
                 apply_repeat_ui(&self.pw.repeat, ps.repeat);
+                self.pw.btn_prev.set_sensitive(ps.can_previous);
+                self.pw.btn_next.set_sensitive(ps.can_next);
             }
         }
 
@@ -738,6 +740,8 @@ impl DeviceWindowInner {
                 });
                 self.mini.status_label.set_label(
                     &format_status_line(&ps.status, ps.source_name.as_deref()));
+                self.mini.btn_prev.set_sensitive(ps.can_previous);
+                self.mini.btn_next.set_sensitive(ps.can_next);
             }
         }
 

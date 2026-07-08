@@ -15,6 +15,8 @@
 use std::rc::Rc;
 use std::time::Duration;
 
+use super::upnp::GuiBehavior;
+
 // ── Canonical playback state ──────────────────────────────────────────────────
 
 /// Canonical playback status, independent of which backend (HTTP polling,
@@ -44,6 +46,13 @@ pub struct PlaybackState {
     pub muted:       bool,
     pub shuffle:     bool,
     pub repeat:      RepeatMode,
+    /// Whether the transport/prev/next buttons should be enabled for the
+    /// current source. Best-effort, not device-guaranteed: see
+    /// `decode_transport_caps_http`/`decode_transport_caps_upnp`'s doc
+    /// comments for the actual rules and their known gaps. Defaults to
+    /// `true`
+    pub can_next:     bool,
+    pub can_previous: bool,
     pub quality:     Option<AudioQuality>,
     /// WiiM-app-style codec/quality badge text ("FLAC"/"HIGH"/"mp3"/...),
     /// only ever populated by the UPnP backend (`decode_quality_upnp`) —
@@ -77,6 +86,8 @@ impl Default for PlaybackState {
             muted:       false,
             shuffle:     false,
             repeat:      RepeatMode::Off,
+            can_next:     true,
+            can_previous: true,
             quality:     None,
             codec_label: None,
             art_url:     None,
@@ -190,8 +201,17 @@ fn mode_source(mode: i32) -> &'static str {
     }
 }
 
+/// Case/whitespace-insensitive form of a raw `vendor`/`TrackSource` string
+/// — real captures have shown both `"Linkplay Radio"` (with a space) and
+/// presumably other casing variants of the same handful of services, so
+/// every vendor-string classification in this module normalizes through
+/// this instead of matching the raw string directly.
+fn normalize_vendor(vendor: &str) -> String {
+    vendor.to_lowercase().chars().filter(|c| !c.is_whitespace()).collect()
+}
+
 fn vendor_display(vendor: &str) -> &'static str {
-    let v: String = vendor.to_lowercase().chars().filter(|c| !c.is_whitespace()).collect();
+    let v = normalize_vendor(vendor);
     match v.as_str() {
         "newtunein" | "tunein"              => "TuneIn",
         "iheartradio" | "iheart"            => "iHeartRadio",
@@ -226,6 +246,88 @@ pub fn decode_source_name_http(mode: i32, vendor: &str) -> Option<Rc<str>> {
         s           => Some(Rc::from(s)),
     }
 }
+
+/// List of station-style services that support skipping forward but
+/// not rewinding back into history based on the info from
+/// `TrackSource` (UPnP)/`vendor` (HTTP) values (confirmed to be the
+/// same identifier space from our captures).
+///
+/// List ported from the `wiim` Python SDK's `TRACK_SOURCES_CTRL`;
+/// only `"Pandora2"` is confirmed via a real capture so far (WiiM Amp,
+/// 2026-07-06) — Add/remove entries here as real reports/captures
+/// confirm or contradict them, same as any other vendor-string table in
+/// this file.
+const TRACK_SOURCES_CTRL: &[&str] = &["Pandora2", "SoundMachine", "Soundtrack", "iHeartRadio"];
+
+/// Decode can_prev/can_next for HTTP protocol.
+/// The protocol has no equivalent of UPnP's `PlayMedium`, only
+/// `mode`/`vendor`, so this is a heuristic — but the default leans
+/// permissive, mirroring `decode_transport_caps_upnp`'s own default: a
+/// mode only gets disabled here for a *positive* reason to believe it
+/// has no track/skip concept at all, not merely because it hasn't been
+/// individually confirmed yet. Wrongly enabling a skip button that turns
+/// out to be a no-op is a much smaller problem than wrongly disabling one
+/// that actually works (e.g. TIDAL Connect, Lyrion, Qobuz, AirPlay,
+/// Chromecast, USB — none of these have any real reason to lack transport
+/// control, and `PLAY_MEDIUMS_CTRL` itself doesn't list most of them).
+///
+/// Disabled outright: the physical analog/digital audio-passthrough
+/// inputs (Line-In, Optical, RCA, HDMI, Phono) — there's no application
+/// layer behind these at all, just a relayed signal, so "skip" is
+/// meaningless by construction, not merely unconfirmed (HDMI specifically
+/// might turn out to support transport control via HDMI-CEC on some
+/// TVs/sources — unconfirmed either way, kept disabled by default until
+/// tested). Idle (`mode` 0/-1) — nothing loaded to skip to/from.
+/// Everything else with an actual application/service behind it —
+/// AirPlay, DLNA, Chromecast, Bluetooth (real sinks commonly support
+/// AVRCP transport commands back to the source phone), USB, Spotify,
+/// TIDAL Connect, Lyrion, Qobuz — defaults enabled: no positive reason to
+/// believe any of them lack transport control.
+///
+/// `mode` 10/20 (the generic "WiFi"/network-playback bucket —
+/// `mode_source()`) is the one genuinely ambiguous case (covers
+/// USB-local/internet-radio/built-in-Tidal all at once) and keeps its
+/// `vendor` sub-classification, same as `decode_source_name_http` needs:
+/// a confirmed radio vendor disables both, a `TRACK_SOURCES_CTRL` vendor
+/// disables just previous (mirroring `decode_transport_caps_upnp`), and
+/// anything else (including no vendor at all, e.g. local USB/queue
+/// playback) defaults to fully enabled.
+///
+/// `mode` 31 (Spotify) defaults fully enabled — unlike UPnP (see
+/// `decode_transport_caps_upnp`), HTTP has no `song:guibehavior`
+/// equivalent, so there's no way to tell a free account (confirmed via a
+/// real capture to disable `previous`) from a premium one (confirmed to
+/// allow it) apart. Defaulting to enabled matches this function's general
+/// "err toward enabling" policy rather than assuming the more restrictive
+/// tier.
+pub fn decode_transport_caps_http(mode: i32, vendor: &str) -> (bool, bool) {
+    match mode {
+        31                          => return (true, true),   // Spotify
+        -1 | 0                      => return (false, false), // Idle
+        40 | 60 | 43 | 44 | 49 | 54 => return (false, false), // Line-In/Optical/RCA/HDMI/Phono
+        _ => {}
+    }
+    if mode != 10 && mode != 20 {
+        return (true, true);
+    }
+    let normalized = normalize_vendor(vendor);
+    if HTTP_RADIO_VENDORS.contains(&normalized.as_str()) {
+        return (false, false);
+    }
+    if TRACK_SOURCES_CTRL.contains(&vendor) {
+        return (true, false);
+    }
+    (true, true)
+}
+
+/// Vendor strings (normalized via `normalize_vendor`) confirmed to mean
+/// "internet radio" for the `mode` 10/20 bucket — the same station
+/// services `vendor_display()` recognizes for display purposes
+/// (`newtunein`/`tunein`, `linkplayradio`, `vtuner`, `radioparadise`),
+/// plus `wiimradio` (WiiM's own built-in radio app, confirmed via a real
+/// capture — `vendor_display()` itself has no display-name entry for it
+/// at all, a separate pre-existing gap not addressed here).
+const HTTP_RADIO_VENDORS: &[&str] = &["newtunein", "tunein", "linkplayradio", "vtuner", "radioparadise", "wiimradio"];
 
 /// `loop_mode` is always a stringified 0-5 integer on the wire; `-1` is the
 /// missing/unparseable sentinel (`de_i32_or_neg1`), which falls through to
@@ -394,6 +496,72 @@ pub fn decode_source_name_upnp(play_medium: &str, track_source: &str) -> Option<
         }
     };
     if label.is_empty() { None } else { Some(Rc::from(label.as_str())) }
+}
+
+/// `PlayMedium` values with no next/previous concept at all — an internet
+/// radio stream, a third-party DLNA push, or a physical input. Ported
+/// verbatim from the `wiim` Python SDK's `PLAY_MEDIUMS_CTRL`
+/// (`consts.py`) — real-hardware-validated, not a novel guess.
+const PLAY_MEDIUMS_CTRL: &[&str] = &["RADIO-NETWORK", "THIRD-DLNA", "LINE-IN", "OPTICAL", "HDMI", "PHONO"];
+
+/// `gui_behavior` (from `upnp::InfoEx`, `song:guibehavior`'s parsed
+/// `next`/`prev` flags — see its doc comment) is trusted directly
+/// whenever the DIDL-Lite item actually carries one, no per-service
+/// allowlist: every non-Spotify case checked against it so far (Pandora2,
+/// WiiM's own radio app) matched the static heuristic below exactly, and
+/// it's the *only* signal that can distinguish something a static
+/// `play_medium`/`track_source` rule fundamentally can't — e.g. a Spotify
+/// free vs. premium account, confirmed via two otherwise-identical real
+/// captures (`next`/`prev`/`loop`/`seek`/`shuffle` all `false` on free,
+/// all `true` except `queue` on premium). It's still not present on every
+/// track, though — confirmed absent even for some genuinely non-skippable
+/// sources (TuneIn/BBC Radio) — so the static fallback below still
+/// matters for tag-absent cases, not just services that never got a tag
+/// at all. Two other candidate device-reported signals were checked and
+/// rejected: the standard `GetCurrentTransportActions` UPnP action (only
+/// ever used by `pywiim`, which wraps it, from a diagnostics-only
+/// snapshot method, never its real state model — and confirmed to report
+/// a stale-looking, `Next`-omitting action list for a session where
+/// `Next` demonstrably worked), and trusting `guibehavior`'s `next` for
+/// Spotify specifically (see the special case below — it's right about
+/// `prev`'s tier-dependence but wrong about `next`).
+///
+/// **`play_medium == "SPOTIFY"` gets one further override on top of
+/// `gui_behavior`**: `next` is forced `true` unconditionally, since
+/// real-device testing (WiiM Ultra, Spotify Connect, transport buttons
+/// themselves — not the WiiM app's own display, and not `gui_behavior`,
+/// both of which are sometimes wrong here) confirmed it always works
+/// regardless of what `gui_behavior` claims (it reported `next: false`
+/// on the free-tier capture even though pressing the button worked).
+/// `prev` is left to `gui_behavior` as normal — confirmed to correctly
+/// track the free/premium distinction — falling back to `false`
+/// (conservative — matches the free-tier default) only in the
+/// unobserved case of a Spotify session with no `gui_behavior` at all.
+///
+/// Base static heuristic (used for everything else, and for Spotify's
+/// `prev` when `gui_behavior` is absent) is the `wiim` Python SDK's
+/// `async_get_transport_capabilities()`: `play_medium` in
+/// `PLAY_MEDIUMS_CTRL` means there's no track to skip to/from at all;
+/// failing that, `track_source` in `TRACK_SOURCES_CTRL` means a
+/// station-style service that supports skipping forward but not
+/// rewinding back into history (confirmed on `"Pandora2"` via a real
+/// capture — see `TRACK_SOURCES_CTRL`'s doc comment).
+pub fn decode_transport_caps_upnp(
+    play_medium: &str, track_source: &str, gui_behavior: Option<GuiBehavior>,
+) -> (bool, bool) {
+    if play_medium == "SPOTIFY" {
+        return (true, gui_behavior.map_or(false, |g| g.prev));
+    }
+    if let Some(g) = gui_behavior {
+        return (g.next, g.prev);
+    }
+    if PLAY_MEDIUMS_CTRL.contains(&play_medium) {
+        return (false, false);
+    }
+    if TRACK_SOURCES_CTRL.contains(&track_source) {
+        return (true, false);
+    }
+    (true, true)
 }
 
 /// Translates a non-empty `song:actualQuality` into the WiiM app's own
@@ -613,5 +781,102 @@ mod tests {
         assert_eq!(decode_status_upnp("PLAYING"), PlaybackStatus::Playing);
         assert_eq!(decode_status_upnp("PAUSED_PLAYBACK"), PlaybackStatus::Paused);
         assert_eq!(decode_status_upnp("weird"), PlaybackStatus::Unknown("weird".to_string()));
+    }
+
+    #[test]
+    fn transport_caps_upnp_no_skip_mediums_disable_both() {
+        assert_eq!(decode_transport_caps_upnp("RADIO-NETWORK", "newTuneIn", None), (false, false));
+        assert_eq!(decode_transport_caps_upnp("LINE-IN", "", None), (false, false));
+        assert_eq!(decode_transport_caps_upnp("HDMI", "", None), (false, false));
+    }
+
+    #[test]
+    fn transport_caps_upnp_station_services_disable_previous_only() {
+        assert_eq!(decode_transport_caps_upnp("STATION-NETWORK", "Pandora2", None), (true, false));
+    }
+
+    #[test]
+    fn transport_caps_upnp_spotify_falls_back_to_previous_false_without_guibehavior() {
+        // Real-device-tested (transport buttons, not just guibehavior/app
+        // display, both of which wrongly claim neither works) — `next` is
+        // always forced true for Spotify; `prev` without a `gui_behavior`
+        // reading defaults to the conservative (free-tier-like) `false`.
+        assert_eq!(decode_transport_caps_upnp("SPOTIFY", "spotify:playlist:37i9dQZF1EIZAuCHB2O9dH", None), (true, false));
+    }
+
+    #[test]
+    fn transport_caps_upnp_spotify_next_forced_true_even_if_guibehavior_disagrees() {
+        // Confirmed via a real free-tier capture: guibehavior claimed
+        // next:false, but pressing the button actually skipped forward.
+        let gb = GuiBehavior { next: false, prev: false };
+        assert_eq!(decode_transport_caps_upnp("SPOTIFY", "spotify:playlist:x", Some(gb)), (true, false));
+    }
+
+    #[test]
+    fn transport_caps_upnp_spotify_previous_follows_guibehavior_premium_vs_free() {
+        // Confirmed via two real captures on the same playlist mechanism,
+        // differing only by account tier.
+        let free = GuiBehavior { next: false, prev: false };
+        assert_eq!(decode_transport_caps_upnp("SPOTIFY", "spotify:playlist:free", Some(free)), (true, false));
+        let premium = GuiBehavior { next: true, prev: true };
+        assert_eq!(decode_transport_caps_upnp("SPOTIFY", "spotify:playlist:premium", Some(premium)), (true, true));
+    }
+
+    #[test]
+    fn transport_caps_upnp_guibehavior_trusted_over_static_heuristic_when_present() {
+        // A source the static heuristic would otherwise default-enable,
+        // but guibehavior says otherwise for this specific track — trust it.
+        let gb = GuiBehavior { next: false, prev: true };
+        assert_eq!(decode_transport_caps_upnp("TIDAL_CONNECT", "Tidal", Some(gb)), (false, true));
+    }
+
+    #[test]
+    fn transport_caps_upnp_unknown_medium_defaults_permissive() {
+        assert_eq!(decode_transport_caps_upnp("TIDAL_CONNECT", "Tidal", None), (true, true));
+        assert_eq!(decode_transport_caps_upnp("SONGLIST-LOCAL", "UPnPServer", None), (true, true));
+    }
+
+    #[test]
+    fn transport_caps_http_physical_inputs_and_idle_disable_both() {
+        assert_eq!(decode_transport_caps_http(40, ""), (false, false)); // Line-In
+        assert_eq!(decode_transport_caps_http(49, ""), (false, false)); // HDMI
+        assert_eq!(decode_transport_caps_http(43, ""), (false, false)); // Optical
+        assert_eq!(decode_transport_caps_http(44, ""), (false, false)); // RCA
+        assert_eq!(decode_transport_caps_http(54, ""), (false, false)); // Phono
+        assert_eq!(decode_transport_caps_http(0,  ""), (false, false)); // Idle
+        assert_eq!(decode_transport_caps_http(-1, ""), (false, false)); // Idle (sentinel)
+    }
+
+    #[test]
+    fn transport_caps_http_unconfirmed_network_services_default_enabled() {
+        // No positive reason to believe these lack transport control —
+        // err toward enabling rather than disabling until proven otherwise.
+        assert_eq!(decode_transport_caps_http(11, ""), (true, true)); // USB
+        assert_eq!(decode_transport_caps_http(1,  ""), (true, true)); // AirPlay
+        assert_eq!(decode_transport_caps_http(2,  ""), (true, true)); // DLNA
+        assert_eq!(decode_transport_caps_http(5,  ""), (true, true)); // Chromecast
+        assert_eq!(decode_transport_caps_http(32, ""), (true, true)); // TIDAL Connect
+        assert_eq!(decode_transport_caps_http(34, ""), (true, true)); // Lyrion
+        assert_eq!(decode_transport_caps_http(36, ""), (true, true)); // Qobuz
+        assert_eq!(decode_transport_caps_http(41, ""), (true, true)); // Bluetooth
+    }
+
+    #[test]
+    fn transport_caps_http_wifi_bucket_uses_vendor() {
+        assert_eq!(decode_transport_caps_http(10, "newTuneIn"), (false, false));
+        assert_eq!(decode_transport_caps_http(10, "WiiMRadio"), (false, false));
+        assert_eq!(decode_transport_caps_http(10, "Linkplay Radio"), (false, false));
+        assert_eq!(decode_transport_caps_http(10, "vTuner"), (false, false));
+        assert_eq!(decode_transport_caps_http(10, "RadioParadise"), (false, false));
+        assert_eq!(decode_transport_caps_http(10, "Pandora2"), (true, false));
+        assert_eq!(decode_transport_caps_http(10, "UDiskLocal"), (true, true));
+        assert_eq!(decode_transport_caps_http(10, ""), (true, true));
+    }
+
+    #[test]
+    fn transport_caps_http_spotify_defaults_fully_enabled_tier_unknown() {
+        // HTTP has no guibehavior-equivalent signal to distinguish free
+        // from premium accounts, unlike UPnP — default permissive.
+        assert_eq!(decode_transport_caps_http(31, ""), (true, true));
     }
 }

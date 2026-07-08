@@ -74,6 +74,29 @@ pub struct InfoEx {
     /// The `<res protocolInfo="...">` attribute, e.g.
     /// `"http-get:*:audio/mpeg:DLNA.ORG_PN=MP3;DLNA.ORG_OP=01;"`.
     pub protocol_info:   Option<String>,
+    /// Parsed `song:guibehavior` JSON blob, when the DIDL-Lite item carries
+    /// one — per-action `"enabled"` flags the device reports directly for
+    /// the *current track*, confirmed (Spotify Connect, free vs. premium
+    /// account, otherwise-identical session) to react to things no static
+    /// `play_medium`/`track_source` rule ever could. `None` when the tag
+    /// is absent entirely, which is common — confirmed absent even for
+    /// some genuinely non-skippable sources (TuneIn/BBC Radio) — so
+    /// `playback::decode_transport_caps_upnp` still needs its static
+    /// fallback for that case, not just for services never granted a tag
+    /// at all.
+    pub gui_behavior:    Option<GuiBehavior>,
+}
+
+/// One `song:guibehavior` JSON blob's `next`/`prev` flags, already
+/// resolved to a definite bool — a key genuinely missing from the JSON
+/// (confirmed on a real Pandora2 capture, which omits `"next"` entirely
+/// while explicitly listing `prev`/`loop`/`queue`) means "not restricted"
+/// (`true`), not "unknown"; that resolution happens here, at parse time,
+/// rather than leaking `Option<bool>` per-action ambiguity out to callers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GuiBehavior {
+    pub next: bool,
+    pub prev: bool,
 }
 
 /// UPnP control-point client for one device's `AVTransport` service.
@@ -299,11 +322,29 @@ fn parse_info_ex_response(envelope: &str) -> anyhow::Result<InfoEx> {
     let format_s       = extract_tag(&didl, "song:format_s").unwrap_or_default();
     let rate_hz        = extract_tag(&didl, "song:rate_hz").unwrap_or_default();
     let protocol_info  = extract_res_protocol_info(&didl);
+    let gui_behavior = extract_tag(&didl, "song:guibehavior")
+        .map(|s| unescape_xml_entities(&s)) // double-escaped, same as title/artist/album above
+        .and_then(|s| parse_gui_behavior(&s));
 
     Ok(InfoEx {
         transport_state, rel_time, track_duration, current_volume, current_mute,
         loop_mode, play_type, play_medium, track_source, title, artist, album, album_art_uri,
-        actual_quality, bitrate, format_s, rate_hz, protocol_info,
+        actual_quality, bitrate, format_s, rate_hz, protocol_info, gui_behavior,
+    })
+}
+
+/// A key present in the JSON but with `"enabled": false` means restricted;
+/// a key missing from the JSON entirely means not restricted — see
+/// `GuiBehavior`'s doc comment. Malformed/unparseable JSON (a tag present
+/// but not actually valid JSON, or a bare object without the expected
+/// shape) degrades to `None`, same as the tag being absent — this is a
+/// best-effort supplementary signal, not something worth erroring over.
+fn parse_gui_behavior(s: &str) -> Option<GuiBehavior> {
+    let v: serde_json::Value = serde_json::from_str(s).ok()?;
+    let enabled = |action: &str| v.get(action)?.get("enabled")?.as_bool();
+    Some(GuiBehavior {
+        next: enabled("next").unwrap_or(true),
+        prev: enabled("prev").unwrap_or(true),
     })
 }
 
@@ -434,5 +475,50 @@ mod tests {
     fn unescape_handles_double_escaped_ampersand() {
         assert_eq!(unescape_xml_entities("&amp;amp;"), "&amp;");
         assert_eq!(unescape_xml_entities("&lt;tag&gt;"), "<tag>");
+    }
+
+    #[test]
+    fn gui_behavior_omitted_action_key_means_enabled() {
+        // Real Pandora2 shape: "next" is omitted entirely while prev/loop/
+        // queue are explicitly listed — confirmed via a real capture that
+        // next genuinely works there (matches TRACK_SOURCES_CTRL's own
+        // "previous restricted, next not" rule for this service).
+        let gb = parse_gui_behavior(
+            r#"{"loop": {"enabled": false},"prev": {"enabled": false},"queue": {"enabled": false},"seek": {"enabled": true}}"#
+        ).unwrap();
+        assert_eq!(gb, GuiBehavior { next: true, prev: false });
+    }
+
+    #[test]
+    fn gui_behavior_absent_tag_and_malformed_json_both_give_none() {
+        assert_eq!(parse_gui_behavior("not json"), None);
+        assert_eq!(parse_gui_behavior("{}"), Some(GuiBehavior { next: true, prev: true }));
+    }
+
+    #[test]
+    fn wiim_radio_case_has_guibehavior_all_disabled() {
+        let cap = load_capture("WiiM_Ultra_20260706_110856.WiimRadio.json");
+        let info = parse_info_ex_response(&get_info_ex_body(&cap)).unwrap();
+        assert_eq!(info.play_medium, "RADIO-NETWORK");
+        assert_eq!(info.gui_behavior, Some(GuiBehavior { next: false, prev: false }));
+    }
+
+    #[test]
+    fn spotify_free_tier_case_has_guibehavior_all_disabled() {
+        let cap = load_capture("WiiM_Ultra_20260708_012808.Spotify.json");
+        let info = parse_info_ex_response(&get_info_ex_body(&cap)).unwrap();
+        assert_eq!(info.play_medium, "SPOTIFY");
+        assert_eq!(info.gui_behavior, Some(GuiBehavior { next: false, prev: false }));
+    }
+
+    #[test]
+    fn spotify_premium_tier_case_has_guibehavior_all_enabled() {
+        // Otherwise-identical Spotify Connect session, differing only by
+        // account tier — confirms `gui_behavior` (not any static
+        // play_medium/track_source rule) is what actually tracks this.
+        let cap = load_capture("WiiM_Ultra_20260708_013737.Spotify-WithPrev.json");
+        let info = parse_info_ex_response(&get_info_ex_body(&cap)).unwrap();
+        assert_eq!(info.play_medium, "SPOTIFY");
+        assert_eq!(info.gui_behavior, Some(GuiBehavior { next: true, prev: true }));
     }
 }

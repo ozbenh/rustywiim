@@ -1405,6 +1405,13 @@ impl DeviceState {
                     let (shuffle, repeat) = playback::decode_loop_mode_http(st.loop_mode);
                     inner.playback.shuffle = shuffle;
                     inner.playback.repeat  = repeat;
+                    let (can_next, can_previous) = playback::decode_transport_caps_http(st.mode, &st.vendor);
+                    dbg(&format!(
+                        "transport caps (http): mode={} vendor={:?} -> can_next={can_next} can_previous={can_previous}",
+                        st.mode, st.vendor,
+                    ));
+                    inner.playback.can_next     = can_next;
+                    inner.playback.can_previous = can_previous;
                 }
                 inner.player_status = Some(st);
             }
@@ -1537,6 +1544,7 @@ impl DeviceState {
             let vol_changed = inner.target_volume < 0 && info.current_volume != inner.playback.volume;
             let source_changed = prev.map_or(true, |p| {
                 p.play_medium != info.play_medium || p.track_source != info.track_source
+                    || p.gui_behavior != info.gui_behavior
             });
             let title_changed  = prev.map_or(true, |p| p.title != info.title);
             let artist_changed = prev.map_or(true, |p| p.artist != info.artist);
@@ -1589,6 +1597,14 @@ impl DeviceState {
             if source_changed {
                 inner.playback.source_name =
                     playback::decode_source_name_upnp(&info.play_medium, &info.track_source);
+                let (can_next, can_previous) =
+                    playback::decode_transport_caps_upnp(&info.play_medium, &info.track_source, info.gui_behavior);
+                dbg(&format!(
+                    "transport caps (upnp): play_medium={:?} track_source={:?} gui_behavior={:?} -> can_next={can_next} can_previous={can_previous}",
+                    info.play_medium, info.track_source, info.gui_behavior,
+                ));
+                inner.playback.can_next     = can_next;
+                inner.playback.can_previous = can_previous;
             }
             if title_changed  { inner.playback.title  = Rc::from(info.title.as_str()); }
             if artist_changed { inner.playback.artist = Rc::from(info.artist.as_str()); }
