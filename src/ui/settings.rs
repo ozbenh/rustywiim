@@ -474,9 +474,12 @@ fn wire_access_row(row: &adw::ComboRow, uuid: String, ds: DeviceState) {
 fn build_advanced_page(ds: &DeviceState) -> adw::PreferencesPage {
     let uuid = ds.device_info().map(|i| i.uuid).unwrap_or_default();
     let over = config::with(|cfg| cfg.device(&uuid).playback_access_override);
-    // This device's actual profile default (not just the global fallback) —
-    // every family currently resolves to the same `AccessMethod::Http`, but
-    // this stays correct if/once families diverge.
+    // This device's actual profile default (not just a single global
+    // fallback) — every family currently defaults to `UpnpPolled` (HTTP
+    // can't deliver artwork/metadata at all for the non-WiiM ones, and WiiM
+    // switched over once UPnP polling proved out), but `Http` is still
+    // selectable per-device here for diagnosis if a specific unit's UPnP
+    // path turns out broken.
     let defaults = ds.capabilities().map(|c| c.playback_access()).unwrap_or(AccessMethod::Http);
 
     let player_status_row = build_access_row(

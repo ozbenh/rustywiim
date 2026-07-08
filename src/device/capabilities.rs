@@ -112,11 +112,22 @@ pub struct FamilyProfile {
 }
 
 // ── Static family profiles ────────────────────────────────────────────────────
+//
+// Every non-WiiM family defaults to `AccessMethod::UpnpPolled`: we suspect
+// Arylic/Audio Pro/iEAST all run the same LinkPlay-licensed OEM software
+// stack, which returns more complete data (artwork, metadata) over UPnP than
+// over its HTTP API. WiiM defaults to `UpnpPolled` too now that it's proven
+// out, leaving no family on `Http` by default — still overridable per-device
+// via Settings.
+//
+// Note: There is evidence in pywiim that at least some AudioPro models might
+// have something older/crappier/less compliant. We will deal with it when we
+// have access or captures.
 
 static FAMILY_WIIM: FamilyProfile = FamilyProfile {
     display_name:     "WiiM",
     loop_mode_scheme: LoopModeScheme::WiiM,
-    playback_access: AccessMethod::Http,
+    playback_access: AccessMethod::UpnpPolled,
     connection: ConnectionConfig {
         requires_client_cert: false,
         // WiiM HTTPS:443 only; plain HTTP:80 is closed on WiiM hardware.
@@ -141,7 +152,9 @@ static FAMILY_WIIM: FamilyProfile = FamilyProfile {
 static FAMILY_ARYLIC: FamilyProfile = FamilyProfile {
     display_name:     "Arylic",
     loop_mode_scheme: LoopModeScheme::Arylic,
-    playback_access: AccessMethod::Http,
+    // Arylic's own developer docs list coverart/playlist as UPnP-only and
+    // never mention `getMetaInfo` — HTTP can't deliver artwork here at all.
+    playback_access: AccessMethod::UpnpPolled,
     connection: ConnectionConfig {
         requires_client_cert: false,
         preferred_ports:      &[80, 443],
@@ -162,15 +175,15 @@ static FAMILY_ARYLIC: FamilyProfile = FamilyProfile {
     grouping: GroupingConfig { uses_wifi_direct: false },
 };
 
-/// Audio Pro MkII: mTLS, UPnP-primary state, restricted endpoints.
+/// Audio Pro MkII: mTLS, restricted endpoints.
 static FAMILY_AUDIO_PRO_MKII: FamilyProfile = FamilyProfile {
     display_name:     "Audio Pro MkII",
     loop_mode_scheme: LoopModeScheme::Arylic,
-    // NOTE: From what we see in other projects, it seems like HTTP doesn't
-    // expose play state/volume/mute/position/duration/ source on MkII at all
-    // so we might need to set the access method to UPnP, but let's wait and
-    // see until we can access or get API captures from one of these devices
-    playback_access: AccessMethod::Http,
+    // Same shared-stack gap as Arylic (no artwork, no `getMetaInfo`), plus
+    // the same mTLS requirement as iEAST AudioCast. Not itself confirmed
+    // that playback control is broken over HTTP, just that artwork isn't
+    // available there.
+    playback_access: AccessMethod::UpnpPolled,
     connection: ConnectionConfig {
         requires_client_cert: true,
         preferred_ports:      &[4443, 8443, 443],
@@ -195,7 +208,10 @@ static FAMILY_AUDIO_PRO_MKII: FamilyProfile = FamilyProfile {
 static FAMILY_AUDIO_PRO_WGEN: FamilyProfile = FamilyProfile {
     display_name:     "Audio Pro W-Generation",
     loop_mode_scheme: LoopModeScheme::Arylic,
-    playback_access: AccessMethod::Http,
+    // `supports_get_meta_info` is statically `true` for this generation, so
+    // this is the general non-WiiM consistency call rather than a confirmed
+    // artwork gap here specifically.
+    playback_access: AccessMethod::UpnpPolled,
     connection: ConnectionConfig {
         requires_client_cert: false,
         preferred_ports:      &[443, 8443, 80],
@@ -216,11 +232,13 @@ static FAMILY_AUDIO_PRO_WGEN: FamilyProfile = FamilyProfile {
     grouping: GroupingConfig { uses_wifi_direct: false },
 };
 
-/// Audio Pro Original (Gen1): HTTP-first, WiFi Direct grouping.
+/// Audio Pro Original (Gen1): WiFi Direct grouping.
 static FAMILY_AUDIO_PRO_ORIGINAL: FamilyProfile = FamilyProfile {
     display_name:     "Audio Pro Original",
     loop_mode_scheme: LoopModeScheme::Arylic,
-    playback_access: AccessMethod::Http,
+    // Same as W-Generation: statically `supports_get_meta_info: true`
+    // already, so this is the general consistency call, not a confirmed gap.
+    playback_access: AccessMethod::UpnpPolled,
     connection: ConnectionConfig {
         requires_client_cert: false,
         preferred_ports:      &[80, 443],
@@ -242,11 +260,16 @@ static FAMILY_AUDIO_PRO_ORIGINAL: FamilyProfile = FamilyProfile {
     grouping: GroupingConfig { uses_wifi_direct: true },
 };
 
-/// Generic LinkPlay: conservative HTTP-first defaults, probe to confirm.
+/// Generic LinkPlay: conservative defaults for a device this code couldn't
+/// identify at all, probe to confirm.
 static FAMILY_LINKPLAY_GENERIC: FamilyProfile = FamilyProfile {
     display_name:     "LinkPlay Generic",
     loop_mode_scheme: LoopModeScheme::Arylic,
-    playback_access: AccessMethod::Http,
+    // No direct evidence for this specific fallback (it's whatever wasn't
+    // identifiable, by definition) — but every family we *have* identified
+    // needs UPnP now, so an unidentified device is more likely than not to
+    // as well.
+    playback_access: AccessMethod::UpnpPolled,
     connection: ConnectionConfig {
         requires_client_cert: false,
         preferred_ports:      &[80, 443, 8080],
@@ -657,6 +680,24 @@ static LINKPLAY_PROFILES: [DeviceProfile; 1] = [
     /* 9999 LinkPlayGeneric */ DeviceProfile {
         model_name:      None,
         ignore_plm_bits: &[],
+        // No forced inputs/outputs here, unlike every other (identified)
+        // profile in this file — this is the fallback for a device this
+        // code couldn't identify at all, so unlike e.g. WiiM Pro (where
+        // "this model has bluetooth/line-in/optical" is a confirmed real
+        // fact), there's no actual basis to assert *any* specific
+        // input/output exists. Previously asserted the same
+        // "bluetooth, line-in, optical" / "optical-out, line-out" guess
+        // every other WiiM/Arylic profile in this file uses — confirmed
+        // wrong via a real capture of an unidentified LinkPlay device (see
+        // `IEAST_PROFILES[0]`'s doc comment — that specific device now has
+        // its own identified profile, but the same "no basis to assert
+        // hardware that isn't confirmed" reasoning applies to whatever
+        // still-unidentified device hits this fallback next): the forced
+        // inputs showed inputs that don't exist, and the forced outputs
+        // showed an output the device doesn't have. The plm_support bitmap
+        // decode alone is all this profile trusts now — a specific,
+        // *identified* model is the right place to assert confirmed extra
+        // hardware, not the catch-all for unidentified ones.
         extra_inputs:    &[],
         outputs:         &["line-out"],
         line_out_is_speaker: false,
@@ -1177,6 +1218,15 @@ fn static_playback_caps(device_id: DeviceId) -> (bool, bool, bool) {
         // matters more here since there's no live give-up mechanism for a
         // wrong `supports_presets` guess.
         Vendor::IEast => (false, false, false),
+
+        // Same reasoning as `LINKPLAY_PROFILES`'s empty extra_inputs/
+        // minimal outputs — a fully unidentified device has no confirmed
+        // basis to assume `getPresetInfo` works. Unlike outputs
+        // probing, there's no live give-up mechanism for a wrong
+        // `supports_presets` guess — `probe_presets` in `state.rs` just
+        // keeps dispatching `getPresetInfo` every slow-poll cycle
+        // forever — so getting the static default right matters more
+        // here, not less.
         Vendor::LinkPlayGeneric => (false, false, false),
     }
 }
