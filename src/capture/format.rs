@@ -189,6 +189,14 @@ pub struct UpnpCapture {
     pub has_qplay: bool,
     #[serde(default)]
     pub has_content_directory: bool,
+    /// Raw `PlayQueueSCPD.xml` body, when the device advertises the
+    /// LinkPlay-proprietary `PlayQueue` service (`has_playqueue`). This is
+    /// the service's actual declared action/argument list — read it
+    /// directly rather than guessing at what `actions` (below) probes,
+    /// since that only ever calls the subset of declared actions that look
+    /// read-only (see `wiim-capture`'s `capture_playqueue()`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub play_queue_scpd: Option<Blob>,
     #[serde(default)]
     pub actions: Vec<UpnpActionCapture>,
 }

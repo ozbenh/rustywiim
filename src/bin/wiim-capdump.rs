@@ -735,6 +735,19 @@ fn render_capture(mode: OutputMode, value: &serde_json::Value) -> String {
             out.push('\n');
         }
 
+        if let Some(scpd) = upnp.get("play_queue_scpd") {
+            out.push('\n');
+            out.push_str(&mode.bold("PlayQueueSCPD.xml"));
+            out.push('\n');
+            render_body(
+                mode,
+                scpd.get("format").and_then(|v| v.as_str()),
+                scpd.get("body").unwrap_or(&serde_json::Value::Null),
+                &mut out,
+            );
+            out.push('\n');
+        }
+
         if let Some(serde_json::Value::Array(actions)) = upnp.get("actions") {
             for action in actions {
                 out.push_str(&render_upnp_action(mode, action));

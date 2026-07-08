@@ -630,20 +630,30 @@ fn extract_tag(xml: &str, tag: &str) -> Option<String> {
     Some(xml[start..end].trim().to_string())
 }
 
-fn extract_service_blocks(xml: &str) -> Vec<String> {
+/// Extracts every non-overlapping, top-level `<tag>...</tag>` block's inner
+/// content — used for `<service>` (device description) and `<action>`/
+/// `<argument>` (SCPD action lists), all of which repeat as flat siblings
+/// with no same-named nesting in real LinkPlay XML.
+fn extract_blocks(xml: &str, tag: &str) -> Vec<String> {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
     let mut out = Vec::new();
     let mut rest = xml;
-    while let Some(start) = rest.find("<service>") {
-        let after = &rest[start + "<service>".len()..];
-        match after.find("</service>") {
+    while let Some(start) = rest.find(&open) {
+        let after = &rest[start + open.len()..];
+        match after.find(&close) {
             Some(end) => {
                 out.push(after[..end].to_string());
-                rest = &after[end + "</service>".len()..];
+                rest = &after[end + close.len()..];
             }
             None => break,
         }
     }
     out
+}
+
+fn extract_service_blocks(xml: &str) -> Vec<String> {
+    extract_blocks(xml, "service")
 }
 
 /// Resolves a (possibly relative) `controlURL` against the origin
@@ -684,6 +694,108 @@ async fn fetch_description(ip: &str, location: Option<&str>) -> Option<(String, 
         }
     }
     None
+}
+
+/// Fetches a service's SCPD (Service Control Point Definition) XML — the
+/// UPnP-standard self-description of a service's actions and arguments.
+/// `url` is already fully resolved (via `resolve_url()`), unlike
+/// `fetch_description()` which has to guess candidate URLs.
+async fn fetch_scpd(url: &str) -> Attempt {
+    let client = build_reqwest_client(tls_for_scheme(url.split(':').next().unwrap_or("http")), REQUEST_TIMEOUT);
+    send_request(|| client.get(url)).await
+}
+
+/// True for action names that look like pure accessors by UPnP/LinkPlay
+/// naming convention ("Get"/"Browse" prefix) — mirrors `commands.yaml`'s own
+/// "broad on Get, sparse on Set" philosophy for the HTTP command list. Only
+/// these get auto-invoked when probing a newly-discovered service like
+/// `PlayQueue`; anything else (Add/Remove/Delete/Insert/Clear/Set/Play/...)
+/// is left alone since we have no per-action review of this vendor-specific
+/// service the way `capture_upnp()`'s hardcoded AVTransport/RenderingControl
+/// action lists already got.
+fn looks_read_only_upnp_action(name: &str) -> bool {
+    name.starts_with("Get") || name.starts_with("Browse")
+}
+
+/// Best-effort argument value for a `PlayQueue` SOAP argument name. Confirmed
+/// against Arylic's own `upnp_hack` shell scripts (a real, working reference
+/// implementation of this exact vendor service — not a guess derived from
+/// unrelated standard-UPnP conventions): `BrowseQueue`'s `QueueName` defaults
+/// to `"TotalQueue"` (list everything) with `SkipQueue` `"0"`; `GetKeyMapping`
+/// takes no arguments at all. Anything not covered here falls back to an
+/// empty value — a wrong guess just means the call fails and gets recorded
+/// as such, which is itself useful diagnostic information.
+fn guess_upnp_arg_value(name: &str) -> &'static str {
+    match name {
+        "InstanceID" => "0",
+        "QueueName" => "TotalQueue",
+        "SkipQueue" => "0",
+        _ => "",
+    }
+}
+
+/// Parses an SCPD's `<actionList>` into `(action name, "in" argument names)`
+/// pairs, for whatever actions look read-only (see
+/// `looks_read_only_upnp_action()`). Non-namespace-aware `<tag>` block
+/// extraction, same as `extract_blocks()` elsewhere in this file — SCPD XML
+/// from real LinkPlay devices doesn't need more than that.
+fn parse_scpd_readonly_actions(scpd_xml: &str) -> Vec<(String, Vec<String>)> {
+    extract_blocks(scpd_xml, "action")
+        .into_iter()
+        .filter_map(|action_block| {
+            let name = extract_tag(&action_block, "name")?;
+            if !looks_read_only_upnp_action(&name) {
+                return None;
+            }
+            let in_args: Vec<String> = extract_blocks(&action_block, "argument")
+                .into_iter()
+                .filter(|arg| extract_tag(arg, "direction").as_deref() == Some("in"))
+                .filter_map(|arg| extract_tag(&arg, "name"))
+                .collect();
+            Some((name, in_args))
+        })
+        .collect()
+}
+
+/// Fetches `PlayQueueSCPD.xml` (if the SCPDURL was found in the device
+/// description) and, for each declared action that looks read-only, calls it
+/// with best-effort guessed arguments against `control_url` (the same
+/// per-service `controlURL` `capture_upnp()` already extracted from the
+/// device description for its AVTransport/RenderingControl branches).
+/// Stores the raw SCPD in `upnp.play_queue_scpd` regardless of whether any
+/// action call succeeds — it's the authoritative record of what this
+/// service actually declares, for a human to read directly rather than
+/// trusting our argument guesses.
+async fn capture_playqueue(
+    upnp: &mut UpnpCapture,
+    description_url: &str,
+    scpd_url_raw: &str,
+    control_url: &str,
+    service_type: &str,
+    ip: &str,
+) {
+    let scpd_url = resolve_url(description_url, scpd_url_raw);
+    eprintln!("[wiim-capture] upnp: fetching PlayQueue SCPD at {scpd_url}");
+    let attempt = fetch_scpd(&scpd_url).await;
+    let Some(raw) = attempt.body else {
+        eprintln!("[wiim-capture] upnp: PlayQueue SCPD fetch failed: {}", attempt.error.as_deref().unwrap_or("no response body"));
+        return;
+    };
+
+    let (format, mut body) = encode_blob(&raw);
+    if format == ResponseFormat::Xml {
+        body = serde_json::Value::String(anonymize_xml(&raw));
+    }
+    upnp.play_queue_scpd = Some(Blob { format, body });
+
+    for (action, in_args) in parse_scpd_readonly_actions(&raw) {
+        let args_xml: String = in_args.iter()
+            .map(|a| format!("<{a}>{}</{a}>", guess_upnp_arg_value(a)))
+            .collect();
+        eprintln!("[wiim-capture] upnp: {action} on PlayQueue (args: {in_args:?})");
+        upnp.actions.push(soap_call(control_url, service_type, &action, &args_xml, ip).await);
+        tokio::time::sleep(INTER_COMMAND_DELAY).await;
+    }
 }
 
 /// Sends one SOAP action, returning the raw (unanonymized) `Attempt` —
@@ -917,11 +1029,24 @@ async fn capture_upnp(ip: &str) -> UpnpCapture {
                 tokio::time::sleep(INTER_COMMAND_DELAY).await;
             }
         } else if service_type.contains(":service:RenderingControl:") {
-            for action in ["GetVolume", "GetMute"] {
+            for (action, args) in [
+                ("GetVolume", "<InstanceID>0</InstanceID><Channel>Master</Channel>"),
+                ("GetMute", "<InstanceID>0</InstanceID><Channel>Master</Channel>"),
+                // LinkPlay/Arylic-specific extension (confirmed via Arylic's
+                // own `upnp_hack` reference scripts): bundles volume/mute/
+                // channel/slave-list plus the device's full `getStatusEx`-
+                // equivalent JSON blob (`Status`) — a second, UPnP-only path
+                // to the same device info HTTP's `getStatusEx` provides,
+                // useful for devices where that HTTP call is unreliable.
+                ("GetControlDeviceInfo", "<InstanceID>0</InstanceID>"),
+            ] {
                 eprintln!("[wiim-capture] upnp: {action} on {service_type}");
-                let args = "<InstanceID>0</InstanceID><Channel>Master</Channel>";
                 upnp.actions.push(soap_call(&control_url, &service_type, action, args, ip).await);
                 tokio::time::sleep(INTER_COMMAND_DELAY).await;
+            }
+        } else if service_type.contains("wiimu-com:service:PlayQueue") {
+            if let Some(scpd_url_raw) = extract_tag(block, "SCPDURL") {
+                capture_playqueue(&mut upnp, &description_url, &scpd_url_raw, &control_url, &service_type, ip).await;
             }
         }
     }
