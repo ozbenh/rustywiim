@@ -2104,7 +2104,7 @@
     },
     {
       "command": "getMRMSubLPF:0.0.0.0",
-      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=getMRMSubLPF:0.0.0.0",
+      "url": "https://xxx.xxx.x.xxx:443/httpapi.asp?command=getMRMSubLPF:x.x.x.x",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
@@ -2122,7 +2122,7 @@
               "sub_filter": 1
             },
             "type": "wireless",
-            "uuid": "FF98F3597E21BAE38D6E1163"
+            "uuid": "xxxxxxxxxxxxxxxxxxxxxxxx"
           }
         ],
         "version": "1.0"
@@ -2527,7 +2527,7 @@
           "errorDescribe": "unknow error",
           "errorType": "-1000",
           "mainDelay": "-1000.000",
-          "mainSubExtraDelay": "-1000.000",
+          "mainSubExtraDelay": "-xxxx.xxx",
           "subDelay": "-1000.000"
         },
         "category": "mainsubdelay"
@@ -3349,7 +3349,7 @@
   ],
   "skipped_not_destructive": [],
   "upnp": {
-    "ssdp_response": "HTTP/1.1 200 OK\r\nCONNECTION: keep-alive\r\nCACHE-CONTROL: max-age=1800\r\nDATE: Sun, 05 Jul 2026 21:05:08 GMT\r\nEXT:\r\nLOCATION: http://192.168.1.184:49152/description.xml\r\nBOOTID.UPNP.ORG: 449e1ea0-1dd2-11b2-9353-9a200a8c8dfc\r\nSERVER: Linux\r\nST: urn:schemas-upnp-org:device:MediaRenderer:1\r\nUSN: uuid:FF98F359-7E21-BAE3-8D6E-1163FF98F359::urn:schemas-upnp-org:device:MediaRenderer:1\r\n\r\n",
+    "ssdp_response": "HTTP/1.1 200 OK\r\nCONNECTION: keep-alive\r\nCACHE-CONTROL: max-age=1800\r\nDATE: Sun, 05 Jul 2026 21:05:08 GMT\r\nEXT:\r\nLOCATION: http://xxx.xxx.x.xxx:49152/description.xml\r\nBOOTID.UPNP.ORG: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx\r\nSERVER: Linux\r\nST: urn:schemas-upnp-org:device:MediaRenderer:1\r\nUSN: uuid:xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx::urn:schemas-upnp-org:device:MediaRenderer:1\r\n\r\n",
     "location": "http://xxx.xxx.x.xxx:49152/description.xml",
     "description_url": "http://xxx.xxx.x.xxx:49152/description.xml",
     "description": {

@@ -1,5 +1,5 @@
 {
-  "captured_at": "2026-07-06T01:29:28.895341358+00:00",
+  "captured_at": "2026-07-08T10:00:16.361913335+00:00",
   "gave_up": false,
   "model": "WiiM Ultra",
   "model_source": "getStatusEx",
@@ -25,12 +25,12 @@
         "BleRemoteControl": "1",
         "BleRemoteException": "0",
         "BleRemoteNewVersion": "",
-        "BleRemoteRSSI": "-72",
+        "BleRemoteRSSI": "-58",
         "BleRemoteVersion": "0054",
         "BleRemote_dev_state": "normal",
         "BleRemote_has_new": "0",
         "BleRemote_power_status": "0",
-        "BleRemote_update_checked_counter": "19",
+        "BleRemote_update_checked_counter": "17",
         "DeviceName": "xxxx xxxxxx",
         "EQVersion": "4.3",
         "EQ_support": "Eq10HP_ver_2.0",
@@ -44,7 +44,7 @@
         "ModuleColorString": "",
         "NewVer": "0",
         "PCB_version": "4",
-        "RSSI": "-64",
+        "RSSI": "-61",
         "Release": "20260703",
         "VersionUpdate": "0",
         "WifiChannel": "0",
@@ -66,8 +66,8 @@
         "capability": "0x20084808",
         "cast_enable": 1,
         "cast_usage_report": 1,
-        "communication_port": "8819",
-        "date": "2026:07:06",
+        "communication_port": "8820",
+        "date": "2026:07:08",
         "deviceSettingVer": "0.0",
         "dsp_ver": "0",
         "dsp_ver_new": "",
@@ -125,7 +125,7 @@
         "streams_all": "0xedf33fc",
         "temp_uuid": "xxxxxxxxxxxxxxxx",
         "tidal_version": "2.0",
-        "time": "01:29:28",
+        "time": "10:00:16",
         "tp_type": "4",
         "tz": "10.0",
         "tz_info_ver": "1.0",
@@ -136,16 +136,16 @@
         "udisk_features": "3",
         "udisk_uuid": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
         "umount": "1",
-        "update_check_count": "19",
+        "update_check_count": "15",
         "upnp_uuid": "xxxx:xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
         "upnp_version": "1005",
         "uuid": "xxxxxxxxxxxxxxxxxxxxxxxx",
         "volume_control": "0",
         "web_firmware_update_hide": "0",
-        "wlanDataRate": "292",
-        "wlanFreq": "5180",
+        "wlanDataRate": "306",
+        "wlanFreq": "5320",
         "wlanNoise": "-92",
-        "wlanSnr": "28",
+        "wlanSnr": "31",
         "wmrm_capability": 63,
         "wmrm_sub_ver": "7",
         "wmrm_version": "4.3"
@@ -159,29 +159,29 @@
       "http_status": 200,
       "format": "json",
       "body": {
-        "Album": "506879736963616C204772616666697469202844656C7578652045646974696F6E29",
-        "Artist": "4C6564205A657070656C696E",
-        "Title": "486F75736573206F662074686520486F6C79202852656D617374657229",
+        "Album": "556E6B6E6F776E",
+        "Artist": "556E6B6E6F776E",
+        "Title": "556E6B6E6F776E",
         "alarmflag": "0",
         "ch": "0",
-        "curpos": "16904",
+        "curpos": "311333",
         "eq": "0",
         "loop": "4",
-        "mode": "32",
+        "mode": "40",
         "mute": "0",
-        "offset_pts": "6315",
+        "offset_pts": "3157",
         "plicount": "0",
         "plicurr": "0",
-        "status": "play",
-        "totlen": "244686",
+        "status": "stop",
+        "totlen": "341400",
         "type": "0",
-        "vendor": "Tidal",
-        "vol": "21"
+        "vendor": "",
+        "vol": "70"
       },
       "decoded": {
-        "Album": "Physical Graffiti (Deluxe Edition)",
-        "Artist": "Led Zeppelin",
-        "Title": "Houses of the Holy (Remaster)"
+        "Album": "Unknown",
+        "Artist": "Unknown",
+        "Title": "Unknown"
       },
       "summary": "Get the playback status (extended) — this app's primary status poll"
     },
@@ -288,7 +288,7 @@
       "http_status": 200,
       "format": "json",
       "body": {
-        "status": 1
+        "status": 0
       },
       "summary": "12V trigger status (Ultra/Pro/Pro Plus only per pywiim)"
     },
@@ -366,15 +366,15 @@
       "format": "json",
       "body": {
         "metaData": {
-          "album": "Physical Graffiti (Deluxe Edition)",
-          "albumArtURI": "https://resources.tidal.com/images/7780d8fb/be62/4026/80d3/b85b67a8bf9b/1280x1280.jpg",
-          "artist": "Led Zeppelin",
-          "bitDepth": "16",
-          "bitRate": "935",
-          "sampleRate": "44100",
+          "album": "unknow",
+          "albumArtURI": "unknow",
+          "artist": "unknow",
+          "bitDepth": "24",
+          "bitRate": "9216",
+          "sampleRate": "192000",
           "subtitle": "unknow",
-          "title": "Houses of the Holy (Remaster)",
-          "trackId": "unknow"
+          "title": "unknow",
+          "trackId": "0"
         }
       },
       "summary": "Get Current Track Metadata"
@@ -387,29 +387,29 @@
       "http_status": 200,
       "format": "json",
       "body": {
-        "Album": "506879736963616C204772616666697469202844656C7578652045646974696F6E29",
-        "Artist": "4C6564205A657070656C696E",
-        "Title": "486F75736573206F662074686520486F6C79202852656D617374657229",
+        "Album": "556E6B6E6F776E",
+        "Artist": "556E6B6E6F776E",
+        "Title": "556E6B6E6F776E",
         "alarmflag": "0",
         "ch": "0",
-        "curpos": "17786",
+        "curpos": "311333",
         "eq": "0",
         "loop": "4",
-        "mode": "32",
+        "mode": "40",
         "mute": "0",
-        "offset_pts": "6315",
+        "offset_pts": "3157",
         "plicount": "0",
         "plicurr": "0",
-        "status": "play",
-        "totlen": "244686",
+        "status": "stop",
+        "totlen": "341400",
         "type": "0",
-        "vendor": "Tidal",
-        "vol": "21"
+        "vendor": "",
+        "vol": "70"
       },
       "decoded": {
-        "Album": "Physical Graffiti (Deluxe Edition)",
-        "Artist": "Led Zeppelin",
-        "Title": "Houses of the Holy (Remaster)"
+        "Album": "Unknown",
+        "Artist": "Unknown",
+        "Title": "Unknown"
       },
       "summary": "Get the playback status"
     },
@@ -717,10 +717,10 @@
         ],
         "EQLevel": 1,
         "EQStat": "Off",
-        "Name": "xxxx",
+        "Name": "",
         "channelMode": "Stereo",
         "pluginURI": "http://moddevices.com/plugins/caps/Eq10HP",
-        "source_name": "xxxx",
+        "source_name": "xxxx-xx",
         "status": "OK"
       },
       "summary": "Read the current EQ values for 10 bands GEQ (old API, no source specified, current source)"
@@ -1202,7 +1202,7 @@
       "outcome": "ok",
       "http_status": 200,
       "format": "base64",
-      "body": "eyJzdGF0dXMiOiJPSyIsIkVRTGV2ZWwiOjEsInNvdXJjZV9uYW1lIjoid2lmaSIsIkVRU3RhdCI6Ik9mZiIsIk5hbWUiOiIiLCJwbHVnaW5VUkkiOiJ7InBsdWdpblVSSSI6Imh0dHA6Ly9tb2RkZXZpY2VzLmNvbS9wbHVnaW5zL2NhcHMvRXExMEhQIn0iLCJjaGFubmVsTW9kZSI6IlN0ZXJlbyIsIkVRQmFuZCI6fQ==",
+      "body": "eyJzdGF0dXMiOiJPSyIsIkVRTGV2ZWwiOjEsInNvdXJjZV9uYW1lIjoibGluZS1pbiIsIkVRU3RhdCI6Ik9mZiIsIk5hbWUiOiIiLCJwbHVnaW5VUkkiOiJ7InBsdWdpblVSSSI6Imh0dHA6Ly9tb2RkZXZpY2VzLmNvbS9wbHVnaW5zL2NhcHMvRXExMEhQIn0iLCJjaGFubmVsTW9kZSI6IlN0ZXJlbyIsIkVRQmFuZCI6fQ==",
       "summary": "Read the new style current source EQ bands for a source (GEQ)"
     },
     {
@@ -1212,7 +1212,7 @@
       "outcome": "ok",
       "http_status": 200,
       "format": "base64",
-      "body": "eyJzdGF0dXMiOiJPSyIsIkVRTGV2ZWwiOjEsInNvdXJjZV9uYW1lIjoid2lmaSIsIkVRU3RhdCI6Ik9mZiIsIk5hbWUiOiIiLCJwbHVnaW5VUkkiOiJ7InBsdWdpblVSSSI6Imh0dHA6Ly9tb2RkZXZpY2VzLmNvbS9wbHVnaW5zL2NhcHMvRXFOcCJ9IiwiY2hhbm5lbE1vZGUiOiJTdGVyZW8iLCJFUUJhbmQiOn0=",
+      "body": "eyJzdGF0dXMiOiJPSyIsIkVRTGV2ZWwiOjEsInNvdXJjZV9uYW1lIjoibGluZS1pbiIsIkVRU3RhdCI6Ik9mZiIsIk5hbWUiOiIiLCJwbHVnaW5VUkkiOiJ7InBsdWdpblVSSSI6Imh0dHA6Ly9tb2RkZXZpY2VzLmNvbS9wbHVnaW5zL2NhcHMvRXFOcCJ9IiwiY2hhbm5lbE1vZGUiOiJTdGVyZW8iLCJFUUJhbmQiOn0=",
       "summary": "Read the new style current source EQ bands for a source (PEQ)"
     },
     {
@@ -1679,10 +1679,10 @@
         ],
         "EQLevel": 1,
         "EQStat": "Off",
-        "Name": "xxxx",
+        "Name": "",
         "channelMode": "Stereo",
         "pluginURI": "http://moddevices.com/plugins/caps/Eq10HP",
-        "source_name": "xxxx",
+        "source_name": "xxxx-xx",
         "status": "OK"
       },
       "summary": "Read the old-style LV2 band for a plugin, no source specified (GEQ)"
@@ -1819,7 +1819,7 @@
           {
             "index": 24,
             "param_name": "g_mode",
-            "value": -1.0
+            "value": 1.0
           },
           {
             "index": 25,
@@ -1834,7 +1834,7 @@
           {
             "index": 27,
             "param_name": "g_gain",
-            "value": -12.0
+            "value": 0.0
           },
           {
             "index": 28,
@@ -1942,7 +1942,7 @@
         "Name": "",
         "channelMode": "Stereo",
         "pluginURI": "http://moddevices.com/plugins/caps/EqNp",
-        "source_name": "xxxx",
+        "source_name": "xxxx-xx",
         "status": "OK"
       },
       "summary": "Read the old-style LV2 band for a plugin, no source specified (PEQ)"
@@ -2294,7 +2294,7 @@
               "sub_filter": 1
             },
             "type": "wireless",
-            "uuid": "FF98F7F4075B5A90FA9572C3"
+            "uuid": "xxxxxxxxxxxxxxxxxxxxxxxx"
           }
         ],
         "version": "1.0"
@@ -3060,7 +3060,7 @@
           "errorDescribe": "unknow error",
           "errorType": "-1000",
           "mainDelay": "-1000.000",
-          "mainSubExtraDelay": "-1000.000",
+          "mainSubExtraDelay": "-xxxx.xxx",
           "subDelay": "-1000.000"
         },
         "category": "mainsubdelay"
@@ -3165,7 +3165,7 @@
       "http_status": 200,
       "format": "json",
       "body": {
-        "button_volume_step": 1,
+        "button_volume_step": 2,
         "status": "OK"
       },
       "summary": "Get the volume step of the buttons"
@@ -3190,7 +3190,7 @@
       "outcome": "ok",
       "http_status": 200,
       "format": "json",
-      "body": 0,
+      "body": 1,
       "summary": "Get button enable status"
     },
     {
@@ -3200,7 +3200,7 @@
       "outcome": "ok",
       "http_status": 200,
       "format": "json",
-      "body": 0,
+      "body": 1,
       "summary": "Get LED switch status"
     },
     {
@@ -3258,7 +3258,7 @@
       "http_status": 200,
       "format": "json",
       "body": {
-        "group_type": -1,
+        "group_type": 1,
         "slaves": 0,
         "surround": 0,
         "wmrm_version": "4.3"
@@ -3273,8 +3273,17 @@
       "http_status": 200,
       "format": "json",
       "body": {
-        "current_group_id": "",
-        "grouplist": []
+        "current_group_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+        "grouplist": [
+          {
+            "channel": -1,
+            "group_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+            "group_name": "WiiM WorkBu + 0",
+            "group_type": 1,
+            "slavelist": [],
+            "update_time": "1783477180"
+          }
+        ]
       },
       "summary": "Get the list of group names in multi-room mode"
     },
@@ -3330,7 +3339,7 @@
         "mac": "xx:xx:xx:xx:xx:xx",
         "name": "xxxx xxxxx xxxxxx",
         "powerstatus": 0,
-        "rssi": -71,
+        "rssi": -58,
         "status": "connected",
         "ver": "0054"
       },
@@ -3411,7 +3420,7 @@
       "http_status": 200,
       "format": "json",
       "body": {
-        "a01controller_crash": "0",
+        "a01controller_crash": "1",
         "alexa_response_status": "0",
         "asr_language": "en_us",
         "asr_ongoing": "0",
@@ -3428,10 +3437,10 @@
         "imuzop_pid": "1",
         "mcu_crash": "0",
         "pause_flag_for_alexa": "0",
-        "play_mode": "32",
-        "play_status": "1",
+        "play_mode": "40",
+        "play_status": "0",
         "plm_notify_flag": "0",
-        "power_ticks": "223891706",
+        "power_ticks": "181756089",
         "priv_languages": "4588",
         "process_deadlock": "x",
         "retail_mode": "0",
@@ -3453,10 +3462,10 @@
         "upnp_action_remain1": "0",
         "upnp_action_remain2": "0",
         "upnp_action_remain3": "0",
-        "upnp_action_total0": "3623",
-        "upnp_action_total1": "3624",
-        "upnp_action_total2": "3624",
-        "upnp_action_total3": "3623",
+        "upnp_action_total0": "11219",
+        "upnp_action_total1": "11221",
+        "upnp_action_total2": "11220",
+        "upnp_action_total3": "11220",
         "wifi_abort_date": ""
       },
       "summary": "Get device debug information"
@@ -3538,18 +3547,18 @@
       "http_status": 200,
       "format": "json",
       "body": {
-        "disconnectedCount": 1,
+        "disconnectedCount": 3,
         "ethDhcpTime": 0,
         "ethDisconnectedCount": 1,
         "ethIsStaticIp": 0,
         "ethNotReady": 0,
-        "lastDisconnectedMsg": "",
-        "lastDisconnectedTime": 6,
+        "lastDisconnectedMsg": "2026-07-08 06:22:49 <3>CTRL-EVENT-DISCONNECTED bssid=xx:xx:xx:xx:xx:xx reason=2",
+        "lastDisconnectedTime": 127,
         "pingCheckFailedCount": 0,
         "wlanAbnormalRebootTimes": 0,
         "wlanBand": 1,
-        "wlanConnectTime": 2,
-        "wlanDhcpTime": 2,
+        "wlanConnectTime": 29,
+        "wlanDhcpTime": 1,
         "wlanEssid": "xxxxxxxxxxxxxxxxxxxx",
         "wlanHistoryNum": 1,
         "wlanIpChanged": 0,
@@ -3558,9 +3567,9 @@
           "meshInfo": [
             {
               "auth": "WPA3SAE",
-              "bssid": "bc:fc:e7:2b:9e:4e",
-              "channel": "36",
-              "rssi": "-62"
+              "bssid": "xx:xx:xx:xx:xx:xx",
+              "channel": "64",
+              "rssi": "-58"
             }
           ],
           "res": 1
@@ -3846,7 +3855,7 @@
       "format": "json",
       "body": {
         "auto_sense_enable": 1,
-        "auto_sense_step": 11,
+        "auto_sense_step": 9,
         "default_bright": 8,
         "disable": 0,
         "wakeup_by_touch": 1
@@ -4072,6 +4081,10 @@
     "has_playqueue": true,
     "has_qplay": true,
     "has_content_directory": false,
+    "play_queue_scpd": {
+      "format": "xml",
+      "body": "<?xml version=\"1.0\"?>\r\n<scpd xmlns=\"urn:schemas-upnp-org:service-1-0\">\r\n<specVersion>\r\n<major>1</major>\r\n<minor>0</minor>\r\n</specVersion>\r\n<actionList>\r\n<action>\r\n<name>CreateQueue</name>\r\n<argumentList>\r\n<argument>\r\n<name>QueueContext</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueContext</relatedStateVariable>\r\n</argument>\r\n</argumentList>\r\n</action>\r\n<action>\r\n<name>ReplaceQueue</name>\r\n<argumentList>\r\n<argument>\r\n<name>QueueContext</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueContext</relatedStateVariable>\r\n</argument>\r\n</argumentList>\r\n</action>\r\n<action>\r\n<name>DeleteQueue</name>\r\n<argumentList>\r\n<argument>\r\n<name>QueueName</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueName</relatedStateVariable>\r\n</argument>\r\n</argumentList>\r\n</action>\r\n<action>\r\n<name>BackUpQueue</name>\r\n<argumentList>\r\n<argument>\r\n<name>QueueContext</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueContext</relatedStateVariable>\r\n</argument>\r\n</argumentList>\r\n</action>\r\n<action>\r\n<name>AppendQueue</name>\r\n<argumentList>\r\n<argument>\r\n<name>QueueContext</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueContext</relatedStateVariable>\r\n</argument>\r\n</argumentList>\r\n</action>\r\n<action>\r\n<name>BrowseQueue</name>\r\n<argumentList>\r\n<argument>\r\n<name>QueueName</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueName</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>QueueContext</name>\r\n<direction>out</direction>\r\n<relatedStateVariable>QueueContext</relatedStateVariable>\r\n</argument>\r\n</argumentList>\r\n</action>\r\n<action>\r\n<name>BrowseQueueEx</name>\r\n<argumentList>\r\n<argument>\r\n<name>QueueName</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueName</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>TrackIndex</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>CurrentIndex</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>TrackNums</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>TrackNums</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>QueueContext</name>\r\n<direction>out</direction>\r\n<relatedStateVariable>QueueContext</relatedStateVariable>\r\n</argument>\r\n</argumentList>\r\n</action>\r\n<action>\r\n<name>SetQueueLoopMode</name>\r\n<argumentList>\r\n<argument>\r\n<name>LoopMode</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>LoopMode</relatedStateVariable>\r\n</argument>\r\n</argumentList>\r\n</action>\r\n<action>\r\n<name>GetQueueLoopMode</name>\r\n<argumentList>\r\n<argument>\r\n<name>LoopMode</name>\r\n<direction>out</direction>\r\n<relatedStateVariable>LoopMode</relatedStateVariable>\r\n</argument>\r\n</argumentList>\r\n</action>\r\n<action>\r\n<name>SetQueuePolicy</name>\r\n<argumentList>\r\n<argument>\r\n<name>QueueName</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueName</relatedStateVariable>\r\n</argument>\r\n</argumentList>\r\n</action>\r\n<action>\r\n<name>PlayQueueWithIndex</name>\r\n<argumentList>\r\n<argument>\r\n<name>QueueName</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueName</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>Index</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>CurrentIndex</relatedStateVariable>\r\n</argument>\r\n</argumentList>\r\n</action>\r\n<action>\r\n<name>AppendTracksInQueue</name>\r\n<argumentList>\r\n<argument>\r\n<name>QueueContext</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueContext</relatedStateVariable>\r\n</argument>\r\n</argumentList>\r\n</action>\r\n<action>\r\n<name>RemoveTracksInQueue</name>\r\n<argumentList>\r\n<argument>\r\n<name>QueueName</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueContext</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>RangStart</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>CurrentIndex</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>RangEnd</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>CurrentIndex</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>Action</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>Action</relatedStateVariable>\r\n</argument>\r\n</argumentList>\r\n</action>\r\n<action>\r\n<name>MoveTracksInQueue</name>\r\n<argumentList>\r\n<argument>\r\n<name>QueueName</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueName</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>IndexList</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>IndexList</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>ToIndex</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>ToIndex</relatedStateVariable>\r\n</argument>\r\n</argumentList>\r\n</action>\r\n<action>\r\n<name>AppendTracksInQueueEx</name>\r\n<argumentList>\r\n<argument>\r\n<name>QueueContext</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueContext</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>Direction</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>CurrentIndex</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>StartIndex</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>CurrentIndex</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>Play</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>CurrentIndex</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>Action</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>Action</relatedStateVariable>\r\n</argument>\r\n</argumentList>\r\n</action>\r\n<action>\r\n<name>SetKeyMapping</name>\r\n<argumentList>\r\n<argument>\r\n<name>QueueContext</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueContext</relatedStateVariable>\r\n</argument>\r\n</argumentList>\r\n</action>\r\n<action>\r\n<name>GetKeyMapping</name>\r\n<argumentList>\r\n<argument>\r\n<name>QueueContext</name>\r\n<direction>out</direction>\r\n<relatedStateVariable>QueueContext</relatedStateVariable>\r\n</argument>\r\n</argumentList>\r\n</action>\r\n<action>\r\n<name>GetQueueOnline</name>\r\n<argumentList>\r\n<argument>\r\n<name>QueueName</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueName</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>QueueID</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueID</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>QueueType</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueType</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>Queuelimit</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>CurrentIndex</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>QueueAutoInsert</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueAutoInsert</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>QueueContext</name>\r\n<direction>out</direction>\r\n<relatedStateVariable>QueueContext</relatedStateVariable>\r\n</argument>\r\n</argumentList>\r\n</action>\r\n<action>\r\n<name>SearchQueueOnline</name>\r\n<argumentList>\r\n<argument>\r\n<name>QueueName</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueName</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>SearchKey</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueID</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>Queuelimit</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>CurrentIndex</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>QueueContext</name>\r\n<direction>out</direction>\r\n<relatedStateVariable>QueueContext</relatedStateVariable>\r\n</argument>\r\n</argumentList>\r\n</action>\r\n<action>\r\n<name>SetQueueRecord</name>\r\n<argumentList>\r\n<argument>\r\n<name>QueueName</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueName</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>QueueID</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueID</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>Action</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueType</relatedStateVariable>\r\n</argument>\r\n</argumentList>\r\n</action>\r\n<action>\r\n<name>SetSongsRecord</name>\r\n<argumentList>\r\n<argument>\r\n<name>QueueName</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueName</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>SongID</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueID</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>Action</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueType</relatedStateVariable>\r\n</argument>\r\n</argumentList>\r\n</action>\r\n<action>\r\n<name>UserRegister</name>\r\n<argumentList>\r\n<argument>\r\n<name>QueueName</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueName</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>UserName</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueID</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>PassWord</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueType</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>Result</name>\r\n<direction>out</direction>\r\n<relatedStateVariable>Result</relatedStateVariable>\r\n</argument>\r\n</argumentList>\r\n</action>\r\n<action>\r\n<name>UserLogin</name>\r\n<argumentList>\r\n<argument>\r\n<name>AccountSource</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueName</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>UserName</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueID</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>PassWord</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueType</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>SavePass</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueuePolicy</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>Code</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>Code</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>Proxy</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>Proxy</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>Result</name>\r\n<direction>out</direction>\r\n<relatedStateVariable>Result</relatedStateVariable>\r\n</argument>\r\n</argumentList>\r\n</action>\r\n<action>\r\n<name>UserLogout</name>\r\n<argumentList>\r\n<argument>\r\n<name>AccountSource</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueName</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>Result</name>\r\n<direction>out</direction>\r\n<relatedStateVariable>Result</relatedStateVariable>\r\n</argument>\r\n</argumentList>\r\n</action>\r\n<action>\r\n<name>GetUserInfo</name>\r\n<argumentList>\r\n<argument>\r\n<name>AccountSource</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueName</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>RefreshToken</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>Code</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>Result</name>\r\n<direction>out</direction>\r\n<relatedStateVariable>Result</relatedStateVariable>\r\n</argument>\r\n</argumentList>\r\n</action>\r\n<action>\r\n<name>GetUserAccountHistory</name>\r\n<argumentList>\r\n<argument>\r\n<name>AccountSource</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueName</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>Number</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>CurrentIndex</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>Result</name>\r\n<direction>out</direction>\r\n<relatedStateVariable>Result</relatedStateVariable>\r\n</argument>\r\n</argumentList>\r\n</action>\r\n<action>\r\n<name>SetUserFavorites</name>\r\n<argumentList>\r\n<argument>\r\n<name>AccountSource</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueName</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>Action</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>Code</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>MediaType</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueType</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>MediaID</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueID</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>MediaContext</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueContext</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>Result</name>\r\n<direction>out</direction>\r\n<relatedStateVariable>Result</relatedStateVariable>\r\n</argument>\r\n</argumentList>\r\n</action>\r\n<action>\r\n<name>GetUserFavorites</name>\r\n<argumentList>\r\n<argument>\r\n<name>AccountSource</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueName</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>MediaType</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueType</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>Filter</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueType</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>Result</name>\r\n<direction>out</direction>\r\n<relatedStateVariable>Result</relatedStateVariable>\r\n</argument>\r\n</argumentList>\r\n</action>\r\n<action>\r\n<name>GetQueueIndex</name>\r\n<argumentList>\r\n<argument>\r\n<name>QueueName</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueName</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>CurrentIndex</name>\r\n<direction>out</direction>\r\n<relatedStateVariable>CurrentIndex</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>PreloadingIndex</name>\r\n<direction>out</direction>\r\n<relatedStateVariable>CurrentIndex</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>CurrentPage</name>\r\n<direction>out</direction>\r\n<relatedStateVariable>CurrentPage</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>TrackNums</name>\r\n<direction>out</direction>\r\n<relatedStateVariable>TrackNums</relatedStateVariable>\r\n</argument>\r\n</argumentList>\r\n</action>\r\n<action>\r\n<name>SetSpotifyPreset</name>\r\n<argumentList>\r\n<argument>\r\n<name>KeyIndex</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>CurrentIndex</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>Result</name>\r\n<direction>out</direction>\r\n<relatedStateVariable>Result</relatedStateVariable>\r\n</argument>\r\n</argumentList>\r\n</action>\r\n<action>\r\n<name>DeleteActionQueue</name>\r\n<argumentList>\r\n<argument>\r\n<name>PressType</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>CurrentIndex</relatedStateVariable>\r\n</argument>\r\n</argumentList>\r\n</action>\r\n<action>\r\n<name>GetBasicUserInfo</name>\r\n<argumentList>\r\n<argument>\r\n<name>Result</name>\r\n<direction>out</direction>\r\n<relatedStateVariable>Result</relatedStateVariable>\r\n</argument>\r\n</argumentList>\r\n</action>\r\n<action>\r\n<name>TakePlayControl</name>\r\n<argumentList>\r\n<argument>\r\n<name>Result</name>\r\n<direction>out</direction>\r\n<relatedStateVariable>Result</relatedStateVariable>\r\n</argument>\r\n</argumentList>\r\n</action>\r\n<action>\r\n<name>SetRating</name>\r\n<argumentList>\r\n<argument>\r\n<name>Source</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueName</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>TrackID</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueType</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>Rating</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueID</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>Result</name>\r\n<direction>out</direction>\r\n<relatedStateVariable>Result</relatedStateVariable>\r\n</argument>\r\n</argumentList>\r\n</action>\r\n</actionList>\r\n<serviceStateTable>\r\n<stateVariable sendEvents=\"yes\">\r\n<name>LastChange</name>\r\n<dataType>string</dataType>\r\n</stateVariable>\r\n<stateVariable sendEvents=\"no\">\r\n<name>QueueName</name>\r\n<dataType>string</dataType>\r\n</stateVariable>\r\n<stateVariable sendEvents=\"no\">\r\n<name>QueueContext</name>\r\n<dataType>string</dataType>\r\n</stateVariable>\r\n<stateVariable sendEvents=\"no\">\r\n<name>CurrentIndex</name>\r\n<dataType>ui4</dataType>\r\n</stateVariable>\r\n<stateVariable sendEvents=\"no\">\r\n<name>CurrentPage</name>\r\n<dataType>ui4</dataType>\r\n</stateVariable>\r\n<stateVariable sendEvents=\"no\">\r\n<name>QueuePolicy</name>\r\n<dataType>ui4</dataType>\r\n</stateVariable>\r\n<stateVariable sendEvents=\"no\">\r\n<name>LoopMode</name>\r\n<dataType>ui4</dataType>\r\n</stateVariable>\r\n<stateVariable sendEvents=\"no\">\r\n<name>QueueID</name>\r\n<dataType>string</dataType>\r\n</stateVariable>\r\n<stateVariable sendEvents=\"no\">\r\n<name>QueueType</name>\r\n<dataType>string</dataType>\r\n</stateVariable>\r\n<stateVariable sendEvents=\"no\">\r\n<name>QueueAutoInsert</name>\r\n<dataType>string</dataType>\r\n</stateVariable>\r\n<stateVariable sendEvents=\"no\">\r\n<name>Result</name>\r\n<dataType>string</dataType>\r\n</stateVariable>\r\n<stateVariable sendEvents=\"no\">\r\n<name>Code</name>\r\n<dataType>string</dataType>\r\n</stateVariable>\r\n<stateVariable sendEvents=\"no\">\r\n<name>Proxy</name>\r\n<dataType>string</dataType>\r\n</stateVariable>\r\n<stateVariable sendEvents=\"no\">\r\n<name>TrackNums</name>\r\n<dataType>ui4</dataType>\r\n</stateVariable>\r\n<stateVariable sendEvents=\"no\">\r\n<name>IndexList</name>\r\n<dataType>string</dataType>\r\n</stateVariable>\r\n<stateVariable sendEvents=\"no\">\r\n<name>ToIndex</name>\r\n<dataType>ui4</dataType>\r\n</stateVariable>\r\n<stateVariable sendEvents=\"no\">\r\n<name>Action</name>\r\n<dataType>string</dataType>\r\n</stateVariable>\r\n</serviceStateTable>\r\n</scpd>\r\n"
+    },
     "actions": [
       {
         "service": "urn:schemas-upnp-org:service:AVTransport:1",
@@ -4081,7 +4094,7 @@
         "http_status": 200,
         "response": {
           "format": "xml",
-          "body": "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\"><s:Body>\n<u:GetTransportInfoResponse xmlns:u=\"urn:schemas-upnp-org:service:AVTransport:1\">\r\n<CurrentTransportState>PLAYING</CurrentTransportState>\r\n<CurrentTransportStatus>OK</CurrentTransportStatus>\r\n<CurrentSpeed>1</CurrentSpeed>\r\n</u:GetTransportInfoResponse>\r\n</s:Body> </s:Envelope>"
+          "body": "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\"><s:Body>\n<u:GetTransportInfoResponse xmlns:u=\"urn:schemas-upnp-org:service:AVTransport:1\">\r\n<CurrentTransportState>PAUSED_PLAYBACK</CurrentTransportState>\r\n<CurrentTransportStatus>OK</CurrentTransportStatus>\r\n<CurrentSpeed>1</CurrentSpeed>\r\n</u:GetTransportInfoResponse>\r\n</s:Body> </s:Envelope>"
         }
       },
       {
@@ -4092,7 +4105,7 @@
         "http_status": 200,
         "response": {
           "format": "xml",
-          "body": "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\"><s:Body>\n<u:GetPositionInfoResponse xmlns:u=\"urn:schemas-upnp-org:service:AVTransport:1\">\r\n<Track>0</Track>\r\n<TrackDuration>00:04:05</TrackDuration>\r\n<TrackMetaData>&lt;?xml version=&quot;1.0&quot; encoding=&quot;UTF-8&quot;?&gt;\n&lt;DIDL-Lite xmlns:dc=&quot;http://purl.org/dc/elements/1.1/&quot; xmlns:upnp=&quot;urn:schemas-upnp-org:metadata-1-0/upnp/&quot; xmlns:song=&quot;www.wiimu.com/song/&quot; xmlns=&quot;urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/&quot;&gt;\n&lt;upnp:class&gt;object.item.audioItem.musicTrack&lt;/upnp:class&gt;\n&lt;item id=&quot;0&quot;&gt;\n&lt;song:actualQuality&gt;LOSSLESS&lt;/song:actualQuality&gt;\n&lt;song:rate_hz&gt;44100&lt;/song:rate_hz&gt;\n&lt;song:format_s&gt;16&lt;/song:format_s&gt;\n&lt;song:bitrate&gt;935&lt;/song:bitrate&gt;\n&lt;res protocolInfo=&quot;http-get:*:*:*&quot; duration=&quot;245000&quot;&gt;&lt;/res&gt;\n&lt;dc:title&gt;Houses of the Holy (Remaster)&lt;/dc:title&gt;\n&lt;upnp:artist&gt;Led Zeppelin&lt;/upnp:artist&gt;\n&lt;upnp:album&gt;Physical Graffiti (Deluxe Edition)&lt;/upnp:album&gt;\n&lt;upnp:albumArtURI&gt;https://resources.tidal.com/images/7780d8fb/be62/4026/80d3/b85b67a8bf9b/1280x1280.jpg&lt;/upnp:albumArtURI&gt;\n&lt;/item&gt;\n&lt;/DIDL-Lite&gt;\n</TrackMetaData>\r\n<TrackURI></TrackURI>\r\n<RelTime>00:00:32</RelTime>\r\n<AbsTime>NOT_IMPLEMENTED</AbsTime>\r\n<RelCount>2147483647</RelCount>\r\n<AbsCount>2147483647</AbsCount>\r\n</u:GetPositionInfoResponse>\r\n</s:Body> </s:Envelope>"
+          "body": "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\"><s:Body>\n<u:GetPositionInfoResponse xmlns:u=\"urn:schemas-upnp-org:service:AVTransport:1\">\r\n<Track>0</Track>\r\n<TrackDuration>00:00:00</TrackDuration>\r\n<TrackMetaData>&lt;?xml version=&quot;1.0&quot; encoding=&quot;UTF-8&quot;?&gt;\r\n&lt;DIDL-Lite xmlns:dc=&quot;http://purl.org/dc/elements/1.1/&quot; xmlns:upnp=&quot;urn:schemas-upnp-org:metadata-1-0/upnp/&quot; xmlns:song=&quot;www.wiimu.com/song/&quot; xmlns=&quot;urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/&quot;&gt;\r\n&lt;upnp:class&gt;object.item.audioItem.musicTrack&lt;/upnp:class&gt;\r\n&lt;item id=&quot;0&quot;&gt;\r\n&lt;song:subid&gt;&lt;/song:subid&gt;\r\n&lt;song:description&gt;&lt;/song:description&gt;\r\n&lt;song:id&gt;0&lt;/song:id&gt;\r\n&lt;song:coding_f&gt;LPCM&lt;/song:coding_f&gt;\r\n&lt;song:dolby_detail_f&gt;&lt;/song:dolby_detail_f&gt;\r\n&lt;song:dolby_surround&gt;&lt;/song:dolby_surround&gt;\r\n&lt;song:stream_ch&gt;&lt;/song:stream_ch&gt;\r\n&lt;song:singerid&gt;0&lt;/song:singerid&gt;\r\n&lt;song:albumid&gt;0&lt;/song:albumid&gt;\r\n&lt;res protocolInfo=&quot;http-get:*:audio/mpeg:DLNA.ORG_PN=MP3;DLNA.ORG_OP=01;&quot; duration=&quot;00:00:00.000&quot;&gt;line-in&lt;/res&gt;\r\n&lt;dc:title&gt;&lt;/dc:title&gt;\r\n&lt;dc:creator&gt;&lt;/dc:creator&gt;\r\n&lt;upnp:artist&gt;&lt;/upnp:artist&gt;\r\n&lt;upnp:album&gt;&lt;/upnp:album&gt;\r\n&lt;upnp:albumArtURI&gt;&lt;/upnp:albumArtURI&gt;\r\n&lt;song:rate_hz&gt;192000&lt;/song:rate_hz&gt;\r\n&lt;song:format_s&gt;24&lt;/song:format_s&gt;\r\n&lt;song:bitrate&gt;9216&lt;/song:bitrate&gt;\r\n&lt;/item&gt;\r\n&lt;/DIDL-Lite&gt;\r\n</TrackMetaData>\r\n<TrackURI>line-in</TrackURI>\r\n<RelTime>00:00:00</RelTime>\r\n<AbsTime>NOT_IMPLEMENTED</AbsTime>\r\n<RelCount>2147483647</RelCount>\r\n<AbsCount>2147483647</AbsCount>\r\n</u:GetPositionInfoResponse>\r\n</s:Body> </s:Envelope>"
         }
       },
       {
@@ -4103,7 +4116,7 @@
         "http_status": 200,
         "response": {
           "format": "xml",
-          "body": "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\"><s:Body>\n<u:GetMediaInfoResponse xmlns:u=\"urn:schemas-upnp-org:service:AVTransport:1\">\r\n<NrTracks>0</NrTracks>\r\n<MediaDuration>00:04:05</MediaDuration>\r\n<CurrentURI></CurrentURI>\r\n<CurrentURIMetaData>&lt;?xml version=&quot;1.0&quot; encoding=&quot;UTF-8&quot;?&gt;\n&lt;DIDL-Lite xmlns:dc=&quot;http://purl.org/dc/elements/1.1/&quot; xmlns:upnp=&quot;urn:schemas-upnp-org:metadata-1-0/upnp/&quot; xmlns:song=&quot;www.wiimu.com/song/&quot; xmlns=&quot;urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/&quot;&gt;\n&lt;upnp:class&gt;object.item.audioItem.musicTrack&lt;/upnp:class&gt;\n&lt;item id=&quot;0&quot;&gt;\n&lt;song:actualQuality&gt;LOSSLESS&lt;/song:actualQuality&gt;\n&lt;song:rate_hz&gt;44100&lt;/song:rate_hz&gt;\n&lt;song:format_s&gt;16&lt;/song:format_s&gt;\n&lt;song:bitrate&gt;935&lt;/song:bitrate&gt;\n&lt;res protocolInfo=&quot;http-get:*:*:*&quot; duration=&quot;245000&quot;&gt;&lt;/res&gt;\n&lt;dc:title&gt;Houses of the Holy (Remaster)&lt;/dc:title&gt;\n&lt;upnp:artist&gt;Led Zeppelin&lt;/upnp:artist&gt;\n&lt;upnp:album&gt;Physical Graffiti (Deluxe Edition)&lt;/upnp:album&gt;\n&lt;upnp:albumArtURI&gt;https://resources.tidal.com/images/7780d8fb/be62/4026/80d3/b85b67a8bf9b/1280x1280.jpg&lt;/upnp:albumArtURI&gt;\n&lt;/item&gt;\n&lt;/DIDL-Lite&gt;\n</CurrentURIMetaData>\r\n<NextURI></NextURI>\r\n<NextURIMetaData></NextURIMetaData>\r\n<TrackSource>Tidal</TrackSource>\r\n<PlayMedium>TIDAL_CONNECT</PlayMedium>\r\n<PreSwitchMode>tidal</PreSwitchMode>\r\n<RecordMedium>NOT_IMPLEMENTED</RecordMedium>\r\n<WriteStatus>NOT_IMPLEMENTED</WriteStatus>\r\n</u:GetMediaInfoResponse>\r\n</s:Body> </s:Envelope>"
+          "body": "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\"><s:Body>\n<u:GetMediaInfoResponse xmlns:u=\"urn:schemas-upnp-org:service:AVTransport:1\">\r\n<NrTracks>0</NrTracks>\r\n<MediaDuration>00:00:00</MediaDuration>\r\n<CurrentURI>line-in</CurrentURI>\r\n<CurrentURIMetaData>&lt;?xml version=&quot;1.0&quot; encoding=&quot;UTF-8&quot;?&gt;\r\n&lt;DIDL-Lite xmlns:dc=&quot;http://purl.org/dc/elements/1.1/&quot; xmlns:upnp=&quot;urn:schemas-upnp-org:metadata-1-0/upnp/&quot; xmlns:song=&quot;www.wiimu.com/song/&quot; xmlns=&quot;urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/&quot;&gt;\r\n&lt;upnp:class&gt;object.item.audioItem.musicTrack&lt;/upnp:class&gt;\r\n&lt;item id=&quot;0&quot;&gt;\r\n&lt;song:subid&gt;&lt;/song:subid&gt;\r\n&lt;song:description&gt;&lt;/song:description&gt;\r\n&lt;song:id&gt;0&lt;/song:id&gt;\r\n&lt;song:coding_f&gt;LPCM&lt;/song:coding_f&gt;\r\n&lt;song:dolby_detail_f&gt;&lt;/song:dolby_detail_f&gt;\r\n&lt;song:dolby_surround&gt;&lt;/song:dolby_surround&gt;\r\n&lt;song:stream_ch&gt;&lt;/song:stream_ch&gt;\r\n&lt;song:singerid&gt;0&lt;/song:singerid&gt;\r\n&lt;song:albumid&gt;0&lt;/song:albumid&gt;\r\n&lt;res protocolInfo=&quot;http-get:*:audio/mpeg:DLNA.ORG_PN=MP3;DLNA.ORG_OP=01;&quot; duration=&quot;00:00:00.000&quot;&gt;line-in&lt;/res&gt;\r\n&lt;dc:title&gt;&lt;/dc:title&gt;\r\n&lt;dc:creator&gt;&lt;/dc:creator&gt;\r\n&lt;upnp:artist&gt;&lt;/upnp:artist&gt;\r\n&lt;upnp:album&gt;&lt;/upnp:album&gt;\r\n&lt;upnp:albumArtURI&gt;&lt;/upnp:albumArtURI&gt;\r\n&lt;song:rate_hz&gt;192000&lt;/song:rate_hz&gt;\r\n&lt;song:format_s&gt;24&lt;/song:format_s&gt;\r\n&lt;song:bitrate&gt;9216&lt;/song:bitrate&gt;\r\n&lt;/item&gt;\r\n&lt;/DIDL-Lite&gt;\r\n</CurrentURIMetaData>\r\n<NextURI></NextURI>\r\n<NextURIMetaData></NextURIMetaData>\r\n<TrackSource></TrackSource>\r\n<PlayMedium>LINE-IN</PlayMedium>\r\n<PreSwitchMode>line-in</PreSwitchMode>\r\n<RecordMedium>NOT_IMPLEMENTED</RecordMedium>\r\n<WriteStatus>NOT_IMPLEMENTED</WriteStatus>\r\n</u:GetMediaInfoResponse>\r\n</s:Body> </s:Envelope>"
         }
       },
       {
@@ -4114,7 +4127,18 @@
         "http_status": 200,
         "response": {
           "format": "xml",
-          "body": "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\"><s:Body>\n<u:GetInfoExResponse xmlns:u=\"urn:schemas-upnp-org:service:AVTransport:1\">\r\n<CurrentTransportState>PLAYING</CurrentTransportState>\r\n<CurrentTransportStatus>OK</CurrentTransportStatus>\r\n<CurrentSpeed>1</CurrentSpeed>\r\n<Track>0</Track>\r\n<TrackDuration>00:04:05</TrackDuration>\r\n<TrackMetaData>&lt;?xml version=&quot;1.0&quot; encoding=&quot;UTF-8&quot;?&gt;\n&lt;DIDL-Lite xmlns:dc=&quot;http://purl.org/dc/elements/1.1/&quot; xmlns:upnp=&quot;urn:schemas-upnp-org:metadata-1-0/upnp/&quot; xmlns:song=&quot;www.wiimu.com/song/&quot; xmlns=&quot;urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/&quot;&gt;\n&lt;upnp:class&gt;object.item.audioItem.musicTrack&lt;/upnp:class&gt;\n&lt;item id=&quot;0&quot;&gt;\n&lt;song:actualQuality&gt;LOSSLESS&lt;/song:actualQuality&gt;\n&lt;song:rate_hz&gt;44100&lt;/song:rate_hz&gt;\n&lt;song:format_s&gt;16&lt;/song:format_s&gt;\n&lt;song:bitrate&gt;935&lt;/song:bitrate&gt;\n&lt;res protocolInfo=&quot;http-get:*:*:*&quot; duration=&quot;245000&quot;&gt;&lt;/res&gt;\n&lt;dc:title&gt;Houses of the Holy (Remaster)&lt;/dc:title&gt;\n&lt;upnp:artist&gt;Led Zeppelin&lt;/upnp:artist&gt;\n&lt;upnp:album&gt;Physical Graffiti (Deluxe Edition)&lt;/upnp:album&gt;\n&lt;upnp:albumArtURI&gt;https://resources.tidal.com/images/7780d8fb/be62/4026/80d3/b85b67a8bf9b/1280x1280.jpg&lt;/upnp:albumArtURI&gt;\n&lt;/item&gt;\n&lt;/DIDL-Lite&gt;\n</TrackMetaData>\r\n<TrackURI></TrackURI>\r\n<RelTime>00:00:32</RelTime>\r\n<AbsTime>NOT_IMPLEMENTED</AbsTime>\r\n<RelCount>2147483647</RelCount>\r\n<AbsCount>2147483647</AbsCount>\r\n<CurrentVolume>21</CurrentVolume>\r\n<CurrentMute>0</CurrentMute>\r\n<CurrentChannel>0</CurrentChannel>\r\n<LoopMode>4</LoopMode>\r\n<PlayType>32</PlayType>\r\n<PreSwitchMode>tidal</PreSwitchMode>\r\n<SlaveFlag>0</SlaveFlag>\r\n<MasterUUID></MasterUUID>\r\n<SlaveList>{ &quot;slaves&quot;: 0, &quot;wmrm_version&quot;: &quot;4.3&quot;, &quot;surround&quot;: 0, &quot;group_type&quot;: -1 }</SlaveList>\r\n<PlayMedium>TIDAL_CONNECT</PlayMedium>\r\n<TrackSource>Tidal</TrackSource>\r\n<InternetAccess>1</InternetAccess>\r\n<VerUpdateFlag>0</VerUpdateFlag>\r\n<VerUpdateStatus>20</VerUpdateStatus>\r\n<BatteryFlag>0</BatteryFlag>\r\n<BatteryPercent>0</BatteryPercent>\r\n<AlarmFlag>0</AlarmFlag>\r\n<TimeStamp>223897083</TimeStamp>\r\n<SubNum>0</SubNum>\r\n<SpotifyActive>0</SpotifyActive>\r\n</u:GetInfoExResponse>\r\n</s:Body> </s:Envelope>"
+          "body": "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\"><s:Body>\n<u:GetInfoExResponse xmlns:u=\"urn:schemas-upnp-org:service:AVTransport:1\">\r\n<CurrentTransportState>PAUSED_PLAYBACK</CurrentTransportState>\r\n<CurrentTransportStatus>OK</CurrentTransportStatus>\r\n<CurrentSpeed>1</CurrentSpeed>\r\n<Track>0</Track>\r\n<TrackDuration>00:00:00</TrackDuration>\r\n<TrackMetaData>&lt;?xml version=&quot;1.0&quot; encoding=&quot;UTF-8&quot;?&gt;\r\n&lt;DIDL-Lite xmlns:dc=&quot;http://purl.org/dc/elements/1.1/&quot; xmlns:upnp=&quot;urn:schemas-upnp-org:metadata-1-0/upnp/&quot; xmlns:song=&quot;www.wiimu.com/song/&quot; xmlns=&quot;urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/&quot;&gt;\r\n&lt;upnp:class&gt;object.item.audioItem.musicTrack&lt;/upnp:class&gt;\r\n&lt;item id=&quot;0&quot;&gt;\r\n&lt;song:subid&gt;&lt;/song:subid&gt;\r\n&lt;song:description&gt;&lt;/song:description&gt;\r\n&lt;song:id&gt;0&lt;/song:id&gt;\r\n&lt;song:coding_f&gt;LPCM&lt;/song:coding_f&gt;\r\n&lt;song:dolby_detail_f&gt;&lt;/song:dolby_detail_f&gt;\r\n&lt;song:dolby_surround&gt;&lt;/song:dolby_surround&gt;\r\n&lt;song:stream_ch&gt;&lt;/song:stream_ch&gt;\r\n&lt;song:singerid&gt;0&lt;/song:singerid&gt;\r\n&lt;song:albumid&gt;0&lt;/song:albumid&gt;\r\n&lt;res protocolInfo=&quot;http-get:*:audio/mpeg:DLNA.ORG_PN=MP3;DLNA.ORG_OP=01;&quot; duration=&quot;00:00:00.000&quot;&gt;line-in&lt;/res&gt;\r\n&lt;dc:title&gt;&lt;/dc:title&gt;\r\n&lt;dc:creator&gt;&lt;/dc:creator&gt;\r\n&lt;upnp:artist&gt;&lt;/upnp:artist&gt;\r\n&lt;upnp:album&gt;&lt;/upnp:album&gt;\r\n&lt;upnp:albumArtURI&gt;&lt;/upnp:albumArtURI&gt;\r\n&lt;song:rate_hz&gt;192000&lt;/song:rate_hz&gt;\r\n&lt;song:format_s&gt;24&lt;/song:format_s&gt;\r\n&lt;song:bitrate&gt;9216&lt;/song:bitrate&gt;\r\n&lt;/item&gt;\r\n&lt;/DIDL-Lite&gt;\r\n</TrackMetaData>\r\n<TrackURI>line-in</TrackURI>\r\n<RelTime>00:00:00</RelTime>\r\n<AbsTime>NOT_IMPLEMENTED</AbsTime>\r\n<RelCount>2147483647</RelCount>\r\n<AbsCount>2147483647</AbsCount>\r\n<CurrentVolume>70</CurrentVolume>\r\n<CurrentMute>0</CurrentMute>\r\n<CurrentChannel>0</CurrentChannel>\r\n<LoopMode>4</LoopMode>\r\n<PlayType>40</PlayType>\r\n<PreSwitchMode>line-in</PreSwitchMode>\r\n<SlaveFlag>0</SlaveFlag>\r\n<MasterUUID></MasterUUID>\r\n<SlaveList>{&quot;group_type&quot;:1,&quot;slaves&quot;:0,&quot;surround&quot;:0,&quot;wmrm_version&quot;:&quot;4.3&quot;}</SlaveList>\r\n<PlayMedium>LINE-IN</PlayMedium>\r\n<TrackSource></TrackSource>\r\n<InternetAccess>1</InternetAccess>\r\n<VerUpdateFlag>0</VerUpdateFlag>\r\n<VerUpdateStatus>20</VerUpdateStatus>\r\n<BatteryFlag>0</BatteryFlag>\r\n<BatteryPercent>0</BatteryPercent>\r\n<AlarmFlag>0</AlarmFlag>\r\n<TimeStamp>181761541</TimeStamp>\r\n<SubNum>0</SubNum>\r\n<SpotifyActive>1</SpotifyActive>\r\n</u:GetInfoExResponse>\r\n</s:Body> </s:Envelope>"
+        }
+      },
+      {
+        "service": "urn:schemas-upnp-org:service:AVTransport:1",
+        "action": "GetCurrentTransportActions",
+        "control_url": "http://xx.x.x.xx:49152/upnp/control/rendertransport1",
+        "outcome": "ok",
+        "http_status": 200,
+        "response": {
+          "format": "xml",
+          "body": "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\"><s:Body>\n<u:GetCurrentTransportActionsResponse xmlns:u=\"urn:schemas-upnp-org:service:AVTransport:1\">\r\n<Actions>Play,Stop</Actions>\r\n</u:GetCurrentTransportActionsResponse>\r\n</s:Body> </s:Envelope>"
         }
       },
       {
@@ -4125,7 +4149,7 @@
         "http_status": 200,
         "response": {
           "format": "xml",
-          "body": "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\"><s:Body>\n<u:GetVolumeResponse xmlns:u=\"urn:schemas-upnp-org:service:RenderingControl:1\">\r\n<CurrentVolume>21</CurrentVolume>\r\n</u:GetVolumeResponse>\r\n</s:Body> </s:Envelope>"
+          "body": "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\"><s:Body>\n<u:GetVolumeResponse xmlns:u=\"urn:schemas-upnp-org:service:RenderingControl:1\">\r\n<CurrentVolume>70</CurrentVolume>\r\n</u:GetVolumeResponse>\r\n</s:Body> </s:Envelope>"
         }
       },
       {
@@ -4137,6 +4161,107 @@
         "response": {
           "format": "xml",
           "body": "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\"><s:Body>\n<u:GetMuteResponse xmlns:u=\"urn:schemas-upnp-org:service:RenderingControl:1\">\r\n<CurrentMute>0</CurrentMute>\r\n</u:GetMuteResponse>\r\n</s:Body> </s:Envelope>"
+        }
+      },
+      {
+        "service": "urn:schemas-upnp-org:service:RenderingControl:1",
+        "action": "GetControlDeviceInfo",
+        "control_url": "http://xx.x.x.xx:49152/upnp/control/rendercontrol1",
+        "outcome": "ok",
+        "http_status": 200,
+        "response": {
+          "format": "xml",
+          "body": "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\"><s:Body>\n<u:GetControlDeviceInfoResponse xmlns:u=\"urn:schemas-upnp-org:service:RenderingControl:1\">\r\n<MultiType>1</MultiType>\r\n<PlayMode>40</PlayMode>\r\n<Router>6D696E696F6E732D3547</Router>\r\n<Ssid>xxxx xxxxx-xxxx</Ssid>\r\n<SlaveMask>0</SlaveMask>\r\n<CurrentVolume>70</CurrentVolume>\r\n<CurrentMute>0</CurrentMute>\r\n<CurrentChannel>0</CurrentChannel>\r\n<SlaveList>{&quot;group_type&quot;:1,&quot;slaves&quot;:0,&quot;surround&quot;:0,&quot;wmrm_version&quot;:&quot;4.3&quot;}</SlaveList>\r\n<Status>{&quot;AP_MAC&quot;:&quot;xx:xx:xx:xx:xx:xx&quot;,&quot;BSSID&quot;:&quot;xx:xx:xx:xx:xx:xx&quot;,&quot;BTMAC&quot;:&quot;xx:xx:xx:xx:xx:xx&quot;,&quot;BleRemoteBatterylevel&quot;:&quot;100&quot;,&quot;BleRemoteConnected&quot;:&quot;1&quot;,&quot;BleRemoteControl&quot;:&quot;1&quot;,&quot;BleRemoteException&quot;:&quot;0&quot;,&quot;BleRemoteNewVersion&quot;:&quot;&quot;,&quot;BleRemoteRSSI&quot;:&quot;-58&quot;,&quot;BleRemoteVersion&quot;:&quot;0054&quot;,&quot;BleRemote_dev_state&quot;:&quot;normal&quot;,&quot;BleRemote_has_new&quot;:&quot;0&quot;,&quot;BleRemote_power_status&quot;:&quot;0&quot;,&quot;BleRemote_update_checked_counter&quot;:&quot;17&quot;,&quot;DeviceName&quot;:&quot;xxxx xxxxxx&quot;,&quot;EQVersion&quot;:&quot;4.3&quot;,&quot;EQ_support&quot;:&quot;Eq10HP_ver_2.0&quot;,&quot;ETH_MAC&quot;:&quot;xx:xx:xx:xx:xx:xx&quot;,&quot;FW_Release_version&quot;:&quot;&quot;,&quot;GroupName&quot;:&quot;xxxx xxxxxx&quot;,&quot;HiFiSRC_version&quot;:&quot;1.1&quot;,&quot;InitialConfiguration&quot;:&quot;1&quot;,&quot;MAC&quot;:&quot;xx:xx:xx:xx:xx:xx&quot;,&quot;ModuleColorNumber&quot;:&quot;3&quot;,&quot;ModuleColorString&quot;:&quot;&quot;,&quot;NewVer&quot;:&quot;0&quot;,&quot;PCB_version&quot;:&quot;4&quot;,&quot;RSSI&quot;:&quot;-64&quot;,&quot;Release&quot;:&quot;20260703&quot;,&quot;VersionUpdate&quot;:&quot;0&quot;,&quot;WifiChannel&quot;:&quot;0&quot;,&quot;alexa_beta_enable&quot;:&quot;0&quot;,&quot;alexa_force_beta_cfg&quot;:&quot;0&quot;,&quot;alexa_ver&quot;:&quot;20180604&quot;,&quot;apcli0&quot;:&quot;xx.x.x.xx&quot;,&quot;app_timezone_id&quot;:&quot;Australia/Sydney&quot;,&quot;audioOutputModeVer&quot;:&quot;1.3&quot;,&quot;audio_channel_config&quot;:&quot;1.0&quot;,&quot;audiocast&quot;:&quot;1&quot;,&quot;autoSenseVersion&quot;:&quot;1.0&quot;,&quot;avs_timezone_id&quot;:&quot;Australia/Sydney&quot;,&quot;battery&quot;:&quot;0&quot;,&quot;battery_percent&quot;:&quot;0&quot;,&quot;ble_active&quot;:&quot;0&quot;,&quot;build&quot;:&quot;release&quot;,&quot;cap1&quot;:&quot;0x40000400&quot;,&quot;capability&quot;:&quot;0x20084808&quot;,&quot;cast_enable&quot;:1,&quot;cast_usage_report&quot;:1,&quot;communication_port&quot;:&quot;8820&quot;,&quot;date&quot;:&quot;2026:07:08&quot;,&quot;deviceSettingVer&quot;:&quot;0.0&quot;,&quot;dsp_ver&quot;:&quot;0&quot;,&quot;dsp_ver_new&quot;:&quot;&quot;,&quot;essid&quot;:&quot;xxxxxxxxxxxxxxxxxxxx&quot;,&quot;eth0&quot;:&quot;x.x.x.x&quot;,&quot;eth2&quot;:&quot;x.x.x.x&quot;,&quot;expired&quot;:&quot;0&quot;,&quot;external&quot;:&quot;0x0&quot;,&quot;files_db&quot;:&quot;1&quot;,&quot;firmware&quot;:&quot;Linkplay.5.2.822041&quot;,&quot;group&quot;:&quot;0&quot;,&quot;hardware&quot;:&quot;AmlogicA113&quot;,&quot;hdmi_ver&quot;:&quot;1100&quot;,&quot;hdmi_ver_new&quot;:&quot;&quot;,&quot;hideSSID&quot;:&quot;x&quot;,&quot;internet&quot;:&quot;1&quot;,&quot;language&quot;:&quot;en-AU&quot;,&quot;languages&quot;:&quot;0x11ec&quot;,&quot;lbc_support&quot;:&quot;0&quot;,&quot;max_volume&quot;:&quot;100&quot;,&quot;mcu_ver&quot;:&quot;0&quot;,&quot;mcu_ver_new&quot;:&quot;0&quot;,&quot;mqtt_support&quot;:&quot;1&quot;,&quot;netstat&quot;:&quot;2&quot;,&quot;new_iheart_podcast&quot;:&quot;1&quot;,&quot;new_tunein_preset_and_alarm&quot;:&quot;1&quot;,&quot;ota_api_ver&quot;:&quot;4.0&quot;,&quot;ota_interface_ver&quot;:&quot;2.0&quot;,&quot;passthrough_support_ver&quot;:&quot;1&quot;,&quot;plm_support&quot;:&quot;0x2b10416&quot;,&quot;power_mode&quot;:&quot;-1&quot;,&quot;preset_key&quot;:&quot;12&quot;,&quot;priv_prj&quot;:&quot;WiiM_Ultra&quot;,&quot;privacy_mode&quot;:&quot;0&quot;,&quot;product_quality_test_ver&quot;:&quot;1&quot;,&quot;project&quot;:&quot;WiiM_Ultra&quot;,&quot;project_build_name&quot;:&quot;xxxx_xxxxx&quot;,&quot;prompt_status&quot;:&quot;1&quot;,&quot;public_https_version&quot;:&quot;1.0&quot;,&quot;ra0&quot;:&quot;xx.xx.xx.xxx&quot;,&quot;region&quot;:&quot;unknown&quot;,&quot;securemode&quot;:&quot;1&quot;,&quot;security&quot;:&quot;https/2.0&quot;,&quot;security_capabilities&quot;:{&quot;aes_ver&quot;:&quot;1.0&quot;,&quot;ver&quot;:&quot;1.0&quot;},&quot;security_version&quot;:&quot;3.0&quot;,&quot;service_version&quot;:&quot;1.0&quot;,&quot;set_play_mode_enable&quot;:&quot;0&quot;,&quot;set_play_mode_gain&quot;:&quot;0&quot;,&quot;silence_ota_flag&quot;:&quot;0&quot;,&quot;ssid&quot;:&quot;xxxx xxxxx-xxxx&quot;,&quot;streams&quot;:&quot;0xedf33fc&quot;,&quot;streams_all&quot;:&quot;0xedf33fc&quot;,&quot;temp_uuid&quot;:&quot;xxxxxxxxxxxxxxxx&quot;,&quot;tidal_version&quot;:&quot;2.0&quot;,&quot;time&quot;:&quot;10:00:32&quot;,&quot;tp_type&quot;:&quot;4&quot;,&quot;tz&quot;:&quot;10.0&quot;,&quot;tz_info_ver&quot;:&quot;1.0&quot;,&quot;uart_pass_port&quot;:&quot;0&quot;,&quot;uboot_verinfo&quot;:&quot;251124.171157&quot;,&quot;udisk&quot;:&quot;1&quot;,&quot;udisk_error&quot;:&quot;0&quot;,&quot;udisk_features&quot;:&quot;3&quot;,&quot;udisk_uuid&quot;:&quot;xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx&quot;,&quot;umount&quot;:&quot;1&quot;,&quot;update_check_count&quot;:&quot;15&quot;,&quot;upnp_uuid&quot;:&quot;xxxx:xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx&quot;,&quot;upnp_version&quot;:&quot;1005&quot;,&quot;uuid&quot;:&quot;xxxxxxxxxxxxxxxxxxxxxxxx&quot;,&quot;volume_control&quot;:&quot;0&quot;,&quot;web_firmware_update_hide&quot;:&quot;0&quot;,&quot;wlanDataRate&quot;:&quot;306&quot;,&quot;wlanFreq&quot;:&quot;5320&quot;,&quot;wlanNoise&quot;:&quot;-91&quot;,&quot;wlanSnr&quot;:&quot;27&quot;,&quot;wmrm_capability&quot;:63,&quot;wmrm_sub_ver&quot;:&quot;7&quot;,&quot;wmrm_version&quot;:&quot;4.3&quot;}</Status>\r\n</u:GetControlDeviceInfoResponse>\r\n</s:Body> </s:Envelope>"
+        }
+      },
+      {
+        "service": "urn:schemas-wiimu-com:service:PlayQueue:1",
+        "action": "BrowseQueue",
+        "control_url": "http://xx.x.x.xx:49152/upnp/control/PlayQueue1",
+        "outcome": "ok",
+        "http_status": 200,
+        "response": {
+          "format": "xml",
+          "body": "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\"><s:Body>\n<u:BrowseQueueResponse xmlns:u=\"urn:schemas-wiimu-com:service:PlayQueue:1\">\r\n<QueueContext>&lt;?xml version=&quot;1.0&quot;?&gt;\r\n&lt;PlayQueue&gt;\r\n&lt;TotalQueue&gt;3&lt;/TotalQueue&gt;\r\n&lt;PlayListInfo&gt;\r\n&lt;List1&gt;\r\n&lt;Name&gt;ABC Jazz_#~2026-06-23 16:06:44&lt;/Name&gt;\r\n&lt;ListInfo&gt;\r\n&lt;Source&gt;newTuneIn&lt;/Source&gt;\r\n&lt;SearchUrl&gt;https://api.radiotime.com/profiles/s44935/media?partnerId=whuuMDii&amp;amp;latlon=,&amp;amp;version=2.0&amp;amp;serial=FF98F7F4B23AAA2E234BEF71&lt;/SearchUrl&gt;\r\n&lt;PicUrl&gt;http://cdn-profiles.tunein.com/s44935/images/logog.png?t=636631071636630000&lt;/PicUrl&gt;\r\n&lt;AutoGenerate&gt;0&lt;/AutoGenerate&gt;\r\n&lt;StationLimit&gt;0&lt;/StationLimit&gt;\r\n&lt;MarkSearch&gt;0&lt;/MarkSearch&gt;\r\n&lt;Quality&gt;182&lt;/Quality&gt;\r\n&lt;UpdateTime&gt;0&lt;/UpdateTime&gt;\r\n&lt;LastPlayIndex&gt;1&lt;/LastPlayIndex&gt;\r\n&lt;AlarmPlayIndex&gt;0&lt;/AlarmPlayIndex&gt;\r\n&lt;RealIndex&gt;0&lt;/RealIndex&gt;\r\n&lt;UserId&gt;0&lt;/UserId&gt;\r\n&lt;ContentType&gt;radio&lt;/ContentType&gt;\r\n&lt;StationBackup&gt;0&lt;/StationBackup&gt;\r\n&lt;PlayMedium&gt;RADIO-NETWORK&lt;/PlayMedium&gt;\r\n&lt;StreamType&gt;playlist&lt;/StreamType&gt;\r\n&lt;ShowName&gt;ABC Jazz&lt;/ShowName&gt;\r\n&lt;TrackNumber&gt;0&lt;/TrackNumber&gt;\r\n&lt;SwitchPageMode&gt;0&lt;/SwitchPageMode&gt;\r\n&lt;PressType&gt;0&lt;/PressType&gt;\r\n&lt;Volume&gt;0&lt;/Volume&gt;\r\n&lt;/ListInfo&gt;\r\n&lt;/List1&gt;\r\n&lt;Radio&gt;0&lt;/Radio&gt;\r\n&lt;List2&gt;\r\n&lt;Name&gt;Radio National Sydney_#~2026-06-23 16:07:09&lt;/Name&gt;\r\n&lt;ListInfo&gt;\r\n&lt;Source&gt;newTuneIn&lt;/Source&gt;\r\n&lt;SearchUrl&gt;https://api.radiotime.com/profiles/s99531/media?partnerId=whuuMDii&amp;amp;latlon=,&amp;amp;version=2.0&amp;amp;serial=FF98F7F4B23AAA2E234BEF71&lt;/SearchUrl&gt;\r\n&lt;PicUrl&gt;http://cdn-profiles.tunein.com/s99531/images/logog.png?t=638733122560000000&lt;/PicUrl&gt;\r\n&lt;AutoGenerate&gt;0&lt;/AutoGenerate&gt;\r\n&lt;StationLimit&gt;0&lt;/StationLimit&gt;\r\n&lt;MarkSearch&gt;0&lt;/MarkSearch&gt;\r\n&lt;Quality&gt;182&lt;/Quality&gt;\r\n&lt;UpdateTime&gt;0&lt;/UpdateTime&gt;\r\n&lt;LastPlayIndex&gt;1&lt;/LastPlayIndex&gt;\r\n&lt;AlarmPlayIndex&gt;0&lt;/AlarmPlayIndex&gt;\r\n&lt;RealIndex&gt;0&lt;/RealIndex&gt;\r\n&lt;UserId&gt;0&lt;/UserId&gt;\r\n&lt;ContentType&gt;radio&lt;/ContentType&gt;\r\n&lt;StationBackup&gt;0&lt;/StationBackup&gt;\r\n&lt;PlayMedium&gt;RADIO-NETWORK&lt;/PlayMedium&gt;\r\n&lt;StreamType&gt;playlist&lt;/StreamType&gt;\r\n&lt;ShowName&gt;Radio National Sydney&lt;/ShowName&gt;\r\n&lt;TrackNumber&gt;0&lt;/TrackNumber&gt;\r\n&lt;SwitchPageMode&gt;0&lt;/SwitchPageMode&gt;\r\n&lt;PressType&gt;0&lt;/PressType&gt;\r\n&lt;Volume&gt;0&lt;/Volume&gt;\r\n&lt;/ListInfo&gt;\r\n&lt;/List2&gt;\r\n&lt;Radio&gt;0&lt;/Radio&gt;\r\n&lt;List3&gt;\r\n&lt;Name&gt;ABC NewsRadio_#~2026-06-23 16:07:24&lt;/Name&gt;\r\n&lt;ListInfo&gt;\r\n&lt;Source&gt;newTuneIn&lt;/Source&gt;\r\n&lt;SearchUrl&gt;https://api.radiotime.com/profiles/s7016/media?partnerId=whuuMDii&amp;amp;latlon=,&amp;amp;version=2.0&amp;amp;serial=FF98F7F4B23AAA2E234BEF71&lt;/SearchUrl&gt;\r\n&lt;PicUrl&gt;http://cdn-profiles.tunein.com/s7016/images/logog.png?t=637977437790000000&lt;/PicUrl&gt;\r\n&lt;AutoGenerate&gt;0&lt;/AutoGenerate&gt;\r\n&lt;StationLimit&gt;0&lt;/StationLimit&gt;\r\n&lt;MarkSearch&gt;0&lt;/MarkSearch&gt;\r\n&lt;Quality&gt;182&lt;/Quality&gt;\r\n&lt;UpdateTime&gt;0&lt;/UpdateTime&gt;\r\n&lt;LastPlayIndex&gt;1&lt;/LastPlayIndex&gt;\r\n&lt;AlarmPlayIndex&gt;0&lt;/AlarmPlayIndex&gt;\r\n&lt;RealIndex&gt;0&lt;/RealIndex&gt;\r\n&lt;UserId&gt;0&lt;/UserId&gt;\r\n&lt;ContentType&gt;radio&lt;/ContentType&gt;\r\n&lt;StationBackup&gt;0&lt;/StationBackup&gt;\r\n&lt;PlayMedium&gt;RADIO-NETWORK&lt;/PlayMedium&gt;\r\n&lt;StreamType&gt;playlist&lt;/StreamType&gt;\r\n&lt;ShowName&gt;ABC NewsRadio&lt;/ShowName&gt;\r\n&lt;TrackNumber&gt;0&lt;/TrackNumber&gt;\r\n&lt;SwitchPageMode&gt;0&lt;/SwitchPageMode&gt;\r\n&lt;PressType&gt;0&lt;/PressType&gt;\r\n&lt;Volume&gt;0&lt;/Volume&gt;\r\n&lt;/ListInfo&gt;\r\n&lt;/List3&gt;\r\n&lt;Radio&gt;0&lt;/Radio&gt;\r\n&lt;/PlayListInfo&gt;\r\n&lt;/PlayQueue&gt;\r\n</QueueContext>\r\n</u:BrowseQueueResponse>\r\n</s:Body> </s:Envelope>"
+        }
+      },
+      {
+        "service": "urn:schemas-wiimu-com:service:PlayQueue:1",
+        "action": "BrowseQueueEx",
+        "control_url": "http://xx.x.x.xx:49152/upnp/control/PlayQueue1",
+        "outcome": "ok",
+        "http_status": 200,
+        "response": {
+          "format": "xml",
+          "body": "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\"><s:Body>\n<u:BrowseQueueExResponse xmlns:u=\"urn:schemas-wiimu-com:service:PlayQueue:1\"></u:BrowseQueueExResponse>\r\n</s:Body> </s:Envelope>"
+        }
+      },
+      {
+        "service": "urn:schemas-wiimu-com:service:PlayQueue:1",
+        "action": "GetQueueLoopMode",
+        "control_url": "http://xx.x.x.xx:49152/upnp/control/PlayQueue1",
+        "outcome": "ok",
+        "http_status": 200,
+        "response": {
+          "format": "xml",
+          "body": "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\"><s:Body>\n<u:GetQueueLoopModeResponse xmlns:u=\"urn:schemas-wiimu-com:service:PlayQueue:1\">\r\n<LoopMode>4</LoopMode>\r\n</u:GetQueueLoopModeResponse>\r\n</s:Body> </s:Envelope>"
+        }
+      },
+      {
+        "service": "urn:schemas-wiimu-com:service:PlayQueue:1",
+        "action": "GetKeyMapping",
+        "control_url": "http://xx.x.x.xx:49152/upnp/control/PlayQueue1",
+        "outcome": "ok",
+        "http_status": 200,
+        "response": {
+          "format": "xml",
+          "body": "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\"><s:Body>\n<u:GetKeyMappingResponse xmlns:u=\"urn:schemas-wiimu-com:service:PlayQueue:1\">\r\n<QueueContext>&lt;?xml version=&quot;1.0&quot;?&gt;\r\n&lt;KeyList&gt;\r\n&lt;ListName&gt;KeyMappingQueue&lt;/ListName&gt;\r\n&lt;MaxNumber&gt;33&lt;/MaxNumber&gt;\r\n&lt;Key0&gt;&lt;/Key0&gt;\r\n&lt;Key1&gt;\r\n&lt;Name&gt;ABC Jazz_#~2026-06-23 16:06:44&lt;/Name&gt;\r\n&lt;Source&gt;newTuneIn&lt;/Source&gt;\r\n&lt;PicUrl&gt;http://cdn-profiles.tunein.com/s44935/images/logog.png?t=636631071636630000&lt;/PicUrl&gt;\r\n&lt;RoutineId&gt;Empty&lt;/RoutineId&gt;\r\n&lt;ContentType&gt;radio&lt;/ContentType&gt;\r\n&lt;Loop&gt;0&lt;/Loop&gt;\r\n&lt;Shuffle&gt;0&lt;/Shuffle&gt;\r\n&lt;/Key1&gt;\r\n&lt;Key2&gt;\r\n&lt;Name&gt;Radio National Sydney_#~2026-06-23 16:07:09&lt;/Name&gt;\r\n&lt;Source&gt;newTuneIn&lt;/Source&gt;\r\n&lt;PicUrl&gt;http://cdn-profiles.tunein.com/s99531/images/logog.png?t=638733122560000000&lt;/PicUrl&gt;\r\n&lt;RoutineId&gt;Empty&lt;/RoutineId&gt;\r\n&lt;ContentType&gt;radio&lt;/ContentType&gt;\r\n&lt;Loop&gt;0&lt;/Loop&gt;\r\n&lt;Shuffle&gt;0&lt;/Shuffle&gt;\r\n&lt;/Key2&gt;\r\n&lt;Key3&gt;\r\n&lt;Name&gt;ABC NewsRadio_#~2026-06-23 16:07:24&lt;/Name&gt;\r\n&lt;Source&gt;newTuneIn&lt;/Source&gt;\r\n&lt;PicUrl&gt;http://cdn-profiles.tunein.com/s7016/images/logog.png?t=637977437790000000&lt;/PicUrl&gt;\r\n&lt;RoutineId&gt;Empty&lt;/RoutineId&gt;\r\n&lt;ContentType&gt;radio&lt;/ContentType&gt;\r\n&lt;Loop&gt;0&lt;/Loop&gt;\r\n&lt;Shuffle&gt;0&lt;/Shuffle&gt;\r\n&lt;/Key3&gt;\r\n&lt;Key4&gt;\r\n&lt;RoutineId&gt;0000000067570795&lt;/RoutineId&gt;\r\n&lt;Loop&gt;0&lt;/Loop&gt;\r\n&lt;Shuffle&gt;0&lt;/Shuffle&gt;\r\n&lt;/Key4&gt;\r\n&lt;Key5&gt;\r\n&lt;RoutineId&gt;000000005d9f1032&lt;/RoutineId&gt;\r\n&lt;Loop&gt;0&lt;/Loop&gt;\r\n&lt;Shuffle&gt;0&lt;/Shuffle&gt;\r\n&lt;/Key5&gt;\r\n&lt;Key6&gt;\r\n&lt;RoutineId&gt;000000003b2fc884&lt;/RoutineId&gt;\r\n&lt;Loop&gt;0&lt;/Loop&gt;\r\n&lt;Shuffle&gt;0&lt;/Shuffle&gt;\r\n&lt;/Key6&gt;\r\n&lt;Key7&gt;\r\n&lt;RoutineId&gt;0000000035d32028&lt;/RoutineId&gt;\r\n&lt;Loop&gt;0&lt;/Loop&gt;\r\n&lt;Shuffle&gt;0&lt;/Shuffle&gt;\r\n&lt;/Key7&gt;\r\n&lt;Key8&gt;\r\n&lt;RoutineId&gt;00000000081a3519&lt;/RoutineId&gt;\r\n&lt;Loop&gt;0&lt;/Loop&gt;\r\n&lt;Shuffle&gt;0&lt;/Shuffle&gt;\r\n&lt;/Key8&gt;\r\n&lt;Key9&gt;\r\n&lt;RoutineId&gt;Empty&lt;/RoutineId&gt;\r\n&lt;/Key9&gt;\r\n&lt;Key10&gt;\r\n&lt;RoutineId&gt;Empty&lt;/RoutineId&gt;\r\n&lt;/Key10&gt;\r\n&lt;Key11&gt;\r\n&lt;RoutineId&gt;Empty&lt;/RoutineId&gt;\r\n&lt;/Key11&gt;\r\n&lt;Key12&gt;\r\n&lt;RoutineId&gt;Empty&lt;/RoutineId&gt;\r\n&lt;/Key12&gt;\r\n&lt;Key13&gt;\r\n&lt;RoutineId&gt;Empty&lt;/RoutineId&gt;\r\n&lt;/Key13&gt;\r\n&lt;Key14&gt;\r\n&lt;RoutineId&gt;Empty&lt;/RoutineId&gt;\r\n&lt;/Key14&gt;\r\n&lt;Key15&gt;\r\n&lt;RoutineId&gt;Empty&lt;/RoutineId&gt;\r\n&lt;/Key15&gt;\r\n&lt;Key16&gt;\r\n&lt;RoutineId&gt;Empty&lt;/RoutineId&gt;\r\n&lt;/Key16&gt;\r\n&lt;Key17&gt;\r\n&lt;RoutineId&gt;Empty&lt;/RoutineId&gt;\r\n&lt;/Key17&gt;\r\n&lt;Key18&gt;\r\n&lt;RoutineId&gt;Empty&lt;/RoutineId&gt;\r\n&lt;/Key18&gt;\r\n&lt;Key19&gt;\r\n&lt;RoutineId&gt;Empty&lt;/RoutineId&gt;\r\n&lt;/Key19&gt;\r\n&lt;Key20&gt;\r\n&lt;RoutineId&gt;Empty&lt;/RoutineId&gt;\r\n&lt;/Key20&gt;\r\n&lt;Key21&gt;\r\n&lt;RoutineId&gt;Empty&lt;/RoutineId&gt;\r\n&lt;/Key21&gt;\r\n&lt;Key22&gt;\r\n&lt;RoutineId&gt;Empty&lt;/RoutineId&gt;\r\n&lt;/Key22&gt;\r\n&lt;Key23&gt;\r\n&lt;RoutineId&gt;Empty&lt;/RoutineId&gt;\r\n&lt;/Key23&gt;\r\n&lt;Key24&gt;\r\n&lt;RoutineId&gt;Empty&lt;/RoutineId&gt;\r\n&lt;/Key24&gt;\r\n&lt;Key25&gt;\r\n&lt;RoutineId&gt;Empty&lt;/RoutineId&gt;\r\n&lt;/Key25&gt;\r\n&lt;Key26&gt;\r\n&lt;RoutineId&gt;Empty&lt;/RoutineId&gt;\r\n&lt;/Key26&gt;\r\n&lt;Key27&gt;\r\n&lt;RoutineId&gt;Empty&lt;/RoutineId&gt;\r\n&lt;/Key27&gt;\r\n&lt;Key28&gt;\r\n&lt;RoutineId&gt;Empty&lt;/RoutineId&gt;\r\n&lt;/Key28&gt;\r\n&lt;Key29&gt;\r\n&lt;RoutineId&gt;Empty&lt;/RoutineId&gt;\r\n&lt;/Key29&gt;\r\n&lt;Key30&gt;\r\n&lt;RoutineId&gt;Empty&lt;/RoutineId&gt;\r\n&lt;/Key30&gt;\r\n&lt;Key31&gt;\r\n&lt;RoutineId&gt;Empty&lt;/RoutineId&gt;\r\n&lt;/Key31&gt;\r\n&lt;Key32&gt;\r\n&lt;RoutineId&gt;Empty&lt;/RoutineId&gt;\r\n&lt;/Key32&gt;\r\n&lt;Key33&gt;&lt;/Key33&gt;\r\n&lt;/KeyList&gt;\r\n</QueueContext>\r\n</u:GetKeyMappingResponse>\r\n</s:Body> </s:Envelope>"
+        }
+      },
+      {
+        "service": "urn:schemas-wiimu-com:service:PlayQueue:1",
+        "action": "GetQueueOnline",
+        "control_url": "http://xx.x.x.xx:49152/upnp/control/PlayQueue1",
+        "outcome": "http_error",
+        "http_status": 500
+      },
+      {
+        "service": "urn:schemas-wiimu-com:service:PlayQueue:1",
+        "action": "GetUserInfo",
+        "control_url": "http://xx.x.x.xx:49152/upnp/control/PlayQueue1",
+        "outcome": "http_error",
+        "http_status": 500
+      },
+      {
+        "service": "urn:schemas-wiimu-com:service:PlayQueue:1",
+        "action": "GetUserAccountHistory",
+        "control_url": "http://xx.x.x.xx:49152/upnp/control/PlayQueue1",
+        "outcome": "http_error",
+        "http_status": 500
+      },
+      {
+        "service": "urn:schemas-wiimu-com:service:PlayQueue:1",
+        "action": "GetUserFavorites",
+        "control_url": "http://xx.x.x.xx:49152/upnp/control/PlayQueue1",
+        "outcome": "http_error",
+        "http_status": 500
+      },
+      {
+        "service": "urn:schemas-wiimu-com:service:PlayQueue:1",
+        "action": "GetQueueIndex",
+        "control_url": "http://xx.x.x.xx:49152/upnp/control/PlayQueue1",
+        "outcome": "http_error",
+        "http_status": 500
+      },
+      {
+        "service": "urn:schemas-wiimu-com:service:PlayQueue:1",
+        "action": "GetBasicUserInfo",
+        "control_url": "http://xx.x.x.xx:49152/upnp/control/PlayQueue1",
+        "outcome": "ok",
+        "http_status": 200,
+        "response": {
+          "format": "xml",
+          "body": "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\"><s:Body>\n<u:GetBasicUserInfoResponse xmlns:u=\"urn:schemas-wiimu-com:service:PlayQueue:1\">\r\n<Result>{&quot;streamServices&quot;:[{&quot;id&quot;:&quot;Pandora2&quot;},{&quot;id&quot;:&quot;Prime&quot;},{&quot;id&quot;:&quot;Rhapsody&quot;},{&quot;id&quot;:&quot;iHeartRadio&quot;},{&quot;id&quot;:&quot;iHeart&quot;},{&quot;id&quot;:&quot;Deezer2&quot;},{&quot;id&quot;:&quot;SoundCloud&quot;},{&quot;id&quot;:&quot;CalmRadio&quot;},{&quot;id&quot;:&quot;SoundMachine&quot;},{&quot;id&quot;:&quot;Tidal&quot;,&quot;showName&quot;:&quot;benh+tidal@ozlabs.org&quot;,&quot;userId&quot;:&quot;101974530&quot;},{&quot;id&quot;:&quot;Qobuz&quot;},{&quot;id&quot;:&quot;newTuneIn&quot;},{&quot;id&quot;:&quot;Plex&quot;},{&quot;id&quot;:&quot;KKBOX&quot;},{&quot;id&quot;:&quot;RadioParadise2&quot;},{&quot;id&quot;:&quot;YouTubeMusic&quot;}],&quot;version&quot;:&quot;1.0&quot;}</Result>\r\n</u:GetBasicUserInfoResponse>\r\n</s:Body> </s:Envelope>"
         }
       }
     ]

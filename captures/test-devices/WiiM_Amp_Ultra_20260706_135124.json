@@ -2165,7 +2165,7 @@
     },
     {
       "command": "getMRMSubLPF:0.0.0.0",
-      "url": "https://xxx.xxx.x.xx:443/httpapi.asp?command=getMRMSubLPF:0.0.0.0",
+      "url": "https://xxx.xxx.x.xx:443/httpapi.asp?command=getMRMSubLPF:x.x.x.x",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
@@ -2183,7 +2183,7 @@
               "sub_filter": 1
             },
             "type": "wireless",
-            "uuid": "FF98F9ED79F227BEBA683E9C"
+            "uuid": "xxxxxxxxxxxxxxxxxxxxxxxx"
           }
         ],
         "version": "1.0"
@@ -2732,7 +2732,7 @@
           "errorDescribe": "unknow error",
           "errorType": "-1000",
           "mainDelay": "-1000.000",
-          "mainSubExtraDelay": "-1000.000",
+          "mainSubExtraDelay": "-xxxx.xxx",
           "subDelay": "-1000.000"
         },
         "category": "mainsubdelay"
@@ -3734,7 +3734,7 @@
   ],
   "skipped_not_destructive": [],
   "upnp": {
-    "ssdp_response": "HTTP/1.1 200 OK\r\nCONNECTION: keep-alive\r\nCACHE-CONTROL: max-age=1800\r\nDATE: Mon, 06 Jul 2026 13:51:24 GMT\r\nEXT:\r\nLOCATION: http://192.168.1.21:49152/description.xml\r\nBOOTID.UPNP.ORG: 6329f26e-1dd2-11b2-9521-dfce7cb4daf5\r\nSERVER: Linux\r\nST: urn:schemas-upnp-org:device:MediaRenderer:1\r\nUSN: uuid:FF98F9ED-79F2-27BE-BA68-3E9CFF98F9ED::urn:schemas-upnp-org:device:MediaRenderer:1\r\n\r\n",
+    "ssdp_response": "HTTP/1.1 200 OK\r\nCONNECTION: keep-alive\r\nCACHE-CONTROL: max-age=1800\r\nDATE: Mon, 06 Jul 2026 13:51:24 GMT\r\nEXT:\r\nLOCATION: http://xxx.xxx.x.xx:49152/description.xml\r\nBOOTID.UPNP.ORG: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx\r\nSERVER: Linux\r\nST: urn:schemas-upnp-org:device:MediaRenderer:1\r\nUSN: uuid:xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx::urn:schemas-upnp-org:device:MediaRenderer:1\r\n\r\n",
     "location": "http://xxx.xxx.x.xx:49152/description.xml",
     "description_url": "http://xxx.xxx.x.xx:49152/description.xml",
     "description": {
@@ -3796,7 +3796,7 @@
         "http_status": 200,
         "response": {
           "format": "xml",
-          "body": "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\"><s:Body>\n<u:GetInfoExResponse xmlns:u=\"urn:schemas-upnp-org:service:AVTransport:1\">\r\n<CurrentTransportState>PAUSED_PLAYBACK</CurrentTransportState>\r\n<CurrentTransportStatus>OK</CurrentTransportStatus>\r\n<CurrentSpeed>1</CurrentSpeed>\r\n<Track>0</Track>\r\n<TrackDuration>00:00:00</TrackDuration>\r\n<TrackMetaData>&lt;?xml version=&quot;1.0&quot; encoding=&quot;UTF-8&quot;?&gt;\r\n&lt;DIDL-Lite xmlns:dc=&quot;http://purl.org/dc/elements/1.1/&quot; xmlns:upnp=&quot;urn:schemas-upnp-org:metadata-1-0/upnp/&quot; xmlns:song=&quot;www.wiimu.com/song/&quot; xmlns=&quot;urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/&quot;&gt;\r\n&lt;upnp:class&gt;object.item.audioItem.musicTrack&lt;/upnp:class&gt;\r\n&lt;item id=&quot;0&quot;&gt;\r\n&lt;song:subid&gt;&lt;/song:subid&gt;\r\n&lt;song:description&gt;&lt;/song:description&gt;\r\n&lt;song:id&gt;0&lt;/song:id&gt;\r\n&lt;song:coding_f&gt;&lt;/song:coding_f&gt;\r\n&lt;song:dolby_detail_f&gt;&lt;/song:dolby_detail_f&gt;\r\n&lt;song:singerid&gt;0&lt;/song:singerid&gt;\r\n&lt;song:albumid&gt;0&lt;/song:albumid&gt;\r\n&lt;res protocolInfo=&quot;http-get:*:audio/mpeg:DLNA.ORG_PN=MP3;DLNA.ORG_OP=01;&quot; duration=&quot;00:00:00.000&quot;&gt;HDMI&lt;/res&gt;\r\n&lt;dc:title&gt;&lt;/dc:title&gt;\r\n&lt;dc:creator&gt;&lt;/dc:creator&gt;\r\n&lt;upnp:artist&gt;&lt;/upnp:artist&gt;\r\n&lt;upnp:album&gt;&lt;/upnp:album&gt;\r\n&lt;upnp:albumArtURI&gt;&lt;/upnp:albumArtURI&gt;\r\n&lt;song:rate_hz&gt;0&lt;/song:rate_hz&gt;\r\n&lt;song:format_s&gt;0&lt;/song:format_s&gt;\r\n&lt;song:bitrate&gt;0&lt;/song:bitrate&gt;\r\n&lt;/item&gt;\r\n&lt;/DIDL-Lite&gt;\r\n</TrackMetaData>\r\n<TrackURI>HDMI</TrackURI>\r\n<RelTime>00:00:00</RelTime>\r\n<AbsTime>NOT_IMPLEMENTED</AbsTime>\r\n<RelCount>2147483647</RelCount>\r\n<AbsCount>2147483647</AbsCount>\r\n<CurrentVolume>18</CurrentVolume>\r\n<CurrentMute>0</CurrentMute>\r\n<CurrentChannel>0</CurrentChannel>\r\n<LoopMode>4</LoopMode>\r\n<PlayType>49</PlayType>\r\n<PreSwitchMode>HDMI</PreSwitchMode>\r\n<SlaveFlag>0</SlaveFlag>\r\n<MasterUUID></MasterUUID>\r\n<SlaveList>{ &quot;slaves&quot;: 0, &quot;wmrm_version&quot;: &quot;4.3&quot;, &quot;surround&quot;: 0, &quot;group_type&quot;: -1 }</SlaveList>\r\n<PlayMedium>HDMI</PlayMedium>\r\n<TrackSource></TrackSource>\r\n<InternetAccess>1</InternetAccess>\r\n<VerUpdateFlag>0</VerUpdateFlag>\r\n<VerUpdateStatus>20</VerUpdateStatus>\r\n<BatteryFlag>0</BatteryFlag>\r\n<BatteryPercent>0</BatteryPercent>\r\n<AlarmFlag>1</AlarmFlag>\r\n<TimeStamp>178415745</TimeStamp>\r\n<SubNum>0</SubNum>\r\n<SpotifyActive>0</SpotifyActive>\r\n</u:GetInfoExResponse>\r\n</s:Body> </s:Envelope>"
+          "body": "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\"><s:Body>\n<u:GetInfoExResponse xmlns:u=\"urn:schemas-upnp-org:service:AVTransport:1\">\r\n<CurrentTransportState>PAUSED_PLAYBACK</CurrentTransportState>\r\n<CurrentTransportStatus>OK</CurrentTransportStatus>\r\n<CurrentSpeed>1</CurrentSpeed>\r\n<Track>0</Track>\r\n<TrackDuration>00:00:00</TrackDuration>\r\n<TrackMetaData>&lt;?xml version=&quot;1.0&quot; encoding=&quot;UTF-8&quot;?&gt;\r\n&lt;DIDL-Lite xmlns:dc=&quot;http://purl.org/dc/elements/1.1/&quot; xmlns:upnp=&quot;urn:schemas-upnp-org:metadata-1-0/upnp/&quot; xmlns:song=&quot;www.wiimu.com/song/&quot; xmlns=&quot;urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/&quot;&gt;\r\n&lt;upnp:class&gt;object.item.audioItem.musicTrack&lt;/upnp:class&gt;\r\n&lt;item id=&quot;0&quot;&gt;\r\n&lt;song:subid&gt;&lt;/song:subid&gt;\r\n&lt;song:description&gt;&lt;/song:description&gt;\r\n&lt;song:id&gt;0&lt;/song:id&gt;\r\n&lt;song:coding_f&gt;&lt;/song:coding_f&gt;\r\n&lt;song:dolby_detail_f&gt;&lt;/song:dolby_detail_f&gt;\r\n&lt;song:singerid&gt;0&lt;/song:singerid&gt;\r\n&lt;song:albumid&gt;0&lt;/song:albumid&gt;\r\n&lt;res protocolInfo=&quot;http-get:*:audio/mpeg:DLNA.ORG_PN=MP3;DLNA.ORG_OP=01;&quot; duration=&quot;00:00:00.000&quot;&gt;HDMI&lt;/res&gt;\r\n&lt;dc:title&gt;&lt;/dc:title&gt;\r\n&lt;dc:creator&gt;&lt;/dc:creator&gt;\r\n&lt;upnp:artist&gt;&lt;/upnp:artist&gt;\r\n&lt;upnp:album&gt;&lt;/upnp:album&gt;\r\n&lt;upnp:albumArtURI&gt;&lt;/upnp:albumArtURI&gt;\r\n&lt;song:rate_hz&gt;0&lt;/song:rate_hz&gt;\r\n&lt;song:format_s&gt;0&lt;/song:format_s&gt;\r\n&lt;song:bitrate&gt;0&lt;/song:bitrate&gt;\r\n&lt;/item&gt;\r\n&lt;/DIDL-Lite&gt;\r\n</TrackMetaData>\r\n<TrackURI>HDMI</TrackURI>\r\n<RelTime>00:00:00</RelTime>\r\n<AbsTime>NOT_IMPLEMENTED</AbsTime>\r\n<RelCount>2147483647</RelCount>\r\n<AbsCount>2147483647</AbsCount>\r\n<CurrentVolume>18</CurrentVolume>\r\n<CurrentMute>0</CurrentMute>\r\n<CurrentChannel>0</CurrentChannel>\r\n<LoopMode>4</LoopMode>\r\n<PlayType>49</PlayType>\r\n<PreSwitchMode>HDMI</PreSwitchMode>\r\n<SlaveFlag>0</SlaveFlag>\r\n<MasterUUID></MasterUUID>\r\n<SlaveList>{&quot;group_type&quot;:-1,&quot;slaves&quot;:0,&quot;surround&quot;:0,&quot;wmrm_version&quot;:&quot;4.3&quot;}</SlaveList>\r\n<PlayMedium>HDMI</PlayMedium>\r\n<TrackSource></TrackSource>\r\n<InternetAccess>1</InternetAccess>\r\n<VerUpdateFlag>0</VerUpdateFlag>\r\n<VerUpdateStatus>20</VerUpdateStatus>\r\n<BatteryFlag>0</BatteryFlag>\r\n<BatteryPercent>0</BatteryPercent>\r\n<AlarmFlag>1</AlarmFlag>\r\n<TimeStamp>178415745</TimeStamp>\r\n<SubNum>0</SubNum>\r\n<SpotifyActive>0</SpotifyActive>\r\n</u:GetInfoExResponse>\r\n</s:Body> </s:Envelope>"
         }
       },
       {

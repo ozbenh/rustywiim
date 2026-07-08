@@ -167,6 +167,27 @@ fn encode_blob(raw: &str) -> (ResponseFormat, serde_json::Value) {
 const ANON_KEY_SUBSTRINGS: &[&str] =
     &["mac", "uuid", "ssid", "bssid", "ad", "name", "eth0", "eth2", "apcli0", "ra0"];
 
+/// Same idea as `ANON_KEY_SUBSTRINGS`, but for keys found *nested* below a
+/// JSON value's own top level (`anonymize_json`'s `depth > 0`) — deliberately
+/// missing `"name"`, the one entry that's genuinely ambiguous once nested.
+/// Confirmed necessary against a real capture: `getPresetInfo`'s
+/// `preset_list[].name` holds real, wanted content ("QuickMix", "Yo-Yo Ma
+/// Radio" — the entire point of capturing presets), not an identifying
+/// device name, whereas `DeviceName`/`GroupName` at the *top* level of the
+/// same kind of response genuinely are. `"ad"` stays in this list, unlike
+/// `"name"` — confirmed against a real capture that it's needed one level
+/// deep too: a paired Bluetooth device's MAC sits in `list[].ad`
+/// (`getbtdiscoveryresult`/similar), and the only nested false-positive it
+/// also catches (`mainSubExtraDelay`, an unrelated numeric delay setting
+/// string, matched via "extrADelay") is a harmless, inconsequential loss
+/// compared to leaking a real MAC. `"mac"`/`"uuid"`/`"ssid"`/`"bssid"`/the
+/// network-interface names have no such ambiguity at all — they're never a
+/// legitimate content-name field regardless of nesting depth — so those
+/// stay in the nested list unchanged (e.g. still catches
+/// `slave_list[].ssid`/`.uuid`).
+const NESTED_ANON_KEY_SUBSTRINGS: &[&str] =
+    &["mac", "uuid", "ssid", "bssid", "ad", "eth0", "eth2", "apcli0", "ra0"];
+
 fn anonymize_string(s: &str) -> String {
     s.chars().map(|c| if c.is_alphanumeric() { 'x' } else { c }).collect()
 }
@@ -196,27 +217,250 @@ fn looks_like_ipv4(s: &str) -> bool {
         })
 }
 
-/// Anonymizes matching string values in a (shallow, LinkPlay responses are
-/// flat) top-level JSON object, in place. A value is anonymized if its *key*
-/// matches `ANON_KEY_SUBSTRINGS`, or if the *value itself* is IP-shaped —
-/// see `looks_like_ipv4()`.
-fn anonymize_json(v: &mut serde_json::Value) {
-    if let serde_json::Value::Object(map) = v {
-        for (k, val) in map.iter_mut() {
-            let kl = k.to_lowercase();
-            let key_matches = ANON_KEY_SUBSTRINGS.iter().any(|needle| kl.contains(needle));
-            if let serde_json::Value::String(s) = val {
-                if key_matches || looks_like_ipv4(s) {
-                    *s = anonymize_string(s);
-                }
+/// Length of a MAC-address shape (`XX:XX:XX:XX:XX:XX`, six colon-separated
+/// hex octets) starting at `bytes[i]`, if any — always exactly 17 bytes.
+fn mac_len_at(bytes: &[u8], i: usize) -> Option<usize> {
+    if i + 17 > bytes.len() {
+        return None;
+    }
+    let matches = (0..6).all(|group| {
+        let base = i + group * 3;
+        bytes[base].is_ascii_hexdigit()
+            && bytes[base + 1].is_ascii_hexdigit()
+            && (group == 5 || bytes[base + 2] == b':')
+    });
+    matches.then_some(17)
+}
+
+/// Length of a UUID shape (`8-4-4-4-12` hex hyphen-separated groups, e.g.
+/// `FF98F359-7E21-BAE3-8D6E-1163FF98F359`) starting at `bytes[i]`, if any.
+fn uuid_len_at(bytes: &[u8], i: usize) -> Option<usize> {
+    const GROUPS: [usize; 5] = [8, 4, 4, 4, 12];
+    let mut pos = i;
+    for (gi, &len) in GROUPS.iter().enumerate() {
+        if pos + len > bytes.len() || !bytes[pos..pos + len].iter().all(u8::is_ascii_hexdigit) {
+            return None;
+        }
+        pos += len;
+        if gi < GROUPS.len() - 1 {
+            if bytes.get(pos) != Some(&b'-') {
+                return None;
+            }
+            pos += 1;
+        }
+    }
+    Some(pos - i)
+}
+
+/// Length of an IPv4-address shape (four dot-separated 0-255 octets)
+/// starting at `bytes[i]`, if any — the embedded-in-larger-text analogue of
+/// `looks_like_ipv4()`, which only checks whether an *entire* value is that
+/// shape.
+fn ipv4_len_at(bytes: &[u8], i: usize) -> Option<usize> {
+    let mut pos = i;
+    for octet in 0..4 {
+        let start = pos;
+        while pos < bytes.len() && bytes[pos].is_ascii_digit() && pos - start < 3 {
+            pos += 1;
+        }
+        if pos == start {
+            return None;
+        }
+        let val: u16 = std::str::from_utf8(&bytes[start..pos]).ok()?.parse().ok()?;
+        if val > 255 {
+            return None;
+        }
+        if octet < 3 {
+            if bytes.get(pos) != Some(&b'.') {
+                return None;
+            }
+            pos += 1;
+        }
+    }
+    Some(pos - i)
+}
+
+/// Scans `s` for every occurrence of a shape (`shape_len_at` returns the
+/// match length starting at a given byte index, if any) and scrubs each one
+/// found — the embedded-in-free-text analogue of a whole-value shape check
+/// like `looks_like_ipv4()`. Shared by MAC/UUID/IPv4 scrubbing (see
+/// `mac_len_at()`/`uuid_len_at()`/`ipv4_len_at()`) — all three are needed:
+/// confirmed against real captures that a MAC can show up embedded inside
+/// an unrelated free-text field (`getNetworkHealth`'s `lastDisconnectedMsg`,
+/// a diagnostic log line), a UUID inside a raw SSDP response's `USN:`
+/// header (never anonymized at all before this — it isn't JSON or XML, just
+/// raw multicast-response text), and an IP inside a URL-valued JSON field
+/// (`metaData.albumArtURI`, e.g. `"http://10.1.1.10:8097/imageproxy/..."` —
+/// neither IP-shaped as a *whole* value nor under a key this module
+/// recognizes). ASCII-only: every shape this matches is itself pure ASCII,
+/// so a non-ASCII string can't contain one — returned unchanged rather than
+/// risk slicing on a non-UTF-8 boundary while scanning byte-by-byte.
+fn scrub_embedded(s: &str, shape_len_at: impl Fn(&[u8], usize) -> Option<usize>) -> String {
+    let bytes = s.as_bytes();
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match shape_len_at(bytes, i) {
+            Some(len) => {
+                out.push_str(&anonymize_string(&s[i..i + len]));
+                i += len;
+            }
+            None => {
+                // Advance by one full UTF-8 character, not necessarily one
+                // byte. `shape_len_at` only ever matches pure-ASCII spans
+                // (MAC/UUID/IPv4 are all ASCII-only shapes) and safely
+                // returns `None` at a multi-byte character's lead byte —
+                // its own byte-level checks (`is_ascii_hexdigit()` etc.)
+                // never match a byte ≥ 0x80 — but the *surrounding* text
+                // can be arbitrary UTF-8 (e.g. a track artist like "João
+                // Gilberto" sharing a `TrackMetaData` blob with a real,
+                // scrubbable LAN IP elsewhere in the same string). An
+                // earlier whole-string `is_ascii()` guard bailed out of
+                // scrubbing *anything* whenever such a string showed up
+                // anywhere in the value — confirmed via a real capture that
+                // this silently let an IP right next to non-ASCII artist
+                // text through untouched.
+                let ch_len = s[i..].chars().next().map(|c| c.len_utf8()).unwrap_or(1);
+                out.push_str(&s[i..i + ch_len]);
+                i += ch_len;
             }
         }
+    }
+    out
+}
+
+fn scrub_embedded_macs(s: &str) -> String {
+    scrub_embedded(s, mac_len_at)
+}
+
+fn scrub_embedded_uuids(s: &str) -> String {
+    scrub_embedded(s, uuid_len_at)
+}
+
+fn scrub_embedded_ips(s: &str) -> String {
+    scrub_embedded(s, ipv4_len_at)
+}
+
+/// Applies all three embedded-shape scrubs (MAC/UUID/IPv4) in sequence —
+/// the one place that combination is needed, so callers don't have to
+/// remember to chain all three themselves.
+fn scrub_all_embedded(s: &str) -> String {
+    scrub_embedded_ips(&scrub_embedded_uuids(&scrub_embedded_macs(s)))
+}
+
+/// True for a JSON key or XML tag name that holds an artwork image URL
+/// (`albumArtURI`, `PicUrl`/`picurl`, ...) — see `anonymize_art_url()` for
+/// why these get different treatment than every other URL/IP-bearing field.
+fn is_art_url_field(name: &str) -> bool {
+    let nl = name.to_lowercase();
+    nl.contains("arturi") || nl.contains("picurl") || nl.contains("pic_url")
+}
+
+/// Artwork-image-URL fields (`albumArtURI`, `PicUrl`, ...) are deliberately
+/// exempt from the usual IP/MAC/UUID scrubbing that applies to every other
+/// field — confirmed necessary: art is sometimes served by a *separate* LAN
+/// device (a DLNA/Music-Assistant server, say) whose address isn't the
+/// target device's own and isn't otherwise identifying, and capture files
+/// are meant to stay usable for testing real artwork downloads (this app's
+/// own preset-art fetch path, for one) — scrubbing every such URL on
+/// principle would make that impossible. The one exception: when the URL is
+/// served *by the device itself* (confirmed real case: a USB stick's cover
+/// art, served from the device's own embedded web server at its own IP),
+/// that IS the device's real address like everywhere else, so it still gets
+/// scrubbed. `device_ip` is `Some` only when the caller can identify that
+/// address — the just-connected-to `ip` at live capture time; recovered
+/// from the raw SSDP `LOCATION:` header when reprocessing an
+/// already-written file (see `device_ip_from_ssdp()`), since every other
+/// field that once held it has usually already been scrubbed into an
+/// ambiguous placeholder by an earlier pass by the time `--reanonymize`
+/// runs.
+fn anonymize_art_url(url: &str, device_ip: Option<&str>) -> String {
+    match device_ip {
+        Some(ip) if url.contains(ip) => anonymize_ip_in_url(url, ip),
+        _ => url.to_string(),
+    }
+}
+
+/// Recovers the device's own LAN IP from its raw SSDP `LOCATION:` header
+/// (`"http://10.1.1.10:49152/description.xml"` -> `"10.1.1.10"`) — the only
+/// way `--reanonymize` can identify "the device's own address" for
+/// `anonymize_art_url()`'s one exception. Must be called before
+/// `ssdp_response` itself gets scrubbed.
+fn device_ip_from_ssdp(ssdp_response: &str) -> Option<String> {
+    let location = extract_header(ssdp_response, "LOCATION")?;
+    let after_scheme = location.split("://").nth(1)?;
+    let host = after_scheme.split(['/', ':']).next()?;
+    looks_like_ipv4(host).then(|| host.to_string())
+}
+
+/// Anonymizes matching string values in a JSON value, in place. Public
+/// entry point — always starts at depth 0 (the value's own top level),
+/// which is where every existing call site's own real top-level fields
+/// (`DeviceName`, `SSID`, etc.) live. See `anonymize_json_at()` for why
+/// recursion below that uses a narrower key list. `device_ip`, when known,
+/// is the one context `anonymize_art_url()` needs — see its doc comment.
+fn anonymize_json(v: &mut serde_json::Value, device_ip: Option<&str>) {
+    anonymize_json_at(v, 0, device_ip);
+}
+
+/// Recursion depth 0 uses the full `ANON_KEY_SUBSTRINGS` (including the
+/// broad, ambiguous `"name"` entry) — safe there because a JSON blob's own
+/// top level is always "device/session info" shaped in every LinkPlay
+/// response this tool captures. Depth > 0 uses the narrower
+/// `NESTED_ANON_KEY_SUBSTRINGS` instead (see its own doc comment for why
+/// `"name"` specifically is dropped there but `"ad"` isn't): nested
+/// structures (`slave_list`, `preset_list`, routine lists, key-mapping
+/// lists, ...) commonly reuse `name` for actual *content* names (a preset's
+/// name, a routine's name), not a device identity — confirmed via a real
+/// capture that a naive "recurse with the same broad list at every depth"
+/// fix would have scrubbed `preset_list[].name` ("QuickMix", "Yo-Yo Ma
+/// Radio"), i.e. exactly the data these captures exist to show.
+/// `looks_like_ipv4()` isn't depth-gated at all — an IP-shaped value is
+/// unambiguous regardless of nesting (also how
+/// `multiroom:getSlaveList`/UPnP `GetInfoEx`'s embedded `SlaveList` JSON's
+/// `slave_list[].ip`, one level below the top object, get caught — a real
+/// leak this recursion was added to fix in the first place). Every string
+/// value not already fully scrubbed also gets `scrub_all_embedded()`
+/// applied — a MAC/UUID/IP can show up *embedded* inside an otherwise-
+/// unrelated field (`getNetworkHealth`'s `lastDisconnectedMsg`, a free-text
+/// diagnostic log line — confirmed via a real capture), not just as a
+/// field's entire value. Artwork-URL-shaped keys (`is_art_url_field()`) are
+/// checked first and handled entirely separately via `anonymize_art_url()`.
+fn anonymize_json_at(v: &mut serde_json::Value, depth: usize, device_ip: Option<&str>) {
+    let key_substrings = if depth == 0 { ANON_KEY_SUBSTRINGS } else { NESTED_ANON_KEY_SUBSTRINGS };
+    match v {
+        serde_json::Value::Object(map) => {
+            for (k, val) in map.iter_mut() {
+                if let serde_json::Value::String(s) = val {
+                    if is_art_url_field(k) {
+                        *s = anonymize_art_url(s, device_ip);
+                    } else {
+                        let kl = k.to_lowercase();
+                        let key_matches = key_substrings.iter().any(|needle| kl.contains(needle));
+                        if key_matches || looks_like_ipv4(s) {
+                            *s = anonymize_string(s);
+                        } else {
+                            *s = scrub_all_embedded(s);
+                        }
+                    }
+                }
+                anonymize_json_at(val, depth + 1, device_ip);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for val in items.iter_mut() {
+                anonymize_json_at(val, depth + 1, device_ip);
+            }
+        }
+        _ => {}
     }
 }
 
 /// Tag-name substrings considered identifying for XML anonymization — a
-/// *stricter* subset of `ANON_KEY_SUBSTRINGS` than the JSON-key matcher uses.
-/// `"ad"` is deliberately excluded here: it was added to the JSON list for
+/// *stricter* subset of `ANON_KEY_SUBSTRINGS` than the JSON-key matcher
+/// uses, in two ways.
+///
+/// `"ad"` is deliberately excluded: it was added to the JSON list for
 /// Bluetooth's flat `ad` field (an exact key name in a flat object, low
 /// collision risk), but as a 2-letter substring it collides with ordinary
 /// HTML/XML tag names — confirmed against a real device: `getsyslog`'s HTML
@@ -225,16 +469,33 @@ fn anonymize_json(v: &mut serde_json::Value) {
 /// "content" and character-scrub it (`anonymize_string` doesn't know about
 /// markup, so this corrupted the real `<meta charset=...>` tag inside into
 /// garbage). No other list entry has shown this problem in practice.
+///
+/// `"name"` is also excluded, unlike the JSON side (which still uses it at
+/// depth 0 — see `ANON_KEY_SUBSTRINGS`'s doc comment). Every *XML tag* named
+/// with "name" ever seen across real captures is either a device-identity
+/// field already covered another way (`friendlyName`/`modelName`, which get
+/// their own explicit skip below regardless) or, confirmed via the
+/// `PlayQueue` service's `GetKeyMapping`/`BrowseQueue` responses, a genuine
+/// *content* name (`<Name>`/`<ListName>`/`<PresetName>`/`<ShowName>` — a
+/// preset's or playlist's own name) that must not be scrubbed — the same
+/// "QuickMix"/"Yo-Yo Ma Radio" problem `NESTED_ANON_KEY_SUBSTRINGS` exists
+/// to avoid for JSON, just discovered later for the XML side once
+/// `wiim-capture` started actually calling those actions. Unlike the JSON
+/// case there's no depth signal to fall back on here, so this is an
+/// unconditional drop rather than a depth-gated one — accepted since no XML
+/// tag has ever needed it.
 const XML_ANON_KEY_SUBSTRINGS: &[&str] =
-    &["mac", "uuid", "ssid", "bssid", "name", "eth0", "eth2", "apcli0", "ra0", "udn"];
+    &["mac", "uuid", "ssid", "bssid", "eth0", "eth2", "apcli0", "ra0", "udn"];
 
 /// Anonymizes the text content of XML leaf elements whose *tag name* matches
 /// `XML_ANON_KEY_SUBSTRINGS` — e.g. `<UDN>uuid:...</UDN>` in UPnP
 /// description.xml. Non-namespace-aware, assumes the matched tag has no
 /// nested elements (true for every LinkPlay/UPnP tag this matches in
 /// practice) — sufficient for the known shape, not a general XML anonymizer,
-/// same spirit as `extract_tag`.
-fn anonymize_xml(xml: &str) -> String {
+/// same spirit as `extract_tag`. `device_ip`, when known, is the one
+/// context `anonymize_art_url()` needs for `upnp:albumArtURI` — see its doc
+/// comment.
+fn anonymize_xml(xml: &str, device_ip: Option<&str>) -> String {
     let mut out = String::with_capacity(xml.len());
     let mut i = 0;
     while i < xml.len() {
@@ -249,7 +510,16 @@ fn anonymize_xml(xml: &str) -> String {
             break;
         };
         let tag = &xml[tag_start..tag_end];
-        out.push_str(tag);
+        // Scrub embedded MAC/UUID/IP shapes inside the tag's own *attribute
+        // values*, not just its text content further down — confirmed real
+        // leak: DIDL-Lite `<item parentID="wiim_uuid:FF98F7F4-...">`, the
+        // device's own UUID sitting in an attribute value, invisible to
+        // every content-based check below since this whole tag string gets
+        // emitted here, before any of them run. Safe to apply
+        // unconditionally to the whole `<...>` span: none of the shapes
+        // scanned for contain `<`/`>`/`=`/`"`, so tag structure and
+        // attribute names are never at risk, only an embedded value itself.
+        out.push_str(&scrub_all_embedded(tag));
         i = tag_end;
 
         let is_opening = !tag.starts_with("</") && !tag.ends_with("/>") && !tag.starts_with("<?") && !tag.starts_with("<!");
@@ -257,16 +527,79 @@ fn anonymize_xml(xml: &str) -> String {
             continue;
         }
         let name = tag[1..tag.len() - 1].split_whitespace().next().unwrap_or("").to_lowercase();
-        // friendlyName/modelName would otherwise match ANON_KEY_SUBSTRINGS's
-        // "name" substring, but per explicit request these two are not
-        // scrubbed — a room name and a marketing model string are useful to
-        // see in a capture and not treated as sensitive here (unlike UDN,
-        // MAC, SSID, etc., which "name" is still broad enough to catch
-        // elsewhere, e.g. Bluetooth device names).
+        // Explicit early skip for these two, even though `XML_ANON_KEY_
+        // SUBSTRINGS` no longer has a "name" entry that would otherwise
+        // match them anyway (see its doc comment) — a room name and a
+        // marketing model string are useful to see in a capture and were
+        // never meant to be treated as sensitive here. Kept as its own
+        // named case rather than relying on the general fallback further
+        // down to also leave them alone, so the "these two are
+        // deliberately exempt" intent stays explicit at the point they're
+        // encountered, not just an emergent property of what else happens
+        // to be in the substring list.
         if matches!(name.as_str(), "friendlyname" | "modelname") {
             continue;
         }
+        if is_art_url_field(&name) {
+            let Some(close_start) = xml[i..].find("</").map(|p| i + p) else {
+                continue;
+            };
+            out.push_str(&anonymize_art_url(&xml[i..close_start], device_ip));
+            i = close_start;
+            continue;
+        }
         if !XML_ANON_KEY_SUBSTRINGS.iter().any(|needle| name.contains(needle)) {
+            // Not a known identifying tag name — but its content might
+            // still embed identifying fields regardless, in one of two
+            // shapes:
+            //   - A JSON blob as escaped text content. LinkPlay bundles a
+            //     full JSON status/slave-list this way in several UPnP SOAP
+            //     responses (`GetControlDeviceInfo`'s `<Status>{"apcli0":
+            //     "10.1.1.76",...}</Status>`/`<SlaveList>{...}</SlaveList>`,
+            //     `GetInfoEx`'s `<SlaveList>` likewise) — confirmed via a
+            //     real capture that leaked exactly this, since neither this
+            //     tag-name check nor `anonymize_json` (which only ever runs
+            //     on responses that are JSON *format*, not XML) ever looked
+            //     at it. Handled by content *shape*, not tag name — same
+            //     principle `looks_like_ipv4()` already applies to JSON
+            //     values regardless of key name.
+            //   - Escaped *XML* as text content (`TrackMetaData`'s
+            //     DIDL-Lite, itself escaped once more inside the outer SOAP
+            //     envelope) — not JSON at all, so the above never touches
+            //     it; confirmed via a real capture that `GetPositionInfo`/
+            //     `GetMediaInfo`/`GetInfoEx` all leak a real LAN IP this way
+            //     (`upnp:albumArtURI`, when it *is* the device's own art —
+            //     see `anonymize_nested_xml_in_xml_text()`, which recurses
+            //     into this content with the same tag-name-aware logic,
+            //     rather than treating the whole blob as one opaque string
+            //     — that would apply the artwork-URL exemption too
+            //     bluntly, to content that isn't actually an artwork URL).
+            let Some(close_start) = xml[i..].find("</").map(|p| i + p) else {
+                continue;
+            };
+            let content = &xml[i..close_start];
+            // A real *container* tag with actual child elements (e.g.
+            // `<DIDL-Lite>` once `anonymize_nested_xml_in_xml_text()` has
+            // recursed into it) has a literal, unescaped `<` in its content
+            // before that content's own end — the true end-of-content search
+            // above just found its *first child's* closing tag, not its
+            // own. Every genuinely leaf/opaque tag this fallback is meant
+            // for (`Status`/`SlaveList`/`TrackMetaData`'s JSON or
+            // once-escaped-XML text) never contains a literal `<` in its
+            // content at all. So: a literal `<` here means "don't touch
+            // this tag's content at all, let the main loop keep walking
+            // tag-by-tag" — anything else risks cutting the wrong tag's
+            // content short and corrupting real markup (confirmed: this is
+            // exactly what happened before this check existed, corrupting
+            // `<dc:title>` content nested inside a recursed-into
+            // `<DIDL-Lite>`).
+            if !content.contains('<') {
+                let replacement = anonymize_json_in_xml_text(content, device_ip)
+                    .or_else(|| anonymize_nested_xml_in_xml_text(content, device_ip))
+                    .unwrap_or_else(|| scrub_all_embedded(content));
+                out.push_str(&replacement);
+                i = close_start;
+            }
             continue;
         }
         let Some(close_start) = xml[i..].find("</").map(|p| i + p) else {
@@ -276,6 +609,62 @@ fn anonymize_xml(xml: &str) -> String {
         i = close_start;
     }
     out
+}
+
+/// Un-escapes the handful of XML entities LinkPlay's JSON-in-XML-tag-content
+/// actually uses. Order matters: `&amp;` must be un-escaped last, or an
+/// already-escaped ampersand followed by literal text (`&amp;lt;`) would
+/// incorrectly turn into `<` instead of the literal `&lt;` it represents.
+fn xml_unescape(s: &str) -> String {
+    s.replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&amp;", "&")
+}
+
+/// Re-escapes a JSON string for safe placement back inside XML tag text
+/// content — the exact reverse of `xml_unescape()`, `&` first this time so
+/// it doesn't double-escape the entities the later replacements produce.
+fn xml_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+/// If `content` (raw XML tag text, still entity-escaped) unescapes to valid
+/// JSON, anonymizes it (recursing via `anonymize_json()`) and re-escapes the
+/// result for XML. Returns `None` if it doesn't parse as JSON at all — most
+/// tag content doesn't (plain text, timestamps, nested XML-in-XML like
+/// `TrackMetaData`'s DIDL-Lite), so the caller falls back to
+/// `anonymize_nested_xml_in_xml_text()`/a plain content-shape scrub instead.
+fn anonymize_json_in_xml_text(content: &str, device_ip: Option<&str>) -> Option<String> {
+    let unescaped = xml_unescape(content);
+    let mut value: serde_json::Value = serde_json::from_str(unescaped.trim()).ok()?;
+    if !value.is_object() && !value.is_array() {
+        return None;
+    }
+    anonymize_json(&mut value, device_ip);
+    Some(xml_escape(&value.to_string()))
+}
+
+/// If `content` (raw XML tag text, still entity-escaped) unescapes to
+/// something that looks like nested XML (`TrackMetaData`'s embedded
+/// DIDL-Lite, etc. — starts with `<` once unescaped), recursively
+/// anonymizes it with the exact same tag-name-aware logic (so e.g. an inner
+/// `<upnp:albumArtURI>` gets the *same* artwork-URL exemption at any
+/// nesting depth, not just at the top level of a SOAP response) and
+/// re-escapes the result. Returns `None` if the unescaped content doesn't
+/// look like XML at all, so the caller falls back to a plain content-shape
+/// scrub instead.
+fn anonymize_nested_xml_in_xml_text(content: &str, device_ip: Option<&str>) -> Option<String> {
+    let unescaped = xml_unescape(content);
+    if !unescaped.trim_start().starts_with('<') {
+        return None;
+    }
+    Some(xml_escape(&anonymize_xml(&unescaped, device_ip)))
 }
 
 /// LinkPlay's "not supported" signal: a 200 OK whose body is literally one
@@ -345,11 +734,11 @@ fn build_command_capture(command: &str, url: &str, ip: &str, attempt: Attempt, m
             unsupported = is_unsupported_text(raw);
             let (fmt, mut val) = encode_blob(raw);
             if fmt == ResponseFormat::Json {
-                anonymize_json(&mut val);
+                anonymize_json(&mut val, Some(ip));
                 decoded = decode_player_status_fields(command, &val);
             } else if fmt == ResponseFormat::Xml {
                 if let serde_json::Value::String(s) = &val {
-                    val = serde_json::Value::String(anonymize_xml(s));
+                    val = serde_json::Value::String(anonymize_xml(s, Some(ip)));
                 }
             }
             format = Some(fmt);
@@ -784,7 +1173,7 @@ async fn capture_playqueue(
 
     let (format, mut body) = encode_blob(&raw);
     if format == ResponseFormat::Xml {
-        body = serde_json::Value::String(anonymize_xml(&raw));
+        body = serde_json::Value::String(anonymize_xml(&raw, Some(ip)));
     }
     upnp.play_queue_scpd = Some(Blob { format, body });
 
@@ -831,7 +1220,7 @@ async fn soap_call(control_url: &str, service_type: &str, action: &str, args_xml
         let (format, mut body) = encode_blob(raw);
         if format == ResponseFormat::Xml {
             if let serde_json::Value::String(s) = &body {
-                body = serde_json::Value::String(anonymize_xml(s));
+                body = serde_json::Value::String(anonymize_xml(s, Some(ip)));
             }
         }
         Blob { format, body }
@@ -954,7 +1343,12 @@ async fn capture_upnp(ip: &str) -> UpnpCapture {
     let mut upnp = UpnpCapture::default();
 
     let (ssdp_text, ssdp_err) = ssdp_probe(ip).await;
-    upnp.ssdp_response = ssdp_text.clone();
+    // Raw multicast-response text, not JSON/XML — never anonymized at all
+    // before this (`anonymize_json`/`anonymize_xml` only ever ran on
+    // command/action response bodies), despite routinely carrying a real
+    // LAN IP in its `LOCATION:` header and a real device UUID in `USN:`
+    // (confirmed via a real capture leaking both).
+    upnp.ssdp_response = ssdp_text.as_deref().map(scrub_all_embedded);
     upnp.ssdp_error = ssdp_err;
     let location = ssdp_text.as_deref().and_then(|t| extract_header(t, "LOCATION"));
     upnp.location = location.as_deref().map(|l| anonymize_ip_in_url(l, ip));
@@ -976,7 +1370,7 @@ async fn capture_upnp(ip: &str) -> UpnpCapture {
     // `description` blob itself got scrubbed. `anonymize_xml` only ever acts
     // on `<tag>...</tag>` shapes it actually finds, so running it
     // unconditionally is harmless even on a body that isn't XML at all.
-    let anonymized_raw = anonymize_xml(&raw);
+    let anonymized_raw = anonymize_xml(&raw, Some(ip));
     if format == ResponseFormat::Xml {
         body = serde_json::Value::String(anonymized_raw.clone());
     }
@@ -1072,6 +1466,118 @@ fn write_output(capture: &CaptureFile) {
     }
 }
 
+// ── Re-anonymization of an already-written capture file ─────────────────────
+//
+// `--reanonymize <file>` reprocesses a capture file already on disk with the
+// current anonymization logic in place — for fixing files written by an
+// older, less complete pass (this tool's own anonymization has grown several
+// real-capture-driven fixes over time; a file written before all of them
+// exist can't retroactively benefit without this) without needing to redo
+// the live capture. Overwrites the file in place. `friendly_name`/
+// `model_name` are deliberately left untouched, same exemption
+// `anonymize_xml` already applies at capture time. The device's own IP
+// (needed for `anonymize_art_url()`'s one exception — see its doc comment)
+// is recovered from the file's own raw `ssdp_response` via
+// `device_ip_from_ssdp()`, since a live capture's `ip` argument obviously
+// isn't available when just reprocessing a file after the fact.
+
+fn reanonymize_blob_value(body: &mut serde_json::Value, fmt: ResponseFormat, device_ip: Option<&str>) {
+    match fmt {
+        ResponseFormat::Json => anonymize_json(body, device_ip),
+        ResponseFormat::Xml => {
+            if let serde_json::Value::String(s) = body {
+                *s = anonymize_xml(s, device_ip);
+            }
+        }
+        ResponseFormat::Text => {
+            if let serde_json::Value::String(s) = body {
+                *s = scrub_all_embedded(s);
+            }
+        }
+        // Binary blob — scrubbing characters would corrupt the encoding.
+        ResponseFormat::Base64 => {}
+    }
+}
+
+fn reanonymize_blob(blob: &mut Blob, device_ip: Option<&str>) {
+    reanonymize_blob_value(&mut blob.body, blob.format, device_ip);
+}
+
+fn reanonymize_command(c: &mut CommandCapture, device_ip: Option<&str>) {
+    c.url = scrub_all_embedded(&c.url);
+    if let Some(err) = &mut c.error {
+        *err = scrub_all_embedded(err);
+    }
+    if let (Some(body), Some(fmt)) = (&mut c.body, c.format) {
+        reanonymize_blob_value(body, fmt, device_ip);
+    }
+    if let Some(decoded) = &mut c.decoded {
+        anonymize_json(decoded, device_ip);
+    }
+}
+
+fn reanonymize_action(a: &mut UpnpActionCapture, device_ip: Option<&str>) {
+    a.control_url = scrub_all_embedded(&a.control_url);
+    if let Some(err) = &mut a.error {
+        *err = scrub_all_embedded(err);
+    }
+    if let Some(resp) = &mut a.response {
+        reanonymize_blob(resp, device_ip);
+    }
+}
+
+fn reanonymize_capture(cap: &mut CaptureFile) {
+    // Must be recovered before `ssdp_response` itself gets scrubbed below —
+    // see `device_ip_from_ssdp()`'s doc comment for why this is the only
+    // place `--reanonymize` can still identify the device's own address.
+    let device_ip = cap.upnp.as_ref()
+        .and_then(|u| u.ssdp_response.as_deref())
+        .and_then(device_ip_from_ssdp);
+    let device_ip = device_ip.as_deref();
+
+    for c in &mut cap.commands {
+        reanonymize_command(c, device_ip);
+    }
+    let Some(upnp) = &mut cap.upnp else { return };
+    for s in [&mut upnp.ssdp_response, &mut upnp.ssdp_error, &mut upnp.location, &mut upnp.description_url] {
+        if let Some(s) = s {
+            *s = scrub_all_embedded(s);
+        }
+    }
+    if let Some(b) = &mut upnp.description {
+        reanonymize_blob(b, device_ip);
+    }
+    if let Some(b) = &mut upnp.play_queue_scpd {
+        reanonymize_blob(b, device_ip);
+    }
+    for a in &mut upnp.actions {
+        reanonymize_action(a, device_ip);
+    }
+}
+
+fn run_reanonymize(path: &str) -> ! {
+    let text = std::fs::read_to_string(path).unwrap_or_else(|e| {
+        eprintln!("[wiim-capture] reading {path}: {e}");
+        std::process::exit(1);
+    });
+    let mut cap: CaptureFile = serde_json::from_str(&text).unwrap_or_else(|e| {
+        eprintln!("[wiim-capture] parsing {path}: {e}");
+        std::process::exit(1);
+    });
+    reanonymize_capture(&mut cap);
+    let json = serde_json::to_string_pretty(&cap).expect("CaptureFile must serialize");
+    match std::fs::write(path, json) {
+        Ok(()) => {
+            eprintln!("[wiim-capture] re-anonymized {path}");
+            std::process::exit(0);
+        }
+        Err(e) => {
+            eprintln!("[wiim-capture] writing {path}: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
 // ── CLI arguments ────────────────────────────────────────────────────────────
 
 struct Args {
@@ -1090,12 +1596,15 @@ fn usage() -> ! {
     eprintln!("       wiim-capture --one <command> <ip>");
     eprintln!("       wiim-capture --one upnp:<Action> <ip>");
     eprintln!("       wiim-capture --one upnp:<Service>:<Action> <ip>");
+    eprintln!("       wiim-capture --reanonymize <file>");
     eprintln!("           <command>  a plain httpapi.asp command, e.g. getPlayerStatusEx");
     eprintln!("           <Action>   a UPnP action, e.g. GetInfoEx — service auto-detected");
     eprintln!("                      for known actions (GetTransportInfo/GetPositionInfo/");
     eprintln!("                      GetMediaInfo/GetInfoEx -> AVTransport; GetVolume/GetMute");
     eprintln!("                      -> RenderingControl), otherwise specify <Service>:");
     eprintln!("           <Service>  AVTransport or RenderingControl");
+    eprintln!("           <file>     reprocesses an already-written capture file in place");
+    eprintln!("                      with the current anonymization logic — no device contacted");
     std::process::exit(2);
 }
 
@@ -1150,6 +1659,19 @@ fn parse_args() -> Args {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
+    // Handled before `parse_args()` (which requires an <ip>) since this mode
+    // never contacts a device at all.
+    let mut raw_args = std::env::args().skip(1);
+    if let Some(flag) = raw_args.next() {
+        if flag == "--reanonymize" {
+            let Some(path) = raw_args.next() else {
+                eprintln!("wiim-capture: --reanonymize requires a file argument");
+                usage();
+            };
+            run_reanonymize(&path);
+        }
+    }
+
     let args = parse_args();
     let ip = args.ip;
     let one = args.one.as_deref().map(parse_one_target);
@@ -1281,4 +1803,257 @@ async fn main() {
         upnp: Some(upnp),
     };
     write_output(&capture);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Real leaked value from a live `WiiM_Ultra` capture:
+    /// `getNetworkHealth`'s `lastDisconnectedMsg` is a free-text diagnostic
+    /// log line with a real MAC embedded mid-string — the key
+    /// (`lastDisconnectedMsg`) doesn't match any key-substring list, and the
+    /// whole value isn't MAC/IP-shaped on its own, so only
+    /// `scrub_embedded_macs()` (applied to every otherwise-unscrubbed string
+    /// value) catches this. The rest of the diagnostic message must survive.
+    #[test]
+    fn anonymize_json_scrubs_mac_embedded_in_free_text_field() {
+        let mut v: serde_json::Value = serde_json::from_str(
+            r#"{"lastDisconnectedMsg":"2026-07-08 06:22:49 <3>CTRL-EVENT-DISCONNECTED bssid=bc:fc:e7:2b:9e:4e reason=2"}"#,
+        ).unwrap();
+        anonymize_json(&mut v, None);
+        let s = v.to_string();
+        assert!(!s.contains("bc:fc:e7:2b:9e:4e"), "embedded MAC should be scrubbed: {s}");
+        assert!(s.contains("CTRL-EVENT-DISCONNECTED"), "rest of message should survive: {s}");
+        assert!(s.contains("reason=2"), "rest of message should survive: {s}");
+    }
+
+    /// `getPresetInfo`'s real response shape — `preset_list[].name`, one
+    /// level below the top object, same nesting depth as `slave_list[].ip`.
+    /// A real committed capture (`WiiM_Amp_20260707_173909.json`) shows
+    /// these names ("QuickMix", "Yo-Yo Ma Radio") intact, unscrubbed — only
+    /// because the *old* shallow `anonymize_json` never reached one level
+    /// deep, the same limitation that let the `slave_list[].ip` leak
+    /// through. Naively making `anonymize_json` recursive would now reach
+    /// this `name` key too (it matches `ANON_KEY_SUBSTRINGS`) and scrub
+    /// preset names — which is exactly the data these captures exist to
+    /// show, not identifying information. This must keep passing.
+    #[test]
+    fn anonymize_json_does_not_scrub_preset_list_names() {
+        let mut v: serde_json::Value = serde_json::from_str(
+            r#"{"preset_list":[{"name":"QuickMix","number":1,"source":"Pandora2","url":"unknow"}],"preset_num":1}"#,
+        ).unwrap();
+        anonymize_json(&mut v, None);
+        let s = v.to_string();
+        assert!(s.contains("QuickMix"), "preset name must survive: {s}");
+    }
+
+    /// A paired Bluetooth device's MAC, one level below the top object —
+    /// same nesting depth as `preset_list[].name` above, but `"ad"` (unlike
+    /// `"name"`) is *not* ambiguous once nested, so it must still be caught.
+    /// Real leaked value from a live capture (`getbtdiscoveryresult`-shaped
+    /// response).
+    #[test]
+    fn anonymize_json_scrubs_nested_bluetooth_mac() {
+        let mut v: serde_json::Value = serde_json::from_str(
+            r#"{"list":[{"ad":"44:73:70:61:02:fa","rssi":-60}]}"#,
+        ).unwrap();
+        anonymize_json(&mut v, None);
+        let s = v.to_string();
+        assert!(!s.contains("44:73:70:61:02:fa"), "nested BT MAC should be scrubbed: {s}");
+    }
+
+    /// A URL field that isn't an artwork URL (`searchUrl`, real TuneIn
+    /// DIDL-Lite shape) — not a bare IP (fails `looks_like_ipv4`) under a
+    /// key that doesn't match any key-substring list — only
+    /// `scrub_all_embedded()`'s IP scan catches the LAN IP embedded partway
+    /// through it. The rest of the URL must survive.
+    #[test]
+    fn anonymize_json_scrubs_ip_embedded_in_non_art_url_value() {
+        let mut v: serde_json::Value = serde_json::from_str(
+            r#"{"metaData":{"searchUrl":"http://10.1.1.10:8097/imageproxy/abc123?size=512"}}"#,
+        ).unwrap();
+        anonymize_json(&mut v, None);
+        let s = v.to_string();
+        assert!(!s.contains("10.1.1.10"), "embedded IP should be scrubbed: {s}");
+        assert!(s.contains("imageproxy/abc123"), "rest of URL should survive: {s}");
+    }
+
+    /// Per explicit request, artwork-URL fields (`albumArtURI`, `PicUrl`)
+    /// are never scrubbed unless they match a known `device_ip` — same
+    /// reasoning as the XML-side
+    /// `anonymize_xml_leaves_third_party_art_url_untouched`/
+    /// `anonymize_xml_scrubs_art_url_matching_device_ip`, for the JSON path
+    /// (`getPlayerStatusEx`'s `MetaData.albumArtURI`, `getPresetInfo`'s
+    /// `preset_list[].picurl`).
+    #[test]
+    fn anonymize_json_art_url_exemption_respects_device_ip() {
+        let mut untouched: serde_json::Value = serde_json::from_str(
+            r#"{"metaData":{"albumArtURI":"http://10.1.1.10:8097/imageproxy/abc123?size=512"}}"#,
+        ).unwrap();
+        let original = untouched.clone();
+        anonymize_json(&mut untouched, Some("10.1.1.73"));
+        assert_eq!(untouched, original, "third-party art URL must survive unchanged");
+
+        let mut scrubbed: serde_json::Value = serde_json::from_str(
+            r#"{"preset_list":[{"picurl":"https://10.1.1.73/data/lmp_cover_abc.jpeg"}]}"#,
+        ).unwrap();
+        anonymize_json(&mut scrubbed, Some("10.1.1.73"));
+        let s = scrubbed.to_string();
+        assert!(!s.contains("10.1.1.73"), "device's own IP should be scrubbed: {s}");
+        assert!(s.contains("lmp_cover_abc.jpeg"), "rest of URL should survive: {s}");
+    }
+
+    /// Real leaked shape from a live capture: `ssdp_response` is raw SSDP
+    /// multicast-response text (never JSON or XML), so it was never passed
+    /// through any anonymization at all before `scrub_all_embedded()` was
+    /// applied to it directly at capture time — confirmed to carry a real
+    /// LAN IP in `LOCATION:` and a real device UUID in `USN:`.
+    #[test]
+    fn scrub_all_embedded_handles_raw_ssdp_response_text() {
+        let ssdp = "HTTP/1.1 200 OK\r\n\
+            LOCATION: http://192.168.1.184:49152/description.xml\r\n\
+            USN: uuid:FF98F359-7E21-BAE3-8D6E-1163FF98F359::urn:schemas-upnp-org:device:MediaRenderer:1\r\n";
+        let out = scrub_all_embedded(ssdp);
+        assert!(!out.contains("192.168.1.184"), "LOCATION IP should be scrubbed: {out}");
+        assert!(!out.contains("FF98F359-7E21-BAE3-8D6E-1163FF98F359"), "USN UUID should be scrubbed: {out}");
+        assert!(out.contains("MediaRenderer"), "rest of USN should survive: {out}");
+    }
+
+    /// Nested LAN IP inside `slave_list[].ip`, one level below the flat
+    /// top-level object `anonymize_json` used to stop at — the exact shape
+    /// that leaked a real IP in `multiroom:getSlaveList`'s JSON body before
+    /// `anonymize_json` recursed into arrays/nested objects.
+    #[test]
+    fn anonymize_json_scrubs_nested_slave_list_ip() {
+        // Real shape (Arylic `upnp_hack` reference): a slave entry also
+        // carries its own `ssid`/`uuid` — genuinely identifying regardless
+        // of nesting, unlike `name` (see the test right below this one).
+        let mut v: serde_json::Value = serde_json::from_str(
+            r#"{"slaves":1,"slave_list":[{"name":"SoundSystem_05A4","ssid":"SoundSystem_05A4","ip":"10.10.10.92","uuid":"uuid:FF31F012-E0F9-174F-40A0-0FF5FF31F012"}]}"#,
+        ).unwrap();
+        anonymize_json(&mut v, None);
+        let s = v.to_string();
+        assert!(!s.contains("10.10.10.92"), "IP should be scrubbed: {s}");
+        assert!(!s.contains("uuid:FF31F012"), "UUID should be scrubbed: {s}");
+        // Both fields hold the same literal string ("SoundSystem_05A4") —
+        // `ssid` must still be scrubbed (matches "ssid"), `name` must not
+        // (see `anonymize_json_does_not_scrub_preset_list_names` — a nested
+        // `name` is a content name, not a device identity, by the same
+        // precedent already established for `friendlyName`/`modelName`).
+        assert_eq!(
+            v["slave_list"][0]["name"], "SoundSystem_05A4",
+            "nested name is a room/device label, not scrubbed here (see friendlyName precedent): {s}"
+        );
+    }
+
+    /// `GetControlDeviceInfo`'s real (anonymized-for-privacy) response shape
+    /// — a JSON blob as the escaped text content of an ordinary-looking
+    /// `<Status>` tag, which `anonymize_xml`'s tag-*name* check alone never
+    /// touches (`"status"` isn't in `XML_ANON_KEY_SUBSTRINGS`) and which
+    /// isn't a JSON-*format* response either, so `anonymize_json` alone
+    /// never got a chance to run on it — this leaked two real LAN IPs and a
+    /// MAC address in a real capture before the content-shape check was
+    /// added.
+    #[test]
+    fn anonymize_xml_scrubs_json_embedded_in_untagged_element() {
+        let xml = "<Status>{ &quot;apcli0&quot;: &quot;10.1.1.76&quot;, \
+                   &quot;ra0&quot;: &quot;10.10.10.254&quot;, \
+                   &quot;MAC&quot;: &quot;00:22:6C:3C:EB:7E&quot; }</Status>";
+        let out = anonymize_xml(xml, None);
+        assert!(!out.contains("10.1.1.76"), "apcli0 IP should be scrubbed: {out}");
+        assert!(!out.contains("10.10.10.254"), "ra0 IP should be scrubbed: {out}");
+        assert!(!out.contains("00:22:6C:3C:EB:7E"), "MAC should be scrubbed: {out}");
+    }
+
+    /// Plain leaf content that happens to parse as a bare JSON scalar (not
+    /// an object/array) must be left completely untouched, not rewritten —
+    /// `anonymize_json_in_xml_text` only acts on object/array content.
+    #[test]
+    fn anonymize_xml_leaves_plain_numeric_content_untouched() {
+        let xml = "<CurrentVolume>60</CurrentVolume>";
+        assert_eq!(anonymize_xml(xml, None), xml);
+    }
+
+    /// Nested XML-in-XML (DIDL-Lite inside `TrackMetaData`) isn't JSON at
+    /// all once unescaped — must fall through *content* unchanged when
+    /// there's nothing to scrub, not get mangled by a failed JSON-parse
+    /// attempt.
+    #[test]
+    fn anonymize_xml_leaves_nested_xml_content_untouched() {
+        let xml = "<TrackMetaData>&lt;DIDL-Lite&gt;&lt;dc:title&gt;Foo&lt;/dc:title&gt;&lt;/DIDL-Lite&gt;</TrackMetaData>";
+        assert_eq!(anonymize_xml(xml, None), xml);
+    }
+
+    /// Real leaked value from a live capture: a DIDL-Lite `<item>`'s
+    /// `parentID` *attribute* embeds the device's own UUID
+    /// (`wiim_uuid:FF98F7F4-...`) — invisible to every content-based check,
+    /// since the whole opening tag (attributes included) is normally
+    /// emitted verbatim before any of them run. The tag structure and
+    /// non-identifying `id`/`restricted` attributes must survive exactly.
+    #[test]
+    fn anonymize_xml_scrubs_uuid_embedded_in_tag_attribute() {
+        let xml = "<TrackMetaData>&lt;item id=&quot;542af8a17b9748e3b1b89cda0da4eaff&quot; \
+                   restricted=&quot;true&quot; parentID=&quot;wiim_uuid:FF98F7F4-075B-5A90-FA95-72C3FF98F7F4&quot;&gt;\
+                   &lt;dc:title&gt;Doralice&lt;/dc:title&gt;&lt;/item&gt;</TrackMetaData>";
+        let out = anonymize_xml(xml, None);
+        assert!(!out.contains("FF98F7F4-075B-5A90-FA95-72C3FF98F7F4"), "attribute UUID should be scrubbed: {out}");
+        assert!(out.contains("542af8a17b9748e3b1b89cda0da4eaff"), "non-identifying id attribute should survive: {out}");
+        assert!(out.contains("Doralice"), "track title should survive: {out}");
+    }
+
+    /// Real regression from a live `GetKeyMapping` capture (against an
+    /// AudioCast with a real Tidal Mix preset configured): its `<Name>` tag
+    /// holds the preset's own name ("My Mix 1_#~2026-07-08 16:49:59"), not a
+    /// device identity — `XML_ANON_KEY_SUBSTRINGS` previously still had a
+    /// bare `"name"` entry (unlike the JSON side, which already special-
+    /// cased this for `preset_list[].name`), so this got fully character-
+    /// scrubbed into "xx xxx x_#~xxxx-xx-xx xx:xx:xx". `ListName`/
+    /// `PresetName`/`ShowName` (also seen in real `PlayQueue` responses) are
+    /// the same story. Non-identifying content (`Source`) must also survive.
+    #[test]
+    fn anonymize_xml_does_not_scrub_playqueue_preset_name() {
+        let xml = "<QueueContext>&lt;KeyList&gt;&lt;Key1&gt;\
+                   &lt;Name&gt;My Mix 1_#~2026-07-08 16:49:59&lt;/Name&gt;\
+                   &lt;Source&gt;Tidal&lt;/Source&gt;\
+                   &lt;/Key1&gt;&lt;/KeyList&gt;</QueueContext>";
+        let out = anonymize_xml(xml, None);
+        assert!(out.contains("My Mix 1_#~2026-07-08 16:49:59"), "preset name must survive: {out}");
+        assert!(out.contains("Tidal"), "source must survive: {out}");
+    }
+
+    /// Real shape from a live `GetPositionInfo`/`GetMediaInfo`/`GetInfoEx`
+    /// capture: `TrackMetaData`'s escaped DIDL-Lite contains an
+    /// `upnp:albumArtURI` pointing at a *separate* LAN device (a DLNA/Music-
+    /// Assistant server, not the target device itself) — per explicit
+    /// request, artwork URLs are deliberately never scrubbed unless they're
+    /// the device's own address (see `anonymize_art_url()`), so this must
+    /// survive untouched: capture files need to stay usable for testing
+    /// real artwork downloads. `device_ip` absent (`None`) means "unknown,"
+    /// which must behave the same as "known but different" — never scrub
+    /// without positive confirmation it's the device's own IP.
+    #[test]
+    fn anonymize_xml_leaves_third_party_art_url_untouched() {
+        let xml = "<TrackMetaData>&lt;DIDL-Lite&gt;&lt;dc:title&gt;Foo&lt;/dc:title&gt;\
+                   &lt;upnp:albumArtURI&gt;http://10.1.1.10:8097/imageproxy/abc?size=512\
+                   &lt;/upnp:albumArtURI&gt;&lt;/DIDL-Lite&gt;</TrackMetaData>";
+        assert_eq!(anonymize_xml(xml, None), xml);
+        assert_eq!(anonymize_xml(xml, Some("10.1.1.73")), xml);
+    }
+
+    /// Real case (a USB stick's cover art, served from the device's *own*
+    /// embedded web server): when the artwork URL's IP matches the known
+    /// `device_ip`, it's the device's real address like everywhere else, so
+    /// it still gets scrubbed — the one exception to
+    /// `anonymize_xml_leaves_third_party_art_url_untouched` above.
+    #[test]
+    fn anonymize_xml_scrubs_art_url_matching_device_ip() {
+        let xml = "<TrackMetaData>&lt;DIDL-Lite&gt;&lt;dc:title&gt;Foo&lt;/dc:title&gt;\
+                   &lt;upnp:albumArtURI&gt;https://10.1.1.73/data/lmp_cover_abc.jpeg\
+                   &lt;/upnp:albumArtURI&gt;&lt;/DIDL-Lite&gt;</TrackMetaData>";
+        let out = anonymize_xml(xml, Some("10.1.1.73"));
+        assert!(!out.contains("10.1.1.73"), "device's own IP should be scrubbed: {out}");
+        assert!(out.contains("Foo"), "non-identifying content should survive: {out}");
+        assert!(out.contains("lmp_cover_abc.jpeg"), "rest of URL should survive: {out}");
+    }
 }

@@ -2276,7 +2276,7 @@
     },
     {
       "command": "getMRMSubLPF:0.0.0.0",
-      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getMRMSubLPF:0.0.0.0",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getMRMSubLPF:x.x.x.x",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
@@ -2294,7 +2294,7 @@
               "sub_filter": 1
             },
             "type": "wireless",
-            "uuid": "FF98F7F4075B5A90FA9572C3"
+            "uuid": "xxxxxxxxxxxxxxxxxxxxxxxx"
           }
         ],
         "version": "1.0"
@@ -3060,7 +3060,7 @@
           "errorDescribe": "unknow error",
           "errorType": "-1000",
           "mainDelay": "-1000.000",
-          "mainSubExtraDelay": "-1000.000",
+          "mainSubExtraDelay": "-xxxx.xxx",
           "subDelay": "-1000.000"
         },
         "category": "mainsubdelay"
@@ -3265,11 +3265,11 @@
             "battery_percent": 0,
             "channel": 0,
             "group_channel": -1,
-            "ip": "10.1.1.72",
+            "ip": "xx.x.x.xx",
             "mute": 0,
             "name": "WiiM Bu",
             "type": "WiiMu-AmlogicA1",
-            "uuid": "FF98F7F4B23AAA2E234BEF71",
+            "uuid": "xxxxxxxxxxxxxxxxxxxxxxxx",
             "version": "4.3",
             "volume": 30
           }
@@ -3288,18 +3288,18 @@
       "http_status": 200,
       "format": "json",
       "body": {
-        "current_group_id": "8424FDA1-F543-4847-BE20-5280FE0E39D2",
+        "current_group_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
         "grouplist": [
           {
             "channel": -1,
-            "group_id": "8424FDA1-F543-4847-BE20-5280FE0E39D2",
+            "group_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
             "group_name": "WiiM WorkBu + 1",
             "group_type": 1,
             "slavelist": [
               {
                 "channel": -1,
                 "name": "WiiM Bu",
-                "uuid": "FF98F7F4B23AAA2E234BEF71"
+                "uuid": "xxxxxxxxxxxxxxxxxxxxxxxx"
               }
             ],
             "update_time": "1783477180"
@@ -3573,7 +3573,7 @@
         "ethDisconnectedCount": 1,
         "ethIsStaticIp": 0,
         "ethNotReady": 0,
-        "lastDisconnectedMsg": "2026-07-06 07:31:35 <3>CTRL-EVENT-DISCONNECTED bssid=bc:fc:e7:2b:9e:4e reason=3 locally_generated=1",
+        "lastDisconnectedMsg": "2026-07-06 07:31:35 <3>CTRL-EVENT-DISCONNECTED bssid=xx:xx:xx:xx:xx:xx reason=3 locally_generated=1",
         "lastDisconnectedTime": 7,
         "pingCheckFailedCount": 0,
         "wlanAbnormalRebootTimes": 0,
@@ -3588,7 +3588,7 @@
           "meshInfo": [
             {
               "auth": "WPA3SAE",
-              "bssid": "bc:fc:e7:2b:9e:4e",
+              "bssid": "xx:xx:xx:xx:xx:xx",
               "channel": "36",
               "rssi": "-69"
             }
@@ -4144,7 +4144,7 @@
         "http_status": 200,
         "response": {
           "format": "xml",
-          "body": "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\"><s:Body>\n<u:GetInfoExResponse xmlns:u=\"urn:schemas-upnp-org:service:AVTransport:1\">\r\n<CurrentTransportState>PLAYING</CurrentTransportState>\r\n<CurrentTransportStatus>OK</CurrentTransportStatus>\r\n<CurrentSpeed>1</CurrentSpeed>\r\n<Track>0</Track>\r\n<TrackDuration>00:03:29</TrackDuration>\r\n<TrackMetaData>&lt;?xml version=&quot;1.0&quot; encoding=&quot;UTF-8&quot;?&gt;\n&lt;DIDL-Lite xmlns:dc=&quot;http://purl.org/dc/elements/1.1/&quot; xmlns:upnp=&quot;urn:schemas-upnp-org:metadata-1-0/upnp/&quot; xmlns:song=&quot;www.wiimu.com/song/&quot; xmlns=&quot;urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/&quot;&gt;\n&lt;upnp:class&gt;object.item.audioItem.musicTrack&lt;/upnp:class&gt;\n&lt;item id=&quot;0&quot;&gt;\n&lt;song:actualQuality&gt;LOSSLESS&lt;/song:actualQuality&gt;\n&lt;song:rate_hz&gt;44100&lt;/song:rate_hz&gt;\n&lt;song:format_s&gt;16&lt;/song:format_s&gt;\n&lt;song:bitrate&gt;766&lt;/song:bitrate&gt;\n&lt;res protocolInfo=&quot;http-get:*:*:*&quot; duration=&quot;209000&quot;&gt;&lt;/res&gt;\n&lt;dc:title&gt;Bass &amp;amp; Drum Intro&lt;/dc:title&gt;\n&lt;upnp:artist&gt;Nils Lofgren Band&lt;/upnp:artist&gt;\n&lt;upnp:album&gt;Nils Lofgren Band Live&lt;/upnp:album&gt;\n&lt;upnp:albumArtURI&gt;https://resources.tidal.com/images/a21d1d66/cb9c/4442/95ca/e2cc52ae5545/1280x1280.jpg&lt;/upnp:albumArtURI&gt;\n&lt;/item&gt;\n&lt;/DIDL-Lite&gt;\n</TrackMetaData>\r\n<TrackURI></TrackURI>\r\n<RelTime>00:00:18</RelTime>\r\n<AbsTime>NOT_IMPLEMENTED</AbsTime>\r\n<RelCount>2147483647</RelCount>\r\n<AbsCount>2147483647</AbsCount>\r\n<CurrentVolume>28</CurrentVolume>\r\n<CurrentMute>0</CurrentMute>\r\n<CurrentChannel>0</CurrentChannel>\r\n<LoopMode>4</LoopMode>\r\n<PlayType>32</PlayType>\r\n<PreSwitchMode>tidal</PreSwitchMode>\r\n<SlaveFlag>0</SlaveFlag>\r\n<MasterUUID></MasterUUID>\r\n<SlaveList>{ &quot;slaves&quot;: 1, &quot;wmrm_version&quot;: &quot;4.3&quot;, &quot;surround&quot;: 0, &quot;group_type&quot;: 1, &quot;slave_list&quot;: [ { &quot;name&quot;: &quot;WiiM Bu&quot;, &quot;uuid&quot;: &quot;FF98F7F4B23AAA2E234BEF71&quot;, &quot;ip&quot;: &quot;10.1.1.72&quot;, &quot;version&quot;: &quot;4.3&quot;, &quot;type&quot;: &quot;WiiMu-AmlogicA1&quot;, &quot;channel&quot;: 0, &quot;volume&quot;: 30, &quot;mute&quot;: 0, &quot;battery_percent&quot;: 0, &quot;battery_charging&quot;: 0, &quot;group_channel&quot;: -1 } ] }</SlaveList>\r\n<PlayMedium>TIDAL_CONNECT</PlayMedium>\r\n<TrackSource>Tidal</TrackSource>\r\n<InternetAccess>1</InternetAccess>\r\n<VerUpdateFlag>0</VerUpdateFlag>\r\n<VerUpdateStatus>0</VerUpdateStatus>\r\n<BatteryFlag>0</BatteryFlag>\r\n<BatteryPercent>0</BatteryPercent>\r\n<AlarmFlag>0</AlarmFlag>\r\n<TimeStamp>154251833</TimeStamp>\r\n<SubNum>0</SubNum>\r\n<SpotifyActive>1</SpotifyActive>\r\n</u:GetInfoExResponse>\r\n</s:Body> </s:Envelope>"
+          "body": "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\"><s:Body>\n<u:GetInfoExResponse xmlns:u=\"urn:schemas-upnp-org:service:AVTransport:1\">\r\n<CurrentTransportState>PLAYING</CurrentTransportState>\r\n<CurrentTransportStatus>OK</CurrentTransportStatus>\r\n<CurrentSpeed>1</CurrentSpeed>\r\n<Track>0</Track>\r\n<TrackDuration>00:03:29</TrackDuration>\r\n<TrackMetaData>&lt;?xml version=&quot;1.0&quot; encoding=&quot;UTF-8&quot;?&gt;\n&lt;DIDL-Lite xmlns:dc=&quot;http://purl.org/dc/elements/1.1/&quot; xmlns:upnp=&quot;urn:schemas-upnp-org:metadata-1-0/upnp/&quot; xmlns:song=&quot;www.wiimu.com/song/&quot; xmlns=&quot;urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/&quot;&gt;\n&lt;upnp:class&gt;object.item.audioItem.musicTrack&lt;/upnp:class&gt;\n&lt;item id=&quot;0&quot;&gt;\n&lt;song:actualQuality&gt;LOSSLESS&lt;/song:actualQuality&gt;\n&lt;song:rate_hz&gt;44100&lt;/song:rate_hz&gt;\n&lt;song:format_s&gt;16&lt;/song:format_s&gt;\n&lt;song:bitrate&gt;766&lt;/song:bitrate&gt;\n&lt;res protocolInfo=&quot;http-get:*:*:*&quot; duration=&quot;209000&quot;&gt;&lt;/res&gt;\n&lt;dc:title&gt;Bass &amp;amp; Drum Intro&lt;/dc:title&gt;\n&lt;upnp:artist&gt;Nils Lofgren Band&lt;/upnp:artist&gt;\n&lt;upnp:album&gt;Nils Lofgren Band Live&lt;/upnp:album&gt;\n&lt;upnp:albumArtURI&gt;https://resources.tidal.com/images/a21d1d66/cb9c/4442/95ca/e2cc52ae5545/1280x1280.jpg&lt;/upnp:albumArtURI&gt;\n&lt;/item&gt;\n&lt;/DIDL-Lite&gt;\n</TrackMetaData>\r\n<TrackURI></TrackURI>\r\n<RelTime>00:00:18</RelTime>\r\n<AbsTime>NOT_IMPLEMENTED</AbsTime>\r\n<RelCount>2147483647</RelCount>\r\n<AbsCount>2147483647</AbsCount>\r\n<CurrentVolume>28</CurrentVolume>\r\n<CurrentMute>0</CurrentMute>\r\n<CurrentChannel>0</CurrentChannel>\r\n<LoopMode>4</LoopMode>\r\n<PlayType>32</PlayType>\r\n<PreSwitchMode>tidal</PreSwitchMode>\r\n<SlaveFlag>0</SlaveFlag>\r\n<MasterUUID></MasterUUID>\r\n<SlaveList>{&quot;group_type&quot;:1,&quot;slave_list&quot;:[{&quot;battery_charging&quot;:0,&quot;battery_percent&quot;:0,&quot;channel&quot;:0,&quot;group_channel&quot;:-1,&quot;ip&quot;:&quot;xx.x.x.xx&quot;,&quot;mute&quot;:0,&quot;name&quot;:&quot;WiiM Bu&quot;,&quot;type&quot;:&quot;WiiMu-AmlogicA1&quot;,&quot;uuid&quot;:&quot;xxxxxxxxxxxxxxxxxxxxxxxx&quot;,&quot;version&quot;:&quot;4.3&quot;,&quot;volume&quot;:30}],&quot;slaves&quot;:1,&quot;surround&quot;:0,&quot;wmrm_version&quot;:&quot;4.3&quot;}</SlaveList>\r\n<PlayMedium>TIDAL_CONNECT</PlayMedium>\r\n<TrackSource>Tidal</TrackSource>\r\n<InternetAccess>1</InternetAccess>\r\n<VerUpdateFlag>0</VerUpdateFlag>\r\n<VerUpdateStatus>0</VerUpdateStatus>\r\n<BatteryFlag>0</BatteryFlag>\r\n<BatteryPercent>0</BatteryPercent>\r\n<AlarmFlag>0</AlarmFlag>\r\n<TimeStamp>154251833</TimeStamp>\r\n<SubNum>0</SubNum>\r\n<SpotifyActive>1</SpotifyActive>\r\n</u:GetInfoExResponse>\r\n</s:Body> </s:Envelope>"
         }
       },
       {

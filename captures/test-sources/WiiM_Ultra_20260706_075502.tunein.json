@@ -2274,7 +2274,7 @@
     },
     {
       "command": "getMRMSubLPF:0.0.0.0",
-      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getMRMSubLPF:0.0.0.0",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getMRMSubLPF:x.x.x.x",
       "attempts": 1,
       "outcome": "ok",
       "http_status": 200,
@@ -2292,7 +2292,7 @@
               "sub_filter": 1
             },
             "type": "wireless",
-            "uuid": "FF98F7F4075B5A90FA9572C3"
+            "uuid": "xxxxxxxxxxxxxxxxxxxxxxxx"
           }
         ],
         "version": "1.0"
@@ -3058,7 +3058,7 @@
           "errorDescribe": "unknow error",
           "errorType": "-1000",
           "mainDelay": "-1000.000",
-          "mainSubExtraDelay": "-1000.000",
+          "mainSubExtraDelay": "-xxxx.xxx",
           "subDelay": "-1000.000"
         },
         "category": "mainsubdelay"
@@ -3541,7 +3541,7 @@
         "ethDisconnectedCount": 1,
         "ethIsStaticIp": 0,
         "ethNotReady": 0,
-        "lastDisconnectedMsg": "2026-07-06 07:31:35 <3>CTRL-EVENT-DISCONNECTED bssid=bc:fc:e7:2b:9e:4e reason=3 locally_generated=1",
+        "lastDisconnectedMsg": "2026-07-06 07:31:35 <3>CTRL-EVENT-DISCONNECTED bssid=xx:xx:xx:xx:xx:xx reason=3 locally_generated=1",
         "lastDisconnectedTime": 21,
         "pingCheckFailedCount": 0,
         "wlanAbnormalRebootTimes": 0,
@@ -3556,7 +3556,7 @@
           "meshInfo": [
             {
               "auth": "WPA3SAE",
-              "bssid": "bc:fc:e7:2b:9e:4e",
+              "bssid": "xx:xx:xx:xx:xx:xx",
               "channel": "36",
               "rssi": "-62"
             }
@@ -4112,7 +4112,7 @@
         "http_status": 200,
         "response": {
           "format": "xml",
-          "body": "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\"><s:Body>\n<u:GetInfoExResponse xmlns:u=\"urn:schemas-upnp-org:service:AVTransport:1\">\r\n<CurrentTransportState>PLAYING</CurrentTransportState>\r\n<CurrentTransportStatus>OK</CurrentTransportStatus>\r\n<CurrentSpeed>1</CurrentSpeed>\r\n<Track>1</Track>\r\n<TrackDuration>00:00:00</TrackDuration>\r\n<TrackMetaData>&lt;?xml version=&quot;1.0&quot;?&gt;\r\n&lt;DIDL-Lite xmlns:dc=&quot;http://purl.org/dc/elements/1.1/&quot; xmlns:upnp=&quot;urn:schemas-upnp-org:metadata-1-0/upnp/&quot; xmlns:song=&quot;www.wiimu.com/song/&quot; xmlns=&quot;urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/&quot;&gt;\r\n&lt;upnp:class&gt;object.item.audioItem.musicTrack&lt;/upnp:class&gt;\r\n&lt;item id=&quot;&quot; type=&quot;playlist&quot; name=&quot;ABC Jazz&quot;&gt;\r\n&lt;song:id&gt;s44935&lt;/song:id&gt;\r\n&lt;song:isLive&gt;1&lt;/song:isLive&gt;\r\n&lt;res protocolInfo=&quot;http-get:*:audio/mpeg:DLNA.ORG_PN=MP3;DLNA.ORG_OP=01;&quot; duration=&quot;0&quot;&gt;&lt;/res&gt;\r\n&lt;dc:title&gt;Foolin’ Myself&lt;/dc:title&gt;\r\n&lt;upnp:artist&gt;Lee Konitz&lt;/upnp:artist&gt;\r\n&lt;dc:subtitle&gt;ABC Jazz&lt;/dc:subtitle&gt;\r\n&lt;upnp:albumArtURI&gt;http://cdn-albums.tunein.com/gn/1R0QGT1XPQg.jpg&lt;/upnp:albumArtURI&gt;\r\n&lt;song:bitrate&gt;0&lt;/song:bitrate&gt;\r\n&lt;song:format_s&gt;32&lt;/song:format_s&gt;\r\n&lt;song:rate_hz&gt;44100&lt;/song:rate_hz&gt;\r\n&lt;/item&gt;\r\n&lt;/DIDL-Lite&gt;\r\n</TrackMetaData>\r\n<TrackURI>https://streaming.abc-cdn.net.au/audio/hls/abcjazz.m3u8</TrackURI>\r\n<RelTime>00:00:48</RelTime>\r\n<AbsTime>NOT_IMPLEMENTED</AbsTime>\r\n<RelCount>2147483647</RelCount>\r\n<AbsCount>2147483647</AbsCount>\r\n<CurrentVolume>17</CurrentVolume>\r\n<CurrentMute>0</CurrentMute>\r\n<CurrentChannel>0</CurrentChannel>\r\n<LoopMode>4</LoopMode>\r\n<PlayType>10</PlayType>\r\n<PreSwitchMode>wifi</PreSwitchMode>\r\n<SlaveFlag>0</SlaveFlag>\r\n<MasterUUID></MasterUUID>\r\n<SlaveList>{ &quot;slaves&quot;: 0, &quot;wmrm_version&quot;: &quot;4.3&quot;, &quot;surround&quot;: 0, &quot;group_type&quot;: -1 }</SlaveList>\r\n<PlayMedium>RADIO-NETWORK</PlayMedium>\r\n<TrackSource>newTuneIn</TrackSource>\r\n<InternetAccess>1</InternetAccess>\r\n<VerUpdateFlag>0</VerUpdateFlag>\r\n<VerUpdateStatus>20</VerUpdateStatus>\r\n<BatteryFlag>0</BatteryFlag>\r\n<BatteryPercent>0</BatteryPercent>\r\n<AlarmFlag>0</AlarmFlag>\r\n<TimeStamp>1432223</TimeStamp>\r\n<SubNum>0</SubNum>\r\n<SpotifyActive>0</SpotifyActive>\r\n</u:GetInfoExResponse>\r\n</s:Body> </s:Envelope>"
+          "body": "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\"><s:Body>\n<u:GetInfoExResponse xmlns:u=\"urn:schemas-upnp-org:service:AVTransport:1\">\r\n<CurrentTransportState>PLAYING</CurrentTransportState>\r\n<CurrentTransportStatus>OK</CurrentTransportStatus>\r\n<CurrentSpeed>1</CurrentSpeed>\r\n<Track>1</Track>\r\n<TrackDuration>00:00:00</TrackDuration>\r\n<TrackMetaData>&lt;?xml version=&quot;1.0&quot;?&gt;\r\n&lt;DIDL-Lite xmlns:dc=&quot;http://purl.org/dc/elements/1.1/&quot; xmlns:upnp=&quot;urn:schemas-upnp-org:metadata-1-0/upnp/&quot; xmlns:song=&quot;www.wiimu.com/song/&quot; xmlns=&quot;urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/&quot;&gt;\r\n&lt;upnp:class&gt;object.item.audioItem.musicTrack&lt;/upnp:class&gt;\r\n&lt;item id=&quot;&quot; type=&quot;playlist&quot; name=&quot;ABC Jazz&quot;&gt;\r\n&lt;song:id&gt;s44935&lt;/song:id&gt;\r\n&lt;song:isLive&gt;1&lt;/song:isLive&gt;\r\n&lt;res protocolInfo=&quot;http-get:*:audio/mpeg:DLNA.ORG_PN=MP3;DLNA.ORG_OP=01;&quot; duration=&quot;0&quot;&gt;&lt;/res&gt;\r\n&lt;dc:title&gt;Foolin’ Myself&lt;/dc:title&gt;\r\n&lt;upnp:artist&gt;Lee Konitz&lt;/upnp:artist&gt;\r\n&lt;dc:subtitle&gt;ABC Jazz&lt;/dc:subtitle&gt;\r\n&lt;upnp:albumArtURI&gt;http://cdn-albums.tunein.com/gn/1R0QGT1XPQg.jpg&lt;/upnp:albumArtURI&gt;\r\n&lt;song:bitrate&gt;0&lt;/song:bitrate&gt;\r\n&lt;song:format_s&gt;32&lt;/song:format_s&gt;\r\n&lt;song:rate_hz&gt;44100&lt;/song:rate_hz&gt;\r\n&lt;/item&gt;\r\n&lt;/DIDL-Lite&gt;\r\n</TrackMetaData>\r\n<TrackURI>https://streaming.abc-cdn.net.au/audio/hls/abcjazz.m3u8</TrackURI>\r\n<RelTime>00:00:48</RelTime>\r\n<AbsTime>NOT_IMPLEMENTED</AbsTime>\r\n<RelCount>2147483647</RelCount>\r\n<AbsCount>2147483647</AbsCount>\r\n<CurrentVolume>17</CurrentVolume>\r\n<CurrentMute>0</CurrentMute>\r\n<CurrentChannel>0</CurrentChannel>\r\n<LoopMode>4</LoopMode>\r\n<PlayType>10</PlayType>\r\n<PreSwitchMode>wifi</PreSwitchMode>\r\n<SlaveFlag>0</SlaveFlag>\r\n<MasterUUID></MasterUUID>\r\n<SlaveList>{&quot;group_type&quot;:-1,&quot;slaves&quot;:0,&quot;surround&quot;:0,&quot;wmrm_version&quot;:&quot;4.3&quot;}</SlaveList>\r\n<PlayMedium>RADIO-NETWORK</PlayMedium>\r\n<TrackSource>newTuneIn</TrackSource>\r\n<InternetAccess>1</InternetAccess>\r\n<VerUpdateFlag>0</VerUpdateFlag>\r\n<VerUpdateStatus>20</VerUpdateStatus>\r\n<BatteryFlag>0</BatteryFlag>\r\n<BatteryPercent>0</BatteryPercent>\r\n<AlarmFlag>0</AlarmFlag>\r\n<TimeStamp>1432223</TimeStamp>\r\n<SubNum>0</SubNum>\r\n<SpotifyActive>0</SpotifyActive>\r\n</u:GetInfoExResponse>\r\n</s:Body> </s:Envelope>"
         }
       },
       {
