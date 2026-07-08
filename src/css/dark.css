@@ -67,6 +67,10 @@ window { background-color: #0a0a0a; }
 .seek-scale trough { min-height: 4px; border-radius: 2px; background-color: #2a2a2a; }
 .seek-scale trough highlight { background-color: @rustywiim_accent; }
 .seek-scale slider { min-width: 0; min-height: 0; margin: 0; padding: 0; opacity: 0; }
+/* Adwaita's own :disabled dimming would normally handle this, but our
+   explicit trough/highlight colors above are APPLICATION-priority and
+   otherwise win over it regardless of sensitivity */
+.seek-scale:disabled { opacity: 0.35; }
 .preset-tile  { border-radius: 8px; background-color: #141414; padding: 4px; }
 .preset-tile:hover { background-color: #202020; }
 .preset-art   { border-radius: 5px; min-width: 40px; min-height: 40px; }

@@ -1597,7 +1597,7 @@ impl DeviceState {
                 inner.playback.source_name =
                     playback::decode_source_name_upnp(&info.play_medium, &info.track_source);
                 let caps =
-                    playback::decode_transport_caps_upnp(&info.play_medium, &info.track_source, info.gui_behavior);
+                    playback::decode_transport_caps_upnp(&info.play_medium, &info.track_source, info.play_type, info.gui_behavior);
                 dbg(&format!(
                     "transport caps (upnp): play_medium={:?} track_source={:?} gui_behavior={:?} -> {caps:?}",
                     info.play_medium, info.track_source, info.gui_behavior,

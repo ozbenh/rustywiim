@@ -132,7 +132,7 @@ pub struct AudioQuality {
 /// Which transport controls make sense for the *current source* — dynamic,
 /// changes with what's playing, unlike `capabilities::DeviceCapabilities`
 /// (static, probed once per device). Modeled after `pywiim`'s
-/// `SourceCapability` flag set and `SOURCE_CAPABILITIES` table
+/// `SourceCapability` flag set and `SOURCE_CAPABILITIES` table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SourceCapabilities {
     pub can_next:     bool,
@@ -368,11 +368,10 @@ fn decode_next_prev_http(mode: i32, vendor: &str) -> (bool, bool) {
     (true, true)
 }
 
-/// `mode` values that are fixed physical audio-passthrough inputs — no
-/// application/service behind them at all, so shuffle/repeat/seek are
-/// meaningless by construction. Same set `decode_next_prev_http` uses for
-/// its own physical-input case.
-fn is_physical_input_http(mode: i32) -> bool {
+/// `mode`/`play_type` values that are fixed physical audio-passthrough
+/// inputs — no application/service behind them at all, so shuffle/repeat/
+/// seek are meaningless by construction.
+fn is_physical_input_mode(mode: i32) -> bool {
     matches!(mode, 40 | 60 | 43 | 44 | 49 | 54)
 }
 
@@ -389,7 +388,7 @@ fn is_physical_input_http(mode: i32) -> bool {
 /// which tier a given session is in, and revisiting needs a free-account
 /// retest that hasn't happened yet.
 fn loop_tier_http(mode: i32, vendor: &str) -> LoopTier {
-    if is_physical_input_http(mode) {
+    if is_physical_input_mode(mode) {
         return LoopTier::None;
     }
     if matches!(mode, 1 | 2 | 5 | 41 | 99) {
@@ -640,10 +639,10 @@ const PLAY_MEDIUMS_CTRL: &[&str] = &["RADIO-NETWORK", "THIRD-DLNA", "LINE-IN", "
 /// rewinding back into history (confirmed on `"Pandora2"` via a real
 /// capture — see `TRACK_SOURCES_CTRL`'s doc comment).
 pub fn decode_transport_caps_upnp(
-    play_medium: &str, track_source: &str, gui_behavior: Option<GuiBehavior>,
+    play_medium: &str, track_source: &str, play_type: i32, gui_behavior: Option<GuiBehavior>,
 ) -> SourceCapabilities {
     let (can_next, can_previous) = decode_next_prev_upnp(play_medium, track_source, gui_behavior);
-    let (can_shuffle, can_repeat, can_seek) = loop_tier_upnp(play_medium, track_source).shuffle_repeat_seek();
+    let (can_shuffle, can_repeat, can_seek) = loop_tier_upnp(play_medium, track_source, play_type).shuffle_repeat_seek();
     SourceCapabilities { can_next, can_previous, can_shuffle, can_repeat, can_seek }
 }
 
@@ -653,8 +652,8 @@ pub fn decode_transport_caps_upnp(
 /// Spotify caveat (identical here: follows `pywiim`'s static
 /// `"spotify": FULL_CONTROL` as-is, known-questionable given the
 /// contradicting real `guibehavior` capture, not corrected yet).
-fn loop_tier_upnp(play_medium: &str, track_source: &str) -> LoopTier {
-    if PHYSICAL_INPUTS_UPNP.contains(&play_medium) {
+fn loop_tier_upnp(play_medium: &str, track_source: &str, play_type: i32) -> LoopTier {
+    if is_physical_input_mode(play_type) {
         return LoopTier::None;
     }
     // RADIO-NETWORK/THIRD-DLNA already disable next/previous entirely
@@ -695,13 +694,6 @@ fn decode_next_prev_upnp(
     }
     (true, true)
 }
-
-/// `PlayMedium` values that are fixed physical audio-passthrough inputs —
-/// the subset of `PLAY_MEDIUMS_CTRL` that's an actual physical jack, not
-/// e.g. `RADIO-NETWORK`/`THIRD-DLNA` (which have no shuffle/repeat/seek
-/// concept for a different reason — a live/externally-pushed stream, not
-/// a lack of any application layer at all).
-const PHYSICAL_INPUTS_UPNP: &[&str] = &["LINE-IN", "OPTICAL", "HDMI", "PHONO"];
 
 /// Translates a non-empty `song:actualQuality` into the WiiM app's own
 /// display vocabulary. Only two mappings are confirmed from real captures —
@@ -942,14 +934,14 @@ mod tests {
 
     #[test]
     fn transport_caps_upnp_no_skip_mediums_disable_both() {
-        assert_eq!(decode_transport_caps_upnp("RADIO-NETWORK", "newTuneIn", None), caps_none_tier(false, false));
-        assert_eq!(decode_transport_caps_upnp("LINE-IN", "", None), caps_none_tier(false, false));
-        assert_eq!(decode_transport_caps_upnp("HDMI", "", None), caps_none_tier(false, false));
+        assert_eq!(decode_transport_caps_upnp("RADIO-NETWORK", "newTuneIn", 10, None), caps_none_tier(false, false));
+        assert_eq!(decode_transport_caps_upnp("LINE-IN", "", 40, None), caps_none_tier(false, false));
+        assert_eq!(decode_transport_caps_upnp("HDMI", "", 49, None), caps_none_tier(false, false));
     }
 
     #[test]
     fn transport_caps_upnp_station_services_disable_previous_only() {
-        assert_eq!(decode_transport_caps_upnp("STATION-NETWORK", "Pandora2", None), caps(true, false));
+        assert_eq!(decode_transport_caps_upnp("STATION-NETWORK", "Pandora2", 10, None), caps(true, false));
     }
 
     #[test]
@@ -958,7 +950,7 @@ mod tests {
         // display, both of which wrongly claim neither works) — `next` is
         // always forced true for Spotify; `prev` without a `gui_behavior`
         // reading defaults to the conservative (free-tier-like) `false`.
-        assert_eq!(decode_transport_caps_upnp("SPOTIFY", "spotify:playlist:37i9dQZF1EIZAuCHB2O9dH", None), caps(true, false));
+        assert_eq!(decode_transport_caps_upnp("SPOTIFY", "spotify:playlist:37i9dQZF1EIZAuCHB2O9dH", 31, None), caps(true, false));
     }
 
     #[test]
@@ -966,7 +958,7 @@ mod tests {
         // Confirmed via a real free-tier capture: guibehavior claimed
         // next:false, but pressing the button actually skipped forward.
         let gb = GuiBehavior { next: false, prev: false };
-        assert_eq!(decode_transport_caps_upnp("SPOTIFY", "spotify:playlist:x", Some(gb)), caps(true, false));
+        assert_eq!(decode_transport_caps_upnp("SPOTIFY", "spotify:playlist:x", 31, Some(gb)), caps(true, false));
     }
 
     #[test]
@@ -974,9 +966,9 @@ mod tests {
         // Confirmed via two real captures on the same playlist mechanism,
         // differing only by account tier.
         let free = GuiBehavior { next: false, prev: false };
-        assert_eq!(decode_transport_caps_upnp("SPOTIFY", "spotify:playlist:free", Some(free)), caps(true, false));
+        assert_eq!(decode_transport_caps_upnp("SPOTIFY", "spotify:playlist:free", 31, Some(free)), caps(true, false));
         let premium = GuiBehavior { next: true, prev: true };
-        assert_eq!(decode_transport_caps_upnp("SPOTIFY", "spotify:playlist:premium", Some(premium)), caps(true, true));
+        assert_eq!(decode_transport_caps_upnp("SPOTIFY", "spotify:playlist:premium", 31, Some(premium)), caps(true, true));
     }
 
     #[test]
@@ -984,24 +976,24 @@ mod tests {
         // A source the static heuristic would otherwise default-enable,
         // but guibehavior says otherwise for this specific track — trust it.
         let gb = GuiBehavior { next: false, prev: true };
-        assert_eq!(decode_transport_caps_upnp("TIDAL_CONNECT", "Tidal", Some(gb)), caps(false, true));
+        assert_eq!(decode_transport_caps_upnp("TIDAL_CONNECT", "Tidal", 32, Some(gb)), caps(false, true));
     }
 
     #[test]
     fn transport_caps_upnp_unknown_medium_defaults_permissive() {
-        assert_eq!(decode_transport_caps_upnp("TIDAL_CONNECT", "Tidal", None), caps(true, true));
-        assert_eq!(decode_transport_caps_upnp("SONGLIST-LOCAL", "UPnPServer", None), caps(true, true));
+        assert_eq!(decode_transport_caps_upnp("TIDAL_CONNECT", "Tidal", 32, None), caps(true, true));
+        assert_eq!(decode_transport_caps_upnp("SONGLIST-LOCAL", "UPnPServer", 11, None), caps(true, true));
     }
 
     #[test]
     fn transport_caps_upnp_bluetooth_and_cast_are_track_control_only() {
-        assert_eq!(decode_transport_caps_upnp("BLUETOOTH", "", None), caps_track_only(true, true));
-        assert_eq!(decode_transport_caps_upnp("CAST", "", None), caps_track_only(true, true));
+        assert_eq!(decode_transport_caps_upnp("BLUETOOTH", "", 41, None), caps_track_only(true, true));
+        assert_eq!(decode_transport_caps_upnp("CAST", "", 5, None), caps_track_only(true, true));
     }
 
     #[test]
     fn transport_caps_upnp_iheartradio_track_source_is_pure_radio_for_loop() {
-        let result = decode_transport_caps_upnp("STATION-NETWORK", "iHeartRadio", None);
+        let result = decode_transport_caps_upnp("STATION-NETWORK", "iHeartRadio", 10, None);
         assert_eq!((result.can_next, result.can_previous), (true, false));
         assert!(!result.can_shuffle && !result.can_repeat && !result.can_seek);
     }
@@ -1026,10 +1018,20 @@ mod tests {
         let physical = decode_transport_caps_http(54, ""); // Phono
         assert!(!physical.can_shuffle && !physical.can_repeat && !physical.can_seek);
 
-        let non_physical = decode_transport_caps_upnp("TIDAL_CONNECT", "Tidal", None);
+        let non_physical = decode_transport_caps_upnp("TIDAL_CONNECT", "Tidal", 32, None);
         assert!(non_physical.can_shuffle && non_physical.can_repeat && non_physical.can_seek);
-        let physical = decode_transport_caps_upnp("OPTICAL", "", None);
+        let physical = decode_transport_caps_upnp("OPTICAL", "", 43, None);
         assert!(!physical.can_shuffle && !physical.can_repeat && !physical.can_seek);
+    }
+
+    #[test]
+    fn transport_caps_upnp_physical_input_check_is_driven_by_play_type_not_play_medium() {
+        // play_type (== HDMI's 49) decides this, not the play_medium string
+        // — confirmed via real captures that play_type == HTTP's mode
+        // byte-for-byte, so this is the same check decode_transport_caps_http
+        // makes, not a separate PlayMedium-keyed table.
+        let result = decode_transport_caps_upnp("SOME_UNRECOGNIZED_MEDIUM", "", 49, None);
+        assert!(!result.can_shuffle && !result.can_repeat && !result.can_seek);
     }
 
     #[test]

@@ -406,10 +406,24 @@ impl DeviceWindowInner {
                 let tot_s = ps.duration.as_secs();
                 if tot_s > 0 {
                     self.pw.seek.set_range(0.0, tot_s as f64);
-                    self.pw.seek.set_value(cur_s as f64);
                 }
+                // Keep the fill empty while seeking isn't possible, rather
+                // than showing a real (but non-interactive/misleading)
+                // position — the position ticking away on a source with no
+                // real seek concept (radio, a physical input) reads as
+                // "there's a track here to scrub through," which isn't true.
+                self.pw.seek.set_value(if ps.caps.can_seek { cur_s as f64 } else { 0.0 });
                 self.pw.pos.set_label(&format!("{}:{:02}", cur_s / 60, cur_s % 60));
                 self.pw.dur.set_label(&format!("{}:{:02}", tot_s / 60, tot_s % 60));
+                // Duration is meaningless when unknown (0), regardless of
+                // whether seeking itself is possible — hide it rather than
+                // show a "0:00" that looks like a real (if zero-length) total.
+                self.pw.dur.set_visible(tot_s > 0);
+                // Position stays visible whenever it's actually nonzero
+                // (still useful to know "how far in" even on a source with
+                // no seek concept, e.g. a live stream) — only hidden when
+                // seek is unavailable *and* there's nothing to show anyway.
+                self.pw.pos.set_visible(ps.caps.can_seek || cur_s > 0);
             }
             if mask & PC::OTHER != 0 {
                 let playing = matches!(ps.status, PlaybackStatus::Playing);
@@ -427,6 +441,11 @@ impl DeviceWindowInner {
                 self.pw.shuffle.set_sensitive(ps.caps.can_shuffle);
                 self.pw.repeat.set_sensitive(ps.caps.can_repeat);
                 self.pw.seek.set_sensitive(ps.caps.can_seek);
+                if !ps.caps.can_seek {
+                    self.pw.seek.set_value(0.0);
+                }
+                self.pw.dur.set_visible(ps.duration.as_secs() > 0);
+                self.pw.pos.set_visible(ps.caps.can_seek || ps.position.as_secs() > 0);
             }
         }
 
