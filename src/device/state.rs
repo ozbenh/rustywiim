@@ -52,6 +52,12 @@ const VOLUME_DEBOUNCE: Duration = Duration::from_millis(500);
 /// after whichever poll happened most recently — long enough that a real
 /// device has almost certainly applied the command that prompted it.
 const POLL_SETTLE_DELAY: Duration = Duration::from_millis(400);
+/// How long to wait for a `switch_input()` to actually take effect (a poll
+/// reporting the new mode) before giving up and reverting the UI to
+/// whatever the device is still really on. Input switches can take real
+/// device-side time (e.g. an HDMI handshake/EDID negotiation), so this is
+/// longer than `POLL_SETTLE_DELAY`.
+const INPUT_CHANGE_TIMEOUT: Duration = Duration::from_secs(2);
 
 use glib::prelude::*;
 use glib::subclass::prelude::*;
@@ -428,6 +434,16 @@ struct Inner {
     mode_renames:    HashMap<String, String>,
     /// Raw wire `mode` value from the last poll; -1 = not known
     current_mode:    i32,
+    /// `true` from the moment `switch_input()` fires until a poll either
+    /// confirms the new mode (cleared normally, see `apply_mode_change()`'s
+    /// caller) or `INPUT_CHANGE_TIMEOUT` elapses with no confirmation
+    /// (cleared by the timeout path, which also reverts the UI to whatever
+    /// `current_mode` still actually is — deliberately left untouched by
+    /// `switch_input()` itself, see its doc comment for why).
+    input_changing:      bool,
+    /// When the in-flight `switch_input()` request was sent. `None` when
+    /// `input_changing` is `false`.
+    input_change_time:   Option<Instant>,
     connection_state: ConnectionState,
     /// Last known network connection type (0=ethernet, 2=wifi).
     /// `None` until first `getStatusEx` result arrives.
@@ -504,6 +520,8 @@ impl Default for Inner {
             output_status:   None,
             mode_renames:    HashMap::new(),
             current_mode:    -1,
+            input_changing:      false,
+            input_change_time:   None,
             netstat:          None,
             rssi:             None,
             remote:           RemoteInfo::default(),
@@ -1204,12 +1222,9 @@ impl DeviceState {
         inner.playback.artwork = new;
     }
 
-    /// Shared by `process_poll_http()`/`process_poll_upnp()`'s `mode_changed`
-    /// handling — identical either way, only the raw mode value's source
-    /// differs (HTTP `mode` vs. UPnP `PlayType`, confirmed byte-identical).
-    /// Updates `current_mode`, clears stale artwork for the incoming track,
-    /// and self-corrects a capability snapshot that claims this input is
-    /// disabled despite demonstrably being in active use right now.
+    /// The input/mode has changed: clears stale artwork for the incoming
+    /// track and deal with inputs incorrectly marked disabled in case of
+    /// firmware bug.
     fn apply_mode_change(inner: &mut Inner, new_mode: i32) {
         inner.current_mode = new_mode;
         Self::replace_artwork(inner, None);
@@ -1226,6 +1241,24 @@ impl DeviceState {
                 }
             }
         }
+    }
+
+    /// Shared by `process_poll_http()`/`process_poll_upnp()`'s mode-change
+    /// handling. Returns whether the caller should emit `input-changed` —
+    /// true either for a real, confirmed mode change, or for a timed-out
+    /// switch that needs reverting.
+    fn handle_input_mode_poll(inner: &mut Inner, mode_changed: bool, new_mode: i32) -> bool {
+        if mode_changed {
+            Self::apply_mode_change(inner, new_mode);
+        } else {
+            let Some(sent) = inner.input_change_time else { return false };
+            if !inner.input_changing || sent.elapsed() < INPUT_CHANGE_TIMEOUT {
+                return false;
+            }
+            eprintln!("[state] timeout changing input");
+        }
+        inner.input_changing = false;
+        true
     }
 
     fn start_slow_poll_processor(&self, rx: async_channel::Receiver<SlowPollResult>) {
@@ -1600,11 +1633,10 @@ impl DeviceState {
             }
 
             // 2. Borrow_mut: decode only what changed, straight into `playback`.
+            let emit_input_changed;
             {
                 let mut inner = self.imp().inner.borrow_mut();
-                if mode_changed {
-                    Self::apply_mode_change(&mut inner, st.mode);
-                }
+                emit_input_changed = Self::handle_input_mode_poll(&mut inner, mode_changed, st.mode);
                 if mute_changed { inner.playback.muted  = st.mute; }
                 if vol_changed  { inner.playback.volume = st.vol;  }
                 if time_changed {
@@ -1629,7 +1661,7 @@ impl DeviceState {
             }
 
             // 3. Side effects, after the borrow is dropped.
-            if mode_changed {
+            if emit_input_changed {
                 dbg("signal: input-changed");
                 self.emit_by_name::<()>("input-changed", &[]);
             }
@@ -1788,11 +1820,10 @@ impl DeviceState {
         let mut art_cleared = false;
 
         // 2. Borrow_mut: decode only what changed, straight into `playback`.
+        let emit_input_changed;
         {
             let mut inner = self.imp().inner.borrow_mut();
-            if mode_changed {
-                Self::apply_mode_change(&mut inner, info.play_type);
-            }
+            emit_input_changed = Self::handle_input_mode_poll(&mut inner, mode_changed, info.play_type);
             if status_changed {
                 inner.playback.status = playback::decode_status_upnp(&info.transport_state);
                 let (shuffle, repeat) = playback::decode_loop_mode_http(info.loop_mode);
@@ -1852,7 +1883,7 @@ impl DeviceState {
         }
 
         // 3. Side effects, after the borrow is dropped.
-        if mode_changed {
+        if emit_input_changed {
             dbg("signal: input-changed");
             self.emit_by_name::<()>("input-changed", &[]);
         }
@@ -1903,14 +1934,21 @@ impl DeviceState {
 
     /// Request an input source switch.
     ///
-    /// `current_mode` is set to -1 during a switch. This will force a refresh and
-    /// signal one the next poll.
+    /// Deliberately does *not* touch `current_mode`. Instead we set a flag
+    /// indicating we are changing mode and a timestamp. If the mode does
+    /// change the poller will detect it and signal the UI to update. If
+    /// the change times out, the poller will signal the UI to update as
+    /// well causing the menu to revert.
     pub fn switch_input(&self, src: String) {
         let client = match self.imp().inner.borrow().client.clone() {
             Some(c) => c,
             None    => return,
         };
-        self.imp().inner.borrow_mut().current_mode = -1;
+        {
+            let mut inner = self.imp().inner.borrow_mut();
+            inner.input_changing    = true;
+            inner.input_change_time = Some(Instant::now());
+        }
         self.rt().spawn(async move { let _ = client.switch_input(&src).await; });
         // TODO: trigger_poll()
     }
