@@ -48,6 +48,16 @@ const SLOW_POLL_FAIL_THRESHOLD: u32 = 3;
 const SLOW_POLL_FAIL_RETRY: Duration = Duration::from_secs(1);
 /// Volume commands are rate-limited: at most one per this interval.
 const VOLUME_DEBOUNCE: Duration = Duration::from_millis(500);
+/// After sending a volume command, poll-reported volume is distrusted for
+/// this long — a real device (confirmed on AudioCast) can keep reporting
+/// its *pre-command* volume for a moment after accepting a `SetVolume`, so
+/// the self-heal resync (`vol_changed` in `process_poll_http`/
+/// `process_poll_upnp`) would otherwise briefly snap the slider back to
+/// the old value before the following poll corrects it forward again.
+/// Distinct from `VOLUME_DEBOUNCE`, which rate-limits *outgoing* commands
+/// — this instead limits how soon an *incoming* poll reading is trusted
+/// after the last outgoing one.
+const VOLUME_POLL_SETTLE: Duration = Duration::from_secs(1);
 /// `trigger_poll()`'s one-shot follow-up poll is spaced at least this long
 /// after whichever poll happened most recently — long enough that a real
 /// device has almost certainly applied the command that prompted it.
@@ -1857,8 +1867,14 @@ impl DeviceState {
                 // clamped command exactly the same way it picks up a
                 // genuine remote change (physical remote, another app,
                 // slave-speaker sync): both look like "device says X,
-                // canonical state says Y" from here.
-                let vol_changed = inner.target_volume < 0 && st.vol != inner.playback.volume;
+                // canonical state says Y" from here. Also gated on
+                // `VOLUME_POLL_SETTLE` — a real device can keep reporting
+                // its pre-command volume for a moment after accepting a
+                // `SetVolume`, so `target_volume < 0` (command sent) alone
+                // isn't enough; see that constant's doc comment.
+                let vol_settled = inner.last_volume_cmd
+                    .map_or(true, |t| Instant::now().duration_since(t) >= VOLUME_POLL_SETTLE);
+                let vol_changed = inner.target_volume < 0 && vol_settled && st.vol != inner.playback.volume;
                 let timing_valid = playback::timing_looks_valid(st.curpos, st.totlen);
                 let time_changed = timing_valid
                     && prev.map_or(true, |p| p.curpos != st.curpos || p.totlen != st.totlen);
@@ -2077,10 +2093,13 @@ impl DeviceState {
             let mute_changed = info.current_mute.is_some()
                 && prev.map_or(true, |p| p.current_mute != info.current_mute);
             // Same self-heal reasoning as process_poll_http()'s vol_changed
-            // — see its doc comment. `SetVolume` still goes over HTTP
-            // regardless of poll backend, so the debounce/`target_volume`
-            // state is shared between both paths.
-            let vol_changed = inner.target_volume < 0 && info.current_volume != inner.playback.volume;
+            // — see its doc comment (including `VOLUME_POLL_SETTLE`).
+            // `SetVolume` still goes over HTTP regardless of poll backend,
+            // so the debounce/`target_volume`/`last_volume_cmd` state is
+            // shared between both paths.
+            let vol_settled = inner.last_volume_cmd
+                .map_or(true, |t| Instant::now().duration_since(t) >= VOLUME_POLL_SETTLE);
+            let vol_changed = inner.target_volume < 0 && vol_settled && info.current_volume != inner.playback.volume;
             let source_changed = prev.map_or(true, |p| {
                 p.play_medium != info.play_medium || p.track_source != info.track_source
                     || p.gui_behavior != info.gui_behavior
