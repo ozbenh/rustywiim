@@ -362,8 +362,31 @@ async fn fetch_http_fast_poll(client: WiimClient) -> (Option<PlayerStatus>, Opti
 /// once it has confirmed a client exists — HTTP and UPnP are mutually
 /// exclusive per tick, so there's no HTTP call running alongside this one
 /// to worry about serializing against.
+///
+/// Follows up with a supplementary `RenderingControl.GetMute` call, but
+/// *only* when this response's `current_mute` came back `None` (tag
+/// absent — confirmed on iEAST AudioCast; see `InfoEx::current_mute`'s doc
+/// comment). This is a per-response runtime check, not gated by
+/// `mute_access` or any other static flag: self-correcting if a firmware
+/// update ever adds/removes the tag, and the common case (`GetInfoEx`
+/// already has it) never pays for the extra round trip. Sequential, never
+/// concurrent with the first call — same "don't hammer the embedded
+/// server" rule every other multi-call poll path already follows (e.g.
+/// `fetch_http_fast_poll`'s status+meta pair). A failed supplementary call
+/// just leaves `current_mute` as `None` for this tick; `process_poll_upnp`
+/// treats that as "no new information," not "unmuted."
+///
+/// This is the ideal stopgap to poll with, but `RenderingControl` GENA
+/// eventing (a separate, already-tracked idea) would eventually remove the
+/// need to poll for mute at all.
 async fn fetch_upnp_fast_poll(upnp_client: UpnpClient) -> Option<upnp::InfoEx> {
-    upnp_client.get_info_ex().await.ok()
+    let mut info = upnp_client.get_info_ex().await.ok()?;
+    if info.current_mute.is_none() {
+        if let Ok(muted) = upnp_client.get_mute().await {
+            info.current_mute = Some(muted);
+        }
+    }
+    Some(info)
 }
 
 // ── Cached device state ───────────────────────────────────────────────────────
@@ -1823,7 +1846,11 @@ impl DeviceState {
             let time_changed = prev.map_or(true, |p| {
                 p.rel_time != info.rel_time || p.track_duration != info.track_duration
             });
-            let mute_changed = prev.map_or(true, |p| p.current_mute != info.current_mute);
+            // `None` (still-unresolved mute, even after `fetch_upnp_fast_poll`'s
+            // supplementary call) means "no new information" — never treated
+            // as a change, and never written below.
+            let mute_changed = info.current_mute.is_some()
+                && prev.map_or(true, |p| p.current_mute != info.current_mute);
             // Same self-heal reasoning as process_poll_http()'s vol_changed
             // — see its doc comment. `SetVolume` still goes over HTTP
             // regardless of poll backend, so the debounce/`target_volume`
@@ -1879,7 +1906,8 @@ impl DeviceState {
             }
             // See doc comment above: don't clobber a pending optimistic write.
             if vol_changed  { inner.playback.volume = info.current_volume; }
-            if mute_changed { inner.playback.muted  = info.current_mute; }
+            // Safe: `mute_changed` only true when `info.current_mute.is_some()`.
+            if mute_changed { inner.playback.muted  = info.current_mute.unwrap(); }
             if source_changed {
                 inner.playback.source_name =
                     playback::decode_source_name_upnp(&info.play_medium, &info.track_source);

@@ -63,7 +63,12 @@ pub struct InfoEx {
     /// `"HH:MM:SS"` wire format, decoded by `playback::decode_hms_duration`.
     pub track_duration:  String,
     pub current_volume:  u32,
-    pub current_mute:    bool,
+    /// `None` when `<CurrentMute>` is absent from the response entirely —
+    /// confirmed on iEAST AudioCast (two real captures, muted and unmuted,
+    /// both entirely missing the tag), not merely "false". Callers (see
+    /// `state.rs`'s `fetch_upnp_fast_poll()`) treat `None` as "ask
+    /// `RenderingControl.GetMute` instead", not as "unmuted".
+    pub current_mute:    Option<bool>,
     pub loop_mode:       i32,
     /// Confirmed byte-for-byte identical to HTTP `getPlayerStatusEx`'s
     /// `mode` across 18 real captures spanning 3 device families, zero
@@ -489,7 +494,7 @@ fn parse_info_ex_response(envelope: &str) -> anyhow::Result<InfoEx> {
     let rel_time        = extract_tag(envelope, "RelTime").unwrap_or_default();
     let track_duration  = extract_tag(envelope, "TrackDuration").unwrap_or_default();
     let current_volume  = extract_tag(envelope, "CurrentVolume").and_then(|s| s.parse().ok()).unwrap_or(0);
-    let current_mute    = extract_tag(envelope, "CurrentMute").is_some_and(|s| s == "1");
+    let current_mute    = extract_tag(envelope, "CurrentMute").map(|s| s == "1");
     let loop_mode        = extract_tag(envelope, "LoopMode").and_then(|s| s.parse().ok()).unwrap_or(-1);
     let play_type        = extract_tag(envelope, "PlayType").and_then(|s| s.parse().ok()).unwrap_or(-1);
     let play_medium      = extract_tag(envelope, "PlayMedium").unwrap_or_default();
@@ -609,9 +614,46 @@ mod tests {
         assert_eq!(info.rate_hz, "48000");
         assert_eq!(info.play_medium, "TIDAL_CONNECT");
         assert_eq!(info.current_volume, 17);
-        assert!(!info.current_mute);
+        assert_eq!(info.current_mute, Some(false));
         assert_eq!(info.rel_time, "00:00:45");
         assert_eq!(info.track_duration, "00:04:17");
+    }
+
+    fn get_action_body(cap: &CaptureFile, action: &str) -> String {
+        let upnp = cap.upnp.as_ref().expect("capture has no upnp section");
+        let a = upnp.actions.iter().find(|a| a.action == action)
+            .unwrap_or_else(|| panic!("capture has no {action} action"));
+        blob_text(a.response.as_ref().unwrap_or_else(|| panic!("{action} has no response"))).to_string()
+    }
+
+    /// Two real captures from the same iEAST AudioCast unit (one muted, one
+    /// not, same song) — confirms `GetInfoEx` never carries `CurrentMute`
+    /// on this device at all, in either state, not just that it's wrong.
+    /// This is the gap `fetch_upnp_fast_poll()`'s supplementary
+    /// `RenderingControl.GetMute` call (tested below) exists to fill.
+    #[test]
+    fn audiocast_get_info_ex_never_has_current_mute() {
+        for f in [
+            "iEAST_AudioCast_20260709_053917.unmuted.json",
+            "iEAST_AudioCast_20260709_054053.muted.json",
+        ] {
+            let cap = load_capture(f);
+            let info = parse_info_ex_response(&get_info_ex_body(&cap)).unwrap();
+            assert_eq!(info.current_mute, None, "{f}: expected CurrentMute tag to be absent from GetInfoEx");
+        }
+    }
+
+    /// Same two captures — `RenderingControl.GetMute` correctly reports
+    /// `CurrentMute` on this device even though `GetInfoEx` doesn't.
+    #[test]
+    fn audiocast_rendering_control_get_mute_reports_correctly() {
+        let unmuted = load_capture("iEAST_AudioCast_20260709_053917.unmuted.json");
+        let body = get_action_body(&unmuted, "GetMute");
+        assert_eq!(extract_tag(&body, "CurrentMute").as_deref(), Some("0"));
+
+        let muted = load_capture("iEAST_AudioCast_20260709_054053.muted.json");
+        let body = get_action_body(&muted, "GetMute");
+        assert_eq!(extract_tag(&body, "CurrentMute").as_deref(), Some("1"));
     }
 
     #[test]
