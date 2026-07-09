@@ -408,12 +408,16 @@ fn build_appearance_page() -> adw::PreferencesPage {
     page
 }
 
-// ── Device -> Advanced (playback access-method override) ─────────────────────
+// ── Device -> Advanced (access-method overrides) ──────────────────────────────
 //
 // Field diagnostics, not a supported end-user-facing feature. Lets a user
-// experiencing a playback-state bug on real hardware try forcing playback
-// state as a whole away from the device profile's default backend and
-// report back what does/doesn't work.
+// experiencing a playback-state or mute bug on real hardware try forcing
+// that field away from the device profile's default backend and report
+// back what does/doesn't work. Two independent rows share this machinery:
+// player status (`playback_access_override`) and mute
+// (`mute_access_override`) — see `DeviceState::recompute_access()`'s doc
+// comment for why mute needed its own override instead of reusing the
+// playback one.
 
 /// Display name paired with the override value it writes. `None` ("Default")
 /// must always stay index 0 and must always serialize as an absent field
@@ -460,14 +464,23 @@ fn build_access_row(title: &str, subtitle: &str, default: AccessMethod, current:
     row
 }
 
-/// Persist `row`'s selection into this device's `playback_access_override`,
-/// then push the recomputed override into `ds` immediately so it takes
-/// effect on the next poll tick.
-fn wire_access_row(row: &adw::ComboRow, uuid: String, ds: DeviceState) {
+/// Persist `row`'s selection into this device's config (via `save`), then
+/// push the recomputed override into `ds` (via `push`) immediately so it
+/// takes effect on the next poll tick. `save`/`push` parameterize which
+/// override field this row controls (`playback_access_override` vs
+/// `mute_access_override`) so the two rows share this wiring instead of
+/// duplicating it.
+fn wire_access_row(
+    row: &adw::ComboRow,
+    uuid: String,
+    ds: DeviceState,
+    save: impl Fn(&mut config::DeviceConfig, Option<AccessMethod>) + 'static,
+    push: impl Fn(&DeviceState, Option<AccessMethod>) + 'static,
+) {
     row.connect_selected_notify(move |r| {
         let (_, method) = ACCESS_METHOD_CHOICES[r.selected() as usize];
-        config::update(|cfg| cfg.device_mut(&uuid).playback_access_override = method);
-        ds.set_playback_access_override(method);
+        config::update(|cfg| save(cfg.device_mut(&uuid), method));
+        push(&ds, method);
     });
 }
 
@@ -486,7 +499,25 @@ fn build_advanced_page(ds: &DeviceState) -> adw::PreferencesPage {
         "Player Status", "Playback informations",
         defaults, over,
     );
-    wire_access_row(&player_status_row, uuid.clone(), ds.clone());
+    wire_access_row(
+        &player_status_row, uuid.clone(), ds.clone(),
+        |dev, method| dev.playback_access_override = method,
+        |ds, method| ds.set_playback_access_override(method),
+    );
+
+    // Mute's own default is a fixed `UpnpPolled` global, not a
+    // per-`FamilyProfile` field like `playback_access()` — see
+    // `DeviceState::recompute_access()`'s doc comment for why.
+    let mute_over = config::with(|cfg| cfg.device(&uuid).mute_access_override);
+    let mute_row = build_access_row(
+        "Mute", "Mute state",
+        AccessMethod::UpnpPolled, mute_over,
+    );
+    wire_access_row(
+        &mute_row, uuid.clone(), ds.clone(),
+        |dev, method| dev.mute_access_override = method,
+        |ds, method| ds.set_mute_access_override(method),
+    );
 
     let group = adw::PreferencesGroup::builder()
         .title("Playback Access Method")
@@ -497,6 +528,7 @@ fn build_advanced_page(ds: &DeviceState) -> adw::PreferencesPage {
         )
         .build();
     group.add(&player_status_row);
+    group.add(&mute_row);
 
     let page = adw::PreferencesPage::new();
     page.add(&group);

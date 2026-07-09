@@ -430,6 +430,17 @@ struct Inner {
     /// needing to resupply it. `None` means "use the device profile's
     /// default".
     access_override: Option<AccessMethod>,
+    /// Mute-specific counterpart to `access`/`access_override` — resolved
+    /// and overridden the same way, but independently, since a device's
+    /// best mute backend can differ from its best playback-state backend
+    /// (iEAST AudioCast: UPnP for everything else, but `GetInfoEx` never
+    /// carries `CurrentMute` on that family, so mute reads/writes go
+    /// through `RenderingControl` specifically). Recomputed by
+    /// `recompute_access()` alongside `access`.
+    mute_access:      AccessMethod,
+    /// Override pushed in via `set_mute_access_override()`, mirroring
+    /// `access_override` exactly.
+    mute_access_override: Option<AccessMethod>,
     output_status:   Option<AudioOutputStatus>,
     mode_renames:    HashMap<String, String>,
     /// Raw wire `mode` value from the last poll; -1 = not known
@@ -517,6 +528,8 @@ impl Default for Inner {
             playback:        PlaybackState::default(),
             access:          AccessMethod::Http,
             access_override: None,
+            mute_access:      AccessMethod::UpnpPolled,
+            mute_access_override: None,
             output_status:   None,
             mode_renames:    HashMap::new(),
             current_mode:    -1,
@@ -628,22 +641,25 @@ impl DeviceState {
     /// `Disconnected` so the caller can try a different IP.  Pass `None` for
     /// user-initiated connects where the right device is already known.
     ///
-    /// `access_override` is established here, up front — not via a separate,
-    /// later call to `set_playback_access_override()` that has to land
-    /// before the first poll tick to matter. There's no window where this
-    /// `DeviceState` exists with the wrong override, because there's no
-    /// point at which it exists without one at all. Since this resets
-    /// *everything* (`*inner = Inner::default()`), including whatever
-    /// override an already-connected `DeviceState` had, a caller
+    /// `access_override`/`mute_access_override` are established here, up
+    /// front — not via a separate, later call to
+    /// `set_playback_access_override()`/`set_mute_access_override()` that
+    /// has to land before the first poll tick to matter. There's no window
+    /// where this `DeviceState` exists with the wrong override, because
+    /// there's no point at which it exists without one at all. Since this
+    /// resets *everything* (`*inner = Inner::default()`), including
+    /// whatever overrides an already-connected `DeviceState` had, a caller
     /// reconnecting an existing instance (`DeviceManager::update_ip()`)
-    /// must read the current value first (`playback_access_override()`)
-    /// and pass it back in, not just a fresh default.
+    /// must read the current values first (`playback_access_override()`/
+    /// `mute_access_override()`) and pass them back in, not just fresh
+    /// defaults.
     pub fn set_device(
         &self,
         ip: &str,
         tls: TlsMode,
         expected_uuid: Option<&str>,
         access_override: Option<AccessMethod>,
+        mute_access_override: Option<AccessMethod>,
     ) {
         // Apply --tls CLI override if set; otherwise use the caller-supplied mode.
         let tls = {
@@ -659,6 +675,7 @@ impl DeviceState {
             inner.connection_state = ConnectionState::Connecting;
             inner.expected_uuid    = expected_uuid.map(String::from);
             inner.access_override  = access_override;
+            inner.mute_access_override = mute_access_override;
         }
         self.recompute_access();
         dbg("signal: device-changed (connecting)");
@@ -794,6 +811,14 @@ impl DeviceState {
     /// profile plus whatever override is currently stored (see
     /// `access_override`). Called whenever either input changes: after
     /// capabilities are (re)detected, and from `set_playback_access_override`.
+    ///
+    /// Also recomputes `mute_access` alongside `access`. Unlike `access`,
+    /// `mute_access`'s base isn't sourced from a per-`FamilyProfile` field —
+    /// only one device family has ever needed a different mute backend
+    /// (iEAST AudioCast), and the per-device Settings override already
+    /// covers that exception, so the base here is just the global
+    /// `AccessMethod::UpnpPolled` default rather than a second capability
+    /// axis.
     fn recompute_access(&self) {
         let wants_upnp = {
             let mut inner = self.imp().inner.borrow_mut();
@@ -801,6 +826,7 @@ impl DeviceState {
                 .map(|c| c.playback_access())
                 .unwrap_or(AccessMethod::Http);
             inner.access = inner.access_override.unwrap_or(base);
+            inner.mute_access = inner.mute_access_override.unwrap_or(AccessMethod::UpnpPolled);
             // Debug-only visibility aid for diagnosing a device where UPnP
             // discovery/`GetInfoEx` never succeeds (playback state silently
             // stays on whatever it last held, since the poll loop only
@@ -808,7 +834,7 @@ impl DeviceState {
             if DEBUG_STATE.load(Ordering::Relaxed) && inner.access == AccessMethod::UpnpPolled {
                 dbg("access config: set to UpnpPolled");
             }
-            inner.access == AccessMethod::UpnpPolled
+            inner.access == AccessMethod::UpnpPolled || inner.mute_access == AccessMethod::UpnpPolled
         };
         if wants_upnp {
             self.ensure_upnp_client();
@@ -876,6 +902,23 @@ impl DeviceState {
     /// otherwise wipe it back to `None`.
     pub fn playback_access_override(&self) -> Option<AccessMethod> {
         self.imp().inner.borrow().access_override
+    }
+
+    /// Mute-specific counterpart to `set_playback_access_override()` — same
+    /// semantics, independent field. See `Inner::mute_access`'s doc comment
+    /// for why this exists as a second override rather than folding into
+    /// the playback one.
+    pub fn set_mute_access_override(&self, over: Option<AccessMethod>) {
+        self.imp().inner.borrow_mut().mute_access_override = over;
+        self.recompute_access();
+    }
+
+    /// Current mute-access override, as last established by `set_device()`
+    /// or `set_mute_access_override()`. Read by `DeviceManager::update_ip()`
+    /// so reconnecting to a new IP doesn't lose it, mirroring
+    /// `playback_access_override()`.
+    pub fn mute_access_override(&self) -> Option<AccessMethod> {
+        self.imp().inner.borrow().mute_access_override
     }
 
     // ── Polling ───────────────────────────────────────────────────────────────
@@ -1955,9 +1998,27 @@ impl DeviceState {
 
     // ── Volume / mute commands ────────────────────────────────────────────────
 
+    /// Branches on `mute_access`: UPnP `RenderingControl.SetMute` when the
+    /// resolved backend is `UpnpPolled` (the `wiim` SDK's own precedent —
+    /// see `upnp.rs`'s module doc comment), otherwise the HTTP `setMute`
+    /// command. No HTTP fallback when UPnP is wanted but no client has been
+    /// discovered yet — same "don't silently use the other backend"
+    /// precedent `access`/`do_set_volume` already follow.
     pub fn do_set_mute(&self, muted: bool) {
-        let Some(client) = self.imp().inner.borrow().client.clone() else { return };
-        self.rt().spawn(async move { let _ = client.set_mute(muted).await; });
+        let (mute_access, client, upnp_client) = {
+            let inner = self.imp().inner.borrow();
+            (inner.mute_access, inner.client.clone(), inner.upnp_client.clone())
+        };
+        match mute_access {
+            AccessMethod::UpnpPolled => {
+                let Some(upnp_client) = upnp_client else { return };
+                self.rt().spawn(async move { let _ = upnp_client.set_mute(muted).await; });
+            }
+            AccessMethod::Http => {
+                let Some(client) = client else { return };
+                self.rt().spawn(async move { let _ = client.set_mute(muted).await; });
+            }
+        }
         self.trigger_poll();
     }
 

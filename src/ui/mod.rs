@@ -528,6 +528,7 @@ impl DeviceWindow {
             Some(spec) => device_manager.get(
                 &spec.uuid, &spec.ip, spec.tls_mode,
                 init_dev_cfg.playback_access_override,
+                init_dev_cfg.mute_access_override,
             ),
             None => {
                 // No device spec: create a standalone state that isn't wired to

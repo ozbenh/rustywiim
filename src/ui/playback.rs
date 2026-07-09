@@ -616,9 +616,9 @@ impl DeviceWindowInner {
     /// loaded this device's window state," and silently skip loading the
     /// saved window size/panel state at launch.
     ///
-    /// Also (re-)establishes `playback_access_override` for the resolved
-    /// `uuid` — normally already done at connection time
-    /// (`DeviceManager::get()` passes it straight to
+    /// Also (re-)establishes `playback_access_override`/`mute_access_override`
+    /// for the resolved `uuid` — normally already done at connection time
+    /// (`DeviceManager::get()` passes them straight to
     /// `DeviceState::set_device()`), but a manually-connected device
     /// (`--connect`, or any freshly-added device the same way) has no real
     /// uuid yet at that point (`getStatusEx` hasn't answered), so
@@ -667,10 +667,11 @@ impl DeviceWindowInner {
 
         let dev_cfg = config::with(|cfg| cfg.device(uuid));
         super::dbg_ui(&format!(
-            "apply_device_window_state: uuid={uuid:?} playback_access_override={:?}",
-            dev_cfg.playback_access_override,
+            "apply_device_window_state: uuid={uuid:?} playback_access_override={:?} mute_access_override={:?}",
+            dev_cfg.playback_access_override, dev_cfg.mute_access_override,
         ));
         self.ds.set_playback_access_override(dev_cfg.playback_access_override);
+        self.ds.set_mute_access_override(dev_cfg.mute_access_override);
 
         let panel_width = if dev_cfg.paned_position > 0 { dev_cfg.paned_position } else { 200 };
         *self.saved_panel_width.borrow_mut() = panel_width;

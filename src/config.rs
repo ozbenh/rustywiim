@@ -125,6 +125,16 @@ pub struct DeviceConfig {
     /// back to `None` ("use the device profile's default") instead.
     #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "deserialize_lenient_access_override")]
     pub playback_access_override: Option<AccessMethod>,
+    /// Same override mechanism as `playback_access_override`, but for the
+    /// mute read/write path specifically. Separate field because the two
+    /// can genuinely need different answers on the same device: iEAST
+    /// AudioCast defaults `playback_access` to UPnP for everything *except*
+    /// mute (`AVTransport.GetInfoEx` never carries `CurrentMute` on that
+    /// family — confirmed via real capture — so mute reads instead fall
+    /// back to a supplementary `RenderingControl.GetMute` poll, and writes
+    /// go through `RenderingControl.SetMute`).
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "deserialize_lenient_access_override")]
+    pub mute_access_override: Option<AccessMethod>,
 }
 
 fn deserialize_lenient_access_override<'de, D>(deserializer: D) -> Result<Option<AccessMethod>, D::Error>
@@ -151,6 +161,7 @@ impl Default for DeviceConfig {
             name:            None,
             model:           None,
             playback_access_override: None,
+            mute_access_override: None,
         }
     }
 }
