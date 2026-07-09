@@ -729,10 +729,16 @@ impl WiimClient {
                 log_request_error(command, &err);
                 return Err(err.into());
             }
-            eprintln!(
-                "[API] {command}: transient send error (attempt {}/{}), retrying in 100ms: {err}",
-                attempt + 1, MAX_RETRIES,
-            );
+            // Attempt 1's failure is the routine, self-healing case this
+            // whole retry loop exists to paper over — only log it under
+            // --debug=api. A first *retry* that also fails (attempt > 0)
+            // is more likely a real problem, so that always logs.
+            if attempt > 0 || DEBUG.load(Ordering::Relaxed) {
+                eprintln!(
+                    "[API] {command}: transient send error (attempt {}/{}), retrying in 100ms: {err}",
+                    attempt + 1, MAX_RETRIES,
+                );
+            }
         }
         unreachable!()
     }
