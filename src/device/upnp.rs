@@ -257,7 +257,23 @@ fn tls_for_scheme(scheme: &str) -> TlsMode {
     if scheme == "https" { TlsMode::HttpsAny } else { TlsMode::Http }
 }
 
+/// Same `[API]`/`--debug=api` request/response tracing as `api.rs`'s
+/// `cmd()` — reusing its `debug()`/`log_request_error()` directly rather
+/// than a second, upnp-specific log format, since this is still
+/// fundamentally an API call, just over SOAP instead of a plain GET.
+///
+/// Retry loop mirrors `cmd()`'s exactly (`api.rs:711-738`): up to
+/// `MAX_RETRIES` retries with a 100ms backoff, only for
+/// `reqwest::Error::is_request()` failures ("connection closed before
+/// message completed" — a known pooled-keep-alive-connection race, not a
+/// real fault; see `TODO.md`'s "`soap_call()` has no retry" entry for the
+/// real-device evidence this was written against). Logging follows the
+/// same noise rule `cmd()` uses too: the first attempt's transient
+/// failure only logs under `--debug=api` (routine, self-healing — that's
+/// the entire point of retrying), but a first *retry* that also fails
+/// logs unconditionally (more likely a real problem).
 async fn soap_call(control_url: &str, service_type: &str, action: &str, args_xml: &str) -> anyhow::Result<String> {
+    const MAX_RETRIES: u32 = 3;
     let scheme = control_url.split(':').next().unwrap_or("http");
     let client = build_reqwest_client(tls_for_scheme(scheme), REQUEST_TIMEOUT);
     let body = format!(
@@ -267,30 +283,41 @@ async fn soap_call(control_url: &str, service_type: &str, action: &str, args_xml
          <s:Body><u:{action} xmlns:u=\"{service_type}\">{args_xml}</u:{action}></s:Body></s:Envelope>"
     );
     let soap_action_header = format!("\"{service_type}#{action}\"");
-    // Same `[API]`/`--debug=api` request/response tracing as api.rs's
-    // `cmd()` — reusing its `debug()`/`log_request_error()` directly
-    // rather than a second, upnp-specific log format, since this is still
-    // fundamentally an API call, just over SOAP instead of a plain GET.
-    let resp = match client
-        .post(control_url)
-        .header("Content-Type", "text/xml; charset=\"utf-8\"")
-        .header("SOAPACTION", soap_action_header)
-        .body(body)
-        .send()
-        .await
-    {
-        Ok(r) => r,
-        Err(e) => {
-            super::api::log_request_error(action, &e);
-            return Err(e.into());
+
+    for attempt in 0..=MAX_RETRIES {
+        if attempt > 0 {
+            tokio::time::sleep(Duration::from_millis(100)).await;
         }
-    };
-    if !resp.status().is_success() {
-        anyhow::bail!("{action}: HTTP {}", resp.status());
+        let err = match client
+            .post(control_url)
+            .header("Content-Type", "text/xml; charset=\"utf-8\"")
+            .header("SOAPACTION", &soap_action_header)
+            .body(body.clone())
+            .send()
+            .await
+        {
+            Ok(resp) => {
+                if !resp.status().is_success() {
+                    anyhow::bail!("{action}: HTTP {}", resp.status());
+                }
+                let text = resp.text().await?;
+                super::api::debug(action, &text);
+                return Ok(text);
+            }
+            Err(e) => e,
+        };
+        if !err.is_request() || attempt == MAX_RETRIES {
+            super::api::log_request_error(action, &err);
+            return Err(err.into());
+        }
+        if attempt > 0 || super::api::DEBUG.load(Ordering::Relaxed) {
+            eprintln!(
+                "[upnp] {action}: transient send error (attempt {}/{}), retrying in 100ms: {err}",
+                attempt + 1, MAX_RETRIES,
+            );
+        }
     }
-    let text = resp.text().await?;
-    super::api::debug(action, &text);
-    Ok(text)
+    unreachable!()
 }
 
 // ── description.xml / SOAP response parsing ──────────────────────────────────
