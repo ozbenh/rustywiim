@@ -9,9 +9,17 @@
 /// timing, volume+mute, loop mode, source, and the full DIDL-Lite track
 /// metadata in one action — confirmed against 5 real device captures
 /// (`captures/test-sources/WiiM_Ultra_20260706_*.json`). That's why this module only
-/// ever calls `GetInfoEx`, not the separate `GetTransportInfo`/
-/// `GetPositionInfo`/`GetVolume`/`GetMute` a naive per-UPnP-service reading
-/// of the spec would suggest.
+/// ever calls `GetInfoEx` for polling, not the separate `GetTransportInfo`/
+/// `GetPositionInfo`/`GetVolume` a naive per-UPnP-service reading of the
+/// spec would suggest.
+///
+/// One confirmed exception: `GetInfoEx` doesn't carry `CurrentMute` at all
+/// on iEAST AudioCast (two real captures, muted and unmuted, both entirely
+/// missing the tag — see `InfoEx::current_mute`'s doc comment), so
+/// `RenderingControl.GetMute`/`SetMute` exist alongside `GetInfoEx` as a
+/// per-poll supplementary read (`fetch_upnp_fast_poll()` in `state.rs`)
+/// and the real write path for mute, rather than folding mute into the
+/// "just call GetInfoEx" rule this module otherwise follows.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -36,6 +44,10 @@ const AV_TRANSPORT_SERVICE: &str = "urn:schemas-upnp-org:service:AVTransport:1";
 /// use for it — see `get_key_mapping_presets()`) — the same service
 /// `wiim-capture`'s `capture_playqueue()` already discovered independently.
 const PLAY_QUEUE_SERVICE: &str = "urn:schemas-wiimu-com:service:PlayQueue:1";
+/// Standard UPnP AV service backing `GetMute`/`SetMute` — see this module's
+/// top doc comment for why it's used at all despite `GetInfoEx` otherwise
+/// covering everything.
+const RENDERING_CONTROL_SERVICE: &str = "urn:schemas-upnp-org:service:RenderingControl:1";
 /// Candidate `description.xml` ports, same well-known LinkPlay UPnP ports
 /// `wiim-capture.rs`'s `fetch_description()` already probes.
 const DESCRIPTION_PORTS: &[u16] = &[49152, 59152];
@@ -104,9 +116,10 @@ pub struct GuiBehavior {
 }
 
 /// UPnP control-point client for one device's `AVTransport` (and, when
-/// advertised, `PlayQueue`) service. Discovered once via `description.xml`
-/// (`UpnpClient::discover`) and reused for every subsequent `get_info_ex()`/
-/// `get_key_mapping_presets()` poll.
+/// advertised, `PlayQueue`/`RenderingControl`) service. Discovered once via
+/// `description.xml` (`UpnpClient::discover`) and reused for every
+/// subsequent `get_info_ex()`/`get_key_mapping_presets()`/`get_mute()`/
+/// `set_mute()` poll.
 #[derive(Debug, Clone)]
 pub struct UpnpClient {
     control_url: String,
@@ -114,6 +127,10 @@ pub struct UpnpClient {
     /// `None` for devices that don't, in which case
     /// `get_key_mapping_presets()` always reports `PresetFetchOutcome::Unsupported`.
     play_queue_control_url: Option<String>,
+    /// `RenderingControl` service's control URL, when the device advertises
+    /// it — `None` for devices that don't, in which case `get_mute()`/
+    /// `set_mute()` both report an error rather than guessing.
+    rendering_control_url: Option<String>,
 }
 
 impl UpnpClient {
@@ -150,7 +167,10 @@ impl UpnpClient {
                         let play_queue_control_url =
                             extract_control_url_for_service(&body, &url, "wiimu-com:service:PlayQueue");
                         dbg(&format!("PlayQueue control URL: {play_queue_control_url:?}"));
-                        return Ok(Self { control_url, play_queue_control_url });
+                        let rendering_control_url =
+                            extract_control_url_for_service(&body, &url, ":service:RenderingControl:");
+                        dbg(&format!("RenderingControl control URL: {rendering_control_url:?}"));
+                        return Ok(Self { control_url, play_queue_control_url, rendering_control_url });
                     }
                     None => {
                         last_err = Some(anyhow::anyhow!(
@@ -188,6 +208,43 @@ impl UpnpClient {
             Ok(body) => parse_key_mapping_presets(&body, old_fp),
             Err(_) => PresetFetchOutcome::Failed,
         }
+    }
+
+    /// `RenderingControl.GetMute`, `Channel="Master"` (matches the
+    /// LinkPlay-maintained `wiim` SDK's own argument shape). Errors rather
+    /// than guessing if the device never advertised `RenderingControl` at
+    /// all, or if a response somehow lacks `<CurrentMute>` — callers decide
+    /// what "unknown" means (e.g. `fetch_upnp_fast_poll()` just leaves
+    /// `InfoEx::current_mute` as `None` on either failure).
+    pub async fn get_mute(&self) -> anyhow::Result<bool> {
+        let Some(control_url) = &self.rendering_control_url else {
+            anyhow::bail!("device has no RenderingControl service");
+        };
+        let body = soap_call(
+            control_url, RENDERING_CONTROL_SERVICE, "GetMute",
+            "<InstanceID>0</InstanceID><Channel>Master</Channel>",
+        ).await?;
+        extract_tag(&body, "CurrentMute")
+            .map(|s| s == "1")
+            .ok_or_else(|| anyhow::anyhow!("GetMute response has no CurrentMute tag"))
+    }
+
+    /// `RenderingControl.SetMute`, `Channel="Master", DesiredMute=...` —
+    /// same argument shape the `wiim` SDK uses. The real write path for
+    /// mute on devices where `AccessMethod` resolves mute to `UpnpPolled`
+    /// (see `DeviceState::do_set_mute()`); HTTP `setPlayerCmd:mute:n`
+    /// remains the only path for volume, matching that same SDK precedent
+    /// of not moving every write to UPnP uniformly.
+    pub async fn set_mute(&self, mute: bool) -> anyhow::Result<()> {
+        let Some(control_url) = &self.rendering_control_url else {
+            anyhow::bail!("device has no RenderingControl service");
+        };
+        let desired = if mute { "1" } else { "0" };
+        soap_call(
+            control_url, RENDERING_CONTROL_SERVICE, "SetMute",
+            &format!("<InstanceID>0</InstanceID><Channel>Master</Channel><DesiredMute>{desired}</DesiredMute>"),
+        ).await?;
+        Ok(())
     }
 }
 
