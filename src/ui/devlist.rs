@@ -32,6 +32,23 @@ fn dbg(msg: &str) {
     }
 }
 
+/// Consecutive failed health-check probes tolerated while a device is
+/// still believed `Active` before demoting it to `Ghost`/`Dead` — a single
+/// transient miss (a slow response, a momentary Wi-Fi hiccup) shouldn't
+/// flip presence, so this uses the normal retried `get_device_info()` and
+/// only gives up after this many probes in a row. Once a device is already
+/// `Ghost`/`Dead`, none of this applies — every probe there is a single
+/// unretried, silent `get_device_info_quiet()` instead (see
+/// `trigger_health_check_for()`), since at that point we already know it's
+/// down and just want cheap, fast recovery detection, not more tolerance.
+const HEALTH_FAIL_THRESHOLD: u32 = 2;
+/// How soon to re-probe a still-`Active` device after a failure, while
+/// still under `HEALTH_FAIL_THRESHOLD` — instead of waiting out the full
+/// `HEALTH_CHECK_INTERVAL` cycle before finding out either way.
+const HEALTH_FAIL_RETRY: Duration = Duration::from_secs(3);
+/// How often the regular health-check cycle probes every known device.
+const HEALTH_CHECK_INTERVAL: Duration = Duration::from_secs(20);
+
 // ── Public types ──────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -58,6 +75,17 @@ struct DeviceRecord {
     entry:        ManagedEntry,
     in_discovery: bool,
     client:       WiimClient,
+    /// Consecutive failed health-check probes while `entry.presence` is
+    /// still `Active` — see `HEALTH_FAIL_THRESHOLD`. Meaningless (and
+    /// unused) once presence is `Ghost`/`Dead`; not persisted.
+    consecutive_failures: u32,
+    /// Whether a device window is currently open for this uuid — set via
+    /// `set_window_open()`, called by `ui::mod`'s `AppState` whenever a
+    /// device window opens/closes. Exempts the entry from `do_prune()`
+    /// (see that function's doc comment): a device the user has an open,
+    /// now-"Disconnected" window for shouldn't vanish from the picker list
+    /// out from under them just because it's unpinned and offline.
+    has_open_window: bool,
 }
 
 struct HealthResult {
@@ -88,6 +116,11 @@ mod mgr_imp {
         pub(super) discovery: std::cell::OnceCell<DiscoveryService>,
         pub(super) inner:     RefCell<Inner>,
         pub(super) health_tx: RefCell<Option<async_channel::Sender<HealthResult>>>,
+        /// Set once by `ui::AppState` at startup via `set_presence_hook()`.
+        /// Fired `(uuid, reachable)` at each of the handful of places this
+        /// module actually flips a device's presence, and only there — see
+        /// `set_presence_hook()`'s doc comment.
+        pub(super) presence_hook: RefCell<Option<Rc<dyn Fn(String, bool)>>>,
     }
 
     impl Default for DiscoveryManager {
@@ -97,6 +130,7 @@ mod mgr_imp {
                 discovery: std::cell::OnceCell::new(),
                 inner:     RefCell::new(Inner::default()),
                 health_tx: RefCell::new(None),
+                presence_hook: RefCell::new(None),
             }
         }
     }
@@ -159,9 +193,9 @@ impl DiscoveryManager {
                 mgr.on_discovery_updated(svc);
             });
 
-        // Health-check all known devices every 30 seconds.
+        // Health-check all known devices every HEALTH_CHECK_INTERVAL.
         let weak3 = self.downgrade();
-        glib::timeout_add_local(Duration::from_secs(30), move || {
+        glib::timeout_add_local(HEALTH_CHECK_INTERVAL, move || {
             let Some(mgr) = weak3.upgrade() else { return glib::ControlFlow::Break };
             mgr.trigger_health_checks();
             glib::ControlFlow::Continue
@@ -193,6 +227,83 @@ impl DiscoveryManager {
         }
     }
 
+    /// Records whether a device window is currently open for `uuid` — see
+    /// `DeviceRecord::has_open_window`'s doc comment. Called by `ui::mod`'s
+    /// `AppState` on window open/close. No-op if `uuid` is empty or
+    /// unknown to devlist (a window with nothing here to mark — e.g. a
+    /// first-ever manual connect whose uuid isn't resolved yet).
+    pub fn set_window_open(&self, uuid: &str, open: bool) {
+        if uuid.is_empty() { return; }
+        let mut inner = self.imp().inner.borrow_mut();
+        if let Some(rec) = inner.devices.get_mut(uuid) {
+            rec.has_open_window = open;
+        }
+    }
+
+    /// Registers the hook fired `(uuid, reachable)` whenever this module
+    /// actually changes a device's presence between `Active` and
+    /// `Ghost`/`Dead` — the *only* moments `DeviceManager` (via
+    /// `ui::AppState`'s wiring) needs to know about, so it can call
+    /// `DeviceManager::sync_reachability()` directly instead of a `ui/`
+    /// layer diffing a `list-changed` snapshot against a shadow copy to
+    /// reconstruct "did this actually change" (the previous design —
+    /// removed because reconstructing that after the fact caused a real
+    /// flapping `Disconnected`/`Connecting…` bug). Only ever set once, by
+    /// `ui::AppState` at startup.
+    pub fn set_presence_hook(&self, hook: impl Fn(String, bool) + 'static) {
+        *self.imp().presence_hook.borrow_mut() = Some(Rc::new(hook));
+    }
+
+    fn fire_presence_hook(&self, uuid: &str, reachable: bool) {
+        if let Some(hook) = self.imp().presence_hook.borrow().clone() {
+            hook(uuid.to_string(), reachable);
+        }
+    }
+
+    /// Immediately marks `uuid` `Ghost`/`Dead`, bypassing
+    /// `HEALTH_FAIL_THRESHOLD`'s normal hysteresis entirely, and fires an
+    /// immediate quiet recovery probe rather than waiting for the next
+    /// scheduled health-check cycle. Called both when devlist's own health
+    /// check concludes a device is down (past `HEALTH_FAIL_THRESHOLD`) and
+    /// — via `DeviceManager`'s offline hook, wired by `ui::AppState` — when
+    /// a `DeviceState`'s own poller notices a failure first; its poll
+    /// already tolerated a transient blip the way `cmd()`/`soap_call()`'s
+    /// retry does, so there's nothing further to verify here — requiring
+    /// devlist to *independently* fail `HEALTH_FAIL_THRESHOLD` more probes
+    /// before agreeing would be redundant tolerance stacked on tolerance
+    /// (this is exactly what caused a real flapping `Disconnected`/
+    /// `Connecting…` loop, observed live, before this method existed).
+    /// No-op if already non-`Active` or `uuid` is unknown to devlist.
+    pub fn mark_offline(&self, uuid: &str) {
+        if uuid.is_empty() { return; }
+        let changed = {
+            let mut inner = self.imp().inner.borrow_mut();
+            if let Some(rec) = inner.devices.get_mut(uuid) {
+                if rec.entry.presence == DevicePresence::Active {
+                    let new_presence =
+                        if rec.entry.pinned { DevicePresence::Ghost } else { DevicePresence::Dead };
+                    dbg(&format!(
+                        "presence: {} ({}) → {:?}",
+                        rec.entry.name, rec.entry.ip, new_presence,
+                    ));
+                    rec.entry.presence = new_presence;
+                    rec.consecutive_failures = 0;
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        };
+        if changed {
+            self.do_prune();
+            self.fire_presence_hook(uuid, false);
+            self.emit_by_name::<()>("list-changed", &[]);
+            self.trigger_health_check_for(uuid);
+        }
+    }
+
     /// Add a manually-discovered device (already confirmed alive by the caller).
     pub fn add_manual(&self, name: String, ip: String, uuid: String, tls_mode: TlsMode) {
         let key = device_key(&uuid, &ip);
@@ -208,13 +319,14 @@ impl DiscoveryManager {
             };
             inner.devices.insert(key.clone(), DeviceRecord {
                 entry, in_discovery: false, client: WiimClient::new(&ip, tls_mode),
+                consecutive_failures: 0, has_open_window: false,
             });
         }
         dbg(&format!("add manual: {name} ({ip}) uuid={uuid:?}"));
         self.persist_pinned();
         self.emit_by_name::<()>("list-changed", &[]);
         // Fetch model (and confirm liveness) immediately rather than waiting for
-        // the next 30-second health-check cycle.
+        // the next scheduled health-check cycle (HEALTH_CHECK_INTERVAL).
         self.trigger_health_check_for(&key);
     }
 
@@ -260,6 +372,7 @@ impl DiscoveryManager {
 
         let mut changed = false;
         let mut new_keys: Vec<String> = Vec::new();
+        let mut presence_changes: Vec<(String, bool)> = Vec::new();
         {
             let mut inner = self.imp().inner.borrow_mut();
             for rec in inner.devices.values_mut() {
@@ -296,8 +409,10 @@ impl DiscoveryManager {
                         inner.devices.insert(key.clone(), DeviceRecord {
                             entry, in_discovery: true,
                             client: WiimClient::new(&dev.ip, dev.tls_mode),
+                            consecutive_failures: 0, has_open_window: false,
                         });
                         new_keys.push(key);
+                        presence_changes.push((dev.uuid.clone(), true));
                         changed = true;
                     }
                     // Known UUID reappeared at a different IP (e.g. DHCP lease
@@ -310,10 +425,39 @@ impl DiscoveryManager {
                             "discovery: {} moved {} → {} uuid={:?}",
                             rec.entry.name, rec.entry.ip, dev.ip, dev.uuid,
                         ));
+                        let was_active = rec.entry.presence == DevicePresence::Active;
                         rec.entry.ip       = dev.ip.clone();
                         rec.entry.tls_mode = dev.tls_mode;
                         rec.client         = WiimClient::new(&dev.ip, dev.tls_mode);
+                        // SSDP's own probe (discovery.rs's "alive: probing"
+                        // → "probe ok" — an actual HTTP confirmation, not
+                        // just hearing an announcement) is itself a strong
+                        // liveness signal, same as a successful health
+                        // check — no need to wait for one separately.
+                        rec.entry.presence = DevicePresence::Active;
+                        rec.consecutive_failures = 0;
+                        if !was_active { presence_changes.push((dev.uuid.clone(), true)); }
                         new_keys.push(key);
+                        changed = true;
+                    }
+                    // Already known, same IP/TLS, re-seen in this SSDP scan.
+                    // Same liveness reasoning as the "moved" arm above — SSDP
+                    // just (re)confirmed this device responds, so it's
+                    // "believed online" immediately rather than waiting for
+                    // devlist's own health check to separately catch up
+                    // (relevant right after startup: a pinned device loaded
+                    // from config starts `Ghost`/`Dead` until *something*
+                    // confirms it — see `load_known_devices_from_config()` —
+                    // and SSDP finding it is one of the two ways that happens,
+                    // the other being the health check itself).
+                    Some(rec) if rec.entry.presence != DevicePresence::Active => {
+                        dbg(&format!(
+                            "discovery: {} ({}) confirmed alive by SSDP, {:?} → Active",
+                            rec.entry.name, rec.entry.ip, rec.entry.presence,
+                        ));
+                        rec.entry.presence = DevicePresence::Active;
+                        rec.consecutive_failures = 0;
+                        presence_changes.push((dev.uuid.clone(), true));
                         changed = true;
                     }
                     Some(_) => {}
@@ -321,11 +465,14 @@ impl DiscoveryManager {
             }
         }
         let pruned = self.do_prune();
+        for (uuid, reachable) in &presence_changes {
+            self.fire_presence_hook(uuid, *reachable);
+        }
         if changed || pruned {
             self.emit_by_name::<()>("list-changed", &[]);
         }
         // Immediately health-check newly discovered or IP-changed devices
-        // rather than waiting for the 30-second health-check cycle.
+        // rather than waiting for the next HEALTH_CHECK_INTERVAL cycle.
         for key in new_keys {
             self.trigger_health_check_for(&key);
         }
@@ -342,15 +489,31 @@ impl DiscoveryManager {
         }
     }
 
-    fn trigger_health_check_for(&self, key: &str) {
+    /// Active devices get the normal retried `get_device_info()` (transient
+    /// misses are tolerated — see `HEALTH_FAIL_THRESHOLD`); a device
+    /// already believed `Ghost`/`Dead` gets the quiet, unretried,
+    /// non-logging `get_device_info_quiet()` instead — recovery detection
+    /// doesn't need to be gentle about a device we already know is down.
+    ///
+    /// `pub(crate)` (not private) so `ui::mod`'s `AppState` can force an
+    /// immediate probe when a `DeviceState`'s own poller notices a failure
+    /// first (`DeviceManager::set_offline_hook`), rather than waiting for
+    /// the next scheduled HEALTH_CHECK_INTERVAL cycle.
+    pub(crate) fn trigger_health_check_for(&self, key: &str) {
         let Some(tx) = self.imp().health_tx.borrow().clone() else { return };
-        let Some((client, name)) = self.imp().inner.borrow()
-            .devices.get(key).map(|r| (r.client.clone(), r.entry.name.clone()))
+        let Some((client, name, believed_active)) = self.imp().inner.borrow()
+            .devices.get(key)
+            .map(|r| (r.client.clone(), r.entry.name.clone(), r.entry.presence == DevicePresence::Active))
             else { return };
-        dbg(&format!("health check: pinging {name} ({key})"));
+        dbg(&format!("health check: pinging {name} ({key}), believed_active={believed_active}"));
         let key = key.to_string();
         self.rt().spawn(async move {
-            let (alive, name, model) = match client.get_device_info().await {
+            let probe = if believed_active {
+                client.get_device_info().await
+            } else {
+                client.get_device_info_quiet().await
+            };
+            let (alive, name, model) = match probe {
                 Ok(info) => (true,
                              Some(info.device_name.clone()),
                              Some(DeviceCapabilities::from_device_info(&info).model)),
@@ -362,24 +525,40 @@ impl DiscoveryManager {
 
     fn on_health_result(&self, result: HealthResult) {
         let mut needs_persist = false;
+        let mut retry_soon = false;
+        let mut presence_change: Option<(String, bool)> = None;
         {
             let mut inner = self.imp().inner.borrow_mut();
             if let Some(rec) = inner.devices.get_mut(&result.key) {
-                let new_presence = if result.alive {
-                    DevicePresence::Active
-                } else if rec.entry.pinned {
-                    DevicePresence::Ghost
-                } else {
-                    DevicePresence::Dead
-                };
-                if new_presence != rec.entry.presence {
-                    dbg(&format!("health result: {} ({}) {:?} → {:?}",
-                        rec.entry.name, rec.entry.ip, rec.entry.presence, new_presence));
-                } else {
-                    dbg(&format!("health result: {} ({}) {:?} (unchanged)",
-                        rec.entry.name, rec.entry.ip, new_presence));
+                if result.alive {
+                    rec.consecutive_failures = 0;
+                    if rec.entry.presence != DevicePresence::Active {
+                        dbg(&format!("health result: {} ({}) {:?} → Active",
+                            rec.entry.name, rec.entry.ip, rec.entry.presence));
+                        rec.entry.presence = DevicePresence::Active;
+                        presence_change = Some((rec.entry.uuid.clone(), true));
+                    }
+                } else if rec.entry.presence == DevicePresence::Active {
+                    rec.consecutive_failures += 1;
+                    if rec.consecutive_failures >= HEALTH_FAIL_THRESHOLD {
+                        let new_presence =
+                            if rec.entry.pinned { DevicePresence::Ghost } else { DevicePresence::Dead };
+                        dbg(&format!(
+                            "health result: {} ({}) Active → {:?} ({} consecutive failures)",
+                            rec.entry.name, rec.entry.ip, new_presence, rec.consecutive_failures,
+                        ));
+                        rec.entry.presence = new_presence;
+                        presence_change = Some((rec.entry.uuid.clone(), false));
+                    } else {
+                        dbg(&format!(
+                            "health result: {} ({}) failed ({}/{HEALTH_FAIL_THRESHOLD}); retrying in {}s",
+                            rec.entry.name, rec.entry.ip, rec.consecutive_failures, HEALTH_FAIL_RETRY.as_secs(),
+                        ));
+                        retry_soon = true;
+                    }
                 }
-                rec.entry.presence = new_presence;
+                // else: already Ghost/Dead and the quiet recovery probe
+                // just failed again — nothing to do, presence stays as-is.
                 if let Some(name) = result.name {
                     if !name.is_empty() && rec.entry.name != name {
                         dbg(&format!("health result: {} name → {:?}", rec.entry.ip, name));
@@ -399,9 +578,21 @@ impl DiscoveryManager {
             }
         }
         self.do_prune();
+        if let Some((uuid, reachable)) = presence_change {
+            self.fire_presence_hook(&uuid, reachable);
+        }
         if needs_persist { self.persist_pinned(); }
         // Always emit so the scanning indicator clears even when presence is unchanged.
         self.emit_by_name::<()>("list-changed", &[]);
+        if retry_soon {
+            let weak = self.downgrade();
+            let key = result.key;
+            glib::timeout_add_local_once(HEALTH_FAIL_RETRY, move || {
+                if let Some(mgr) = weak.upgrade() {
+                    mgr.trigger_health_check_for(&key);
+                }
+            });
+        }
     }
 
     /// Remove entries that are Dead (not pinned, not responding) and no longer
@@ -412,7 +603,8 @@ impl DiscoveryManager {
         inner.devices.retain(|key, rec| {
             let keep = rec.entry.pinned
                 || rec.entry.presence == DevicePresence::Active
-                || rec.in_discovery;
+                || rec.in_discovery
+                || rec.has_open_window;
             if !keep {
                 dbg(&format!("prune: removing {} ({key})", rec.entry.name));
             }
@@ -439,11 +631,24 @@ impl DiscoveryManager {
                 dbg(&format!("load from config: {name} ({ip}) uuid={uuid} pinned={pinned}"));
                 let entry = ManagedEntry {
                     uuid: uuid.clone(), name, model, ip: ip.clone(),
-                    // Start Active (optimistic); health check will demote to Ghost if offline.
-                    tls_mode: tls, pinned, presence: DevicePresence::Active,
+                    // Start believed offline (Ghost if pinned, Dead
+                    // otherwise) rather than optimistically Active — this is
+                    // a config-remembered entry, not something SSDP or a
+                    // health check has actually confirmed responds *right
+                    // now*. `start()` triggers an immediate health check
+                    // right after loading these, so a genuinely-online
+                    // device only shows this for a moment; a genuinely-
+                    // offline one is never shown as "online" even briefly,
+                    // and its first probe (see `trigger_health_check_for()`)
+                    // is the quiet, unretried, non-logging one from the
+                    // start, rather than the normal retried probe an
+                    // optimistic `Active` default would get first.
+                    tls_mode: tls, pinned,
+                    presence: if pinned { DevicePresence::Ghost } else { DevicePresence::Dead },
                 };
                 inner.devices.insert(uuid.clone(), DeviceRecord {
                     entry, in_discovery: false, client: WiimClient::new(ip, tls),
+                    consecutive_failures: 0, has_open_window: false,
                 });
             }
         });

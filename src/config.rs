@@ -323,6 +323,21 @@ impl Config {
         if NO_CONFIG.load(Ordering::Relaxed) {
             return;
         }
+        // Never persist a bogus empty-uuid device entry — a safety net
+        // against any call site that captures a device's uuid before it's
+        // actually known (e.g. `device_mut("")` reached while a window is
+        // still `Connecting`/offline) rather than guarding every such call
+        // site individually. An empty key can never legitimately refer to
+        // a real device, so this can never discard real data.
+        if self.devices.contains_key("") {
+            eprintln!("[config] dropping bogus empty-uuid device entry before saving");
+            let mut sanitized = self.clone();
+            sanitized.devices.remove("");
+            if let Ok(json) = serde_json::to_string_pretty(&sanitized) {
+                let _ = fs::write(config_path(), json);
+            }
+            return;
+        }
         if let Ok(json) = serde_json::to_string_pretty(self) {
             let _ = fs::write(config_path(), json);
         }

@@ -776,6 +776,20 @@ impl WiimClient {
         Ok(serde_json::from_str(&text).unwrap_or_default())
     }
 
+    /// Single unretried `getStatusEx` attempt that never logs on failure —
+    /// bypasses `cmd()` entirely rather than just calling it once, since
+    /// `cmd()`'s failure path always calls `log_request_error()`. For
+    /// liveness probing of a device already believed offline (devlist's
+    /// health check): at that point a failure is the expected, routine
+    /// result on every probe until the device comes back, so `cmd()`'s
+    /// retry/logging (tuned for a device believed reachable) would just
+    /// waste time and spam stderr once per probe forever.
+    pub async fn get_device_info_quiet(&self) -> anyhow::Result<DeviceInfo> {
+        let url = format!("{}?command=getStatusEx", self.base);
+        let text = self.http.get(&url).send().await?.text().await?;
+        Ok(serde_json::from_str(&text).unwrap_or_default())
+    }
+
     /// Fetches `getPresetInfo`, distinguishing a confirmed-unsupported
     /// response from a merely-failed/inconclusive one — see
     /// `GetPresetsResult`'s doc comment. `Ok(PresetResponse { preset_num: 0,

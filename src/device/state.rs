@@ -39,13 +39,6 @@ use std::time::{Duration, Instant};
 
 /// Slow poll (device info, outputs, presets) runs at most this often.
 const SLOW_POLL_INTERVAL: Duration = Duration::from_secs(10);
-/// Consecutive getStatusEx failures tolerated during a slow poll before the
-/// connection is declared Failed. These embedded HTTP servers are flaky
-/// enough that a single miss shouldn't reset the whole UI.
-const SLOW_POLL_FAIL_THRESHOLD: u32 = 3;
-/// How soon to retry after a getStatusEx failure, instead of waiting out the
-/// full SLOW_POLL_INTERVAL.
-const SLOW_POLL_FAIL_RETRY: Duration = Duration::from_secs(1);
 /// Volume commands are rate-limited: at most one per this interval.
 const VOLUME_DEBOUNCE: Duration = Duration::from_millis(500);
 /// After sending a volume command, poll-reported volume is distrusted for
@@ -106,6 +99,20 @@ pub enum ConnectionState {
     Disconnected,
     Connecting,
     Connected,
+    /// Believed offline (displayed "Disconnected") — fast/slow polling is
+    /// fully stopped (see `do_poll()`'s early return). Recovery is normally
+    /// always externally triggered, via `mark_reachable()` — called once
+    /// `ui::devlist`'s health check confirms a plain `getStatusEx` succeeds
+    /// again. Entered either by that same external path calling
+    /// `mark_offline()` directly (devlist's health check declared the
+    /// device down first), or by this `DeviceState`'s own fast/slow poll
+    /// noticing sustained failure first — which also fires the offline
+    /// callback (`set_offline_callback`) so devlist finds out immediately
+    /// instead of waiting for its next scheduled health check. The one
+    /// exception: `maybe_self_reconnect()` reinstates old-style self-driven
+    /// retrying for a `DeviceState` nobody registered that callback on at
+    /// all (no external health check could ever exist for it) — see its
+    /// doc comment.
     Failed,
 }
 
@@ -557,9 +564,6 @@ struct Inner {
     /// request doesn't get redispatched again on every subsequent tick
     /// before it resolves.
     preset_art_inflight: HashSet<usize>,
-    /// Expected UUID for the current startup reconnect attempt.
-    /// `None` means accept any device (user-initiated connect or already verified).
-    expected_uuid:    Option<String>,
     /// Pending volume level to send on the next 1s tick (-1 = none pending).
     target_volume:    i32,
     /// When the last volume API command was sent (None = never).
@@ -578,9 +582,26 @@ struct Inner {
     slow_poll_active: bool,
     /// The next phase to dispatch, while `slow_poll_active`.
     slow_poll_phase:  SlowPollPhase,
-    /// Consecutive getStatusEx failures during a slow poll while Connected.
-    /// Reset to 0 on any successful getStatusEx. See SLOW_POLL_FAIL_THRESHOLD.
-    slow_poll_failures: u32,
+    /// `Some` from the moment `dispatch_fast_poll()` actually spawns a call
+    /// until its result comes back through `process_poll()` (which clears
+    /// it to `None`). Checked by `dispatch_fast_poll()` to skip dispatching
+    /// a new one while the previous is still outstanding — without this,
+    /// the once-a-second tick kept firing a fresh call every tick
+    /// regardless of whether the last one had resolved, so a real unplug (a
+    /// slow *timeout*, not an instant "connection refused") let several
+    /// ticks' worth of calls pile up in flight before the first one even
+    /// failed and triggered offline detection; all of those stragglers then
+    /// had to individually time out afterward, looking like polling never
+    /// actually stopped. Also lets `apply_disconnected()` `.abort()` a call
+    /// that's still genuinely in flight the moment `Failed` is reached,
+    /// instead of leaving it to time out on its own — see that function.
+    /// Same reasoning `dispatch_slow_poll()`/`slow_poll_handle` follows for
+    /// the other poll.
+    fast_poll_handle: Option<tokio::task::JoinHandle<()>>,
+    /// Slow-poll counterpart of `fast_poll_handle` — same reasoning,
+    /// replaced when the next phase dispatches, cleared when that phase's
+    /// `SlowPollResult` arrives in `start_slow_poll_processor()`.
+    slow_poll_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl Default for Inner {
@@ -615,14 +636,14 @@ impl Default for Inner {
             preset_probe_failures: 0,
             pending_preset_art:  HashMap::new(),
             preset_art_inflight: HashSet::new(),
-            expected_uuid:    None,
             target_volume:    -1,
             last_volume_cmd:  None,
             last_slow_poll:   None,
             last_poll:        None,
             slow_poll_active: false,
             slow_poll_phase:  SlowPollPhase::FIRST,
-            slow_poll_failures: 0,
+            fast_poll_handle: None,
+            slow_poll_handle: None,
         }
     }
 }
@@ -639,6 +660,45 @@ mod imp {
         pub(super) rt:            std::cell::OnceCell<Arc<tokio::runtime::Runtime>>,
         pub(super) slow_poll_tx:  RefCell<Option<async_channel::Sender<SlowPollResult>>>,
         pub(super) poll_tx:       RefCell<Option<async_channel::Sender<PollData>>>,
+        /// Fired by `mark_offline()` when *this* `DeviceState` is the one
+        /// that first noticed a Connected/Connecting → Failed transition
+        /// (fast/slow poll failure threshold, or a reconnect attempt
+        /// failing) — not when told externally that it's already offline.
+        /// Kept outside `Inner` since a UUID-change reset (`*inner =
+        /// Inner::default()`) shouldn't drop it; set once, by
+        /// `DeviceManager::get()`, for the lifetime of the `DeviceState`.
+        pub(super) offline_cb:    RefCell<Option<Rc<dyn Fn()>>>,
+        /// This device's uuid — fixed at construction (`new()`) and never
+        /// changed for the rest of this `DeviceState`'s life, full stop.
+        /// **There is no such thing as "the uuid changed"**: if
+        /// `getStatusEx` ever reports a different uuid than this one at
+        /// the same IP, that's a *different device* now sitting at that
+        /// address — this `DeviceState` must not attach itself to it (some
+        /// other `DeviceState` may already own that uuid in
+        /// `DeviceManager`'s registry). It just declares itself `Failed`
+        /// (`fetch_device_info()`'s success handler) and stops, exactly
+        /// like any other disconnect — devlist's health check for *this*
+        /// uuid, and `DeviceManager::update_ip()` for whichever
+        /// `DeviceState` actually owns the uuid that showed up, handle
+        /// the rest with existing machinery. `OnceCell` (not `RefCell`)
+        /// specifically to make "never changes" a compile-time property,
+        /// not just a convention — mirrors `rt`'s Default-construct-then-
+        /// `new()`-sets-it-once pattern. Empty only for a `DeviceState`
+        /// nothing has ever known the identity of at all (`--connect`/a
+        /// fresh manual add by IP, where the uuid is genuinely unknown
+        /// until the first successful connect — `DeviceManager` already
+        /// treats these as second-class/undeduplicated, see its doc
+        /// comment, so a permanently-empty stable uuid here is consistent
+        /// with that, not a new gap). Lives outside `Inner` since a
+        /// `Failed`/reconnect cycle must never touch it (unlike
+        /// `Inner`, which a UUID-*mismatch* — see above — never even
+        /// gets to reset, since that path returns before touching `Inner`
+        /// at all now). Exists so callers that need a stable identity
+        /// even while disconnected — `ui::settings`'s Advanced panel,
+        /// notably — aren't stuck reading `device_info().uuid`, which is
+        /// `None` for as long as the device is offline (see `pub fn
+        /// uuid()`'s doc comment).
+        pub(super) uuid: std::cell::OnceCell<String>,
     }
 
     impl Default for DeviceState {
@@ -648,6 +708,8 @@ mod imp {
                 rt:            std::cell::OnceCell::new(),
                 slow_poll_tx:  RefCell::new(None),
                 poll_tx:       RefCell::new(None),
+                uuid:          std::cell::OnceCell::new(),
+                offline_cb:    RefCell::new(None),
             }
         }
     }
@@ -660,10 +722,17 @@ mod imp {
 
     impl ObjectImpl for DeviceState {
         fn dispose(&self) {
-            let inner = self.inner.borrow();
+            let mut inner = self.inner.borrow_mut();
             let id = inner.device_info.as_ref()
                 .map(|d| format!("{} ({})", d.device_name, d.ip_addr()))
                 .unwrap_or_else(|| "unknown".to_string());
+            // Nothing else will ever poll_tx/slow_tx.recv() this result
+            // once we're being dropped — let any still-in-flight request
+            // stop immediately instead of running to completion for no
+            // reason (same reasoning as `apply_disconnected()`'s abort).
+            if let Some(h) = inner.fast_poll_handle.take() { h.abort(); }
+            if let Some(h) = inner.slow_poll_handle.take() { h.abort(); }
+            drop(inner);
             dbg(&format!("DeviceState dropped: {}", id));
         }
 
@@ -694,9 +763,14 @@ glib::wrapper! {
 // ── Public API ────────────────────────────────────────────────────────────────
 
 impl DeviceState {
-    pub fn new(rt: Arc<tokio::runtime::Runtime>) -> Self {
+    /// `uuid` — this `DeviceState`'s identity for the rest of its life,
+    /// fixed here and never changed afterward; empty only when genuinely
+    /// unknown (a fresh `--connect`/manual add by IP). See
+    /// `imp::DeviceState::uuid`'s doc comment for the full reasoning.
+    pub fn new(rt: Arc<tokio::runtime::Runtime>, uuid: String) -> Self {
         let obj: Self = glib::Object::new();
         obj.imp().rt.set(rt).unwrap();
+        obj.imp().uuid.set(uuid).unwrap();
         obj
     }
 
@@ -707,10 +781,13 @@ impl DeviceState {
     /// "Connecting…"), then fetches device info asynchronously and emits
     /// `device-changed` again when the data arrives.
     ///
-    /// `expected_uuid` — when `Some`, the UUID reported by the device must
-    /// match; on mismatch the connection is aborted and state reverts to
-    /// `Disconnected` so the caller can try a different IP.  Pass `None` for
-    /// user-initiated connects where the right device is already known.
+    /// No `expected_uuid` parameter anymore — identity verification is now
+    /// unconditional and uses `uuid()` (fixed at construction) instead of a
+    /// per-call opt-in: `fetch_device_info()`'s success handler checks
+    /// `info.uuid` against it whenever `uuid()` is non-empty. See
+    /// `imp::DeviceState::uuid`'s doc comment for why a mismatch there
+    /// means "different device, don't attach" rather than "update our
+    /// identity."
     ///
     /// `access_override`/`mute_access_override` are established here, up
     /// front — not via a separate, later call to
@@ -724,34 +801,49 @@ impl DeviceState {
     /// must read the current values first (`playback_access_override()`/
     /// `mute_access_override()`) and pass them back in, not just fresh
     /// defaults.
+    ///
+    /// `connect_now` — when `false`, everything above still happens
+    /// (`client`/`ip`/overrides configured, `device-changed` emitted) but
+    /// `connection_state` is left `Disconnected` and no `fetch_device_info()`
+    /// attempt is made. For `DeviceManager::get()` opening a window on a
+    /// device devlist already believes is offline — attempting (and
+    /// failing) a connection immediately, every single time, for a device
+    /// already known to be unreachable is exactly the noisy behavior this
+    /// whole connection-handling redesign exists to avoid; instead this
+    /// `DeviceState` just sits configured-but-idle until `mark_reachable()`
+    /// (devlist's health check confirming otherwise) actually attempts one.
     pub fn set_device(
         &self,
         ip: &str,
         tls: TlsMode,
-        expected_uuid: Option<&str>,
         access_override: Option<AccessMethod>,
         mute_access_override: Option<AccessMethod>,
+        connect_now: bool,
     ) {
         // Apply --tls CLI override if set; otherwise use the caller-supplied mode.
         let tls = {
             let global = TlsMode::from_usize(TLS_MODE.load(Ordering::Relaxed));
             if global != TlsMode::Auto { global } else { tls }
         };
-        dbg(&format!("set_device: connecting to {ip} ({})", tls.description()));
+        dbg(&format!(
+            "set_device: configuring {ip} ({}), connect_now={connect_now}",
+            tls.description(),
+        ));
         {
             let mut inner = self.imp().inner.borrow_mut();
             *inner = Inner::default();
             inner.client           = Some(WiimClient::new(ip, tls));
             inner.ip                = ip.to_string();
-            inner.connection_state = ConnectionState::Connecting;
-            inner.expected_uuid    = expected_uuid.map(String::from);
+            if connect_now { inner.connection_state = ConnectionState::Connecting; }
             inner.access_override  = access_override;
             inner.mute_access_override = mute_access_override;
         }
         self.recompute_access();
-        dbg("signal: device-changed (connecting)");
+        dbg(&format!("signal: device-changed ({})", if connect_now { "connecting" } else { "configured" }));
         self.emit_by_name::<()>("device-changed", &[]);
-        self.fetch_device_info();
+        if connect_now {
+            self.fetch_device_info();
+        }
     }
 
     fn fetch_device_info(&self) {
@@ -801,26 +893,27 @@ impl DeviceState {
             let Some(ds) = ds.upgrade() else { return };
 
             let Some(FetchOk { info, caps, renames }) = payload else {
-                ds.imp().inner.borrow_mut().connection_state = ConnectionState::Failed;
-                dbg("signal: device-changed (failed)");
-                ds.emit_by_name::<()>("device-changed", &[]);
+                ds.report_failure("fetch_device_info: getStatusEx unreachable");
                 return;
             };
-            // If we were given an expected UUID (startup reconnect), verify it
-            // before accepting the connection.  On mismatch the device at this
-            // IP is not ours; drop back to Disconnected so discovery can
-            // reconnect to the right IP by UUID.
-            let expected_uuid = ds.imp().inner.borrow().expected_uuid.clone();
-            if let Some(expected) = expected_uuid {
-                if info.uuid != expected {
-                    dbg(&format!(
-                        "UUID mismatch: expected {:?}, got {:?}; aborting connection",
-                        expected, info.uuid,
-                    ));
-                    *ds.imp().inner.borrow_mut() = Inner::default();
-                    ds.emit_by_name::<()>("device-changed", &[]);
-                    return;
-                }
+            // Identity check against our fixed uuid() (see
+            // `imp::DeviceState::uuid`'s doc comment) — skipped only when
+            // it's genuinely unknown (a fresh `--connect`/manual add,
+            // where anything answering is accepted as-is). A mismatch
+            // means a *different* device now sits at this IP; treat it
+            // exactly like any other disconnect — this `DeviceState` must
+            // not attach itself to it (something else may already own
+            // that uuid). Recovering the actual device this `DeviceState`
+            // is for (if it reappears elsewhere) is devlist's job, not
+            // this one's — see `DiscoveryManager`'s health-check identity
+            // handling.
+            let known_uuid = ds.uuid();
+            if !known_uuid.is_empty() && info.uuid != known_uuid {
+                ds.report_failure(&format!(
+                    "device identity mismatch at this IP (expected {known_uuid}, got {})",
+                    info.uuid,
+                ));
+                return;
             }
             dbg(&format!(
                 "device info: model=\"{}\" vendor={} fw={} project={} inputs={}",
@@ -852,7 +945,6 @@ impl DeviceState {
                 inner.pending_preset_art.clear();
                 inner.preset_art_inflight.clear();
                 inner.connection_state  = ConnectionState::Connected;
-                inner.slow_poll_failures = 0;
             }
             ds.recompute_access();
             dbg("signal: device-changed (ready)");
@@ -1025,13 +1117,14 @@ impl DeviceState {
         });
     }
 
-    /// Fires once per second while Connected or Failed (a no-op tick while
-    /// Disconnected/Connecting). Reads everything this tick needs to decide
-    /// from `Inner` in one borrow — several interrelated pieces of state
-    /// that don't split cleanly without just moving the borrow-juggling
-    /// into another function's parameter list — then, once the borrow is
-    /// dropped, hands off to a focused helper per action: reconnecting, the
-    /// fast poll, one slow-poll phase.
+    /// Fires once per second, but a genuine no-op tick unless Connected —
+    /// see the early return below and `ConnectionState::Failed`'s doc
+    /// comment for why `Failed` doesn't poll either. Reads everything this
+    /// tick needs to decide from `Inner` in one borrow — several
+    /// interrelated pieces of state that don't split cleanly without just
+    /// moving the borrow-juggling into another function's parameter list —
+    /// then, once the borrow is dropped, hands off to a focused helper per
+    /// action: the fast poll, one slow-poll phase.
     fn do_poll(
         &self,
         poll_tx: &async_channel::Sender<PollData>,
@@ -1040,20 +1133,29 @@ impl DeviceState {
         let mut inner = self.imp().inner.borrow_mut();
         let state = inner.connection_state;
 
-        // Nothing to do while not yet connected or deliberately disconnected.
-        if matches!(state, ConnectionState::Disconnected | ConnectionState::Connecting) {
+        // Only an actually-Connected device polls at all. `Disconnected`/
+        // `Connecting` never had a live connection to poll yet; `Failed`
+        // (displayed "Disconnected") deliberately stops polling too — see
+        // `ConnectionState::Failed`'s doc comment. Reconnection there is
+        // always externally driven (`mark_reachable()`) *when something is
+        // actually watching* — `maybe_self_reconnect()` is the fallback for
+        // when nothing is (see its doc comment).
+        if state != ConnectionState::Connected {
+            if state == ConnectionState::Failed {
+                drop(inner);
+                self.maybe_self_reconnect();
+            }
             return glib::ControlFlow::Continue;
         }
 
         let now = Instant::now();
 
-        // Is it time to start a new slow-poll cycle / reconnect attempt?
+        // Is it time to start a new slow-poll cycle?
         let cycle_due = inner.last_slow_poll
             .map_or(true, |t| now.duration_since(t) >= SLOW_POLL_INTERVAL);
 
         // Flush any pending volume command if the debounce window has elapsed.
-        let pending_vol = if state == ConnectionState::Connected
-            && inner.target_volume >= 0
+        let pending_vol = if inner.target_volume >= 0
             && inner.last_volume_cmd
                 .map_or(true, |t| now.duration_since(t) >= VOLUME_DEBOUNCE)
         {
@@ -1065,8 +1167,15 @@ impl DeviceState {
             None
         };
 
-        let do_reconnect   = cycle_due && state == ConnectionState::Failed;
-        let dispatch_phase = self.advance_slow_poll_rotation(&mut inner, state, cycle_due, now);
+        // Same "don't pile on top of a still-outstanding call" reasoning as
+        // `fast_poll_handle` (see its doc comment) — don't even advance
+        // the rotation while the previous phase's call hasn't resolved yet,
+        // so it retries the same phase once clear rather than skipping it.
+        let dispatch_phase = if inner.slow_poll_handle.is_some() {
+            None
+        } else {
+            self.advance_slow_poll_rotation(&mut inner, state, cycle_due, now)
+        };
 
         let client        = inner.client.clone();
         // `probes_outputs`/`preset_source` are read straight off
@@ -1083,12 +1192,6 @@ impl DeviceState {
         let preset_fp     = inner.preset_fp.clone();
         let upnp_client   = inner.upnp_client.clone();
         drop(inner);
-
-        // Reconnect when Failed and the interval has elapsed.
-        if do_reconnect {
-            self.try_reconnect(client);
-            return glib::ControlFlow::Continue;
-        }
 
         let Some(client) = client else { return glib::ControlFlow::Continue };
 
@@ -1149,16 +1252,179 @@ impl DeviceState {
         }
     }
 
-    /// Begin a reconnect attempt: transition to Connecting and re-run
-    /// `fetch_device_info()` against the same client/IP. No-op if there's
-    /// no client at all (shouldn't normally happen while Failed).
-    fn try_reconnect(&self, client: Option<WiimClient>) {
-        if client.is_some() {
-            dbg("reconnect attempt: transitioning Connecting");
+    // ── External connectivity control ─────────────────────────────────────────
+    //
+    // `DeviceState` no longer decides on its own when to retry a failed
+    // connection (see `ConnectionState::Failed`'s doc comment), and — as of
+    // this redesign — doesn't even decide on its own that it's *failed*,
+    // when anything else is watching: `apply_disconnected()` is the *only*
+    // place `connection_state` is ever locally set to `Failed`, and the
+    // only way there is either `mark_offline()` (devlist telling this
+    // `DeviceState` directly) or, for a poll failure this `DeviceState`
+    // notices itself, a round trip through `report_failure()` — call the
+    // offline callback, let devlist mark itself offline, and let *that*
+    // call straight back into `mark_offline()` here. Same call stack, same
+    // GTK thread, no lag from the round trip. The only case that never
+    // takes the round trip at all is a `DeviceState` nothing is watching in
+    // the first place (`report_failure()`'s fallback) — see its doc comment.
+
+    /// Registers the callback `report_failure()` invokes when *this*
+    /// `DeviceState` notices a poll failure itself (as opposed to being
+    /// told about a failure externally via `mark_offline()`, which does not
+    /// invoke it — seeing this callback fire is *always* devlist finding
+    /// out about a failure it didn't already know about). Takes no
+    /// uuid/identity — the caller (`DeviceManager::get()`) already knows
+    /// which `DeviceState` this is and closes over whatever identity its
+    /// own callback needs. Overwrites any previously-registered callback;
+    /// only ever set once per `DeviceState` in practice.
+    pub fn set_offline_callback(&self, cb: impl Fn() + 'static) {
+        *self.imp().offline_cb.borrow_mut() = Some(Rc::new(cb));
+    }
+
+    /// Told externally (devlist) that this device is offline — either its
+    /// own health check concluded that, or (the common case) this is the
+    /// round-trip tail end of this same `DeviceState`'s own
+    /// `report_failure()` call reaching devlist and bouncing straight back.
+    /// No-op unless currently `Connected` — deliberately *not* `Connecting`
+    /// too: a fresh reconnect attempt (e.g. a window just (re)opened for a
+    /// device devlist's presence hasn't caught up on yet) gets to run to
+    /// completion on its own merits rather than being preempted by stale
+    /// presence from before the attempt even started — if it really is
+    /// still down, `fetch_device_info()` will fail and reach `Failed` (via
+    /// `report_failure()`, telling devlist) within one round trip anyway.
+    pub fn mark_offline(&self) {
+        let connected = self.imp().inner.borrow().connection_state == ConnectionState::Connected;
+        if !connected { return; }
+        self.apply_disconnected("told externally (devlist)");
+    }
+
+    /// Told externally (devlist's health check) that a plain `getStatusEx`
+    /// against this device just succeeded again. No-op unless currently
+    /// `Failed` or `Disconnected` — reconnecting from any other state
+    /// doesn't make sense (already connected, or a first connection
+    /// attempt already in flight). `Disconnected` is included alongside
+    /// `Failed` for `set_device(..., connect_now: false)`'s case: a
+    /// window opened on a device devlist already believed offline sits
+    /// configured-but-`Disconnected` (never having attempted a connect at
+    /// all) until this fires. Re-runs the full `fetch_device_info()` path
+    /// (capability detection, not just the bare liveness check devlist
+    /// already did) — same as any other (re)connect.
+    pub fn mark_reachable(&self) {
+        let can_reconnect = matches!(
+            self.imp().inner.borrow().connection_state,
+            ConnectionState::Failed | ConnectionState::Disconnected,
+        );
+        if !can_reconnect { return; }
+        dbg("connection: told reachable externally (devlist health check); reconnecting");
+        self.imp().inner.borrow_mut().connection_state = ConnectionState::Connecting;
+        self.emit_by_name::<()>("device-changed", &[]);
+        self.fetch_device_info();
+    }
+
+    /// Fallback for a `DeviceState` nobody external is watching — i.e. no
+    /// `set_offline_callback()` was ever registered, so no health check
+    /// anywhere will ever call `mark_reachable()` for it and it would
+    /// otherwise sit `Failed` forever. `DeviceManager::get()` only wires
+    /// the callback for a uuid-keyed device (see its doc comment) — the
+    /// two real cases with no callback are `--connect`/testing-mode (skips
+    /// discovery/devlist entirely, by design) and a device/-layer consumer
+    /// that builds a `DeviceState` directly, bypassing `DeviceManager`
+    /// altogether (any future `src/bin/` tool, in principle — `device/` is
+    /// meant to be usable stand-alone). Reinstates the pre-devlist-handoff
+    /// self-driven periodic retry, at the same `SLOW_POLL_INTERVAL` cadence
+    /// and reusing `last_slow_poll` for it (untouched while `Failed`, so
+    /// safe to repurpose) — no-op, cheaply, on every other tick.
+    fn maybe_self_reconnect(&self) {
+        if self.imp().offline_cb.borrow().is_some() {
+            return; // Someone else (devlist) owns recovery for this one.
+        }
+        let (due, client) = {
+            let mut inner = self.imp().inner.borrow_mut();
+            let due = inner.last_slow_poll
+                .map_or(true, |t| Instant::now().duration_since(t) >= SLOW_POLL_INTERVAL);
+            if due { inner.last_slow_poll = Some(Instant::now()); }
+            (due, inner.client.clone())
+        };
+        if due && client.is_some() {
+            dbg("connection: no external health check registered; self-reconnecting");
             self.imp().inner.borrow_mut().connection_state = ConnectionState::Connecting;
             self.emit_by_name::<()>("device-changed", &[]);
             self.fetch_device_info();
         }
+    }
+
+    /// This `DeviceState` noticed a poll failure itself (`fetch_device_info()`
+    /// unreachable/identity-mismatch, a fast-poll tick, or a slow-poll
+    /// `getStatusEx`) — no threshold/counter anymore (a failure reaching
+    /// this point already survived `cmd()`/`soap_call()`'s own internal
+    /// retry, so a single one is already a strong signal; stacking more
+    /// tolerance on top just delayed detection and multiplied log volume
+    /// for a genuine disconnect, without actually improving flakiness
+    /// tolerance — that's `cmd()`'s job already).
+    ///
+    /// Doesn't mutate local state itself: if devlist is watching
+    /// (`offline_cb` registered), it just calls that and lets the resulting
+    /// round trip (devlist marks itself offline, then calls straight back
+    /// into `mark_offline()`) perform the actual transition — see the
+    /// "External connectivity control" section doc comment above. Only
+    /// falls back to mutating locally when nothing is watching at all
+    /// (`--connect`/testing-mode, or a `device/`-layer consumer that
+    /// bypassed `DeviceManager`) — otherwise a poll failure there would
+    /// silently do nothing and the UI would sit showing stale "Connected"
+    /// forever, the original "device reboot isn't handled" bug all over
+    /// again for that one case.
+    fn report_failure(&self, reason: &str) {
+        if let Some(cb) = self.imp().offline_cb.borrow().clone() {
+            cb();
+        } else {
+            self.apply_disconnected(reason);
+        }
+    }
+
+    /// The *only* place `connection_state` is ever locally set to `Failed`
+    /// — reached either directly from `mark_offline()` (devlist told us) or
+    /// from `report_failure()`'s no-one-watching fallback. No-op if already
+    /// `Failed`/`Disconnected`.
+    fn apply_disconnected(&self, reason: &str) {
+        let transitioned = {
+            let mut inner = self.imp().inner.borrow_mut();
+            if matches!(inner.connection_state, ConnectionState::Failed | ConnectionState::Disconnected) {
+                false
+            } else {
+                dbg(&format!("connection: {:?} → Failed ({reason})", inner.connection_state));
+                inner.connection_state = ConnectionState::Failed;
+                inner.device_info      = None;
+                // Whichever poll triggered this transition already
+                // resolved (process_poll()/start_slow_poll_processor()
+                // clear the corresponding handle before this ever runs) —
+                // but the *other* one may still be genuinely in flight
+                // right now (e.g. slow poll detected the failure while an
+                // independent fast-poll call was still waiting on its own
+                // timeout). Cut it short immediately instead of letting it
+                // run out its full timeout/retry chain for no reason.
+                if let Some(h) = inner.fast_poll_handle.take() { h.abort(); }
+                if let Some(h) = inner.slow_poll_handle.take() { h.abort(); }
+                true
+            }
+        };
+        if transitioned {
+            dbg("signal: device-changed (failed)");
+            self.emit_by_name::<()>("device-changed", &[]);
+        }
+    }
+
+    /// Fast-poll counterpart of `handle_slow_poll_device_info()`'s failure
+    /// handling — factored out so `process_poll_http`/`process_poll_upnp`
+    /// share the one policy. A no-op outside `Connected` (nothing to
+    /// escalate from) — `dispatch_fast_poll()` doesn't fire outside
+    /// `Connected` anyway, but this stays defensive rather than assuming
+    /// that.
+    fn note_fast_poll_result(&self, failed: bool) {
+        if !failed { return; }
+        if self.imp().inner.borrow().connection_state != ConnectionState::Connected {
+            return;
+        }
+        self.report_failure("fast poll: getPlayerStatusEx/GetInfoEx failed");
     }
 
     /// Fast poll — exactly one of HTTP (`getPlayerStatusEx`+`getMetaInfo`)
@@ -1184,30 +1450,43 @@ impl DeviceState {
     /// its own `glib::timeout_add_local_once` closure).
     fn dispatch_fast_poll(&self) {
         let Some(poll_tx) = self.imp().poll_tx.borrow().clone() else { return };
-        let (wants_upnp, upnp_client, want_bt, client) = {
+        let (wants_upnp, upnp_client, want_bt, client, inflight) = {
             let inner = self.imp().inner.borrow();
             let want_bt = capabilities::mode_to_input_source(inner.current_mode) == "bluetooth";
-            (inner.access == AccessMethod::UpnpPolled, inner.upnp_client.clone(), want_bt, inner.client.clone())
+            (inner.access == AccessMethod::UpnpPolled, inner.upnp_client.clone(), want_bt,
+             inner.client.clone(), inner.fast_poll_handle.is_some())
         };
         let Some(client) = client else { return };
+        // A poll not completing within a tick is itself a signal something
+        // is wrong (a slow/hanging request, or the device having just gone
+        // silent) — pile-driving more requests at it on top doesn't help,
+        // and on a real disconnect (a timeout, not an instant "connection
+        // refused") it produced a real backlog of straggling in-flight
+        // calls that kept logging failures long after the device was
+        // already correctly marked offline. Just skip this tick.
+        if inflight { return; }
 
         match (wants_upnp, upnp_client) {
             (true, None) => {
                 // Selected but not ready yet — see doc comment above.
             }
             (true, Some(uc)) => {
-                self.imp().inner.borrow_mut().last_poll = Some(Instant::now());
-                self.rt().spawn(async move {
+                let handle = self.rt().spawn(async move {
                     let (info, bt_status) = fetch_upnp_fast_poll(uc, client, want_bt).await;
                     let _ = poll_tx.send(PollData::Upnp { info, bt_status }).await;
                 });
+                let mut inner = self.imp().inner.borrow_mut();
+                inner.last_poll = Some(Instant::now());
+                inner.fast_poll_handle = Some(handle);
             }
             (false, _) => {
-                self.imp().inner.borrow_mut().last_poll = Some(Instant::now());
-                self.rt().spawn(async move {
+                let handle = self.rt().spawn(async move {
                     let (status, meta, bt_status) = fetch_http_fast_poll(client, want_bt).await;
                     let _ = poll_tx.send(PollData::Http { status, meta, bt_status }).await;
                 });
+                let mut inner = self.imp().inner.borrow_mut();
+                inner.last_poll = Some(Instant::now());
+                inner.fast_poll_handle = Some(handle);
             }
         }
     }
@@ -1241,7 +1520,7 @@ impl DeviceState {
         let cp = client.clone();
         let tx = slow_tx.clone();
         let dispatched_at = Instant::now();
-        self.rt().spawn(async move {
+        let handle = self.rt().spawn(async move {
             let result = run_slow_poll_phase(
                 cp, phase, preset_fp, upnp_client, preset_source, preset_probe_failures,
             ).await;
@@ -1255,6 +1534,7 @@ impl DeviceState {
             }
             let _ = tx.send(result).await;
         });
+        self.imp().inner.borrow_mut().slow_poll_handle = Some(handle);
     }
 
     /// Dispatch a fetch for every preset slot in `pending_preset_art` not
@@ -1471,6 +1751,7 @@ impl DeviceState {
         glib::spawn_future_local(async move {
             while let Ok(result) = rx.recv().await {
                 let Some(ds) = ds_weak.upgrade() else { break };
+                ds.imp().inner.borrow_mut().slow_poll_handle = None;
                 match result {
                     SlowPollResult::Presets { source, probe_failures, entries } => {
                         ds.handle_slow_poll_preset_source(source, probe_failures);
@@ -1625,51 +1906,22 @@ impl DeviceState {
     }
 
     fn handle_slow_poll_device_info(&self, info: Option<DeviceInfo>) {
-        // getStatusEx failed. Tolerate a few consecutive misses (these
-        // embedded HTTP servers are flaky) before declaring the connection
-        // Failed — clearing device_info on every transient blip needlessly
-        // resets the whole UI (e.g. the output selector, see the bug this
-        // was fixing) for something that usually self-heals a second later.
+        // getStatusEx failed — no threshold/counter (see report_failure()'s
+        // doc comment: cmd()'s own internal retry already absorbed a
+        // transient blip before this ever got here).
         let Some(new_info) = info else {
             if self.imp().inner.borrow().connection_state == ConnectionState::Connected {
-                let declared_failed = {
-                    let mut inner = self.imp().inner.borrow_mut();
-                    inner.slow_poll_failures += 1;
-                    if inner.slow_poll_failures >= SLOW_POLL_FAIL_THRESHOLD {
-                        dbg(&format!(
-                            "slow poll: getStatusEx failed {} times in a row; transitioning to Failed",
-                            inner.slow_poll_failures,
-                        ));
-                        inner.connection_state = ConnectionState::Failed;
-                        inner.device_info      = None;
-                        true
-                    } else {
-                        dbg(&format!(
-                            "slow poll: getStatusEx failed ({}/{SLOW_POLL_FAIL_THRESHOLD}); retrying in {}s",
-                            inner.slow_poll_failures, SLOW_POLL_FAIL_RETRY.as_secs(),
-                        ));
-                        // Rewind last_slow_poll so the next 1s tick retries
-                        // immediately instead of waiting out the full
-                        // SLOW_POLL_INTERVAL.
-                        inner.last_slow_poll =
-                            Instant::now().checked_sub(SLOW_POLL_INTERVAL - SLOW_POLL_FAIL_RETRY);
-                        false
-                    }
-                };
-                if declared_failed {
-                    self.emit_by_name::<()>("device-changed", &[]);
-                }
+                self.report_failure("slow poll: getStatusEx failed");
             }
             return;
         };
         dbg("slow poll: getStatusEx ok");
 
-        let (prev_fw, prev_uuid, prev_name, prev_netstat, prev_rssi, prev_remote) = {
+        let (prev_fw, prev_name, prev_netstat, prev_rssi, prev_remote) = {
             let inner = self.imp().inner.borrow();
             let di = inner.device_info.as_ref();
             (
                 di.map(|i| i.firmware.clone()).unwrap_or_default(),
-                di.map(|i| i.uuid.clone()).unwrap_or_default(),
                 di.map(|i| i.device_name.clone()).unwrap_or_default(),
                 inner.netstat,
                 inner.rssi,
@@ -1677,26 +1929,19 @@ impl DeviceState {
             )
         };
 
-        // UUID change means the underlying device has been replaced on the
-        // same IP.  Do a full re-init rather than a partial identity update.
-        if !prev_uuid.is_empty() && new_info.uuid != prev_uuid {
-            dbg(&format!(
-                "slow poll: UUID changed ({} → {}); resetting connection",
-                prev_uuid, new_info.uuid,
+        // A different device now answers this IP's getStatusEx than the
+        // one this `DeviceState` is for — same "don't attach, just
+        // disconnect" handling as `fetch_device_info()`'s success handler
+        // (see `imp::DeviceState::uuid`'s doc comment for the full
+        // reasoning; this is the DHCP-lease-reassignment/device-swapped-
+        // at-this-IP case, not a "this device renamed its uuid" case —
+        // there is no such thing).
+        let known_uuid = self.uuid();
+        if !known_uuid.is_empty() && new_info.uuid != known_uuid {
+            self.report_failure(&format!(
+                "device identity mismatch at this IP (expected {known_uuid}, got {})",
+                new_info.uuid,
             ));
-            let (client, ip) = {
-                let inner = self.imp().inner.borrow();
-                (inner.client.clone(), inner.ip.clone())
-            };
-            {
-                let mut inner = self.imp().inner.borrow_mut();
-                *inner = Inner::default();
-                inner.client           = client;
-                inner.ip                = ip;
-                inner.connection_state = ConnectionState::Connecting;
-            }
-            self.emit_by_name::<()>("device-changed", &[]);
-            self.fetch_device_info();
             return;
         }
 
@@ -1723,7 +1968,6 @@ impl DeviceState {
             inner.netstat = new_netstat;
             inner.rssi    = new_rssi;
             inner.remote  = new_remote;
-            inner.slow_poll_failures = 0;
             if identity_changed {
                 dbg(&format!(
                     "device identity changed: fw={} uuid={} name={}",
@@ -1757,9 +2001,11 @@ impl DeviceState {
     fn process_poll(&self, data: PollData, art_tx: &async_channel::Sender<(String, Vec<u8>)>) {
         match data {
             PollData::Http { status, meta, bt_status } => {
+                self.imp().inner.borrow_mut().fast_poll_handle = None;
                 self.process_poll_http(status, meta, bt_status, art_tx);
             }
             PollData::Upnp { info, bt_status } => {
+                self.imp().inner.borrow_mut().fast_poll_handle = None;
                 self.process_poll_upnp(info, bt_status, art_tx);
             }
             PollData::PresetArt { slot, url, bytes } => self.process_preset_art_result(slot, url, bytes),
@@ -1834,6 +2080,8 @@ impl DeviceState {
         bt_status: Option<BtStatus>,
         art_tx: &async_channel::Sender<(String, Vec<u8>)>,
     ) {
+        self.note_fast_poll_result(status.is_none());
+
         let mut playback_mask: u32 = 0;
 
         // Fallback for the (very unlikely) case `status` itself failed this
@@ -2068,6 +2316,7 @@ impl DeviceState {
         &self, info: Option<upnp::InfoEx>, bt_status: Option<BtStatus>,
         art_tx: &async_channel::Sender<(String, Vec<u8>)>,
     ) {
+        self.note_fast_poll_result(info.is_none());
         let Some(info) = info else { return };
         let mut playback_mask: u32 = 0;
 
@@ -2423,6 +2672,15 @@ impl DeviceState {
     /// IP the current connection is using (empty if never connected).
     pub fn ip(&self) -> String {
         self.imp().inner.borrow().ip.clone()
+    }
+
+    /// This device's uuid, fixed at construction — unlike
+    /// `device_info().map(|i| i.uuid)`, stays populated across a
+    /// disconnect (see `imp::DeviceState::uuid`'s doc comment). Empty only
+    /// for a `DeviceState` constructed without knowing it (a fresh
+    /// `--connect`/manual add by IP).
+    pub fn uuid(&self) -> String {
+        self.imp().uuid.get().cloned().unwrap_or_default()
     }
 
     pub fn device_info(&self) -> Option<DeviceInfo> {

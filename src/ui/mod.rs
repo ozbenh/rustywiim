@@ -95,6 +95,12 @@ pub struct DeviceSpec {
     pub ip:       String,
     pub uuid:     String,
     pub tls_mode: TlsMode,
+    /// Whether to actually attempt a connection immediately
+    /// (`DeviceManager::get()`'s `try_connect`) — `false` when devlist
+    /// already believes this device offline, so opening its window
+    /// doesn't repeat an already-known-to-fail attempt; see that
+    /// function's doc comment.
+    pub try_connect: bool,
 }
 
 /// `--connect <scheme://ip[:port]>` override: when set, `AppState::activate()`
@@ -388,6 +394,19 @@ struct DeviceWindowInner {
     /// differently — a single guard on the whole function is simpler than
     /// caching that one value.
     cleaned_up: Cell<bool>,
+    /// Last known friendly name — the window title's fallback while
+    /// `device_info()` is `None` (still `Connecting`, or `Failed`/
+    /// "Disconnected"): otherwise there'd be nothing to show but the
+    /// generic "RustyWiiM". Seeded at construction from
+    /// `config::DeviceConfig::name` (that field's own doc comment promises
+    /// exactly this, "displayed while connecting / offline" — it just was
+    /// never actually wired up to the window title before), then kept
+    /// fresh by `apply_device_info()` every time the device actually
+    /// answers — so a *later* disconnect falls back to the most recently
+    /// confirmed live name, not a stale config-time one (e.g. the device
+    /// having since been renamed in the WiiM app). Empty for a brand-new
+    /// device config has never seen before and hasn't connected yet.
+    cached_name: RefCell<String>,
     // ── Mini player ───────────────────────────────────────────────────────────
     mini:              MiniWidgets,
     mini_mode:         RefCell<bool>,
@@ -529,11 +548,12 @@ impl DeviceWindow {
                 &spec.uuid, &spec.ip, spec.tls_mode,
                 init_dev_cfg.playback_access_override,
                 init_dev_cfg.mute_access_override,
+                spec.try_connect,
             ),
             None => {
                 // No device spec: create a standalone state that isn't wired to
                 // any device yet; polling still starts so the UI can be shown.
-                let ds = DeviceState::new(device_manager.rt());
+                let ds = DeviceState::new(device_manager.rt(), String::new());
                 ds.start_polling();
                 ds
             }
@@ -700,6 +720,7 @@ impl DeviceWindow {
             applied_window_key: RefCell::new(cfg_uuid.clone()),
             window_state_loaded: Cell::new(false),
             cleaned_up: Cell::new(false),
+            cached_name: RefCell::new(init_dev_cfg.name.clone().unwrap_or_default()),
             mini,
             mini_mode:         RefCell::new(false),
             mini_toggling:     RefCell::new(false),
@@ -1228,11 +1249,44 @@ impl AppState {
             disc_svc.start();
         }
         let disc_mgr = devlist::DiscoveryManager::new(rt.clone(), disc_svc.clone());
+        let device_manager = DeviceManager::new(rt);
+        // Two symmetric, decoupled hooks bridge `devlist` (canonical
+        // reachability, in `ui/`) and `DeviceManager` (in `device/`, which
+        // can't import `ui/devlist` types at all) — `ui::AppState` is the
+        // only thing that knows about both. Neither manager holds a direct
+        // reference to the other; see `TODO.md`'s "relocate devlist's
+        // backend into device/" entry for why this stays this way for now.
+        //
+        // devlist → DeviceManager: fired only at an actual presence
+        // transition (devlist already knows exactly when that is — see
+        // `DiscoveryManager::set_presence_hook()`'s doc comment for why
+        // this replaced a `list-changed`-diffing approach that caused a
+        // real flapping bug).
+        {
+            let device_manager = device_manager.clone();
+            disc_mgr.set_presence_hook(move |uuid, reachable| {
+                device_manager.sync_reachability(&uuid, reachable);
+            });
+        }
+        // DeviceManager → devlist: a DeviceState's own poll can notice a
+        // failure before devlist's next scheduled health-check (HEALTH_CHECK_INTERVAL)
+        // cycle would. `disc_mgr` capture is weak — `disc_mgr` now also
+        // holds a strong reference to `device_manager` via the hook above,
+        // so a strong capture here would be a two-node reference cycle
+        // (harmless for these process-lifetime singletons, but not clean).
+        {
+            let weak_disc = disc_mgr.downgrade();
+            device_manager.set_offline_hook(move |uuid| {
+                if let Some(disc_mgr) = weak_disc.upgrade() {
+                    disc_mgr.mark_offline(&uuid);
+                }
+            });
+        }
 
         Rc::new(Self {
             app:            app.clone(),
             disc_mgr,
-            device_manager: DeviceManager::new(rt),
+            device_manager,
             registry:       RefCell::new(Vec::new()),
             settings_reg:   RefCell::new(Vec::new()),
             disc_win:       RefCell::new(None),
@@ -1314,9 +1368,10 @@ impl AppState {
             config::update(|cfg| cfg.device_mut(&entry.uuid).window_open = true);
         }
         Self::open_device_spec(self_rc, DeviceSpec {
-            ip:       entry.ip.clone(),
-            uuid:     entry.uuid.clone(),
-            tls_mode: entry.tls_mode,
+            ip:          entry.ip.clone(),
+            uuid:        entry.uuid.clone(),
+            tls_mode:    entry.tls_mode,
+            try_connect: entry.presence == devlist::DevicePresence::Active,
         });
     }
 
@@ -1343,6 +1398,11 @@ impl AppState {
         let gtk_win   = dw.window.clone();
         dw.present();
         self_rc.registry.borrow_mut().push(dw);
+        // Exempts this device from devlist's do_prune() for as long as this
+        // window is open — see DeviceRecord::has_open_window's doc comment.
+        // No-op if log_uuid is empty (uuid not resolved yet) or unknown to
+        // devlist.
+        self_rc.disc_mgr.set_window_open(&log_uuid, true);
         let win_key   = gtk_win.clone();
         let weak_self = Rc::downgrade(self_rc);
         gtk_win.connect_close_request({
@@ -1363,6 +1423,7 @@ impl AppState {
             dbg_state(&format!("device window: destroyed uuid={log_uuid}"));
             if let Some(s) = weak_self.upgrade() {
                 s.registry.borrow_mut().retain(|w| w.window != win_key);
+                s.disc_mgr.set_window_open(&log_uuid, false);
             }
         });
     }
@@ -1422,6 +1483,7 @@ impl AppState {
                 ip: ip.clone(),
                 uuid: String::new(),
                 tls_mode: *tls_mode,
+                try_connect: true,
             });
             return;
         }
@@ -1444,6 +1506,13 @@ impl AppState {
                     // retrying the old dead IP forever.
                     self_rc.device_manager.update_ip(&entry.uuid, &entry.ip, entry.tls_mode);
                 }
+                // Reachability sync (devlist → DeviceManager) no longer
+                // happens here at all — devlist fires its presence_hook
+                // directly, at the exact moment it changes presence, wired
+                // in AppState::new(). Diffing a list-changed snapshot
+                // against a shadow copy to reconstruct "did this change"
+                // was itself the cause of a flapping Disconnected/
+                // Connecting… bug.
                 // update() only saves if something actually changed, so no
                 // need to track a separate "dirty" flag here.
                 config::update(|cfg| {

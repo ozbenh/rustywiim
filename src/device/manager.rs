@@ -27,6 +27,15 @@ use crate::device::state::DeviceState;
 struct Inner {
     rt:     Arc<tokio::runtime::Runtime>,
     states: RefCell<HashMap<String, glib::WeakRef<DeviceState>>>,
+    /// Set once by the caller (`ui::AppState`, at startup) via
+    /// `set_offline_hook()`. Wired onto every newly-created `DeviceState` in
+    /// `get()` (see `DeviceState::set_offline_callback`'s doc comment) so a
+    /// `DeviceState` noticing its own connection failure can tell the
+    /// caller immediately, without this module needing to know anything
+    /// about what the caller actually does with it (`ui::devlist`'s health
+    /// check, in practice — kept out of this module since `device/` mustn't
+    /// depend on `ui/`).
+    offline_hook: RefCell<Option<Rc<dyn Fn(String)>>>,
 }
 
 /// Cheap-to-clone handle to the device-state registry.
@@ -38,21 +47,43 @@ impl DeviceManager {
         Self(Rc::new(Inner {
             rt,
             states: RefCell::new(HashMap::new()),
+            offline_hook: RefCell::new(None),
         }))
+    }
+
+    /// Registers the hook invoked (with the device's uuid) whenever a
+    /// `DeviceState` created by this manager notices its own connection
+    /// failure — see `Inner::offline_hook`'s doc comment. Only ever set
+    /// once, by `ui::AppState` at startup.
+    pub fn set_offline_hook(&self, hook: impl Fn(String) + 'static) {
+        *self.0.offline_hook.borrow_mut() = Some(Rc::new(hook));
     }
 
     /// Return a live `DeviceState` for `uuid` + `ip` + `tls`.
     ///
     /// * **Existing entry**: if a live `DeviceState` for this UUID is already
     ///   held by a consumer, that same object is returned.  The `ip`/`tls`/
-    ///   `access_override` arguments are ignored (the device is already
-    ///   connected and configured).
+    ///   `access_override`/`try_connect` arguments are ignored (the device
+    ///   is already connected and configured).
     /// * **New / stale entry**: a fresh `DeviceState` is created, given
     ///   `access_override` up front (before polling starts, so the very
     ///   first poll tick already uses it, not just ones after some later
-    ///   caller happens to push it in), connected, polling is started, and
-    ///   a weak reference is stored.
-    /// * **Empty UUID**: creates an uncached standalone `DeviceState`.
+    ///   caller happens to push it in), configured (`ip`/`tls`/client, and
+    ///   an actual connection attempt too if `try_connect`), polling is
+    ///   started, and a weak reference is stored.
+    /// * **Empty UUID**: creates an uncached standalone `DeviceState`
+    ///   (always with `try_connect` effectively forced true — see below).
+    ///
+    /// `try_connect` — whether to actually attempt a connection now
+    /// (`DeviceState::set_device`'s `connect_now`). The caller (`ui/mod.rs`)
+    /// passes this based on devlist's current belief about the device: if
+    /// devlist already thinks it's offline, there's no point immediately
+    /// repeating a connection attempt that's already known to fail — the
+    /// `DeviceState` sits configured-but-`Disconnected` until devlist's
+    /// health check confirms otherwise (`mark_reachable()`). Ignored (always
+    /// `true`) for an empty uuid — devlist has no presence to consult for a
+    /// device it doesn't know about (`--connect`/a brand new manual add),
+    /// so there's nothing to defer to.
     ///
     /// `access_override`/`mute_access_override` take the same
     /// `Option<AccessMethod>` shape `DeviceState::set_playback_access_override()`/
@@ -71,6 +102,7 @@ impl DeviceManager {
         tls: TlsMode,
         access_override: Option<AccessMethod>,
         mute_access_override: Option<AccessMethod>,
+        try_connect: bool,
     ) -> DeviceState {
         let mut states = self.0.states.borrow_mut();
         // Prune stale entries lazily so the map doesn't grow unboundedly.
@@ -82,11 +114,20 @@ impl DeviceManager {
             }
         }
 
-        let ds = DeviceState::new(self.0.rt.clone());
-        ds.set_device(ip, tls, None, access_override, mute_access_override);
+        let ds = DeviceState::new(self.0.rt.clone(), uuid.to_string());
+        ds.set_device(ip, tls, access_override, mute_access_override, try_connect || uuid.is_empty());
         ds.start_polling();
 
         if !uuid.is_empty() {
+            // Only a uuid-keyed DeviceState can be looked back up by
+            // mark_offline()/mark_reachable() at all, so only these get the
+            // callback wired — an empty-uuid DeviceState (first-ever
+            // connect, uuid not resolved until getStatusEx answers) has no
+            // key the hook's caller could act on anyway.
+            if let Some(hook) = self.0.offline_hook.borrow().clone() {
+                let hook_uuid = uuid.to_string();
+                ds.set_offline_callback(move || hook(hook_uuid.clone()));
+            }
             states.insert(uuid.to_string(), ds.downgrade());
         }
         ds
@@ -95,6 +136,20 @@ impl DeviceManager {
     /// Expose the tokio runtime for callers that need it directly.
     pub fn rt(&self) -> Arc<tokio::runtime::Runtime> {
         self.0.rt.clone()
+    }
+
+    /// Tell the live `DeviceState` for `uuid`, if any, that its
+    /// reachability (as devlist understands it — the canonical source,
+    /// per `ui::devlist`'s `DiscoveryManager`) just changed. No-op if
+    /// there's no live `DeviceState` for this uuid (not open in any window
+    /// right now). The single entry point for the devlist → `DeviceState`
+    /// direction — see `DeviceState::mark_offline()`/`mark_reachable()`.
+    pub fn sync_reachability(&self, uuid: &str, reachable: bool) {
+        if uuid.is_empty() { return; }
+        let ds = self.0.states.borrow().get(uuid).and_then(|w| w.upgrade());
+        if let Some(ds) = ds {
+            if reachable { ds.mark_reachable(); } else { ds.mark_offline(); }
+        }
     }
 
     /// Push a possibly-new `ip`/`tls` to the live `DeviceState` for `uuid`,
@@ -120,7 +175,14 @@ impl DeviceManager {
                 // simply moving to a new IP shouldn't lose them.
                 let access_override = ds.playback_access_override();
                 let mute_access_override = ds.mute_access_override();
-                ds.set_device(ip, tls, Some(uuid), access_override, mute_access_override);
+                // Identity verification no longer needs an explicit
+                // `expected_uuid` opt-in — `ds` was looked up by `uuid`, so
+                // its own fixed `uuid()` already equals it, and
+                // `fetch_device_info()` checks that unconditionally now.
+                // Always connect_now: discovery just confirmed a moved IP
+                // for an already-live DeviceState, not a device devlist
+                // merely still believes offline.
+                ds.set_device(ip, tls, access_override, mute_access_override, true);
             }
         }
     }

@@ -106,8 +106,32 @@ fn apply_repeat_ui(btn: &gtk::Button, state: RepeatMode) {
 impl DeviceWindowInner {
     // ── Reset ─────────────────────────────────────────────────────────────────
 
+    /// Shows `title` ("Connecting…"/"Disconnected") as the big now-playing
+    /// text — in both the main and mini widgets, regardless of which is
+    /// currently visible, so switching modes later doesn't need a fresh
+    /// `device-changed` to catch up — and disables every playback control,
+    /// in both. **Must not be followed by `update_playback_ui()`/
+    /// `update_mini_playback()` in the same refresh** (`populate_all()`
+    /// only calls those in its *other* branch, when there's a live
+    /// `device_info`) — those render straight from `playback_state()`,
+    /// which this does *not* clear (see `ConnectionState::Failed`'s doc
+    /// comment: only `device_info` is cleared on disconnect, so a later
+    /// reconnect can diff against still-relevant last-known playback
+    /// fields) — calling them here would immediately clobber this text and
+    /// re-enable controls from that stale-but-not-cleared state.
     pub(super) fn reset_device_ui(&self, title: &str) {
-        self.window.set_title(Some("RustyWiiM"));
+        // Fall back to the cached name (see `cached_name`'s doc comment)
+        // rather than the bare generic title, while there's no live
+        // `device_info` yet to give a definitive one.
+        let cached_name = self.cached_name.borrow();
+        let win_title = if cached_name.is_empty() {
+            "RustyWiiM".to_string()
+        } else {
+            format!("RustyWiiM ({cached_name})")
+        };
+        drop(cached_name);
+        self.window.set_title(Some(&win_title));
+
         self.pw.title.set_text(title);
         self.pw.artist.set_text("");
         self.pw.album.set_text("");
@@ -117,6 +141,29 @@ impl DeviceWindowInner {
         self.art_bg.clear();
         self.dev_info_label.set_label("");
         self.ip_label.set_visible(false);
+        self.pw.btn_bt_pair.set_visible(false);
+        for btn in [
+            &self.pw.btn_play, &self.pw.btn_prev, &self.pw.btn_next,
+            &self.pw.shuffle, &self.pw.repeat, &self.pw.mute_btn, &self.pw.vol_btn,
+        ] {
+            btn.set_sensitive(false);
+        }
+        self.pw.seek.set_sensitive(false);
+        self.pw.seek.set_value(0.0);
+        self.pw.pos.set_visible(false);
+        self.pw.dur.set_visible(false);
+        self.vol_scale.set_sensitive(false);
+
+        self.mini.title_label.set_text(title);
+        self.mini.artist_label.set_text("");
+        self.mini.status_label.set_label("");
+        self.mini.artwork.clear();
+        self.mini.art_bg.clear();
+        self.mini.btn_bt_pair.set_visible(false);
+        for btn in [&self.mini.btn_play, &self.mini.btn_prev, &self.mini.btn_next, &self.mini.mute_btn] {
+            btn.set_sensitive(false);
+        }
+        self.mini.vol_scale.set_sensitive(false);
 
         for btn in self.pp.btns.iter() { btn.set_visible(false); }
         for lbl in self.pp.labels.iter() { lbl.set_label(""); }
@@ -151,15 +198,27 @@ impl DeviceWindowInner {
         if self.ds.device_info().is_some() {
             self.apply_device_info();
             self.on_presets_changed();
+            // Both, regardless of `mini_mode` — see `reset_device_ui()`'s
+            // doc comment on why this must stay paired with (never run
+            // alongside) that branch, not this one specifically; here it's
+            // safe/correct since there's a live `device_info` to render.
+            self.update_playback_ui(playback_changed::ALL);
+            self.update_mini_playback(playback_changed::ALL);
         } else {
+            // `Disconnected` shows the same "Disconnected" text as `Failed`
+            // now, not blank — `set_device(..., connect_now: false)` means
+            // a window can sit genuinely `Disconnected` (never having
+            // attempted a connect at all, because devlist already believed
+            // the device offline) for a good while, a real steady state
+            // now, not just a fleeting pre-`set_device()` moment.
             let title = match self.ds.connection_state() {
-                ConnectionState::Connecting => "Connecting…",
-                ConnectionState::Failed     => "Disconnected",
-                _                           => "",
+                ConnectionState::Connecting  => "Connecting…",
+                ConnectionState::Failed
+                | ConnectionState::Disconnected => "Disconnected",
+                ConnectionState::Connected      => "",
             };
             self.reset_device_ui(title);
         }
-        self.update_playback_ui(playback_changed::ALL);
         self.update_input_display();
         self.update_output_display();
     }
@@ -327,6 +386,12 @@ impl DeviceWindowInner {
         let caps = match self.ds.capabilities() { Some(c) => c, None => return };
 
         self.window.set_title(Some(&format!("RustyWiiM ({})", info.device_name)));
+        // Refresh the disconnected-fallback title too (see `cached_name`'s
+        // doc comment) — this device just answered, so its name is at
+        // least as fresh as whatever config had at window-open time, and a
+        // later disconnect should fall back to this, not that stale value
+        // (e.g. the device having since been renamed in the WiiM app).
+        *self.cached_name.borrow_mut() = info.device_name.clone();
 
         self.dev_info_label.set_label(&format!(
             "{} · {} · FW {}",

@@ -479,7 +479,18 @@ fn wire_access_row(
 ) {
     row.connect_selected_notify(move |r| {
         let (_, method) = ACCESS_METHOD_CHOICES[r.selected() as usize];
-        config::update(|cfg| save(cfg.device_mut(&uuid), method));
+        // `uuid` is empty while the device is offline/still connecting
+        // (`build_advanced_page()` derives it from `device_info()`, which
+        // is `None` then) — never write that into config (see TODO.md's
+        // "Settings Advanced panel while offline" entry for the full
+        // story; `config::write_to_disk()` also guards this generally,
+        // but skip the write outright here rather than relying on that).
+        // Still push the override live to the DeviceState — harmless and
+        // arguably still useful for this session even though it won't
+        // persist.
+        if !uuid.is_empty() {
+            config::update(|cfg| save(cfg.device_mut(&uuid), method));
+        }
         push(&ds, method);
     });
 }
