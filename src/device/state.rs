@@ -403,6 +403,10 @@ async fn fetch_upnp_fast_poll(
     let bt_status = if want_bt { client.get_bt_status().await } else { None };
     let Some(mut info) = upnp_client.get_info_ex().await.ok() else { return (None, bt_status) };
     if info.current_mute.is_none() {
+        // AudioCast (and maybe other similarly slow devices) gets a
+        // connection error on almost second attempt at this, give it
+        // some breathing room and delay the GetMute by 100ms
+        tokio::time::sleep(Duration::from_millis(100)).await;
         if let Ok(muted) = upnp_client.get_mute().await {
             info.current_mute = Some(muted);
         }
