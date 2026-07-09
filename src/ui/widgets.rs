@@ -112,6 +112,10 @@ pub(crate) struct PlaybackWidgets {
     pub btn_next:    Button,
     pub shuffle:     Button,
     pub repeat:      Button,
+    /// "Restart Pairing" — hidden by default (`update_playback_ui()` only
+    /// shows it while Bluetooth is the active input, disconnected, and not
+    /// already pairing), on its own row below the status label.
+    pub btn_bt_pair: Button,
     pub vol_btn:      Button,
     pub vol_icon_img: gtk::Image,
     pub vol_label:    gtk::Label,
@@ -141,6 +145,10 @@ pub(crate) struct MiniWidgets {
     pub close_btn:     Button,
     pub title_label:   SwipeText,
     pub artist_label:  SwipeText,
+    /// "Restart Pairing" — mirrors the main window's `PlaybackWidgets::btn_bt_pair`
+    /// (same visibility rule), placed above `status_label` rather than
+    /// inside `mini_transport` alongside it.
+    pub btn_bt_pair:   Button,
     pub status_label:  Label,
     pub btn_prev:      Button,
     pub btn_play:      Button,
@@ -427,6 +435,34 @@ fn build_vol_popover() -> (Button, gtk::Image, gtk::Label, Scale, Button, gtk::P
     (vol_btn, vol_icon_img, vol_label, vol_scale, mute_btn, vol_popover)
 }
 
+/// Icon + "Restart Pairing" label, for the main window's "Restart pairing"
+/// button. `css_class`/`icon_px` let `build_mini_window()` reuse this for a
+/// smaller variant rather than duplicating the icon+label+button assembly.
+/// Not `.transport-btn` (its `border-radius:50%`/`padding:0`/fixed size is
+/// tuned for a single glyph and would clip a text label) — a dedicated
+/// class instead, styled in `system.css`/`dark.css`/`modern.css`.
+fn build_bt_pair_button(css_class: &str, icon_px: i32) -> Button {
+    let icon = gtk::Image::builder()
+        .icon_name("bluetooth-symbolic")
+        .pixel_size(icon_px)
+        .build();
+    let label = Label::builder().label("Restart Pairing").build();
+    let content = GtkBox::builder()
+        .orientation(Orientation::Horizontal).spacing(6)
+        .halign(Align::Center)
+        .build();
+    content.append(&icon);
+    content.append(&label);
+    let btn = Button::builder()
+        .css_classes(["flat", css_class])
+        .tooltip_text("Restart Bluetooth pairing")
+        .halign(Align::Center)
+        .visible(false)
+        .build();
+    btn.set_child(Some(&content));
+    btn
+}
+
 pub(super) fn build_playback_widgets() -> (PlaybackWidgets, Scale) {
     let (vol_btn, vol_icon_img, vol_label, vol_scale, mute_btn, vol_popover) = build_vol_popover();
 
@@ -473,6 +509,13 @@ pub(super) fn build_playback_widgets() -> (PlaybackWidgets, Scale) {
         repeat:   Button::builder()
             .icon_name("media-playlist-repeat-symbolic")
             .css_classes(["loop-btn", "circular", "flat"]).tooltip_text("Repeat: Off").build(),
+        // Icon + text label, its own row below the status label (see
+        // `build_right_pane()`), not inside the `transport` row — a text
+        // button there previously widened the row enough to shift
+        // btn_prev/btn_play/btn_next off-center whenever it appeared; its
+        // own row can't affect that row's centering at all, regardless of
+        // size.
+        btn_bt_pair: build_bt_pair_button("bt-pair-btn", 14),
         vol_btn,
         vol_icon_img,
         vol_label,
@@ -537,6 +580,10 @@ pub(super) fn build_right_pane(pw: &PlaybackWidgets) -> gtk::Box {
     right_pane.append(&pw.artist.stack);
     right_pane.append(&pw.album.stack);
     right_pane.append(&pw.status);
+    // Sits below the status label rather than in the transport row (see
+    // `btn_bt_pair`'s own doc comment) — invisible by default, `GtkBox`
+    // doesn't reserve space for a hidden child either way.
+    right_pane.append(&pw.btn_bt_pair);
     right_pane.append(&pw.quality);
     right_pane.append(&controls_card);
 
@@ -810,13 +857,32 @@ pub(super) fn build_mini_window(app: &adw::Application) -> (MiniWidgets, gtk::Ap
 
     let mini_title_label  = SwipeText::new("—", "mini-title",  false, false);
     let mini_artist_label = SwipeText::new("",  "mini-artist", false, false);
+    let mini_btn_bt_pair  = build_bt_pair_button("mini-bt-pair-btn", 11);
+    // Left-aligned (not the shared helper's default Center) so it lines up
+    // with `mini_status_label`'s own left edge (`build_mini_transport()`,
+    // halign(Start)).
+    mini_btn_bt_pair.set_halign(Align::Start);
+    mini_btn_bt_pair.set_valign(Align::Center);
+
+    // Overlaid on `mini_artist_label` rather than appended as its own row —
+    // `blank_playback_baseline()`/`has_playable_content()` guarantee title
+    // and artist are always blank exactly when this button is visible (both
+    // conditions are the same "nothing playable" check), so there's nothing
+    // real for it to cover. A real extra row would grow/shrink the whole
+    // mini window's height every time the button's visibility flips (the
+    // reported bug); `gtk::Overlay` doesn't affect the main child's size
+    // request by default (`measure_overlay` defaults to `false`), so
+    // stacking it here keeps the window a fixed height regardless.
+    let mini_artist_overlay = gtk::Overlay::new();
+    mini_artist_overlay.set_child(Some(&mini_artist_label.stack));
+    mini_artist_overlay.add_overlay(&mini_btn_bt_pair);
 
     let mini_info_box = GtkBox::builder()
         .orientation(Orientation::Vertical).spacing(4)
         .valign(Align::Center).hexpand(true)
         .build();
     mini_info_box.append(&mini_title_label.stack);
-    mini_info_box.append(&mini_artist_label.stack);
+    mini_info_box.append(&mini_artist_overlay);
     mini_info_box.append(&mini_transport);
 
     let mini_main_row = GtkBox::builder()
@@ -912,6 +978,7 @@ pub(super) fn build_mini_window(app: &adw::Application) -> (MiniWidgets, gtk::Ap
         close_btn:     mini_close_btn,
         title_label:   mini_title_label,
         artist_label:  mini_artist_label,
+        btn_bt_pair:   mini_btn_bt_pair,
         status_label:  mini_status_label,
         btn_prev:      mini_btn_prev,
         btn_play:      mini_btn_play,

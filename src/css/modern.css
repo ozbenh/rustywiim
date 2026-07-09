@@ -233,12 +233,14 @@ window.mini-window.mini-window-modern menubutton.mini-restore-btn > button {
    active app-wide theme. */
 window.player-window .transport-btn:hover,
 window.player-window .loop-btn:hover,
-window.player-window .vol-btn:hover {
+window.player-window .vol-btn:hover,
+window.player-window .bt-pair-btn:hover {
     background-color: rgba(255, 255, 255, 0.15);
 }
 window.mini-window.mini-window-modern .mini-restore-btn:hover,
 window.mini-window.mini-window-modern menubutton.mini-restore-btn > button:hover,
 window.mini-window.mini-window-modern .mini-transport-btn:hover,
-window.mini-window.mini-window-modern .mini-vol-btn:hover {
+window.mini-window.mini-window-modern .mini-vol-btn:hover,
+window.mini-window.mini-window-modern .mini-bt-pair-btn:hover {
     background-color: rgba(255, 255, 255, 0.15);
 }

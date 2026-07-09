@@ -878,6 +878,11 @@ impl DeviceWindow {
             move |_| { if let Some(i) = i.upgrade() { i.ds.do_next(); } }
         });
 
+        inner.pw.btn_bt_pair.connect_clicked({
+            let i = Rc::downgrade(&inner);
+            move |_| { if let Some(i) = i.upgrade() { i.ds.bt_enter_pairing(); } }
+        });
+
         // ── Keyboard shortcuts (main window) ────────────────────────────────────
         // Capture phase: must win over a focused seek/volume Scale's own
         // Left/Right/Up/Down handling, since the whole point is a global
@@ -1038,6 +1043,11 @@ impl DeviceWindow {
         inner.mini.btn_next.connect_clicked({
             let i = Rc::downgrade(&inner);
             move |_| { if let Some(i) = i.upgrade() { i.ds.do_next(); } }
+        });
+
+        inner.mini.btn_bt_pair.connect_clicked({
+            let i = Rc::downgrade(&inner);
+            move |_| { if let Some(i) = i.upgrade() { i.ds.bt_enter_pairing(); } }
         });
 
         inner.mini.vol_btn.connect_clicked({

@@ -80,7 +80,7 @@ fn parse_remote_connected(raw: &str) -> Option<bool> {
 }
 
 use super::api::{
-    AudioOutputStatus, DeviceInfo, MetaData, OutputEntry, PlayerStatus,
+    AudioOutputStatus, BtStatus, DeviceInfo, MetaData, OutputEntry, PlayerStatus,
     PresetEntry, PresetFetchOutcome, TlsMode, WiimClient, TLS_MODE,
 };
 use super::capabilities::{self, DeviceCapabilities};
@@ -115,8 +115,8 @@ pub enum ConnectionState {
 /// because it's genuinely a fast-poll backend result; see
 /// `dispatch_pending_preset_art()`.
 enum PollData {
-    Http { status: Option<PlayerStatus>, meta: Option<MetaData> },
-    Upnp { info: Option<upnp::InfoEx> },
+    Http { status: Option<PlayerStatus>, meta: Option<MetaData>, bt_status: Option<BtStatus> },
+    Upnp { info: Option<upnp::InfoEx>, bt_status: Option<BtStatus> },
     PresetArt { slot: usize, url: String, bytes: Option<Vec<u8>> },
 }
 
@@ -346,47 +346,68 @@ async fn run_slow_poll_phase(
     }
 }
 
-/// The HTTP fast poll: `getPlayerStatusEx` + `getMetaInfo`. Only called by
-/// `dispatch_fast_poll`/`trigger_poll` when `access == AccessMethod::Http`
-/// — a `UpnpPolled` device never runs this (see `PollData`'s doc comment),
-/// so `inner.player_status`/`inner.metadata` simply stop updating while
-/// UPnP is selected.
-async fn fetch_http_fast_poll(client: WiimClient) -> (Option<PlayerStatus>, Option<MetaData>) {
+/// The HTTP fast poll: `getbtstatus` (only if `want_bt`) + `getPlayerStatusEx`
+/// + `getMetaInfo` (only if not skipped — see below), sequential, never
+/// concurrent. Only called by `dispatch_fast_poll`/`trigger_poll` when
+/// `access == AccessMethod::Http` — a `UpnpPolled` device never runs this
+/// (see `PollData`'s doc comment), so `inner.player_status`/`inner.metadata`
+/// simply stop updating while UPnP is selected.
+///
+/// `want_bt` (computed by the caller from `current_mode`, necessarily a
+/// snapshot from *before* this tick's own `getPlayerStatusEx` answers —
+/// there's no way to know this tick's real mode any earlier) gates whether
+/// `getbtstatus` is called at all; it's fetched *first*, ahead of
+/// `getPlayerStatusEx`, specifically so its fresh `connected` value (not
+/// `inner.playback.bt_connected`, which could be up to one tick stale) is
+/// what decides whether to skip `getMetaInfo` this same tick — nothing is
+/// casting while Bluetooth is connected-to-nothing, so there's no metadata
+/// to fetch, and `process_poll_http()` force-blanks the cached song data
+/// in that case anyway (`blank_playback_baseline`) rather than
+/// trusting whatever's still sitting in `meta`. `getPlayerStatusEx` itself
+/// is always fetched regardless of any of this — status/mode/volume
+/// polling keeps running unconditionally, since that's how a later input
+/// change or a volume command's result is noticed at all.
+async fn fetch_http_fast_poll(
+    client: WiimClient, want_bt: bool,
+) -> (Option<PlayerStatus>, Option<MetaData>, Option<BtStatus>) {
+    let bt_status = if want_bt { client.get_bt_status().await } else { None };
+    let skip_meta = bt_status.as_ref().is_some_and(|b| !b.connected);
     let status = client.get_status().await.ok();
-    let meta   = client.get_meta_info().await.ok();
-    (status, meta)
+    let meta = if skip_meta { None } else { client.get_meta_info().await.ok() };
+    (status, meta, bt_status)
 }
 
-/// The UPnP fast poll: `GetInfoEx` on an already-discovered `UpnpClient`.
-/// The caller (`dispatch_fast_poll`/`trigger_poll`) only ever calls this
-/// once it has confirmed a client exists — HTTP and UPnP are mutually
-/// exclusive per tick, so there's no HTTP call running alongside this one
-/// to worry about serializing against.
+/// The UPnP fast poll: `getbtstatus` (only if `want_bt`, HTTP — there's no
+/// UPnP equivalent implemented) followed by `GetInfoEx` on an
+/// already-discovered `UpnpClient`. The caller (`dispatch_fast_poll`/
+/// `trigger_poll`) only ever calls this once it has confirmed a client
+/// exists. `want_bt` and the call ordering mirror `fetch_http_fast_poll`'s
+/// own doc comment exactly (bt status fetched first, ahead of the main
+/// call) — the only difference here is there's no `skip_meta` decision to
+/// make from it, since `GetInfoEx` always bundles metadata into the same
+/// single call regardless.
 ///
-/// Follows up with a supplementary `RenderingControl.GetMute` call, but
-/// *only* when this response's `current_mute` came back `None` (tag
-/// absent — confirmed on iEAST AudioCast; see `InfoEx::current_mute`'s doc
-/// comment). This is a per-response runtime check, not gated by
-/// `mute_access` or any other static flag: self-correcting if a firmware
-/// update ever adds/removes the tag, and the common case (`GetInfoEx`
-/// already has it) never pays for the extra round trip. Sequential, never
-/// concurrent with the first call — same "don't hammer the embedded
-/// server" rule every other multi-call poll path already follows (e.g.
-/// `fetch_http_fast_poll`'s status+meta pair). A failed supplementary call
-/// just leaves `current_mute` as `None` for this tick; `process_poll_upnp`
-/// treats that as "no new information," not "unmuted."
+/// Also follows `GetInfoEx` up with a supplementary `RenderingControl.GetMute`
+/// call, but *only* when this response's `current_mute` came back `None`
+/// (tag absent — confirmed on iEAST AudioCast; see `InfoEx::current_mute`'s
+/// doc comment). A failed supplementary `GetMute` call just leaves
+/// `current_mute` as `None` for this tick; `process_poll_upnp` treats that
+/// as "no new information," not "unmuted."
 ///
-/// This is the ideal stopgap to poll with, but `RenderingControl` GENA
-/// eventing (a separate, already-tracked idea) would eventually remove the
-/// need to poll for mute at all.
-async fn fetch_upnp_fast_poll(upnp_client: UpnpClient) -> Option<upnp::InfoEx> {
-    let mut info = upnp_client.get_info_ex().await.ok()?;
+/// This is the ideal stopgap to poll mute with, but `RenderingControl`
+/// GENA eventing (a separate, already-tracked idea) would eventually
+/// remove the need to poll for it at all.
+async fn fetch_upnp_fast_poll(
+    upnp_client: UpnpClient, client: WiimClient, want_bt: bool,
+) -> (Option<upnp::InfoEx>, Option<BtStatus>) {
+    let bt_status = if want_bt { client.get_bt_status().await } else { None };
+    let Some(mut info) = upnp_client.get_info_ex().await.ok() else { return (None, bt_status) };
     if info.current_mute.is_none() {
         if let Ok(muted) = upnp_client.get_mute().await {
             info.current_mute = Some(muted);
         }
     }
-    Some(info)
+    (Some(info), bt_status)
 }
 
 // ── Cached device state ───────────────────────────────────────────────────────
@@ -443,6 +464,18 @@ struct Inner {
     /// field by field, by `process_poll()` rather than rebuilt and diffed
     /// wholesale every tick.
     playback:        PlaybackState,
+    /// `false` on any tick where `process_poll_http()`/`process_poll_upnp()`
+    /// skipped real content decode because `has_playable_content()` said
+    /// no (idle, or Bluetooth not confirmed connected) — set once a
+    /// tick successfully decodes real content again. Exists to force a
+    /// full re-decode the instant `has_playable_content()` flips back to
+    /// `false`, even if the underlying wire response happens not to have
+    /// changed since the last real decode (e.g. `play_medium` stayed
+    /// `"BLUETOOTH"` across a whole disconnect→reconnect cycle) — without
+    /// this, the plain per-field diff against the raw response cache
+    /// wouldn't detect anything to re-decode, and real values would never
+    /// repopulate.
+    has_content: bool,
     /// Backend selection for this device: capability-profile default with
     /// `access_override` applied on top, if set. Recomputed by
     /// `recompute_access()`.
@@ -549,6 +582,7 @@ impl Default for Inner {
             upnp_discovery_in_flight: false,
             upnp_info:        None,
             playback:        PlaybackState::default(),
+            has_content:     false,
             access:          AccessMethod::Http,
             access_override: None,
             mute_access:      AccessMethod::UpnpPolled,
@@ -954,7 +988,7 @@ impl DeviceState {
     pub fn start_polling(&self) {
         let (poll_tx, poll_rx) = async_channel::unbounded::<PollData>();
         let (slow_tx, slow_rx) = async_channel::unbounded::<SlowPollResult>();
-        let (art_tx,  art_rx)  = async_channel::unbounded::<Vec<u8>>();
+        let (art_tx,  art_rx)  = async_channel::unbounded::<(String, Vec<u8>)>();
 
         *self.imp().slow_poll_tx.borrow_mut() = Some(slow_tx.clone());
 
@@ -1050,7 +1084,7 @@ impl DeviceState {
             self.rt().spawn(async move { let _ = cv.set_volume(vol).await; });
         }
 
-        self.dispatch_fast_poll(&client, poll_tx);
+        self.dispatch_fast_poll();
         self.dispatch_slow_poll(
             &client, slow_tx, dispatch_phase, probe_outputs,
             preset_source, preset_probe_failures, preset_fp, upnp_client,
@@ -1124,11 +1158,24 @@ impl DeviceState {
     /// the point of the choice. (An HTTP-fallback mode was considered and
     /// deferred as unnecessary complexity for what's currently an opt-in
     /// diagnostic path, not the default.)
-    fn dispatch_fast_poll(&self, client: &WiimClient, poll_tx: &async_channel::Sender<PollData>) {
-        let (wants_upnp, upnp_client) = {
+    ///
+    /// Takes no parameters — fetches its own `client`/`poll_tx` (a couple
+    /// of cheap `Option` clones off two `RefCell`s) rather than requiring
+    /// the caller to already have them in hand, so both regular call sites
+    /// can share this one function outright: `do_poll()`'s every-tick call
+    /// (which happens to have `client` in scope anyway, for the slow-poll/
+    /// preset-art dispatchers running the same tick, but doesn't need to
+    /// pass it here too) and `trigger_poll()`'s delayed one-shot after a
+    /// command (which doesn't have either in scope at all, running from
+    /// its own `glib::timeout_add_local_once` closure).
+    fn dispatch_fast_poll(&self) {
+        let Some(poll_tx) = self.imp().poll_tx.borrow().clone() else { return };
+        let (wants_upnp, upnp_client, want_bt, client) = {
             let inner = self.imp().inner.borrow();
-            (inner.access == AccessMethod::UpnpPolled, inner.upnp_client.clone())
+            let want_bt = capabilities::mode_to_input_source(inner.current_mode) == "bluetooth";
+            (inner.access == AccessMethod::UpnpPolled, inner.upnp_client.clone(), want_bt, inner.client.clone())
         };
+        let Some(client) = client else { return };
 
         match (wants_upnp, upnp_client) {
             (true, None) => {
@@ -1136,19 +1183,16 @@ impl DeviceState {
             }
             (true, Some(uc)) => {
                 self.imp().inner.borrow_mut().last_poll = Some(Instant::now());
-                let tx = poll_tx.clone();
                 self.rt().spawn(async move {
-                    let info = fetch_upnp_fast_poll(uc).await;
-                    let _ = tx.send(PollData::Upnp { info }).await;
+                    let (info, bt_status) = fetch_upnp_fast_poll(uc, client, want_bt).await;
+                    let _ = poll_tx.send(PollData::Upnp { info, bt_status }).await;
                 });
             }
             (false, _) => {
                 self.imp().inner.borrow_mut().last_poll = Some(Instant::now());
-                let cp = client.clone();
-                let tx = poll_tx.clone();
                 self.rt().spawn(async move {
-                    let (status, meta) = fetch_http_fast_poll(cp).await;
-                    let _ = tx.send(PollData::Http { status, meta }).await;
+                    let (status, meta, bt_status) = fetch_http_fast_poll(client, want_bt).await;
+                    let _ = poll_tx.send(PollData::Http { status, meta, bt_status }).await;
                 });
             }
         }
@@ -1233,7 +1277,7 @@ impl DeviceState {
     fn start_poll_processor(
         &self,
         poll_rx: async_channel::Receiver<PollData>,
-        art_tx: async_channel::Sender<Vec<u8>>,
+        art_tx: async_channel::Sender<(String, Vec<u8>)>,
     ) {
         let ds = self.downgrade();
         glib::spawn_future_local(async move {
@@ -1248,23 +1292,42 @@ impl DeviceState {
     /// nothing) — treated as "no artwork" rather than dropped silently, so a
     /// failed download still clears the previous track's stale art instead of
     /// leaving it on screen forever.
-    fn start_art_loader(&self, art_rx: async_channel::Receiver<Vec<u8>>) {
+    ///
+    /// `url` is the URL this fetch was *for*, tagged on by `fetch_art()` —
+    /// checked against `inner.playback.art_url` before applying anything.
+    /// A fetch that was in flight when the input changed (or a newer fetch
+    /// superseded it) can land after `art_url` has already moved on to
+    /// something else (or been cleared to `None` by
+    /// `blank_playback_baseline()`); applying it anyway would paint the
+    /// wrong track's artwork over whatever's actually current now. Mirrors
+    /// `process_preset_art_result()`'s identical stale-result guard for
+    /// presets.
+    fn start_art_loader(&self, art_rx: async_channel::Receiver<(String, Vec<u8>)>) {
         let ds = self.downgrade();
         glib::spawn_future_local(async move {
-            while let Ok(bytes) = art_rx.recv().await {
+            while let Ok((url, bytes)) = art_rx.recv().await {
                 let Some(ds) = ds.upgrade() else { break };
-                {
+                let applied = {
                     let mut inner = ds.imp().inner.borrow_mut();
-                    Self::replace_artwork(&mut inner, None); // leak-check the outgoing value first
-                    if bytes.is_empty() {
-                        dbg("artwork fetch failed; clearing stale art");
+                    if inner.playback.art_url.as_deref() != Some(url.as_str()) {
+                        false
                     } else {
-                        dbg(&format!("artwork loaded: {} bytes", bytes.len()));
-                        inner.playback.artwork = Some(Rc::new(bytes));
+                        Self::replace_artwork(&mut inner, None); // leak-check the outgoing value first
+                        if bytes.is_empty() {
+                            dbg("artwork fetch failed; clearing stale art");
+                        } else {
+                            dbg(&format!("artwork loaded: {} bytes", bytes.len()));
+                            inner.playback.artwork = Some(Rc::new(bytes));
+                        }
+                        true
                     }
+                };
+                if applied {
+                    dbg("signal: playback-changed (artwork)");
+                    ds.emit_by_name::<()>("playback-changed", &[&playback_changed::ARTWORK]);
+                } else {
+                    dbg(&format!("artwork fetch result for stale/superseded url ignored: {url}"));
                 }
-                dbg("signal: playback-changed (artwork)");
-                ds.emit_by_name::<()>("playback-changed", &[&playback_changed::ARTWORK]);
             }
         });
     }
@@ -1288,13 +1351,75 @@ impl DeviceState {
         inner.playback.artwork = new;
     }
 
-    /// The input/mode has changed: clears stale artwork for the incoming
-    /// track and deal with inputs incorrectly marked disabled in case of
-    /// firmware bug.
+    /// Whether there's currently anything playable at all. Currently
+    /// takes into account the bluetooth sink status when the input
+    /// is set to BT and the mode (0 = nothing).
+    fn has_playable_content(mode: i32, bt_status: &Option<BtStatus>) -> bool {
+        if matches!(mode, -1 | 0) { return false; } // idle / not yet known
+        if capabilities::mode_to_input_source(mode) == "bluetooth" {
+            return bt_status.as_ref().is_some_and(|s| s.connected);
+        }
+        true
+    }
+
+    /// Forces every song-metadata field (title/artist/album/artwork/
+    /// quality/codec_label) to a blank baseline and every transport
+    /// capability (including `can_playpause`) to disabled — the shared
+    /// "nothing playable right now" state, used whenever
+    /// `has_playable_content()` says so (idle mode, or Bluetooth not
+    /// confirmed connected). Diffed against the *current* `playback` state
+    /// (not either backend's own raw response cache), so it's a cheap
+    /// no-op once already blank — returns whether it actually changed
+    /// anything, for the caller to decide whether a
+    /// `playback_changed::ALL` refresh is warranted (see the "`blank_mask`
+    /// is overkill" note this replaced — a precise per-field bitmask isn't
+    /// worth the bookkeeping for a reset this coarse).
+    fn blank_playback_baseline(inner: &mut Inner) -> bool {
+        let mut changed = false;
+        if !inner.playback.title.is_empty()  { inner.playback.title  = Rc::from(""); changed = true; }
+        if !inner.playback.artist.is_empty() { inner.playback.artist = Rc::from(""); changed = true; }
+        if !inner.playback.album.is_empty()  { inner.playback.album  = Rc::from(""); changed = true; }
+        if inner.playback.quality.is_some() || inner.playback.codec_label.is_some() {
+            inner.playback.quality     = None;
+            inner.playback.codec_label = None;
+            changed = true;
+        }
+        if inner.playback.art_url.is_some() || inner.playback.artwork.is_some() {
+            inner.playback.art_url = None;
+            Self::replace_artwork(inner, None);
+            changed = true;
+        }
+        let disabled = playback::SourceCapabilities {
+            can_next: false, can_previous: false, can_shuffle: false,
+            can_repeat: false, can_seek: false, can_playpause: false,
+        };
+        if inner.playback.caps != disabled {
+            inner.playback.caps = disabled;
+            changed = true;
+        }
+        changed
+    }
+
+    /// The input/mode has changed: resets the whole playback baseline via
+    /// `blank_playback_baseline()` unconditionally (so a stale title/caps
+    /// left over from whatever was previously selected never leaks into
+    /// the new source's display, even for one tick — and, the same fix in
+    /// the other direction, switching *away* from a Bluetooth-disconnected
+    /// source doesn't leave everything stuck disabled just because the old
+    /// override happened to still be asserted a moment earlier) and deals
+    /// with inputs incorrectly marked disabled in case of firmware bug.
+    /// This runs before any of this tick's own per-field decode logic
+    /// (same borrow, right after), which is what actually repopulates real
+    /// values for the new source, same tick — no staleness window.
     fn apply_mode_change(inner: &mut Inner, new_mode: i32) {
         inner.current_mode = new_mode;
-        Self::replace_artwork(inner, None);
-        inner.playback.art_url = None;
+        Self::blank_playback_baseline(inner);
+        // Not (still) Bluetooth: nothing left to track for it either.
+        if capabilities::mode_to_input_source(new_mode) != "bluetooth" {
+            inner.playback.bt_connected   = false;
+            inner.playback.bt_device_name = None;
+            inner.playback.bt_pairing     = false;
+        }
         let active_id = capabilities::mode_to_input_source(new_mode);
         if let Some(caps) = inner.capabilities.as_mut() {
             if let Some(entry) = caps.inputs.iter_mut().find(|i| i.id == active_id) {
@@ -1454,6 +1579,37 @@ impl DeviceState {
         }
     }
 
+    /// Writes one fast-poll `getbtstatus` result straight into
+    /// `inner.playback` — called from *within*
+    /// `process_poll_http`/`process_poll_upnp`'s own borrow, using the
+    /// exact same `bt_status` value `has_playable_content()` just decided
+    /// with, so there's no way for "what we decided" and "what we
+    /// recorded" to diverge (the previous design applied this in a
+    /// separate pass, reading `inner.current_mode` as it stood *after*
+    /// this same tick's mode update but comparing against
+    /// `inner.playback.bt_connected` from *before* it — exactly the
+    /// staleness class of bug this whole redesign exists to close).
+    /// Resetting back to disconnected/no-name when Bluetooth *isn't* (or
+    /// stopped being) the active input is `apply_mode_change()`'s job, not
+    /// this function's — this one only ever runs with a `status` already
+    /// known to be fresh and relevant. Returns whether it actually changed
+    /// anything, mirroring `blank_playback_baseline()`'s shape so both can
+    /// feed the same "OR into `playback_changed::ALL`" pattern.
+    fn apply_bt_status(inner: &mut Inner, status: &BtStatus) -> bool {
+        let name: Option<Rc<str>> = if status.connected && !status.device_name.is_empty() {
+            Some(Rc::from(status.device_name.as_str()))
+        } else {
+            None
+        };
+        let changed = inner.playback.bt_connected != status.connected
+            || inner.playback.bt_device_name.as_deref() != name.as_deref()
+            || inner.playback.bt_pairing != status.pairing;
+        inner.playback.bt_connected   = status.connected;
+        inner.playback.bt_device_name = name;
+        inner.playback.bt_pairing     = status.pairing;
+        changed
+    }
+
     fn handle_slow_poll_device_info(&self, info: Option<DeviceInfo>) {
         // getStatusEx failed. Tolerate a few consecutive misses (these
         // embedded HTTP servers are flaky) before declaring the connection
@@ -1584,10 +1740,14 @@ impl DeviceState {
     /// `PollData::Http`/`PollData::Upnp` are mutually exclusive (see
     /// `PollData`'s doc comment), so exactly one of these runs per tick,
     /// never both.
-    fn process_poll(&self, data: PollData, art_tx: &async_channel::Sender<Vec<u8>>) {
+    fn process_poll(&self, data: PollData, art_tx: &async_channel::Sender<(String, Vec<u8>)>) {
         match data {
-            PollData::Http { status, meta } => self.process_poll_http(status, meta, art_tx),
-            PollData::Upnp { info } => self.process_poll_upnp(info, art_tx),
+            PollData::Http { status, meta, bt_status } => {
+                self.process_poll_http(status, meta, bt_status, art_tx);
+            }
+            PollData::Upnp { info, bt_status } => {
+                self.process_poll_upnp(info, bt_status, art_tx);
+            }
             PollData::PresetArt { slot, url, bytes } => self.process_preset_art_result(slot, url, bytes),
         }
     }
@@ -1641,15 +1801,39 @@ impl DeviceState {
     /// source-name lookup, an unchanged `curpos`/`totlen` never re-runs the
     /// ms/µs heuristic — decode cost is paid only when the raw diff already
     /// told us something changed.
+    ///
+    /// `bt_status` is this exact tick's `getbtstatus` reading (already
+    /// fetched by `fetch_http_fast_poll()`, ahead of `getPlayerStatusEx`) —
+    /// applied here, in the same borrow that also decides
+    /// `has_playable_content()`, rather than in a separate post-hoc pass
+    /// (see `apply_bt_status()`'s doc comment for why that separation used
+    /// to cause staleness bugs). Caps and metadata content are gated by
+    /// `has_playable_content()`, freshly recomputed every tick from this
+    /// tick's own `st.mode`/`bt_status` — never from a cross-tick cached
+    /// value — so entering/leaving "nothing playable" (idle, or Bluetooth
+    /// disconnected) takes effect the instant it's known, in either
+    /// direction, with no lag and no dependency on write ordering.
     fn process_poll_http(
         &self,
         status: Option<PlayerStatus>,
         meta:   Option<MetaData>,
-        art_tx: &async_channel::Sender<Vec<u8>>,
+        bt_status: Option<BtStatus>,
+        art_tx: &async_channel::Sender<(String, Vec<u8>)>,
     ) {
         let mut playback_mask: u32 = 0;
 
+        // Fallback for the (very unlikely) case `status` itself failed this
+        // tick but `meta` somehow still arrived — uses last tick's mode.
+        // Overwritten with this tick's real, fresh `st.mode` below the
+        // instant `status` is available.
+        let (mut has_content, had_content) = {
+            let inner = self.imp().inner.borrow();
+            (Self::has_playable_content(inner.current_mode, &bt_status), inner.has_content)
+        };
+
         if let Some(st) = status {
+            has_content = Self::has_playable_content(st.mode, &bt_status);
+
             // 1. Borrow: diff against previous status, compute everything we
             //    need from `inner` before it's dropped.
             let (mode_changed, prev_mode, mute_changed, vol_changed, timing_valid, time_changed, other_changed) = {
@@ -1703,6 +1887,12 @@ impl DeviceState {
             {
                 let mut inner = self.imp().inner.borrow_mut();
                 emit_input_changed = Self::handle_input_mode_poll(&mut inner, mode_changed, st.mode);
+                if mode_changed { playback_mask |= playback_changed::ALL; }
+
+                if let Some(bts) = &bt_status {
+                    if Self::apply_bt_status(&mut inner, bts) { playback_mask |= playback_changed::ALL; }
+                }
+
                 if mute_changed { inner.playback.muted  = st.mute; }
                 if vol_changed  { inner.playback.volume = st.vol;  }
                 if time_changed {
@@ -1716,13 +1906,26 @@ impl DeviceState {
                     let (shuffle, repeat) = playback::decode_loop_mode_http(st.loop_mode);
                     inner.playback.shuffle = shuffle;
                     inner.playback.repeat  = repeat;
-                    let caps = playback::decode_transport_caps_http(st.mode, &st.vendor);
-                    dbg(&format!(
-                        "transport caps (http): mode={} vendor={:?} -> {caps:?}",
-                        st.mode, st.vendor,
-                    ));
-                    inner.playback.caps = caps;
                 }
+                if has_content {
+                    // `had_content` false forces a redecode even without a raw
+                    // diff — see `Inner::has_content`'s doc comment:
+                    // the wire fields may genuinely not have changed across
+                    // a disconnect→reconnect cycle.
+                    if other_changed || !had_content {
+                        let caps = playback::decode_transport_caps_http(st.mode, &st.vendor);
+                        dbg(&format!(
+                            "transport caps (http): mode={} vendor={:?} -> {caps:?}",
+                            st.mode, st.vendor,
+                        ));
+                        inner.playback.caps = caps;
+                        playback_mask |= playback_changed::OTHER;
+                    }
+                } else if Self::blank_playback_baseline(&mut inner) {
+                    playback_mask |= playback_changed::ALL;
+                }
+                inner.has_content = has_content;
+
                 inner.player_status = Some(st);
             }
 
@@ -1737,7 +1940,10 @@ impl DeviceState {
             let art_url = m.art_uri().to_string();
 
             // 1. Borrow: diff against previous metadata, compute everything we
-            //    need from `inner` before it's dropped.
+            //    need from `inner` before it's dropped. Diffed regardless of
+            //    `has_content` — the raw cache below always tracks the
+            //    latest response so a future tick's diff stays accurate,
+            //    even while nothing's being applied to `playback` right now.
             let (url_changed, title_changed, artist_changed, album_changed, other_changed) = {
                 let inner = self.imp().inner.borrow();
                 let prev = inner.metadata.as_ref();
@@ -1750,40 +1956,44 @@ impl DeviceState {
                 let cached_url = inner.playback.art_url.as_deref().unwrap_or("");
                 (art_url != cached_url, title_changed, artist_changed, album_changed, other_changed)
             };
-
-            if title_changed  { playback_mask |= playback_changed::TITLE; }
-            if artist_changed { playback_mask |= playback_changed::ARTIST; }
-            if album_changed  { playback_mask |= playback_changed::ALBUM; }
-            if other_changed  { playback_mask |= playback_changed::OTHER; }
+            if has_content != had_content { playback_mask |= playback_changed::ALL; }
+            else if has_content {
+                if title_changed  { playback_mask |= playback_changed::TITLE; }
+                if artist_changed { playback_mask |= playback_changed::ARTIST; }
+                if album_changed  { playback_mask |= playback_changed::ALBUM; }
+                if url_changed    { playback_mask |= playback_changed::OTHER; }
+            }
 
             // 2. Borrow_mut: decode only what changed, straight into `playback`.
             {
                 let mut inner = self.imp().inner.borrow_mut();
-                if title_changed  { inner.playback.title  = Rc::from(m.title.as_str()); }
-                if artist_changed { inner.playback.artist = Rc::from(m.artist.as_str()); }
-                if album_changed  { inner.playback.album  = Rc::from(m.album.as_str()); }
-                if other_changed {
-                    inner.playback.quality =
-                        playback::decode_quality_http(&m.bit_rate, &m.sample_rate, &m.bit_depth);
-                    // HTTP has no codec-badge equivalent at all — always clear
-                    // here so switching `metadata`'s access method back to
-                    // HTTP (from a Settings override) doesn't leave a stale
-                    // UPnP-sourced badge on screen forever. If `metadata` is
-                    // actually still `UpnpPolled` and this tick also carries a
-                    // fresh `GetInfoEx` result, the UPnP block below runs
-                    // right after this and sets it again.
-                    inner.playback.codec_label = None;
-                }
-                if url_changed {
-                    inner.playback.art_url =
-                        if art_url.is_empty() { None } else { Some(Rc::from(art_url.as_str())) };
-                    Self::replace_artwork(&mut inner, None);
+                if has_content {
+                    if title_changed  { inner.playback.title  = Rc::from(m.title.as_str()); }
+                    if artist_changed { inner.playback.artist = Rc::from(m.artist.as_str()); }
+                    if album_changed  { inner.playback.album  = Rc::from(m.album.as_str()); }
+                    if other_changed {
+                        inner.playback.quality =
+                            playback::decode_quality_http(&m.bit_rate, &m.sample_rate, &m.bit_depth);
+                        // HTTP has no codec-badge equivalent at all — always clear
+                        // here so switching `metadata`'s access method back to
+                        // HTTP (from a Settings override) doesn't leave a stale
+                        // UPnP-sourced badge on screen forever. If `metadata` is
+                        // actually still `UpnpPolled` and this tick also carries a
+                        // fresh `GetInfoEx` result, the UPnP block below runs
+                        // right after this and sets it again.
+                        inner.playback.codec_label = None;
+                    }
+                    if url_changed {
+                        inner.playback.art_url =
+                            if art_url.is_empty() { None } else { Some(Rc::from(art_url.as_str())) };
+                        Self::replace_artwork(&mut inner, None);
+                    }
                 }
                 inner.metadata = Some(m);
             }
 
             // 3. Side effects, after the borrow is dropped.
-            if url_changed {
+            if has_content && url_changed {
                 if art_url.is_empty() {
                     // Current track has no artwork at all (was non-empty before,
                     // or this is the first metadata) — clear immediately rather
@@ -1827,7 +2037,17 @@ impl DeviceState {
     ///   second regardless of anything the user cares about, so a coarse
     ///   check would be true almost every tick and flood the UI with
     ///   redundant redraws.
-    fn process_poll_upnp(&self, info: Option<upnp::InfoEx>, art_tx: &async_channel::Sender<Vec<u8>>) {
+    ///
+    /// `bt_status` — see `process_poll_http()`'s identical doc comment on
+    /// its own `bt_status` parameter; the same "apply in the same borrow
+    /// that decides `has_playable_content()`" reasoning applies here.
+    /// Unlike HTTP, `GetInfoEx` always bundles metadata into the one call
+    /// regardless (no fetch to skip), so `has_playable_content()` only
+    /// gates the *decode*, not a separate fetch.
+    fn process_poll_upnp(
+        &self, info: Option<upnp::InfoEx>, bt_status: Option<BtStatus>,
+        art_tx: &async_channel::Sender<(String, Vec<u8>)>,
+    ) {
         let Some(info) = info else { return };
         let mut playback_mask: u32 = 0;
 
@@ -1836,6 +2056,7 @@ impl DeviceState {
             mode_changed, prev_mode,
             status_changed, time_changed, mute_changed, vol_changed,
             source_changed, title_changed, artist_changed, album_changed, quality_changed,
+            had_content,
         ) = {
             let inner = self.imp().inner.borrow();
             let prev = inner.upnp_info.as_ref();
@@ -1872,15 +2093,24 @@ impl DeviceState {
                 info.play_type != prev_mode, prev_mode,
                 status_changed, time_changed, mute_changed, vol_changed,
                 source_changed, title_changed, artist_changed, album_changed, quality_changed,
+                inner.has_content,
             )
         };
 
-        if mute_changed || vol_changed { playback_mask |= playback_changed::VOLUME; }
-        if time_changed                { playback_mask |= playback_changed::TIME; }
-        if status_changed || source_changed || quality_changed { playback_mask |= playback_changed::OTHER; }
-        if title_changed  { playback_mask |= playback_changed::TITLE; }
-        if artist_changed { playback_mask |= playback_changed::ARTIST; }
-        if album_changed  { playback_mask |= playback_changed::ALBUM; }
+        let has_content = Self::has_playable_content(info.play_type, &bt_status);
+        if (has_content != had_content) || mode_changed {
+            playback_mask |= playback_changed::ALL
+        } else {
+            if mute_changed || vol_changed { playback_mask |= playback_changed::VOLUME; }
+            if time_changed                { playback_mask |= playback_changed::TIME; }
+            if status_changed              { playback_mask |= playback_changed::OTHER; }
+            if has_content  {
+                if title_changed  { playback_mask |= playback_changed::TITLE; }
+                if artist_changed { playback_mask |= playback_changed::ARTIST; }
+                if album_changed  { playback_mask |= playback_changed::ALBUM; }
+                if source_changed || quality_changed { playback_mask |= playback_changed::OTHER; }
+            }
+        }
 
         if mode_changed {
             dbg(&format!("input changed (upnp): mode {prev_mode} → {}", info.play_type));
@@ -1894,6 +2124,11 @@ impl DeviceState {
         {
             let mut inner = self.imp().inner.borrow_mut();
             emit_input_changed = Self::handle_input_mode_poll(&mut inner, mode_changed, info.play_type);
+
+            if let Some(bts) = &bt_status {
+                if Self::apply_bt_status(&mut inner, bts) { playback_mask |= playback_changed::ALL; }
+            }
+
             if status_changed {
                 inner.playback.status = playback::decode_status_upnp(&info.transport_state);
                 let (shuffle, repeat) = playback::decode_loop_mode_http(info.loop_mode);
@@ -1908,47 +2143,59 @@ impl DeviceState {
             if vol_changed  { inner.playback.volume = info.current_volume; }
             // Safe: `mute_changed` only true when `info.current_mute.is_some()`.
             if mute_changed { inner.playback.muted  = info.current_mute.unwrap(); }
-            if source_changed {
+
+            // `source_name` stays unconditional (cheap, always correct, and
+            // the Bluetooth status line needs it current immediately) —
+            // only the transport-capability decode is gated.
+            if source_changed || (has_content && !had_content) {
                 inner.playback.source_name =
                     playback::decode_source_name_upnp(&info.play_medium, &info.track_source);
-                let caps =
-                    playback::decode_transport_caps_upnp(&info.play_medium, &info.track_source, info.play_type, info.gui_behavior);
-                dbg(&format!(
-                    "transport caps (upnp): play_medium={:?} track_source={:?} gui_behavior={:?} -> {caps:?}",
-                    info.play_medium, info.track_source, info.gui_behavior,
-                ));
-                inner.playback.caps = caps;
             }
-            if title_changed  { inner.playback.title  = Rc::from(info.title.as_str()); }
-            if artist_changed { inner.playback.artist = Rc::from(info.artist.as_str()); }
-            if album_changed  { inner.playback.album  = Rc::from(info.album.as_str()); }
-            if quality_changed {
-                let (quality, codec_label) = playback::decode_quality_upnp(
-                    info.actual_quality.as_deref(),
-                    &info.bitrate, &info.format_s, &info.rate_hz,
-                    info.protocol_info.as_deref(),
-                    &info.play_medium,
-                );
-                inner.playback.quality     = quality;
-                inner.playback.codec_label = codec_label;
-            }
-
-            let art_url = info.album_art_uri.clone().unwrap_or_default();
-            let cached = inner.playback.art_url.as_deref().unwrap_or("");
-            if art_url != cached {
-                inner.playback.art_url = if art_url.is_empty() {
-                    None
-                } else {
-                    Some(Rc::from(art_url.as_str()))
-                };
-                Self::replace_artwork(&mut inner, None);
-                if art_url.is_empty() {
-                    dbg("upnp art url cleared: current track has no artwork");
-                    art_cleared = true;
-                } else {
-                    art_url_for_fetch = Some(art_url);
+            if has_content {
+                if source_changed || (has_content != had_content) {
+                    let caps = playback::decode_transport_caps_upnp(
+                        &info.play_medium, &info.track_source, info.play_type, info.gui_behavior,
+                    );
+                    dbg(&format!(
+                        "transport caps (upnp): play_medium={:?} track_source={:?} gui_behavior={:?} -> {caps:?}",
+                        info.play_medium, info.track_source, info.gui_behavior,
+                    ));
+                    inner.playback.caps = caps;
                 }
+                if title_changed  { inner.playback.title  = Rc::from(info.title.as_str()); }
+                if artist_changed { inner.playback.artist = Rc::from(info.artist.as_str()); }
+                if album_changed  { inner.playback.album  = Rc::from(info.album.as_str()); }
+                if quality_changed {
+                    let (quality, codec_label) = playback::decode_quality_upnp(
+                        info.actual_quality.as_deref(),
+                        &info.bitrate, &info.format_s, &info.rate_hz,
+                        info.protocol_info.as_deref(),
+                        &info.play_medium,
+                    );
+                    inner.playback.quality     = quality;
+                    inner.playback.codec_label = codec_label;
+                }
+
+                let art_url = info.album_art_uri.clone().unwrap_or_default();
+                let cached = inner.playback.art_url.as_deref().unwrap_or("");
+                if art_url != cached || !had_content {
+                    inner.playback.art_url = if art_url.is_empty() {
+                        None
+                    } else {
+                        Some(Rc::from(art_url.as_str()))
+                    };
+                    Self::replace_artwork(&mut inner, None);
+                    if art_url.is_empty() {
+                        dbg("upnp art url cleared: current track has no artwork");
+                        art_cleared = true;
+                    } else {
+                        art_url_for_fetch = Some(art_url);
+                    }
+                }
+            } else if Self::blank_playback_baseline(&mut inner) {
+                playback_mask |= playback_changed::ALL;
             }
+            inner.has_content = has_content;
 
             inner.upnp_info = Some(info);
         }
@@ -1969,7 +2216,7 @@ impl DeviceState {
         }
     }
 
-    fn fetch_art(&self, url: String, art_tx: &async_channel::Sender<Vec<u8>>) {
+    fn fetch_art(&self, url: String, art_tx: &async_channel::Sender<(String, Vec<u8>)>) {
         let client = match self.imp().inner.borrow().client.clone() {
             Some(c) => c,
             None    => return,
@@ -1978,9 +2225,11 @@ impl DeviceState {
         self.rt().spawn(async move {
             // Always send, even on failure (as an empty Vec) — start_art_loader
             // treats that as "no artwork" and clears the stale texture instead
-            // of the UI never hearing about the failure at all.
+            // of the UI never hearing about the failure at all. Tagged with
+            // `url` so the loader can tell whether this result is still
+            // relevant by the time it lands — see its own doc comment.
             let bytes = client.fetch_bytes(&url).await.unwrap_or_default();
-            let _ = art_tx.send(bytes).await;
+            let _ = art_tx.send((url, bytes)).await;
         });
     }
 
@@ -2022,6 +2271,17 @@ impl DeviceState {
         }
         self.rt().spawn(async move { let _ = client.switch_input(&src).await; });
         // TODO: trigger_poll()
+    }
+
+    /// Puts the device's Bluetooth A2DP sink back into pairing mode — the
+    /// "Restart pairing" button, shown only while Bluetooth is the active
+    /// input and nothing is currently connected. Fire-and-forget, same as
+    /// `switch_input()`; the next `getbtstatus` slow-poll tick picks up the
+    /// result once a phone/laptop actually re-pairs. UI-facing so this
+    /// method exists at all — `ui/` never talks to `WiimClient` directly.
+    pub fn bt_enter_pairing(&self) {
+        let Some(client) = self.imp().inner.borrow().client.clone() else { return };
+        self.rt().spawn(async move { let _ = client.bt_enter_pair().await; });
     }
 
     // ── Volume / mute commands ────────────────────────────────────────────────
@@ -2120,36 +2380,10 @@ impl DeviceState {
             Some(t) => POLL_SETTLE_DELAY.saturating_sub(now.duration_since(t)),
             None    => Duration::ZERO,
         };
-        let Some(tx) = self.imp().poll_tx.borrow().clone() else { return };
         let ds = self.downgrade();
-        let rt = self.rt();
         glib::timeout_add_local_once(delay, move || {
             let Some(ds) = ds.upgrade() else { return };
-            let (wants_upnp, upnp_client, client) = {
-                let inner = ds.imp().inner.borrow();
-                (inner.access == AccessMethod::UpnpPolled, inner.upnp_client.clone(), inner.client.clone())
-            };
-            // Same either/or dispatch shape (and same "no HTTP fallback"
-            // rule) as the main fast-poll in `dispatch_fast_poll` — see
-            // that comment.
-            match (wants_upnp, upnp_client) {
-                (true, None) => {}
-                (true, Some(uc)) => {
-                    ds.imp().inner.borrow_mut().last_poll = Some(Instant::now());
-                    rt.spawn(async move {
-                        let info = fetch_upnp_fast_poll(uc).await;
-                        let _ = tx.send(PollData::Upnp { info }).await;
-                    });
-                }
-                (false, _) => {
-                    let Some(c) = client else { return };
-                    ds.imp().inner.borrow_mut().last_poll = Some(Instant::now());
-                    rt.spawn(async move {
-                        let (status, meta) = fetch_http_fast_poll(c).await;
-                        let _ = tx.send(PollData::Http { status, meta }).await;
-                    });
-                }
-            }
+            ds.dispatch_fast_poll();
         });
     }
 

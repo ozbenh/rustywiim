@@ -32,6 +32,25 @@ fn format_status_line(status: &PlaybackStatus, source_name: Option<&str>) -> Str
     }
 }
 
+/// Replaces `format_status_line` entirely while Bluetooth is the active
+/// input — play/pause state isn't meaningful for an external A2DP source
+/// the way it is for a real queue, so the connection state is more useful
+/// here than "▶ Playing · Bluetooth". `device_name` is only meaningful
+/// when `connected` (see `PlaybackState::bt_device_name`'s doc comment);
+/// a connected sink that didn't report a name still says "connected"
+/// rather than nothing. `pairing` (only meaningful while disconnected —
+/// a sink that's actively connected isn't simultaneously discoverable)
+/// takes priority over the plain "disconnected" text, since it's a more
+/// specific/useful thing to tell the user.
+fn format_bt_status_line(connected: bool, device_name: Option<&str>, pairing: bool) -> String {
+    match (connected, device_name) {
+        (true, Some(name)) => format!("Bluetooth: {name}"),
+        (true, None)       => "Bluetooth: connected".to_string(),
+        (false, _) if pairing => "Bluetooth: Ready to pair".to_string(),
+        (false, _)         => "Bluetooth disconnected".to_string(),
+    }
+}
+
 /// "FLAC · 1571 kbps / 48.0 kHz / 24-bit" style string. The codec/quality
 /// badge prefix is only ever present when the UPnP backend supplied it (see
 /// `device::playback::decode_quality_upnp`) — presentation only, all the
@@ -433,9 +452,18 @@ impl DeviceWindowInner {
                 } else {
                     "media-playback-start-symbolic"
                 });
-                self.pw.status.set_label(&format_status_line(&ps.status, ps.source_name.as_deref()));
+                let is_bluetooth = ps.source_name.as_deref() == Some("Bluetooth");
+                self.pw.status.set_label(&if is_bluetooth {
+                    format_bt_status_line(ps.bt_connected, ps.bt_device_name.as_deref(), ps.bt_pairing)
+                } else {
+                    format_status_line(&ps.status, ps.source_name.as_deref())
+                });
+                // Hidden while already pairing (nothing to "restart") as
+                // well as while connected.
+                self.pw.btn_bt_pair.set_visible(is_bluetooth && !ps.bt_connected && !ps.bt_pairing);
                 apply_shuffle_ui(&self.pw.shuffle, ps.shuffle);
                 apply_repeat_ui(&self.pw.repeat, ps.repeat);
+                self.pw.btn_play.set_sensitive(ps.caps.can_playpause);
                 self.pw.btn_prev.set_sensitive(ps.caps.can_previous);
                 self.pw.btn_next.set_sensitive(ps.caps.can_next);
                 self.pw.shuffle.set_sensitive(ps.caps.can_shuffle);
@@ -761,8 +789,14 @@ impl DeviceWindowInner {
                 } else {
                     "media-playback-start-symbolic"
                 });
-                self.mini.status_label.set_label(
-                    &format_status_line(&ps.status, ps.source_name.as_deref()));
+                let mini_is_bluetooth = ps.source_name.as_deref() == Some("Bluetooth");
+                self.mini.status_label.set_label(&if mini_is_bluetooth {
+                    format_bt_status_line(ps.bt_connected, ps.bt_device_name.as_deref(), ps.bt_pairing)
+                } else {
+                    format_status_line(&ps.status, ps.source_name.as_deref())
+                });
+                self.mini.btn_bt_pair.set_visible(mini_is_bluetooth && !ps.bt_connected && !ps.bt_pairing);
+                self.mini.btn_play.set_sensitive(ps.caps.can_playpause);
                 self.mini.btn_prev.set_sensitive(ps.caps.can_previous);
                 self.mini.btn_next.set_sensitive(ps.caps.can_next);
             }

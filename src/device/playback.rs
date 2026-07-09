@@ -66,6 +66,16 @@ pub struct PlaybackState {
     /// the async fetch/decode pipeline (`DeviceState::start_art_loader`),
     /// shared from there via cheap `Rc::clone`, never copied byte-for-byte.
     pub artwork:     Option<Rc<Vec<u8>>>,
+    /// Bluetooth A2DP sink connection state — only ever populated while
+    /// Bluetooth is the active input (`state.rs`'s slow poll only fetches
+    /// `getbtstatus` in that case); reset to `false`/`None` as soon as a
+    /// different input becomes active, so switching back to Bluetooth
+    /// later doesn't show a stale value from a previous session until the
+    /// next slow-poll cycle. `bt_device_name` is only meaningful when
+    /// `bt_connected` is `true`.
+    pub bt_connected:    bool,
+    pub bt_device_name:  Option<Rc<str>>,
+    pub bt_pairing:      bool,
 }
 
 impl Default for PlaybackState {
@@ -87,6 +97,9 @@ impl Default for PlaybackState {
             codec_label: None,
             art_url:     None,
             artwork:     None,
+            bt_connected:   false,
+            bt_device_name: None,
+            bt_pairing:     false,
         }
     }
 }
@@ -140,11 +153,15 @@ pub struct SourceCapabilities {
     pub can_shuffle:  bool,
     pub can_repeat:   bool,
     pub can_seek:     bool,
+    pub can_playpause: bool,
 }
 
 impl Default for SourceCapabilities {
     fn default() -> Self {
-        Self { can_next: true, can_previous: true, can_shuffle: true, can_repeat: true, can_seek: true }
+        Self {
+            can_next: true, can_previous: true, can_shuffle: true, can_repeat: true, can_seek: true,
+            can_playpause: true,
+        }
     }
 }
 
@@ -345,7 +362,7 @@ const TRACK_SOURCES_CTRL: &[&str] = &["Pandora2", "SoundMachine", "Soundtrack", 
 pub fn decode_transport_caps_http(mode: i32, vendor: &str) -> SourceCapabilities {
     let (can_next, can_previous) = decode_next_prev_http(mode, vendor);
     let (can_shuffle, can_repeat, can_seek) = loop_tier_http(mode, vendor).shuffle_repeat_seek();
-    SourceCapabilities { can_next, can_previous, can_shuffle, can_repeat, can_seek }
+    SourceCapabilities { can_next, can_previous, can_shuffle, can_repeat, can_seek, can_playpause: true }
 }
 
 fn decode_next_prev_http(mode: i32, vendor: &str) -> (bool, bool) {
@@ -643,7 +660,7 @@ pub fn decode_transport_caps_upnp(
 ) -> SourceCapabilities {
     let (can_next, can_previous) = decode_next_prev_upnp(play_medium, track_source, gui_behavior);
     let (can_shuffle, can_repeat, can_seek) = loop_tier_upnp(play_medium, track_source, play_type).shuffle_repeat_seek();
-    SourceCapabilities { can_next, can_previous, can_shuffle, can_repeat, can_seek }
+    SourceCapabilities { can_next, can_previous, can_shuffle, can_repeat, can_seek, can_playpause: true }
 }
 
 /// `pywiim`'s `SOURCE_CAPABILITIES` table, translated into UPnP's
@@ -797,13 +814,13 @@ mod tests {
     /// Same as `caps()`, for a `LoopTier::None` source (physical input or
     /// radio) — shuffle/repeat/seek are always disabled there.
     fn caps_none_tier(can_next: bool, can_previous: bool) -> SourceCapabilities {
-        SourceCapabilities { can_next, can_previous, can_shuffle: false, can_repeat: false, can_seek: false }
+        SourceCapabilities { can_next, can_previous, can_shuffle: false, can_repeat: false, can_seek: false, can_playpause: true }
     }
 
     /// `LoopTier::TrackOnly` — next/previous/seek stay whatever the
     /// next/previous heuristic already gave, shuffle/repeat always false.
     fn caps_track_only(can_next: bool, can_previous: bool) -> SourceCapabilities {
-        SourceCapabilities { can_next, can_previous, can_shuffle: false, can_repeat: false, can_seek: true }
+        SourceCapabilities { can_next, can_previous, can_shuffle: false, can_repeat: false, can_seek: true, can_playpause: true }
     }
 
     #[test]

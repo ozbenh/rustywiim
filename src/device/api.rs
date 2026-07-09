@@ -442,6 +442,20 @@ pub struct AudioOutputStatus {
     pub source: String,
 }
 
+/// Decoded Bluetooth A2DP sink status obtained from `getbtstatus`'s
+/// `{"a2dp_sink": {"link_state": "connected"|"disconnected",
+/// "name": "...", "pairing": N}, ...}` .
+/// `pairing` is whether the sink is currently discoverable/open for
+/// pairing. I noticed some false negatives but those are harmless
+/// and seem to happen with the WiiM app too (ie, it offers to restart
+/// pairing while still visible to other devices too).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct BtStatus {
+    pub connected:    bool,
+    pub device_name:  String,
+    pub pairing:      bool,
+}
+
 /// One entry in the device's supported-outputs list.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OutputEntry {
@@ -778,6 +792,33 @@ impl WiimClient {
         Ok(serde_json::from_str(&text).unwrap_or_default())
     }
 
+    /// `getbtstatus` — `None` on a transport failure or a response that
+    /// doesn't parse; the caller (`state.rs`'s slow poll) only ever calls
+    /// this while Bluetooth is the active input in the first place.
+    pub async fn get_bt_status(&self) -> Option<BtStatus> {
+        #[derive(Deserialize, Default)]
+        struct Response {
+            #[serde(default)]
+            a2dp_sink: A2dpSink,
+        }
+        #[derive(Deserialize, Default)]
+        struct A2dpSink {
+            #[serde(default)]
+            link_state: String,
+            #[serde(default)]
+            name: String,
+            #[serde(default)]
+            pairing: u8,
+        }
+        let text = self.cmd("getbtstatus").await.ok()?;
+        let resp: Response = serde_json::from_str(&text).ok()?;
+        Some(BtStatus {
+            connected:   resp.a2dp_sink.link_state == "connected",
+            device_name: resp.a2dp_sink.name,
+            pairing:     resp.a2dp_sink.pairing != 0,
+        })
+    }
+
     /// Returns each input and whether it is enabled (1) or disabled (0), or
     /// `None` if the call failed or didn't parse (device doesn't support
     /// the API, or something else went wrong) — distinct from `Some(vec![])`,
@@ -866,6 +907,14 @@ impl WiimClient {
 
     pub async fn switch_input(&self, source: &str) -> anyhow::Result<()> {
         self.cmd(&format!("setPlayerCmd:switchmode:{source}")).await?;
+        Ok(())
+    }
+
+    /// Puts the device's Bluetooth A2DP sink back into pairing mode —
+    /// exposed in the UI as "Restart pairing", shown only while Bluetooth
+    /// is the active input and nothing is currently connected.
+    pub async fn bt_enter_pair(&self) -> anyhow::Result<()> {
+        self.cmd("btavkenterpair").await?;
         Ok(())
     }
 

@@ -40,6 +40,10 @@
 .loop-btn:hover { opacity: 1.0; }
 .loop-active  { color: @accent_color; }
 .vol-btn     { border-radius: 6px; padding: 0 8px; min-width: 0; }
+/* "Restart Pairing" — icon+text; color/background left to Adwaita's own
+   button style, sizing/rounding set explicitly. */
+.bt-pair-btn      { border-radius: 6px; padding: 6px 14px; min-width: 0; min-height: 0; font-size: 12px; font-weight: 600; }
+.mini-bt-pair-btn  { border-radius: 5px; padding: 3px 10px; min-width: 0; min-height: 0; font-size: 10px; font-weight: 600; }
 .vol-pop trough   { min-width: 3px; border-radius: 2px; }
 .vol-pop slider   { min-width: 8px; min-height: 8px; margin: -3px; border-radius: 50%; border: none; box-shadow: none; }
 .mini-vol-pop trough { min-width: 3px; border-radius: 2px; }
