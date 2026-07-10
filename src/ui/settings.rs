@@ -13,6 +13,7 @@
 use adw::prelude::*;
 use gtk::glib;
 use gtk::Orientation;
+use std::cell::Cell;
 
 use crate::config::{self, ThemeMode};
 use crate::device::api::DeviceInfo;
@@ -80,7 +81,13 @@ impl SettingsWindow {
             .selection_mode(gtk::SelectionMode::Single)
             .css_classes(["navigation-sidebar"])
             .build();
-        if ds.is_some() {
+        // Built together with the sidebar rows (rather than deferred to the
+        // "Content stack" section below, where this file used to build
+        // `advanced_page`/`about_page` directly) because both the rows and
+        // the holder stacks need to be reachable from the same
+        // connect/disconnect handler further down — `None` when `ds` is
+        // `None` (global settings, no per-device panels at all).
+        let device_panels = ds.as_ref().map(|d| {
             let device_label = gtk::Label::builder()
                 .label("Device")
                 .xalign(0.0)
@@ -105,7 +112,40 @@ impl SettingsWindow {
             device_list.append(&about_row);
 
             sidebar_box.append(&device_list);
-        }
+
+            // Greyed out (row insensitive) and showing a centered "Offline"
+            // placeholder instead of the real panel whenever there's no
+            // live `device_info` — both at construction (the device may
+            // still be `Connecting`/`Disconnected` right when Settings
+            // opens) and live thereafter, wired below once the window
+            // itself exists. Each panel is a small holder `Stack` (rather
+            // than swapping the row's sensitivity alone) specifically so a
+            // panel that's already selected when the device drops shows
+            // "Offline" instead of leaving its last-rendered (now stale)
+            // content on screen.
+            let connected = d.device_info().is_some();
+            advanced_row.set_sensitive(connected);
+            about_row.set_sensitive(connected);
+
+            let advanced_holder = gtk::Stack::builder()
+                .transition_type(gtk::StackTransitionType::None).build();
+            advanced_holder.add_named(&build_offline_placeholder(), Some("offline"));
+            let about_holder = gtk::Stack::builder()
+                .transition_type(gtk::StackTransitionType::None).build();
+            about_holder.add_named(&build_offline_placeholder(), Some("offline"));
+
+            if connected {
+                advanced_holder.add_named(&build_advanced_page(d), Some("content"));
+                advanced_holder.set_visible_child_name("content");
+                about_holder.add_named(&build_about_page(d), Some("content"));
+                about_holder.set_visible_child_name("content");
+            } else {
+                advanced_holder.set_visible_child_name("offline");
+                about_holder.set_visible_child_name("offline");
+            }
+
+            (advanced_row, advanced_holder, about_row, about_holder)
+        });
 
         let sidebar_scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
@@ -123,11 +163,9 @@ impl SettingsWindow {
         let appearance_page = build_appearance_page();
         content_stack.add_named(&appearance_page, Some("appearance"));
 
-        if let Some(ref d) = ds {
-            let advanced_page = build_advanced_page(d);
-            content_stack.add_named(&advanced_page, Some("advanced"));
-            let about_page = build_about_page(d);
-            content_stack.add_named(&about_page, Some("about"));
+        if let Some((_, ref advanced_holder, _, ref about_holder)) = device_panels {
+            content_stack.add_named(advanced_holder, Some("advanced"));
+            content_stack.add_named(about_holder, Some("about"));
         }
 
         // Select "Appearance" by default
@@ -197,6 +235,54 @@ impl SettingsWindow {
                 };
                 window.set_title(Some(&title));
             }));
+        }
+
+        // React to the device connecting/disconnecting while Settings is
+        // open: grey out (disable) the per-device panel rows and swap their
+        // content to the "Offline" placeholder, live — this window used to
+        // have no equivalent of `reset_device_ui()` at all, so its Advanced
+        // panel stayed fully interactive (and About kept showing a stale
+        // snapshot) even after the device it was for went offline.
+        //
+        // `device-changed` fires on every device_info update while
+        // connected too, not just at actual connect/disconnect transitions
+        // — `was_connected` filters down to just the edges. Weak captures
+        // (matching the title-update closure above): this closure is a
+        // permanent signal handler on `ds`, which can easily outlive this
+        // window (e.g. the owning device window keeps `ds` alive after
+        // Settings is closed) — a strong capture of these child widgets
+        // would keep them (and their whole subtree) alive right along with
+        // it, the same class of leak `wire_access_row()` had.
+        if let Some((advanced_row, advanced_holder, about_row, about_holder)) = device_panels {
+            if let Some(ref d) = ds {
+                let was_connected = Cell::new(d.device_info().is_some());
+                d.connect_device_changed(glib::clone!(
+                    @weak advanced_row, @weak advanced_holder,
+                    @weak about_row, @weak about_holder
+                    => move |ds| {
+                        let connected = ds.device_info().is_some();
+                        if connected == was_connected.get() { return; }
+                        was_connected.set(connected);
+                        advanced_row.set_sensitive(connected);
+                        about_row.set_sensitive(connected);
+                        if connected {
+                            if let Some(old) = advanced_holder.child_by_name("content") {
+                                advanced_holder.remove(&old);
+                            }
+                            advanced_holder.add_named(&build_advanced_page(ds), Some("content"));
+                            advanced_holder.set_visible_child_name("content");
+                            if let Some(old) = about_holder.child_by_name("content") {
+                                about_holder.remove(&old);
+                            }
+                            about_holder.add_named(&build_about_page(ds), Some("content"));
+                            about_holder.set_visible_child_name("content");
+                        } else {
+                            advanced_holder.set_visible_child_name("offline");
+                            about_holder.set_visible_child_name("offline");
+                        }
+                    }
+                ));
+            }
         }
 
         // Gated on DEBUG_UI *or* DEBUG_STATE — this print pairs with the
@@ -523,6 +609,21 @@ fn wire_access_row(
             push(&ds, method);
         }
     });
+}
+
+/// Shown in place of `build_advanced_page()`/`build_about_page()`'s real
+/// content whenever there's no live `device_info` — see the
+/// `connect_device_changed` wiring in `SettingsWindow::new()`.
+fn build_offline_placeholder() -> gtk::Widget {
+    gtk::Label::builder()
+        .label("Offline")
+        .halign(gtk::Align::Center)
+        .valign(gtk::Align::Center)
+        .hexpand(true)
+        .vexpand(true)
+        .css_classes(["dim-label", "title-2"])
+        .build()
+        .upcast()
 }
 
 fn build_advanced_page(ds: &DeviceState) -> adw::PreferencesPage {
