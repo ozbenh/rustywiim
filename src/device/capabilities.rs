@@ -7,7 +7,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use super::api::{DeviceInfo, OutputEntry, WiimClient};
+use super::api::{ApiOutcome, DeviceInfo, OutputEntry, WiimClient};
 use super::playback::AccessMethod;
 
 pub static DEBUG_DEVICE: AtomicBool = AtomicBool::new(false);
@@ -768,13 +768,23 @@ pub struct DeviceCapabilities {
     /// device. `state.rs` only reads this to decide whether to keep
     /// polling that endpoint on the slow-poll cycle — it doesn't need to
     /// know *why* the answer is what it is (static guess vs. live probe).
+    /// Set directly by `state.rs` (a plain field, not behind a setter) once
+    /// it decides to give up — the failure counter/threshold that decision
+    /// is based on lives in `state.rs`'s `Inner::outputs_probe_failures`,
+    /// not here: this struct is meant to hold a device's resolved
+    /// capabilities (static per-family data, or the result of a one-shot
+    /// connect-time probe), not ongoing per-tick retry bookkeeping.
     pub probes_outputs:     bool,
-    /// Consecutive `getSoundCardModeSupportList` failures during ongoing
-    /// slow polling (not part of the initial `detect_capabilities()` probe,
-    /// which is a single attempt). Private — `state.rs` reports results via
-    /// `record_outputs_probe()` and never sees this counter directly; see
-    /// `OUTPUTS_PROBE_FAIL_THRESHOLD`.
-    outputs_probe_failures: u32,
+    /// Whether `getNewAudioOutputHardwareMode` actually works on this
+    /// device — same shape as `probes_outputs` above, but for the separate
+    /// "what's currently active" query rather than "what outputs exist."
+    /// Confirmed unsupported on iEAST AudioCast (only has one output, so
+    /// the query is meaningless there) — without this, a device where it
+    /// always fails got asked again every slow-poll cycle forever, and
+    /// each failure additionally fired a spurious `output-changed` signal
+    /// (see `get_audio_output()`'s doc comment for that half of the bug).
+    /// Set directly by `state.rs`, same reasoning as `probes_outputs`.
+    pub probes_output_status: bool,
     /// Resolved audio input list — `detect_inputs()`'s static plm_support-
     /// based list, `enabled` defaulting `true` for every entry, optionally
     /// amended by a one-time `getAudioInputEnable` probe in
@@ -882,7 +892,7 @@ impl DeviceCapabilities {
             // probing entry point) sets these to something meaningful.
             // Standalone callers of `from_device_info()` (e.g. `wiim-capture`,
             // which only wants the model name) never see these matter.
-            outputs: Vec::new(), probes_outputs: true, outputs_probe_failures: 0,
+            outputs: Vec::new(), probes_outputs: true, probes_output_status: true,
         };
 
         if DEBUG_DEVICE.load(Ordering::Relaxed) {
@@ -923,60 +933,28 @@ impl DeviceCapabilities {
         self.family.playback_access
     }
 
-    /// Consecutive `getSoundCardModeSupportList` failures tolerated during
-    /// ongoing slow polling before giving up on it for this device
-    /// (`probes_outputs` flips to `false`). Matches `state.rs`'s
-    /// `SLOW_POLL_FAIL_THRESHOLD` — these embedded HTTP servers are flaky
-    /// enough that a single miss shouldn't immediately be treated as
-    /// "device doesn't support this."
-    const OUTPUTS_PROBE_FAIL_THRESHOLD: u32 = 3;
-
-    /// Report the result of one `getSoundCardModeSupportList` slow-poll
-    /// attempt. `state.rs` just reports what happened here; this method —
-    /// not the caller — decides whether/when to actually give up. Keeps the
-    /// give-up policy (and the failure counter itself) entirely inside
-    /// capabilities.rs: `state.rs` never sees the counter or the threshold,
-    /// only the resulting `probes_outputs` flag and whatever it needs to
-    /// know whether to emit `outputs-changed`.
-    ///
-    /// Returns `true` if `self.outputs` actually changed as a result (the
+    /// Store a fresh `getSoundCardModeSupportList` result — called by
+    /// `state.rs`'s `handle_slow_poll_outputs()` only on a confirmed
+    /// success; the retry/give-up policy (failure counter, threshold,
+    /// deciding when to flip `probes_outputs` to `false`) lives entirely in
+    /// `state.rs`'s `Inner`, not here — see `probes_outputs`'s doc comment
+    /// for why. Returns `true` if `self.outputs` actually changed (the
     /// caller emits `outputs-changed` when this is `true`).
-    pub fn record_outputs_probe(&mut self, result: Option<Vec<OutputEntry>>) -> bool {
-        match result {
-            None => {
-                self.outputs_probe_failures += 1;
-                eprintln!(
-                    "[device] getSoundCardModeSupportList failed ({}/{})",
-                    self.outputs_probe_failures, Self::OUTPUTS_PROBE_FAIL_THRESHOLD,
-                );
-                if self.outputs_probe_failures >= Self::OUTPUTS_PROBE_FAIL_THRESHOLD {
-                    eprintln!(
-                        "[device] giving up on getSoundCardModeSupportList for this device \
-                         after {} consecutive failures",
-                        self.outputs_probe_failures,
-                    );
-                    self.probes_outputs = false;
-                }
-                false
-            }
-            Some(mut list) => {
-                self.outputs_probe_failures = 0;
-                // The raw API call (`WiimClient::get_sound_card_mode_support_list()`)
-                // has no notion of per-device profiles, so it always returns
-                // `icon_canon == canon` — the `line_out_is_speaker` quirk must be
-                // (re)applied here on every probe, not just the initial one in
-                // `detect_capabilities()`, or a corrected icon from connect time
-                // gets clobbered back to the wrong one on the very next slow poll.
-                for e in &mut list {
-                    e.icon_canon = icon_canon_for_output(e.canon, self.device_id);
-                }
-                if list != self.outputs {
-                    self.outputs = list;
-                    true
-                } else {
-                    false
-                }
-            }
+    pub fn record_outputs(&mut self, mut list: Vec<OutputEntry>) -> bool {
+        // The raw API call (`WiimClient::get_sound_card_mode_support_list()`)
+        // has no notion of per-device profiles, so it always returns
+        // `icon_canon == canon` — the `line_out_is_speaker` quirk must be
+        // (re)applied here on every probe, not just the initial one in
+        // `detect_capabilities()`, or a corrected icon from connect time
+        // gets clobbered back to the wrong one on the very next slow poll.
+        for e in &mut list {
+            e.icon_canon = icon_canon_for_output(e.canon, self.device_id);
+        }
+        if list != self.outputs {
+            self.outputs = list;
+            true
+        } else {
+            false
         }
     }
 
@@ -1017,8 +995,11 @@ pub async fn detect_capabilities(client: &WiimClient) -> Option<(DeviceInfo, Dev
     let info = client.get_device_info().await.ok()?;
     let mut caps = DeviceCapabilities::from_device_info(&info);
 
+    // A single attempt either way (no retry budget at connect time — that's
+    // the ongoing slow poll's job, see `state.rs`'s `outputs_probe_failures`)
+    // so `Unsupported` and `Failed` are treated identically here.
     match client.get_sound_card_mode_support_list().await {
-        Some(mut list) => {
+        ApiOutcome::Ok(mut list) => {
             dbg(&format!("outputs from API: {:?}", list));
             for e in &mut list {
                 e.icon_canon = icon_canon_for_output(e.canon, caps.device_id);
@@ -1026,7 +1007,7 @@ pub async fn detect_capabilities(client: &WiimClient) -> Option<(DeviceInfo, Dev
             caps.outputs = list;
             caps.probes_outputs = true;
         }
-        None => {
+        ApiOutcome::Unsupported | ApiOutcome::Failed => {
             dbg("getSoundCardModeSupportList not supported; using static profile");
             caps.outputs = detect_outputs(caps.device_id)
                 .iter()

@@ -83,7 +83,7 @@ fn parse_remote_connected(raw: &str) -> Option<bool> {
 }
 
 use super::api::{
-    AudioOutputStatus, BtStatus, DeviceInfo, MetaData, OutputEntry, PlayerStatus,
+    ApiOutcome, AudioOutputStatus, BtStatus, DeviceInfo, MetaData, OutputEntry, PlayerStatus,
     PresetEntry, PresetFetchOutcome, TlsMode, WiimClient, TLS_MODE,
 };
 use super::capabilities::{self, DeviceCapabilities};
@@ -180,9 +180,11 @@ enum SlowPollResult {
         probe_failures: u32,
         entries:        Option<(String, Vec<PresetEntry>)>,
     },
-    /// `None` when the response wasn't a JSON array (API unsupported).
-    Outputs(Option<Vec<OutputEntry>>),
-    OutputStatus(Option<AudioOutputStatus>),
+    /// `ApiOutcome::Unsupported` is a *confirmed* answer (device said so in
+    /// plain text) — `handle_slow_poll_outputs()` gives up on it
+    /// immediately, no retry budget, unlike `Failed` (transient).
+    Outputs(ApiOutcome<Vec<OutputEntry>>),
+    OutputStatus(ApiOutcome<AudioOutputStatus>),
     DeviceInfo(Option<DeviceInfo>),
 }
 
@@ -190,10 +192,42 @@ enum SlowPollResult {
 /// failure, not a confirmed-unsupported response) tolerated for whichever
 /// backend is currently being attempted before giving up on it exactly as
 /// a confirmed-unsupported response would. Same reasoning/value as
-/// `capabilities.rs`'s `OUTPUTS_PROBE_FAIL_THRESHOLD` — these embedded
-/// HTTP/UPnP servers are flaky enough that a single miss shouldn't
-/// immediately be treated as "device doesn't support this."
+/// `OUTPUTS_PROBE_FAIL_THRESHOLD`/`OUTPUT_STATUS_PROBE_FAIL_THRESHOLD`
+/// below — these embedded HTTP/UPnP servers are flaky enough that a single
+/// miss shouldn't immediately be treated as "device doesn't support this."
 const PRESET_PROBE_FAIL_THRESHOLD: u32 = 3;
+
+/// Consecutive `ApiOutcome::Failed` (transient — network/parse failure, not
+/// a confirmed-unsupported response) results tolerated for
+/// `getSoundCardModeSupportList`/`getNewAudioOutputHardwareMode` before
+/// giving up on them for this connection (`probes_outputs`/
+/// `probes_output_status` flip to `false`). `ApiOutcome::Unsupported` — the
+/// device explicitly saying "unknown command" — skips this budget entirely
+/// and gives up immediately; retrying a *definite* answer on a timer would
+/// just be wrong, not merely wasteful. These failure counters live here,
+/// on `Inner`, rather than on `DeviceCapabilities` — same reasoning as
+/// `preset_probe_failures` above: they're short-lived per-tick retry
+/// bookkeeping, not part of the device's resolved capability set.
+const OUTPUTS_PROBE_FAIL_THRESHOLD: u32 = 3;
+const OUTPUT_STATUS_PROBE_FAIL_THRESHOLD: u32 = 3;
+
+/// Increments `*failures` for one `ApiOutcome::Failed` result and reports
+/// whether the retry budget (`threshold`) is now exhausted — shared by
+/// `handle_slow_poll_outputs()`/`handle_slow_poll_output_status()`, which
+/// only ever call this for `Failed` (transient); `ApiOutcome::Unsupported`
+/// skips the budget entirely and gives up on the spot, in the caller.
+fn record_probe_failure(failures: &mut u32, threshold: u32, command: &str) -> bool {
+    *failures += 1;
+    eprintln!("[device] {command} failed ({failures}/{threshold})", failures = *failures);
+    let gave_up = *failures >= threshold;
+    if gave_up {
+        eprintln!(
+            "[device] giving up on {command} for this device after {failures} consecutive failures",
+            failures = *failures,
+        );
+    }
+    gave_up
+}
 
 /// Outcome of one single-backend preset-fetch attempt, already folding in
 /// the retry-budget decision (see `PRESET_PROBE_FAIL_THRESHOLD`).
@@ -357,7 +391,7 @@ async fn run_slow_poll_phase(
         SlowPollPhase::Outputs =>
             SlowPollResult::Outputs(client.get_sound_card_mode_support_list().await),
         SlowPollPhase::OutputStatus =>
-            SlowPollResult::OutputStatus(client.get_audio_output().await.ok()),
+            SlowPollResult::OutputStatus(client.get_audio_output().await),
         SlowPollPhase::DeviceInfo =>
             SlowPollResult::DeviceInfo(client.get_device_info().await.ok()),
     }
@@ -552,6 +586,13 @@ struct Inner {
     /// unlike `preset_source` it lives here rather than on
     /// `DeviceCapabilities` (see `PRESET_PROBE_FAIL_THRESHOLD`).
     preset_probe_failures: u32,
+    /// Consecutive `ApiOutcome::Failed` results for `getSoundCardModeSupportList`/
+    /// `getNewAudioOutputHardwareMode` respectively — same shape/reasoning
+    /// as `preset_probe_failures` (see `OUTPUTS_PROBE_FAIL_THRESHOLD`/
+    /// `OUTPUT_STATUS_PROBE_FAIL_THRESHOLD`). Reset to 0 on reconnect
+    /// alongside `preset_probe_failures`.
+    outputs_probe_failures:       u32,
+    output_status_probe_failures: u32,
     /// Preset slots whose artwork still needs fetching (or re-fetching),
     /// keyed by slot rather than URL since display addresses slots, not
     /// URLs — `(url, attempts so far)`. Populated by
@@ -634,6 +675,8 @@ impl Default for Inner {
             presets:          Vec::new(),
             preset_fp:        String::new(),
             preset_probe_failures: 0,
+            outputs_probe_failures:       0,
+            output_status_probe_failures: 0,
             pending_preset_art:  HashMap::new(),
             preset_art_inflight: HashSet::new(),
             target_volume:    -1,
@@ -941,6 +984,8 @@ impl DeviceState {
                 // Reset preset data so the first slow-poll cycle re-fetches from scratch.
                 inner.preset_fp         = String::new();
                 inner.preset_probe_failures = 0;
+                inner.outputs_probe_failures       = 0;
+                inner.output_status_probe_failures = 0;
                 inner.presets           = Vec::new();
                 inner.pending_preset_art.clear();
                 inner.preset_art_inflight.clear();
@@ -1185,6 +1230,7 @@ impl DeviceState {
         // identity, so it lives directly on `Inner` instead (see its doc
         // comment) — `capabilities.rs` only ever records `preset_source`.
         let probe_outputs = inner.capabilities.as_ref().is_some_and(|c| c.probes_outputs);
+        let probe_output_status = inner.capabilities.as_ref().is_some_and(|c| c.probes_output_status);
         let preset_source = inner.capabilities.as_ref()
             .map(|c| c.preset_source())
             .unwrap_or(capabilities::PresetSource::Unknown);
@@ -1203,7 +1249,7 @@ impl DeviceState {
 
         self.dispatch_fast_poll();
         self.dispatch_slow_poll(
-            &client, slow_tx, dispatch_phase, probe_outputs,
+            &client, slow_tx, dispatch_phase, probe_outputs, probe_output_status,
             preset_source, preset_probe_failures, preset_fp, upnp_client,
         );
         self.dispatch_pending_preset_art(&client, poll_tx);
@@ -1501,6 +1547,7 @@ impl DeviceState {
         slow_tx:               &async_channel::Sender<SlowPollResult>,
         dispatch_phase:        Option<SlowPollPhase>,
         probe_outputs:         bool,
+        probe_output_status:   bool,
         preset_source:         capabilities::PresetSource,
         preset_probe_failures: u32,
         preset_fp:             String,
@@ -1509,8 +1556,9 @@ impl DeviceState {
         let Some(phase) = dispatch_phase else { return };
         let enabled = match phase {
             SlowPollPhase::Outputs => probe_outputs,
+            SlowPollPhase::OutputStatus => probe_output_status,
             SlowPollPhase::Presets => preset_source != capabilities::PresetSource::Unavailable,
-            SlowPollPhase::OutputStatus | SlowPollPhase::DeviceInfo => true,
+            SlowPollPhase::DeviceInfo => true,
         };
         if !enabled {
             dbg(&format!("slow poll: phase {phase:?} skipped (not supported)"));
@@ -1832,15 +1880,39 @@ impl DeviceState {
         self.emit_by_name::<()>("presets-changed", &[]);
     }
 
-    /// Reports one slow-poll `getSoundCardModeSupportList` result to
-    /// `capabilities::DeviceCapabilities::record_outputs_probe()`, which
-    /// owns the actual give-up/failure-counting policy — this is just the
-    /// thin reporting + signal-emitting wrapper. `state.rs` never sees a
-    /// failure counter or threshold.
-    fn handle_slow_poll_outputs(&self, outputs: Option<Vec<OutputEntry>>) {
+    /// Owns the give-up/retry-budget decision for `getSoundCardModeSupportList`
+    /// itself (`outputs_probe_failures`, this `Inner`) — `capabilities.rs`'s
+    /// `record_outputs()` only ever sees a confirmed success, storing the
+    /// resolved list; it has no notion of failures or thresholds at all.
+    /// `ApiOutcome::Unsupported` (the device explicitly said "unknown
+    /// command") gives up immediately, no retry budget spent on it —
+    /// that's a *definite* answer, not a transient miss.
+    fn handle_slow_poll_outputs(&self, outputs: ApiOutcome<Vec<OutputEntry>>) {
         let mut inner = self.imp().inner.borrow_mut();
-        let Some(caps) = inner.capabilities.as_mut() else { return };
-        let changed = caps.record_outputs_probe(outputs);
+        let changed = match outputs {
+            ApiOutcome::Ok(list) => {
+                inner.outputs_probe_failures = 0;
+                match inner.capabilities.as_mut() {
+                    Some(caps) => caps.record_outputs(list),
+                    None => false,
+                }
+            }
+            ApiOutcome::Unsupported => {
+                dbg("slow poll: getSoundCardModeSupportList confirmed unsupported, giving up");
+                if let Some(caps) = inner.capabilities.as_mut() { caps.probes_outputs = false; }
+                false
+            }
+            ApiOutcome::Failed => {
+                let gave_up = record_probe_failure(
+                    &mut inner.outputs_probe_failures, OUTPUTS_PROBE_FAIL_THRESHOLD,
+                    "getSoundCardModeSupportList",
+                );
+                if gave_up {
+                    if let Some(caps) = inner.capabilities.as_mut() { caps.probes_outputs = false; }
+                }
+                false
+            }
+        };
         drop(inner);
         if changed {
             dbg("signal: outputs-changed");
@@ -1848,11 +1920,34 @@ impl DeviceState {
         }
     }
 
-    fn handle_slow_poll_output_status(&self, status: Option<AudioOutputStatus>) {
-        let Some(out) = status else {
-            dbg("slow poll: getNewAudioOutputHardwareMode failed");
-            return;
+    /// Same give-up/retry-budget shape as `handle_slow_poll_outputs()`, for
+    /// `getNewAudioOutputHardwareMode` — see that function's doc comment.
+    fn handle_slow_poll_output_status(&self, status: ApiOutcome<AudioOutputStatus>) {
+        let out = {
+            let mut inner = self.imp().inner.borrow_mut();
+            match status {
+                ApiOutcome::Ok(out) => {
+                    inner.output_status_probe_failures = 0;
+                    Some(out)
+                }
+                ApiOutcome::Unsupported => {
+                    dbg("slow poll: getNewAudioOutputHardwareMode confirmed unsupported, giving up");
+                    if let Some(caps) = inner.capabilities.as_mut() { caps.probes_output_status = false; }
+                    None
+                }
+                ApiOutcome::Failed => {
+                    let gave_up = record_probe_failure(
+                        &mut inner.output_status_probe_failures, OUTPUT_STATUS_PROBE_FAIL_THRESHOLD,
+                        "getNewAudioOutputHardwareMode",
+                    );
+                    if gave_up {
+                        if let Some(caps) = inner.capabilities.as_mut() { caps.probes_output_status = false; }
+                    }
+                    None
+                }
+            }
         };
+        let Some(out) = out else { return };
         let (changed, prev_hw) = {
             let inner = self.imp().inner.borrow();
             let prev_hw = inner.output_status.as_ref().map(|o| o.hardware.clone());

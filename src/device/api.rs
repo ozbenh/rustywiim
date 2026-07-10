@@ -612,6 +612,21 @@ enum GetPresetsResult {
     Failed,
 }
 
+/// Outcome of a probe for a command that might return LinkPlay's "not
+/// supported" sentinel (`is_unsupported_text()`) instead of real data.
+/// `Unsupported` is a *definite* answer from the device — it said so, in
+/// plain text, not a transient hiccup — so callers must never retry it on
+/// a timer the way they would `Failed` (a genuine transport/parse error,
+/// worth a few retries before assuming the same thing). Shared by
+/// `get_audio_output()`/`get_sound_card_mode_support_list()`; `get_presets()`
+/// has its own richer `GetPresetsResult` (needs to additionally carry the
+/// real "zero presets configured" case, which isn't just "no data").
+pub enum ApiOutcome<T> {
+    Ok(T),
+    Unsupported,
+    Failed,
+}
+
 /// A single resolved preset slot (1–12), ready for display.
 #[derive(Debug, Clone)]
 pub struct PresetEntry {
@@ -807,9 +822,37 @@ impl WiimClient {
         }
     }
 
-    pub async fn get_audio_output(&self) -> anyhow::Result<AudioOutputStatus> {
-        let text = self.cmd("getNewAudioOutputHardwareMode").await?;
-        Ok(serde_json::from_str(&text).unwrap_or_default())
+    /// `Unsupported` when the device confirms it doesn't support this
+    /// command at all (the `is_unsupported_text()` sentinel — confirmed on
+    /// iEAST AudioCast, which only has one output, via real captures);
+    /// `Failed` when the response otherwise doesn't parse as
+    /// `AudioOutputStatus` (transient — worth retrying, unlike
+    /// `Unsupported`). Previously this returned `anyhow::Result` and fell
+    /// back to `unwrap_or_default()` on a parse failure, which turned
+    /// *both* cases into `Ok(AudioOutputStatus { hardware: "", .. })` —
+    /// `state.rs`'s `handle_slow_poll_output_status()` couldn't tell that
+    /// apart from genuine (if oddly empty) data, so on a device where this
+    /// always fails it fired a spurious `output-changed` signal every
+    /// single slow-poll cycle forever, since `""` differs from whatever
+    /// the last successful call (if any) had cached. Then, even once that
+    /// was fixed to a plain `Err`, the caller couldn't distinguish
+    /// `Unsupported` from `Failed` either, and kept retrying a confirmed
+    /// "unknown command" on the same tolerant timer as a real transient
+    /// failure — this `ApiOutcome` split is what actually lets `state.rs`
+    /// give up immediately on the former while still tolerating a few
+    /// misses of the latter.
+    pub async fn get_audio_output(&self) -> ApiOutcome<AudioOutputStatus> {
+        let text = match self.cmd("getNewAudioOutputHardwareMode").await {
+            Ok(t)  => t,
+            Err(_) => return ApiOutcome::Failed,
+        };
+        if is_unsupported_text(&text) {
+            return ApiOutcome::Unsupported;
+        }
+        match serde_json::from_str(&text) {
+            Ok(v)  => ApiOutcome::Ok(v),
+            Err(_) => ApiOutcome::Failed,
+        }
     }
 
     /// `getbtstatus` — `None` on a transport failure or a response that
@@ -945,13 +988,23 @@ impl WiimClient {
 
     /// Query `getSoundCardModeSupportList`.
     ///
-    /// Returns `Some(list)` with `OutputEntry` items for every output the device
-    /// currently supports. "unknown" canonical names and duplicates are discarded.
-    /// Returns `None` if the response is not a JSON array — the caller should
-    /// treat this as "API not supported" and stop calling.
-    pub async fn get_sound_card_mode_support_list(&self) -> Option<Vec<OutputEntry>> {
-        let text = self.cmd("getSoundCardModeSupportList").await.ok()?;
-        let arr: Vec<serde_json::Value> = serde_json::from_str(&text).ok()?;
+    /// `Ok(list)` has an `OutputEntry` for every output the device
+    /// currently supports ("unknown" canonical names and duplicates
+    /// discarded). `Unsupported` on the confirmed-not-supported sentinel,
+    /// `Failed` on any other transport/parse failure — see
+    /// `ApiOutcome`'s doc comment for why callers must treat those two
+    /// differently (only `Failed` is worth retrying).
+    pub async fn get_sound_card_mode_support_list(&self) -> ApiOutcome<Vec<OutputEntry>> {
+        let text = match self.cmd("getSoundCardModeSupportList").await {
+            Ok(t)  => t,
+            Err(_) => return ApiOutcome::Failed,
+        };
+        if is_unsupported_text(&text) {
+            return ApiOutcome::Unsupported;
+        }
+        let Ok(arr) = serde_json::from_str::<Vec<serde_json::Value>>(&text) else {
+            return ApiOutcome::Failed;
+        };
         let mut seen = std::collections::HashSet::new();
         let outputs = arr.iter()
             .filter_map(|v| {
@@ -968,7 +1021,7 @@ impl WiimClient {
                 Some(OutputEntry { canon, icon_canon: canon, name })
             })
             .collect();
-        Some(outputs)
+        ApiOutcome::Ok(outputs)
     }
 
     // ── Fetch helpers ─────────────────────────────────────────────────
