@@ -70,6 +70,9 @@ You can pretty-print this file using `target/debug/wiim-capdump`. I would apprec
 
 ## Changelog ##
 
+  * 0.8.2 - 2026-07-10
+    * Fix volume button & scale disabled
+
   * 0.8.1 - 2026-07-10
     * Fix input pop-ver flip/flopping when switching inputs
 	* Add support for setting Mute via UPnP and make it the default.

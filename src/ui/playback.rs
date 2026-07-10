@@ -219,7 +219,7 @@ impl DeviceWindowInner {
         self.pw.btn_bt_pair.set_visible(false);
         for btn in [
             &self.pw.btn_play, &self.pw.btn_prev, &self.pw.btn_next,
-            &self.pw.shuffle, &self.pw.repeat, &self.pw.mute_btn, &self.pw.vol_btn,
+            &self.pw.shuffle, &self.pw.repeat,
         ] {
             btn.set_sensitive(false);
         }
@@ -227,7 +227,6 @@ impl DeviceWindowInner {
         self.pw.seek.set_value(0.0);
         self.pw.pos.set_visible(false);
         self.pw.dur.set_visible(false);
-        self.vol_scale.set_sensitive(false);
 
         self.mini.title_label.set_text(title);
         self.mini.artist_label.set_text("");
@@ -235,10 +234,9 @@ impl DeviceWindowInner {
         self.mini.artwork.clear();
         self.mini.art_bg.clear();
         self.mini.btn_bt_pair.set_visible(false);
-        for btn in [&self.mini.btn_play, &self.mini.btn_prev, &self.mini.btn_next, &self.mini.mute_btn] {
+        for btn in [&self.mini.btn_play, &self.mini.btn_prev, &self.mini.btn_next] {
             btn.set_sensitive(false);
         }
-        self.mini.vol_scale.set_sensitive(false);
 
         for btn in self.pp.btns.iter() { btn.set_visible(false); }
         for lbl in self.pp.labels.iter() { lbl.set_label(""); }
