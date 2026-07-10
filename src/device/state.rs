@@ -596,6 +596,19 @@ struct Inner {
     /// `input_changing` is `false`.
     input_change_time:   Option<Instant>,
     connection_state: ConnectionState,
+    /// The device state manager has two mode: `Full` and `Simple`. `Simple`
+    /// is when just the device-list is displayed, `Full` is when the device
+    /// window or setting window (or both) is/are displayed. We count the
+    /// number of "full" clients to decide when to switch mode.
+    full_clients: u32,
+    /// Whether Simple-mode polling additionally fetches title/artist/
+    /// artwork content, on top of the bare `getStatusEx` liveness/identity
+    /// check it always does. Has no effect in `Full` mode (which always
+    /// fetches everything regardless). Set via `configure_simple_mode()`,
+    /// pushed explicitly whenever the "Song info in device list" setting
+    /// changes rather than read lazily, so a toggle takes effect
+    /// immediately on every already-tracked device.
+    simple_mode_song_info: bool,
     /// Last known network connection type (0=ethernet, 2=wifi).
     /// `None` until first `getStatusEx` result arrives.
     netstat:          Option<u32>,
@@ -701,6 +714,8 @@ impl Default for Inner {
             rssi:             None,
             remote:           RemoteInfo::default(),
             connection_state: ConnectionState::Disconnected,
+            full_clients:     0,
+            simple_mode_song_info: false,
             presets:          Vec::new(),
             preset_fp:        String::new(),
             preset_probe_failures: 0,
@@ -830,6 +845,19 @@ mod imp {
 
 glib::wrapper! {
     pub struct DeviceState(ObjectSubclass<imp::DeviceState>);
+}
+
+/// RAII handle for `Full`-mode polling, from `DeviceState::acquire_full()`.
+/// Releases automatically on drop — hold one for as long as something (e.g.
+/// an open device window) wants full detail.
+pub struct FullModeGuard {
+    ds: DeviceState,
+}
+
+impl Drop for FullModeGuard {
+    fn drop(&mut self) {
+        self.ds.release_full();
+    }
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -2954,6 +2982,44 @@ impl DeviceState {
 
     pub fn connection_state(&self) -> ConnectionState {
         self.imp().inner.borrow().connection_state
+    }
+
+    // ── Simple/Full polling mode ─────────────────────────────────────────────
+    // `Simple` is the default for any `DeviceState` the device registry creates,
+    // `Full` is an opt-in, refcounted upgrade an open device window acquires for
+    // as long as it stays open.
+
+    /// Acquire a `Full`-mode handle. Bumps the refcount immediately; `Full`
+    /// mode is in effect for as long as *any* `FullModeGuard` for this
+    /// device is alive, and reverts to `Simple` the moment the last one
+    /// drops. Cheap and safe to call redundantly — multiple independent
+    /// acquirers (e.g. two windows) just each get their own guard.
+    pub fn acquire_full(&self) -> FullModeGuard {
+        self.imp().inner.borrow_mut().full_clients += 1;
+        FullModeGuard { ds: self.clone() }
+    }
+
+    fn release_full(&self) {
+        let mut inner = self.imp().inner.borrow_mut();
+        debug_assert!(inner.full_clients > 0, "release_full() with no outstanding FullModeGuard");
+        inner.full_clients = inner.full_clients.saturating_sub(1);
+    }
+
+    /// Whether this device is currently in `Full` mode (at least one
+    /// `FullModeGuard` alive) as opposed to `Simple`.
+    pub fn is_full_mode(&self) -> bool {
+        self.imp().inner.borrow().full_clients > 0
+    }
+
+    /// Configure whether `Simple`-mode polling additionally fetches title/
+    /// artist/artwork content, on top of the bare `getStatusEx` liveness/
+    /// identity check it always does — see `Inner::simple_mode_song_info`'s
+    /// doc comment. No effect while in `Full` mode. Pushed explicitly
+    /// (rather than read lazily) so toggling the underlying setting takes
+    /// effect immediately on an already-tracked device, not just ones
+    /// created afterward.
+    pub fn configure_simple_mode(&self, want_song_info: bool) {
+        self.imp().inner.borrow_mut().simple_mode_song_info = want_song_info;
     }
 
     pub fn netstat(&self) -> Option<u32> {
