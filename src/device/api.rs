@@ -262,6 +262,20 @@ pub struct PlayerStatus {
     pub plicount: String,
     #[serde(default)]
     pub plicurr: String,
+    /// Hex-encoded UTF-8 (same LinkPlay convention as `essid`/`ssid_decoded()`
+    /// above) — present directly in `getPlayerStatusEx` on devices that don't
+    /// support `getMetaInfo` at all (confirmed live, 2026-07-13, on an Audio
+    /// Pro Addon C5 running old firmware: `getMetaInfo` returns "unknown
+    /// command", but `getPlayerStatusEx` carries `Title`/`Artist`/`Album`
+    /// directly). Use `title_decoded()`/`artist_decoded()`/`album_decoded()`,
+    /// never these raw fields — matches every other hex field's own accessor
+    /// pattern rather than leaving decode-or-not ambiguous at call sites.
+    #[serde(default, rename = "Title")]
+    pub title: String,
+    #[serde(default, rename = "Artist")]
+    pub artist: String,
+    #[serde(default, rename = "Album")]
+    pub album: String,
 }
 
 impl Default for PlayerStatus {
@@ -277,7 +291,22 @@ impl Default for PlayerStatus {
             vendor:    String::new(),
             plicount:  String::new(),
             plicurr:   String::new(),
+            title:     String::new(),
+            artist:    String::new(),
+            album:     String::new(),
         }
+    }
+}
+
+impl PlayerStatus {
+    pub fn title_decoded(&self) -> String {
+        hex_decode_utf8(&self.title).unwrap_or_else(|| self.title.clone())
+    }
+    pub fn artist_decoded(&self) -> String {
+        hex_decode_utf8(&self.artist).unwrap_or_else(|| self.artist.clone())
+    }
+    pub fn album_decoded(&self) -> String {
+        hex_decode_utf8(&self.album).unwrap_or_else(|| self.album.clone())
     }
 }
 
@@ -308,6 +337,25 @@ impl MetaData {
             &self.album_art_uri
         } else {
             &self.album_art_uri_spaced
+        }
+    }
+
+    /// Synthesizes a `MetaData` from a `getPlayerStatusEx` response's own
+    /// `Title`/`Artist`/`Album`, for devices whose family profile has
+    /// `endpoints.supports_get_meta_info: false` — see `fetch_http_fast_poll`
+    /// in `state.rs`, the only caller. No artwork/quality fields: this
+    /// endpoint doesn't carry them at all (confirmed on the Audio Pro Addon
+    /// C5 capture this was built for — a real `getPlayerStatusEx` response
+    /// while playing had no art-URL field of any kind), so `art_uri()`
+    /// returns empty and `process_poll_http`'s quality decode falls back to
+    /// its own already-existing "nothing to show" path, same as it does for
+    /// any device with no quality data.
+    pub fn from_player_status(st: &PlayerStatus) -> Self {
+        Self {
+            title:  st.title_decoded(),
+            artist: st.artist_decoded(),
+            album:  st.album_decoded(),
+            ..Self::default()
         }
     }
 }

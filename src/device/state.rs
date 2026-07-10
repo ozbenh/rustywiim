@@ -419,12 +419,24 @@ async fn run_slow_poll_phase(
 /// polling keeps running unconditionally, since that's how a later input
 /// change or a volume command's result is noticed at all.
 async fn fetch_http_fast_poll(
-    client: WiimClient, want_bt: bool,
+    client: WiimClient, want_bt: bool, has_meta_info: bool,
 ) -> (Option<PlayerStatus>, Option<MetaData>, Option<BtStatus>) {
     let bt_status = if want_bt { client.get_bt_status().await } else { None };
     let skip_meta = bt_status.as_ref().is_some_and(|b| !b.connected);
     let status = client.get_status().await.ok();
-    let meta = if skip_meta { None } else { client.get_meta_info().await.ok() };
+    let meta = if skip_meta {
+        None
+    } else if has_meta_info {
+        client.get_meta_info().await.ok()
+    } else {
+        // Family capability flag says `getMetaInfo` isn't supported at all
+        // (confirmed: returns "unknown command" — e.g. Audio Pro Addon C5
+        // on old firmware) — synthesize from this tick's own `status`
+        // instead of spending a request on a call known to fail. See
+        // `MetaData::from_player_status`'s doc comment for what's lost
+        // (no artwork/quality this way — a real trade-off, not a bug).
+        status.as_ref().map(MetaData::from_player_status)
+    };
     (status, meta, bt_status)
 }
 
@@ -1496,11 +1508,13 @@ impl DeviceState {
     /// its own `glib::timeout_add_local_once` closure).
     fn dispatch_fast_poll(&self) {
         let Some(poll_tx) = self.imp().poll_tx.borrow().clone() else { return };
-        let (wants_upnp, upnp_client, want_bt, client, inflight) = {
+        let (wants_upnp, upnp_client, want_bt, client, inflight, has_meta_info) = {
             let inner = self.imp().inner.borrow();
             let want_bt = capabilities::mode_to_input_source(inner.current_mode) == "bluetooth";
+            let has_meta_info = inner.capabilities.as_ref()
+                .map_or(true, |c| c.family.endpoints.supports_get_meta_info);
             (inner.access == AccessMethod::UpnpPolled, inner.upnp_client.clone(), want_bt,
-             inner.client.clone(), inner.fast_poll_handle.is_some())
+             inner.client.clone(), inner.fast_poll_handle.is_some(), has_meta_info)
         };
         let Some(client) = client else { return };
         // A poll not completing within a tick is itself a signal something
@@ -1527,7 +1541,7 @@ impl DeviceState {
             }
             (false, _) => {
                 let handle = self.rt().spawn(async move {
-                    let (status, meta, bt_status) = fetch_http_fast_poll(client, want_bt).await;
+                    let (status, meta, bt_status) = fetch_http_fast_poll(client, want_bt, has_meta_info).await;
                     let _ = poll_tx.send(PollData::Http { status, meta, bt_status }).await;
                 });
                 let mut inner = self.imp().inner.borrow_mut();
