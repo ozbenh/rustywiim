@@ -346,6 +346,20 @@ struct DeviceWindowInner {
     icons:          Rc<icons::IconSet>,
     vol_scale:      Scale,
     ui_state:       PlaybackUiState,
+    /// Shown (spinning) only while `ConnectionState::Connecting` — see
+    /// `reset_device_ui()`. Overlaid on the header bar, not packed into
+    /// it — see `build_header()`'s doc comment for why.
+    connecting_spinner: gtk::Spinner,
+    /// When `connecting_spinner` was last shown — `None` while hidden.
+    /// Lets `hide_connecting_spinner()` enforce `MIN_SPINNER_DISPLAY`
+    /// (see that constant) instead of hiding it again so fast (a
+    /// same-LAN reconnect can resolve in well under 100ms) that it never
+    /// renders a single visible frame — exactly as unreadable/glitchy as
+    /// the text flash it replaced.
+    spinner_shown_at: std::cell::Cell<Option<std::time::Instant>>,
+    /// Pending deferred hide from `hide_connecting_spinner()`, if any —
+    /// cancelled in `cleanup()` like `settle_timer`/`config_save_timer`.
+    spinner_hide_timer: RefCell<Option<glib::SourceId>>,
     // Window / panel state — kept here so device-change and close handlers
     // only need one Rc<Inner> capture.
     window:              adw::ApplicationWindow,
@@ -446,6 +460,7 @@ impl DeviceWindowInner {
         ));
         if let Some(id) = self.settle_timer.borrow_mut().take() { id.remove(); }
         if let Some(id) = self.config_save_timer.borrow_mut().take() { id.remove(); }
+        if let Some(id) = self.spinner_hide_timer.borrow_mut().take() { id.remove(); }
         self.save_config_now();
 
         // Skip saving the "window_open" flag to false if that was the last
@@ -561,7 +576,7 @@ impl DeviceWindow {
 
         dbg_ui(&format!("DeviceWindow creating (uuid={})", cfg_uuid));
 
-        let (header, sidebar_btn, mini_btn) = build_header(init_dev_cfg.panel_visible);
+        let (header, sidebar_btn, mini_btn, connecting_spinner) = build_header(init_dev_cfg.panel_visible);
         let (pp, presets_scroll) = build_presets_panel();
         let sw = build_source_widgets(&icons);
         let ow = build_output_widgets(&icons);
@@ -670,6 +685,10 @@ impl DeviceWindow {
         let window_overlay = gtk::Overlay::new();
         window_overlay.set_child(Some(&art_bg));
         window_overlay.add_overlay(&full_toolbar);
+        // Below the header row, not inside it — see `build_header()`'s doc
+        // comment for why the header bar itself is the wrong place to
+        // overlay this (collides with the native CSD window buttons).
+        window_overlay.add_overlay(&connecting_spinner);
 
         let win_w = if init_dev_cfg.window_width  > 0 { init_dev_cfg.window_width  } else { 680 };
         let win_h = if init_dev_cfg.window_height > 0 { init_dev_cfg.window_height } else { 640 };
@@ -707,6 +726,9 @@ impl DeviceWindow {
             icons,
             vol_scale,
             ui_state,
+            connecting_spinner,
+            spinner_shown_at: std::cell::Cell::new(None),
+            spinner_hide_timer: RefCell::new(None),
             window: window.clone(),
             art_bg: art_bg.clone(),
             paned:  paned.clone(),
@@ -1314,11 +1336,21 @@ impl AppState {
         let win_clone  = s.window_ref().clone();
         let weak_self  = Rc::downgrade(self_rc);
         let close_uuid = ds_uuid.clone();
-        s.window_ref().connect_close_request(move |_| {
+        s.window_ref().connect_close_request(move |win| {
             dbg_state(&format!("settings: closed for {:?}", close_uuid));
             if let Some(state) = weak_self.upgrade() {
                 state.settings_reg.borrow_mut().retain(|w| w.window_ref() != &win_clone);
             }
+            // Explicit, rather than relying on close()'s default handler to
+            // do it — this is what actually frees the page widgets
+            // (ComboRows etc.) and, with them, any strong refs their signal
+            // closures hold (e.g. the Advanced page's access-method rows,
+            // even after those were fixed to hold `ds` weakly — see
+            // `wire_access_row()`'s doc comment). Without an explicit
+            // destroy() here nothing actually confirmed the window's widget
+            // tree itself was ever torn down, only that `settings_reg`
+            // dropped its own reference to it.
+            win.destroy();
             glib::Propagation::Proceed
         });
         s.present();
@@ -1412,7 +1444,29 @@ impl AppState {
             move |_| {
                 dbg_state(&format!("device window: close-request uuid={log_uuid}"));
                 if let Some(s) = weak_self.upgrade() {
+                    let live_uuid = s.registry.borrow().iter()
+                        .find(|w| w.window == win_key)
+                        .and_then(|w| w.uuid());
                     s.registry.borrow_mut().retain(|w| w.window != win_key);
+                    // Also close any Settings window open for this device.
+                    // SettingsWindow holds a *strong* DeviceState clone
+                    // (settings_reg, until the settings window itself
+                    // closes) — without this, closing the device window
+                    // leaves that strong clone alive, the DeviceState
+                    // GObject never disposes, and polling keeps running
+                    // indefinitely even though no window looks associated
+                    // with the device anymore. Clone the window handle and
+                    // drop the settings_reg borrow before calling close() —
+                    // close() re-enters this same RefCell synchronously via
+                    // its own close-request handler.
+                    if let Some(uuid) = live_uuid.filter(|u| !u.is_empty()) {
+                        let target = s.settings_reg.borrow().iter()
+                            .find(|sw| sw.device_uuid().as_deref() == Some(uuid.as_str()))
+                            .map(|sw| sw.window_ref().clone());
+                        if let Some(win) = target {
+                            win.close();
+                        }
+                    }
                 }
                 glib::Propagation::Proceed
             }

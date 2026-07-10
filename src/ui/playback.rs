@@ -103,23 +103,86 @@ fn apply_repeat_ui(btn: &gtk::Button, state: RepeatMode) {
 
 // ── impl DeviceWindowInner ────────────────────────────────────────────────────
 
+/// Minimum time `connecting_spinner` stays visible once shown, so a
+/// same-LAN reconnect that resolves in well under this doesn't hide it
+/// again before it ever renders a single visible frame — see
+/// `DeviceWindowInner::show_connecting_spinner()`/`hide_connecting_spinner()`.
+const MIN_SPINNER_DISPLAY: std::time::Duration = std::time::Duration::from_secs(1);
+
 impl DeviceWindowInner {
+    // ── Connecting spinner ───────────────────────────────────────────────────
+
+    /// Shows+starts `connecting_spinner`, recording when it was first shown
+    /// (unless already showing) so `hide_connecting_spinner()` can enforce
+    /// `MIN_SPINNER_DISPLAY`. Also cancels any pending deferred hide — a
+    /// `Failed`/`Disconnected` → `Connecting` flip inside the debounce
+    /// window must not let a stale hide fire after this call.
+    fn show_connecting_spinner(self: &Rc<Self>) {
+        if let Some(id) = self.spinner_hide_timer.borrow_mut().take() { id.remove(); }
+        if self.spinner_shown_at.get().is_none() {
+            self.spinner_shown_at.set(Some(std::time::Instant::now()));
+        }
+        self.connecting_spinner.set_visible(true);
+        self.connecting_spinner.set_spinning(true);
+    }
+
+    /// Hides+stops `connecting_spinner`, deferring the actual hide if it
+    /// hasn't been visible for `MIN_SPINNER_DISPLAY` yet. A no-op (besides
+    /// making sure the widget is actually hidden) if the spinner was never
+    /// shown in the first place.
+    fn hide_connecting_spinner(self: &Rc<Self>) {
+        let Some(shown_at) = self.spinner_shown_at.get() else {
+            self.connecting_spinner.set_visible(false);
+            self.connecting_spinner.set_spinning(false);
+            return;
+        };
+        let elapsed = shown_at.elapsed();
+        if elapsed >= MIN_SPINNER_DISPLAY {
+            self.spinner_shown_at.set(None);
+            self.connecting_spinner.set_visible(false);
+            self.connecting_spinner.set_spinning(false);
+            return;
+        }
+        if self.spinner_hide_timer.borrow().is_some() {
+            return; // Hide already scheduled — let it run.
+        }
+        let i2 = Rc::clone(self);
+        let id = glib::timeout_add_local_once(MIN_SPINNER_DISPLAY - elapsed, move || {
+            *i2.spinner_hide_timer.borrow_mut() = None;
+            i2.spinner_shown_at.set(None);
+            i2.connecting_spinner.set_visible(false);
+            i2.connecting_spinner.set_spinning(false);
+        });
+        *self.spinner_hide_timer.borrow_mut() = Some(id);
+    }
+
     // ── Reset ─────────────────────────────────────────────────────────────────
 
-    /// Shows `title` ("Connecting…"/"Disconnected") as the big now-playing
-    /// text — in both the main and mini widgets, regardless of which is
-    /// currently visible, so switching modes later doesn't need a fresh
-    /// `device-changed` to catch up — and disables every playback control,
-    /// in both. **Must not be followed by `update_playback_ui()`/
-    /// `update_mini_playback()` in the same refresh** (`populate_all()`
-    /// only calls those in its *other* branch, when there's a live
-    /// `device_info`) — those render straight from `playback_state()`,
-    /// which this does *not* clear (see `ConnectionState::Failed`'s doc
-    /// comment: only `device_info` is cleared on disconnect, so a later
-    /// reconnect can diff against still-relevant last-known playback
-    /// fields) — calling them here would immediately clobber this text and
-    /// re-enable controls from that stale-but-not-cleared state.
-    pub(super) fn reset_device_ui(&self, title: &str) {
+    /// Shows the "no live `device_info`" state — in both the main and mini
+    /// widgets, regardless of which is currently visible, so switching
+    /// modes later doesn't need a fresh `device-changed` to catch up — and
+    /// disables every playback control, in both. **Must not be followed by
+    /// `update_playback_ui()`/`update_mini_playback()` in the same
+    /// refresh** (`populate_all()` only calls those in its *other* branch,
+    /// when there's a live `device_info`) — those render straight from
+    /// `playback_state()`, which this does *not* clear (see
+    /// `ConnectionState::Failed`'s doc comment: only `device_info` is
+    /// cleared on disconnect, so a later reconnect can diff against
+    /// still-relevant last-known playback fields) — calling them here
+    /// would immediately clobber this text and re-enable controls from
+    /// that stale-but-not-cleared state.
+    ///
+    /// Only `Failed`/`Disconnected` get big text ("Disconnected") — that's
+    /// a real, potentially long-lived steady state worth reading.
+    /// `Connecting` is normally brief (a few hundred ms on a real LAN) and
+    /// showing text for something that fast just reads as an unreadable
+    /// flash/glitch — instead, the corner spinner
+    /// (`build_header()`/`connecting_spinner`) is shown+spinning, and the
+    /// title area stays blank. `apply_device_info()` is the other place
+    /// that needs to hide the spinner again — it's the code path taken on
+    /// the opposite transition (`Connecting` → `Connected`), which never
+    /// runs through here.
+    pub(super) fn reset_device_ui(self: &Rc<Self>, state: ConnectionState) {
         // Fall back to the cached name (see `cached_name`'s doc comment)
         // rather than the bare generic title, while there's no live
         // `device_info` yet to give a definitive one.
@@ -131,6 +194,17 @@ impl DeviceWindowInner {
         };
         drop(cached_name);
         self.window.set_title(Some(&win_title));
+
+        if state == ConnectionState::Connecting {
+            self.show_connecting_spinner();
+        } else {
+            self.hide_connecting_spinner();
+        }
+        let title = if matches!(state, ConnectionState::Failed | ConnectionState::Disconnected) {
+            "Disconnected"
+        } else {
+            ""
+        };
 
         self.pw.title.set_text(title);
         self.pw.artist.set_text("");
@@ -191,7 +265,7 @@ impl DeviceWindowInner {
     /// Populate the entire UI from whatever the DeviceState currently has cached.
     /// Called on initial window creation and on every `device-changed` signal.
     /// Safe to call redundantly — all underlying setters are idempotent.
-    pub(super) fn populate_all(&self) {
+    pub(super) fn populate_all(self: &Rc<Self>) {
         use crate::device::state::playback_changed;
         self.update_network_icon();
         self.update_remote_display();
@@ -205,19 +279,16 @@ impl DeviceWindowInner {
             self.update_playback_ui(playback_changed::ALL);
             self.update_mini_playback(playback_changed::ALL);
         } else {
-            // `Disconnected` shows the same "Disconnected" text as `Failed`
-            // now, not blank — `set_device(..., connect_now: false)` means
-            // a window can sit genuinely `Disconnected` (never having
-            // attempted a connect at all, because devlist already believed
-            // the device offline) for a good while, a real steady state
-            // now, not just a fleeting pre-`set_device()` moment.
-            let title = match self.ds.connection_state() {
-                ConnectionState::Connecting  => "Connecting…",
-                ConnectionState::Failed
-                | ConnectionState::Disconnected => "Disconnected",
-                ConnectionState::Connected      => "",
-            };
-            self.reset_device_ui(title);
+            // `Failed`/`Disconnected` show "Disconnected" text — a real,
+            // potentially long-lived steady state (`set_device(...,
+            // connect_now: false)` means a window can sit genuinely
+            // `Disconnected` for a good while, never having attempted a
+            // connect at all, because devlist already believed the device
+            // offline). `Connecting` shows the corner spinner instead — see
+            // `reset_device_ui()`'s doc comment for why.
+            let state = self.ds.connection_state();
+            super::dbg_ui(&format!("populate_all: no device_info, connection_state={state:?}"));
+            self.reset_device_ui(state);
         }
         self.update_input_display();
         self.update_output_display();
@@ -381,10 +452,18 @@ impl DeviceWindowInner {
         self.remote_label.queue_resize();
     }
 
-    pub(super) fn apply_device_info(&self) {
+    pub(super) fn apply_device_info(self: &Rc<Self>) {
         let info = match self.ds.device_info() { Some(i) => i, None => return };
         let caps = match self.ds.capabilities() { Some(c) => c, None => return };
 
+        super::dbg_ui(&format!(
+            "apply_device_info: showing real state for {:?}", info.device_name,
+        ));
+        // The only other place the corner spinner is touched is
+        // `reset_device_ui()` (the `Connecting` case) — this is the
+        // opposite transition (`Connecting` → `Connected`, a live
+        // `device_info` just arrived) and never runs through there.
+        self.hide_connecting_spinner();
         self.window.set_title(Some(&format!("RustyWiiM ({})", info.device_name)));
         // Refresh the disconnected-fallback title too (see `cached_name`'s
         // doc comment) — this device just answered, so its name is at

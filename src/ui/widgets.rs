@@ -163,7 +163,21 @@ pub(crate) struct MiniWidgets {
 
 // ── Build functions ───────────────────────────────────────────────────────────
 
-pub(super) fn build_header(init_panel_visible: bool) -> (adw::HeaderBar, gtk::ToggleButton, gtk::ToggleButton) {
+/// Returns the header-bar widget to actually add as the toolbar's top bar,
+/// the two existing toggle buttons, and a small spinner shown while
+/// `ConnectionState::Connecting` — see `reset_device_ui()`. The spinner is
+/// **not** attached anywhere in here — `adw::HeaderBar` reserves its own
+/// far-right corner for the native CSD window buttons
+/// (`show-end-title-buttons`, on by default), so overlaying the header
+/// itself puts the spinner right on top of/behind those, effectively
+/// invisible. Instead the caller overlays it on the window's *content*
+/// area (`window_overlay` in `mod.rs`), below the header row entirely —
+/// still an overlay child, not packed, so it never shifts any of the
+/// header's own buttons even briefly, it just floats on top of whatever's
+/// already in that corner of the content instead.
+pub(super) fn build_header(
+    init_panel_visible: bool,
+) -> (adw::HeaderBar, gtk::ToggleButton, gtk::ToggleButton, gtk::Spinner) {
     let header = adw::HeaderBar::new();
 
     let sidebar_btn = gtk::ToggleButton::builder()
@@ -182,7 +196,21 @@ pub(super) fn build_header(init_panel_visible: bool) -> (adw::HeaderBar, gtk::To
         .build();
     header.pack_end(&mini_btn);
 
-    (header, sidebar_btn, mini_btn)
+    // margin_top clears the header bar's own height (it's overlaid on the
+    // window's whole content area, below the header row — see the doc
+    // comment above) so it lands in open content space, not on top of the
+    // header row itself.
+    let connecting_spinner = gtk::Spinner::builder()
+        .halign(Align::End)
+        .valign(Align::Start)
+        .margin_end(12)
+        .margin_top(56)
+        .visible(false)
+        .build();
+    connecting_spinner.set_size_request(20, 20);
+    connecting_spinner.add_css_class("connecting-spinner");
+
+    (header, sidebar_btn, mini_btn, connecting_spinner)
 }
 
 pub(super) fn build_presets_panel() -> (PresetWidgets, gtk::ScrolledWindow) {

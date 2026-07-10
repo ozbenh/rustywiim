@@ -197,7 +197,13 @@ impl SettingsWindow {
             }));
         }
 
-        if DEBUG_UI.load(Ordering::Relaxed) {
+        // Gated on DEBUG_UI *or* DEBUG_STATE — this print pairs with the
+        // "settings: closed"/"destroy() called" DEBUG_STATE-gated prints in
+        // `AppState::open_settings()`, and running with only one of the two
+        // flags on made it genuinely ambiguous whether "destroyed" simply
+        // never printed (flag off) or whether destroy() really wasn't
+        // tearing the window down.
+        if DEBUG_UI.load(Ordering::Relaxed) || crate::device::state::DEBUG_STATE.load(Ordering::Relaxed) {
             let uuid = ds.as_ref().and_then(|d| d.device_info()).map(|i| i.uuid)
                 .unwrap_or_else(|| "global".to_string());
             println!("[ui] SettingsWindow created (uuid={uuid})");
@@ -473,10 +479,17 @@ fn build_access_row(title: &str, subtitle: &str, default: AccessMethod, current:
 fn wire_access_row(
     row: &adw::ComboRow,
     uuid: String,
-    ds: DeviceState,
+    ds: &DeviceState,
     save: impl Fn(&mut config::DeviceConfig, Option<AccessMethod>) + 'static,
     push: impl Fn(&DeviceState, Option<AccessMethod>) + 'static,
 ) {
+    // Weak: an owned `DeviceState` clone here would only be released once
+    // this `ComboRow` itself is destroyed, which doesn't happen
+    // synchronously (or reliably at all) when the settings window closes —
+    // confirmed live via refcount tracing, two of these (Player Status +
+    // Mute rows) each leaked a strong ref, keeping the device polling long
+    // after both the device window and the settings window were closed.
+    let ds_weak = ds.downgrade();
     row.connect_selected_notify(move |r| {
         let (_, method) = ACCESS_METHOD_CHOICES[r.selected() as usize];
         // `uuid` is empty while the device is offline/still connecting
@@ -491,7 +504,9 @@ fn wire_access_row(
         if !uuid.is_empty() {
             config::update(|cfg| save(cfg.device_mut(&uuid), method));
         }
-        push(&ds, method);
+        if let Some(ds) = ds_weak.upgrade() {
+            push(&ds, method);
+        }
     });
 }
 
@@ -511,7 +526,7 @@ fn build_advanced_page(ds: &DeviceState) -> adw::PreferencesPage {
         defaults, over,
     );
     wire_access_row(
-        &player_status_row, uuid.clone(), ds.clone(),
+        &player_status_row, uuid.clone(), ds,
         |dev, method| dev.playback_access_override = method,
         |ds, method| ds.set_playback_access_override(method),
     );
@@ -525,7 +540,7 @@ fn build_advanced_page(ds: &DeviceState) -> adw::PreferencesPage {
         AccessMethod::UpnpPolled, mute_over,
     );
     wire_access_row(
-        &mute_row, uuid.clone(), ds.clone(),
+        &mute_row, uuid.clone(), ds,
         |dev, method| dev.mute_access_override = method,
         |ds, method| ds.set_mute_access_override(method),
     );
