@@ -266,8 +266,7 @@ fn tls_for_scheme(scheme: &str) -> TlsMode {
 /// `MAX_RETRIES` retries with a 100ms backoff, only for
 /// `reqwest::Error::is_request()` failures ("connection closed before
 /// message completed" — a known pooled-keep-alive-connection race, not a
-/// real fault; see `TODO.md`'s "`soap_call()` has no retry" entry for the
-/// real-device evidence this was written against). Logging follows the
+/// real fault). Logging follows the
 /// same noise rule `cmd()` uses too: the first attempt's transient
 /// failure only logs under `--debug=api` (routine, self-healing — that's
 /// the entire point of retrying), but a first *retry* that also fails

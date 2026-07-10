@@ -1415,7 +1415,7 @@ async fn capture_upnp(ip: &str) -> UpnpCapture {
                 // returns for it, since neither reference project checked
                 // (pywiim wraps it but only for a diagnostics-only
                 // snapshot, never its real state model) trusts it enough
-                // to rely on. See TODO.md's can_next/can_previous entry.
+                // to rely on.
                 "GetCurrentTransportActions",
             ] {
                 eprintln!("[wiim-capture] upnp: {action} on {service_type}");

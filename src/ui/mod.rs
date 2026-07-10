@@ -1291,8 +1291,9 @@ impl AppState {
         // reachability, in `ui/`) and `DeviceManager` (in `device/`, which
         // can't import `ui/devlist` types at all) — `ui::AppState` is the
         // only thing that knows about both. Neither manager holds a direct
-        // reference to the other; see `TODO.md`'s "relocate devlist's
-        // backend into device/" entry for why this stays this way for now.
+        // reference to the other, since `devlist`'s backend may eventually
+        // move into `device/` itself, which would make a direct reference
+        // the wrong shape to have picked here.
         //
         // devlist → DeviceManager: fired only at an actual presence
         // transition (devlist already knows exactly when that is — see
