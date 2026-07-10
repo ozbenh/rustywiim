@@ -11,52 +11,135 @@
 //
 // An empty UUID cannot be deduplicated; `get()` returns a fresh uncached
 // DeviceState every time for those.
+//
+// Phase 2 of the devlist redesign (see `DEVLIST-REDESIGN.md`) is turning
+// this into the merged device-registry the design document describes — a
+// GObject now, with a `configure-device` signal and `add_known_device()`/
+// `get_state()` alongside the original `get()` — but SSDP consumption and
+// health-check retirement haven't moved in here yet; `ui/devlist.rs` still
+// owns those for now. Read `DEVLIST-REDESIGN.md` before extending this
+// further, it's the up to date plan/progress doc for what's left.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use glib::clone::Downgrade;
+use glib::prelude::*;
+use glib::subclass::prelude::*;
 use gtk::glib;
 
 use crate::device::api::TlsMode;
 use crate::device::playback::AccessMethod;
 use crate::device::state::DeviceState;
 
-struct Inner {
-    rt:     Arc<tokio::runtime::Runtime>,
-    states: RefCell<HashMap<String, glib::WeakRef<DeviceState>>>,
-    /// Set once by the caller (`ui::AppState`, at startup) via
-    /// `set_offline_hook()`. Wired onto every newly-created `DeviceState` in
-    /// `get()` (see `DeviceState::set_offline_callback`'s doc comment) so a
-    /// `DeviceState` noticing its own connection failure can tell the
-    /// caller immediately, without this module needing to know anything
-    /// about what the caller actually does with it (`ui::devlist`'s health
-    /// check, in practice — kept out of this module since `device/` mustn't
-    /// depend on `ui/`).
-    offline_hook: RefCell<Option<Rc<dyn Fn(String)>>>,
+mod imp {
+    use super::*;
+    use glib::subclass::Signal;
+    use std::sync::OnceLock;
+
+    pub struct DeviceManager {
+        pub(super) rt:     std::cell::OnceCell<Arc<tokio::runtime::Runtime>>,
+        pub(super) states: RefCell<HashMap<String, glib::WeakRef<DeviceState>>>,
+        /// Set once by the caller (`ui::AppState`, at startup) via
+        /// `set_offline_hook()`. Wired onto every newly-created `DeviceState` in
+        /// `get()`/`create_and_configure()` (see `DeviceState::set_offline_callback`'s
+        /// doc comment) so a `DeviceState` noticing its own connection failure
+        /// can tell the caller immediately, without this module needing to
+        /// know anything about what the caller actually does with it
+        /// (`ui::devlist`'s health check, in practice — kept out of this
+        /// module since `device/` mustn't depend on `ui/`).
+        pub(super) offline_hook: RefCell<Option<Rc<dyn Fn(String)>>>,
+    }
+
+    impl Default for DeviceManager {
+        fn default() -> Self {
+            Self {
+                rt:     std::cell::OnceCell::new(),
+                states: RefCell::new(HashMap::new()),
+                offline_hook: RefCell::new(None),
+            }
+        }
+    }
+
+    #[glib::object_subclass]
+    impl ObjectSubclass for DeviceManager {
+        const NAME: &'static str = "RustyWiimDeviceManager";
+        type Type = super::DeviceManager;
+    }
+
+    impl ObjectImpl for DeviceManager {
+        fn signals() -> &'static [Signal] {
+            static SIGNALS: OnceLock<Vec<Signal>> = OnceLock::new();
+            SIGNALS.get_or_init(|| {
+                vec![
+                    // Fired synchronously exactly once per `DeviceState`,
+                    // right after construction and *before* it's allowed to
+                    // make first contact (`set_device(..., connect_now:
+                    // true)` — see `create_and_configure()`) — never on
+                    // `get()`'s path, which already receives overrides as
+                    // caller-supplied params instead (`ui/`'s existing,
+                    // older pattern of resolving config before ever calling
+                    // in). A real GObject signal rather than a `Rc<dyn
+                    // Fn(..)>` hook deliberately with the idea that this
+                    // might become a standalone library.
+                    //
+                    // The connected handler resolves config for this
+                    // device's uuid (`DeviceState::uuid()`, already fixed
+                    // at construction) and calls back
+                    // `set_playback_access_override()`/
+                    // `set_mute_access_override()` on the passed
+                    // `DeviceState` before returning — `device/` can't read
+                    // config itself, this is the one place `ui/` gets a
+                    // synchronous chance to push it in before polling
+                    // starts.
+                    Signal::builder("configure-device")
+                        .param_types([DeviceState::static_type()])
+                        .build(),
+                ]
+            })
+        }
+    }
 }
 
-/// Cheap-to-clone handle to the device-state registry.
-#[derive(Clone)]
-pub struct DeviceManager(Rc<Inner>);
+glib::wrapper! {
+    pub struct DeviceManager(ObjectSubclass<imp::DeviceManager>);
+}
 
 impl DeviceManager {
     pub fn new(rt: Arc<tokio::runtime::Runtime>) -> Self {
-        Self(Rc::new(Inner {
-            rt,
-            states: RefCell::new(HashMap::new()),
-            offline_hook: RefCell::new(None),
-        }))
+        let obj: Self = glib::Object::new();
+        obj.imp().rt.set(rt).unwrap();
+        obj
     }
 
     /// Registers the hook invoked (with the device's uuid) whenever a
     /// `DeviceState` created by this manager notices its own connection
-    /// failure — see `Inner::offline_hook`'s doc comment. Only ever set
-    /// once, by `ui::AppState` at startup.
+    /// failure — see `imp::DeviceManager::offline_hook`'s doc comment. Only
+    /// ever set once, by `ui::AppState` at startup.
     pub fn set_offline_hook(&self, hook: impl Fn(String) + 'static) {
-        *self.0.offline_hook.borrow_mut() = Some(Rc::new(hook));
+        *self.imp().offline_hook.borrow_mut() = Some(Rc::new(hook));
+    }
+
+    /// Connect to `configure-device` — see `imp::DeviceManager::signals()`'s
+    /// doc comment for the full contract (fires synchronously, before first
+    /// contact; connect this immediately after `new()`, before anything
+    /// else runs).
+    pub fn connect_configure_device<F: Fn(&Self, &DeviceState) + 'static>(
+        &self,
+        f: F,
+    ) -> glib::SignalHandlerId {
+        self.connect_local("configure-device", false, move |values| {
+            let obj = values[0].get::<Self>().expect("configure-device arg 0: DeviceManager");
+            let ds  = values[1].get::<DeviceState>().expect("configure-device arg 1: DeviceState");
+            f(&obj, &ds);
+            None
+        })
+    }
+
+    /// Expose the tokio runtime for callers that need it directly.
+    pub fn rt(&self) -> Arc<tokio::runtime::Runtime> {
+        self.imp().rt.get().expect("DeviceManager::rt() called before new()").clone()
     }
 
     /// Return a live `DeviceState` for `uuid` + `ip` + `tls`.
@@ -90,11 +173,16 @@ impl DeviceManager {
     /// `set_mute_access_override()` already use — already `config`-free on
     /// their own (this module can't depend on `config`, main-binary-crate
     /// only, kept out of the reusable device layer the CLI tools link
-    /// against), so the caller (the only one there is: `ui/mod.rs`'s
+    /// against), so the caller (currently `ui/mod.rs`'s
     /// `DeviceWindow::new_for_device()`, which already has the per-device
     /// config in hand at this exact point) can pass
     /// `config::DeviceConfig::playback_access_override`/`mute_access_override`
-    /// straight through with no conversion step.
+    /// straight through with no conversion step. Doesn't go through
+    /// `configure-device` at all — this is the older, still-valid pattern
+    /// of the caller resolving config *before* ever calling in, which
+    /// `add_known_device()`/`create_and_configure()` below can't use since
+    /// they're triggered without a synchronous config-aware caller in the
+    /// loop.
     pub fn get(
         &self,
         uuid: &str,
@@ -104,38 +192,69 @@ impl DeviceManager {
         mute_access_override: Option<AccessMethod>,
         try_connect: bool,
     ) -> DeviceState {
-        let mut states = self.0.states.borrow_mut();
-        // Prune stale entries lazily so the map doesn't grow unboundedly.
-        states.retain(|_, w| w.upgrade().is_some());
-
-        if !uuid.is_empty() {
-            if let Some(ds) = states.get(uuid).and_then(|w| w.upgrade()) {
-                return ds;
-            }
+        if let Some(ds) = self.lookup_and_prune(uuid) {
+            return ds;
         }
 
-        let ds = DeviceState::new(self.0.rt.clone(), uuid.to_string());
+        let ds = DeviceState::new(self.rt(), uuid.to_string());
         ds.set_device(ip, tls, access_override, mute_access_override, try_connect || uuid.is_empty());
         ds.start_polling();
 
         if !uuid.is_empty() {
-            // Only a uuid-keyed DeviceState can be looked back up by
-            // mark_offline()/mark_reachable() at all, so only these get the
-            // callback wired — an empty-uuid DeviceState (first-ever
-            // connect, uuid not resolved until getStatusEx answers) has no
-            // key the hook's caller could act on anyway.
-            if let Some(hook) = self.0.offline_hook.borrow().clone() {
-                let hook_uuid = uuid.to_string();
-                ds.set_offline_callback(move || hook(hook_uuid.clone()));
-            }
-            states.insert(uuid.to_string(), ds.downgrade());
+            self.wire_and_insert(&ds, uuid);
         }
         ds
     }
 
-    /// Expose the tokio runtime for callers that need it directly.
-    pub fn rt(&self) -> Arc<tokio::runtime::Runtime> {
-        self.0.rt.clone()
+    /// Create (if not already tracked) a `DeviceState` purely from identity
+    /// — no config-derived parameters at all, deliberately: everything
+    /// config-derived (TLS mode defaults to `TlsMode::HttpsWiiM` here,
+    /// matching what `ui/devlist.rs`'s `load_known_devices_from_config()`
+    /// already assumed — no per-device TLS is remembered in config today
+    /// either way; playback/mute access overrides come via
+    /// `configure-device`) is resolved through the single
+    /// `create_and_configure()` path, not duplicated here. For pinned
+    /// devices seeded from config at startup.
+    pub fn add_known_device(&self, uuid: &str, ip: &str) -> DeviceState {
+        self.create_and_configure(uuid, ip, TlsMode::HttpsWiiM)
+    }
+
+    /// Shared by `add_known_device()` and (once wired) SSDP-driven
+    /// creation — one creation+configure path, not two, so overrides are
+    /// resolved identically regardless of what triggered creation. Fires
+    /// `configure-device` synchronously, then reads back whatever the
+    /// connected handler set via `set_playback_access_override()`/
+    /// `set_mute_access_override()` before making first contact
+    /// (`set_device(..., connect_now: true)`).
+    fn create_and_configure(&self, uuid: &str, ip: &str, tls: TlsMode) -> DeviceState {
+        if let Some(ds) = self.lookup_and_prune(uuid) {
+            return ds;
+        }
+
+        let ds = DeviceState::new(self.rt(), uuid.to_string());
+        self.emit_by_name::<()>("configure-device", &[&ds]);
+        let access_override      = ds.playback_access_override();
+        let mute_access_override = ds.mute_access_override();
+        ds.set_device(ip, tls, access_override, mute_access_override, true);
+        ds.start_polling();
+
+        if !uuid.is_empty() {
+            self.wire_and_insert(&ds, uuid);
+        }
+        ds
+    }
+
+    /// Look up an already-tracked `DeviceState` by uuid — doesn't create
+    /// one. `None` means this manager doesn't know this uuid at all yet.
+    /// Callers wanting `Full` mode call `.acquire_full()` on the result
+    /// themselves (see `DeviceState::acquire_full()`) — not baked into a
+    /// `mode` parameter here, since acquiring is inherently a "hold this
+    /// guard for a while" operation the caller (a device window) owns the
+    /// lifetime of, not something `get_state()` itself could sensibly do
+    /// on the caller's behalf.
+    pub fn get_state(&self, uuid: &str) -> Option<DeviceState> {
+        if uuid.is_empty() { return None; }
+        self.imp().states.borrow().get(uuid).and_then(|w| w.upgrade())
     }
 
     /// Tell the live `DeviceState` for `uuid`, if any, that its
@@ -146,7 +265,7 @@ impl DeviceManager {
     /// direction — see `DeviceState::mark_offline()`/`mark_reachable()`.
     pub fn sync_reachability(&self, uuid: &str, reachable: bool) {
         if uuid.is_empty() { return; }
-        let ds = self.0.states.borrow().get(uuid).and_then(|w| w.upgrade());
+        let ds = self.imp().states.borrow().get(uuid).and_then(|w| w.upgrade());
         if let Some(ds) = ds {
             if reachable { ds.mark_reachable(); } else { ds.mark_offline(); }
         }
@@ -155,17 +274,17 @@ impl DeviceManager {
     /// Push a possibly-new `ip`/`tls` to the live `DeviceState` for `uuid`,
     /// if one exists and it isn't already using this IP.
     ///
-    /// `get()` only resolves `ip`/`tls` when creating a *new* `DeviceState`;
-    /// an already-open device window keeps polling whatever IP it connected
-    /// with, even after discovery learns the device moved (DHCP lease
-    /// change). Call this whenever discovery reports a device's current
-    /// address — e.g. from `DiscoveryManager`'s `list-changed` handler — so
-    /// an open window reconnects to the right IP instead of retrying a dead
-    /// one forever.
+    /// `get()`/`create_and_configure()` only resolve `ip`/`tls` when
+    /// creating a *new* `DeviceState`; an already-open device window keeps
+    /// polling whatever IP it connected with, even after discovery learns
+    /// the device moved (DHCP lease change). Call this whenever discovery
+    /// reports a device's current address — e.g. from `DiscoveryManager`'s
+    /// `list-changed` handler — so an open window reconnects to the right
+    /// IP instead of retrying a dead one forever.
     pub fn update_ip(&self, uuid: &str, ip: &str, tls: TlsMode) {
         if uuid.is_empty() { return; }
         let ds = {
-            let states = self.0.states.borrow();
+            let states = self.imp().states.borrow();
             states.get(uuid).and_then(|w| w.upgrade())
         };
         if let Some(ds) = ds {
@@ -185,5 +304,28 @@ impl DeviceManager {
                 ds.set_device(ip, tls, access_override, mute_access_override, true);
             }
         }
+    }
+
+    /// Shared prune-and-look-up prefix for `get()`/`create_and_configure()`
+    /// — prunes stale (weak-ref-only, GC'd) entries lazily so the map
+    /// doesn't grow unboundedly, then returns the existing entry for
+    /// `uuid` if there is one. Empty `uuid` never matches (can't be
+    /// deduplicated at all — see this module's own doc comment).
+    fn lookup_and_prune(&self, uuid: &str) -> Option<DeviceState> {
+        let mut states = self.imp().states.borrow_mut();
+        states.retain(|_, w| w.upgrade().is_some());
+        if uuid.is_empty() { return None; }
+        states.get(uuid).and_then(|w| w.upgrade())
+    }
+
+    /// Shared offline-hook wiring + map insertion tail, used by `get()`
+    /// and `create_and_configure()` alike. Caller must already have
+    /// checked `!uuid.is_empty()`.
+    fn wire_and_insert(&self, ds: &DeviceState, uuid: &str) {
+        if let Some(hook) = self.imp().offline_hook.borrow().clone() {
+            let hook_uuid = uuid.to_string();
+            ds.set_offline_callback(move || hook(hook_uuid.clone()));
+        }
+        self.imp().states.borrow_mut().insert(uuid.to_string(), ds.downgrade());
     }
 }
