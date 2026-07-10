@@ -903,10 +903,16 @@ impl WiimClient {
         }
     }
 
-    /// `getbtstatus` — `None` on a transport failure or a response that
-    /// doesn't parse; the caller (`state.rs`'s slow poll) only ever calls
+    /// `getbtstatus` — the caller (`state.rs`'s fast poll) only ever calls
     /// this while Bluetooth is the active input in the first place.
-    pub async fn get_bt_status(&self) -> Option<BtStatus> {
+    /// `ApiOutcome::Unsupported` for a confirmed `"unknown command"`
+    /// response (some devices — e.g. Audio Pro Addon C5 — don't implement
+    /// this endpoint at all) — same split as `get_audio_output()`, and for
+    /// the same reason: `Unsupported` is a definite answer worth acting on
+    /// immediately (`state.rs` stops calling this at all once seen, rather
+    /// than retrying a call that will never succeed), `Failed` is a
+    /// transient transport/parse error worth tolerating.
+    pub async fn get_bt_status(&self) -> ApiOutcome<BtStatus> {
         #[derive(Deserialize, Default)]
         struct Response {
             #[serde(default)]
@@ -921,9 +927,17 @@ impl WiimClient {
             #[serde(default)]
             pairing: u8,
         }
-        let text = self.cmd("getbtstatus").await.ok()?;
-        let resp: Response = serde_json::from_str(&text).ok()?;
-        Some(BtStatus {
+        let text = match self.cmd("getbtstatus").await {
+            Ok(t)  => t,
+            Err(_) => return ApiOutcome::Failed,
+        };
+        if is_unsupported_text(&text) {
+            return ApiOutcome::Unsupported;
+        }
+        let Ok(resp) = serde_json::from_str::<Response>(&text) else {
+            return ApiOutcome::Failed;
+        };
+        ApiOutcome::Ok(BtStatus {
             connected:   resp.a2dp_sink.link_state == "connected",
             device_name: resp.a2dp_sink.name,
             pairing:     resp.a2dp_sink.pairing != 0,

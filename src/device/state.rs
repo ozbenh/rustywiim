@@ -132,8 +132,8 @@ pub enum ConnectionState {
 /// because it's genuinely a fast-poll backend result; see
 /// `dispatch_pending_preset_art()`.
 enum PollData {
-    Http { status: Option<PlayerStatus>, meta: Option<MetaData>, bt_status: Option<BtStatus> },
-    Upnp { info: Option<upnp::InfoEx>, bt_status: Option<BtStatus> },
+    Http { status: Option<PlayerStatus>, meta: Option<MetaData>, bt_status: Option<ApiOutcome<BtStatus>> },
+    Upnp { info: Option<upnp::InfoEx>, bt_status: Option<ApiOutcome<BtStatus>> },
     PresetArt { slot: usize, url: String, bytes: Option<Vec<u8>> },
 }
 
@@ -418,11 +418,19 @@ async fn run_slow_poll_phase(
 /// is always fetched regardless of any of this — status/mode/volume
 /// polling keeps running unconditionally, since that's how a later input
 /// change or a volume command's result is noticed at all.
+///
+/// `probe_bt` — the capability flag `probes_bt` (see `DeviceCapabilities`).
+/// When `false` (confirmed `"unknown command"` at least once already),
+/// `getbtstatus` is never called at all — `skip_meta` below only fires on
+/// a *confirmed* `connected: false`, never on "didn't ask"/"asked and it
+/// failed," so a device that's given up probing keeps fetching metadata
+/// normally rather than getting stuck treating Bluetooth as permanently
+/// silent.
 async fn fetch_http_fast_poll(
-    client: WiimClient, want_bt: bool, has_meta_info: bool,
-) -> (Option<PlayerStatus>, Option<MetaData>, Option<BtStatus>) {
-    let bt_status = if want_bt { client.get_bt_status().await } else { None };
-    let skip_meta = bt_status.as_ref().is_some_and(|b| !b.connected);
+    client: WiimClient, want_bt: bool, probe_bt: bool, has_meta_info: bool,
+) -> (Option<PlayerStatus>, Option<MetaData>, Option<ApiOutcome<BtStatus>>) {
+    let bt_status = if want_bt && probe_bt { Some(client.get_bt_status().await) } else { None };
+    let skip_meta = matches!(&bt_status, Some(ApiOutcome::Ok(b)) if !b.connected);
     let status = client.get_status().await.ok();
     let meta = if skip_meta {
         None
@@ -461,9 +469,9 @@ async fn fetch_http_fast_poll(
 /// GENA eventing (a separate, already-tracked idea) would eventually
 /// remove the need to poll for it at all.
 async fn fetch_upnp_fast_poll(
-    upnp_client: UpnpClient, client: WiimClient, want_bt: bool,
-) -> (Option<upnp::InfoEx>, Option<BtStatus>) {
-    let bt_status = if want_bt { client.get_bt_status().await } else { None };
+    upnp_client: UpnpClient, client: WiimClient, want_bt: bool, probe_bt: bool,
+) -> (Option<upnp::InfoEx>, Option<ApiOutcome<BtStatus>>) {
+    let bt_status = if want_bt && probe_bt { Some(client.get_bt_status().await) } else { None };
     let Some(mut info) = upnp_client.get_info_ex().await.ok() else { return (None, bt_status) };
     if info.current_mute.is_none() {
         // AudioCast (and maybe other similarly slow devices) gets a
@@ -1508,13 +1516,14 @@ impl DeviceState {
     /// its own `glib::timeout_add_local_once` closure).
     fn dispatch_fast_poll(&self) {
         let Some(poll_tx) = self.imp().poll_tx.borrow().clone() else { return };
-        let (wants_upnp, upnp_client, want_bt, client, inflight, has_meta_info) = {
+        let (wants_upnp, upnp_client, want_bt, client, inflight, has_meta_info, probe_bt) = {
             let inner = self.imp().inner.borrow();
             let want_bt = capabilities::mode_to_input_source(inner.current_mode) == "bluetooth";
             let has_meta_info = inner.capabilities.as_ref()
                 .map_or(true, |c| c.family.endpoints.supports_get_meta_info);
+            let probe_bt = inner.capabilities.as_ref().map_or(true, |c| c.probes_bt);
             (inner.access == AccessMethod::UpnpPolled, inner.upnp_client.clone(), want_bt,
-             inner.client.clone(), inner.fast_poll_handle.is_some(), has_meta_info)
+             inner.client.clone(), inner.fast_poll_handle.is_some(), has_meta_info, probe_bt)
         };
         let Some(client) = client else { return };
         // A poll not completing within a tick is itself a signal something
@@ -1532,7 +1541,7 @@ impl DeviceState {
             }
             (true, Some(uc)) => {
                 let handle = self.rt().spawn(async move {
-                    let (info, bt_status) = fetch_upnp_fast_poll(uc, client, want_bt).await;
+                    let (info, bt_status) = fetch_upnp_fast_poll(uc, client, want_bt, probe_bt).await;
                     let _ = poll_tx.send(PollData::Upnp { info, bt_status }).await;
                 });
                 let mut inner = self.imp().inner.borrow_mut();
@@ -1541,7 +1550,7 @@ impl DeviceState {
             }
             (false, _) => {
                 let handle = self.rt().spawn(async move {
-                    let (status, meta, bt_status) = fetch_http_fast_poll(client, want_bt, has_meta_info).await;
+                    let (status, meta, bt_status) = fetch_http_fast_poll(client, want_bt, probe_bt, has_meta_info).await;
                     let _ = poll_tx.send(PollData::Http { status, meta, bt_status }).await;
                 });
                 let mut inner = self.imp().inner.borrow_mut();
@@ -2103,6 +2112,44 @@ impl DeviceState {
         }
     }
 
+    /// Resolves this tick's raw `getbtstatus` outcome into the plain
+    /// `Option<BtStatus>` `process_poll_http()`/`process_poll_upnp()`
+    /// already expect, folding in the "confirmed unsupported" self-
+    /// correction: `ApiOutcome::Unsupported` (a *definite* "unknown
+    /// command" answer, not a transient hiccup) flips `probes_bt` to
+    /// `false` so `dispatch_fast_poll()` stops calling this at all from
+    /// the next tick on, and — both on the tick that just learned this
+    /// and on every subsequent tick that skipped calling it for that
+    /// reason — synthesizes `connected: true` rather than leaving
+    /// Bluetooth looking permanently disconnected. `ApiOutcome::Failed`
+    /// (transient) and `None` while Bluetooth isn't even the active input
+    /// both still resolve to `None` — "no new information," same as
+    /// before this existed.
+    fn resolve_bt_status(&self, raw: Option<ApiOutcome<BtStatus>>) -> Option<BtStatus> {
+        let assume_connected = || Some(BtStatus {
+            connected: true, device_name: String::new(), pairing: false,
+        });
+        match raw {
+            Some(ApiOutcome::Ok(status)) => Some(status),
+            Some(ApiOutcome::Unsupported) => {
+                let mut inner = self.imp().inner.borrow_mut();
+                if let Some(caps) = inner.capabilities.as_mut() {
+                    if caps.probes_bt {
+                        dbg("getbtstatus: confirmed unsupported, won't ask again");
+                        caps.probes_bt = false;
+                    }
+                }
+                assume_connected()
+            }
+            Some(ApiOutcome::Failed) => None,
+            None => {
+                let confirmed_unsupported =
+                    self.imp().inner.borrow().capabilities.as_ref().is_some_and(|c| !c.probes_bt);
+                if confirmed_unsupported { assume_connected() } else { None }
+            }
+        }
+    }
+
     /// Dispatch to whichever backend actually produced this tick's data —
     /// `PollData::Http`/`PollData::Upnp` are mutually exclusive (see
     /// `PollData`'s doc comment), so exactly one of these runs per tick,
@@ -2110,10 +2157,12 @@ impl DeviceState {
     fn process_poll(&self, data: PollData, art_tx: &async_channel::Sender<(String, Vec<u8>)>) {
         match data {
             PollData::Http { status, meta, bt_status } => {
+                let bt_status = self.resolve_bt_status(bt_status);
                 self.imp().inner.borrow_mut().fast_poll_handle = None;
                 self.process_poll_http(status, meta, bt_status, art_tx);
             }
             PollData::Upnp { info, bt_status } => {
+                let bt_status = self.resolve_bt_status(bt_status);
                 self.imp().inner.borrow_mut().fast_poll_handle = None;
                 self.process_poll_upnp(info, bt_status, art_tx);
             }
