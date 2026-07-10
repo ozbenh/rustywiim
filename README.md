@@ -70,6 +70,21 @@ You can pretty-print this file using `target/debug/wiim-capdump`. I would apprec
 
 ## Changelog ##
 
+  * 0.8.1 - 2026-07-10
+    * Fix input pop-ver flip/flopping when switching inputs
+	* Add support for setting Mute via UPnP and make it the default.
+	  Also add fallback to querying via a separate UPnP command when
+	  GetInfoEx doesn't return it (AudioCast).
+	  This matches the WiiM App behaviour as far as I can tell and
+	  fixes mute handling on AudioCast devices.
+    * Add better support for Bluetooth sink (bluetooth as input). The
+	  connection state is displayed and the UI properly cleared when
+	  disconnected. A button "Restart pairing" appears when BT is the
+	  current input and not currently in pairing state. Matches the
+	  behaviour of the WiiM App.
+    * Add retries on UPnP and generally improve error handling
+	* A pile of fix around devices being or going offline/online
+
   * 0.8.0 - 2026-07-08
     * Add support for iEAST AudioCast (not yet Pro, AMP, etc... just
 	  the base one, though the others might partially work, please send
