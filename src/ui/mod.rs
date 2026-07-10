@@ -1287,6 +1287,40 @@ impl AppState {
         }
         let disc_mgr = devlist::DiscoveryManager::new(rt.clone(), disc_svc.clone());
         let device_manager = DeviceManager::new(rt);
+
+        // `device_manager` construction is inert (no side effects, matches
+        // `disc_mgr`'s own contract) — connecting `configure-device` this
+        // early, before anything else touches `device_manager`, means
+        // there's no window where a `DeviceState` could be created before
+        // this handler exists to configure it. Resolves per-device config
+        // overrides (device/ can't read config itself) and pushes them onto
+        // the fresh `DeviceState` before `create_and_configure()` lets it
+        // make first contact.
+        device_manager.connect_configure_device(|_, ds| {
+            let uuid = ds.uuid();
+            if uuid.is_empty() { return; }
+            let (access_override, mute_access_override) = config::with(|cfg| {
+                let d = cfg.device(&uuid);
+                (d.playback_access_override, d.mute_access_override)
+            });
+            ds.set_playback_access_override(access_override);
+            ds.set_mute_access_override(mute_access_override);
+        });
+        // Seed every pinned device from config so it has a live (Simple-
+        // mode) DeviceState from startup, same as `ui/devlist.rs`'s own
+        // `load_known_devices_from_config()` does for its picker-list
+        // entries — this is a separate, additional seeding pass for now,
+        // not yet a replacement of that one (see DEVLIST-REDESIGN.md:
+        // Phase 3 is what retires devlist's own health-check polling in
+        // favor of this).
+        config::with(|cfg| {
+            for (uuid, dev_cfg) in &cfg.devices {
+                if dev_cfg.pinned != Some(true) { continue; }
+                let Some(ref ip) = dev_cfg.last_ip else { continue };
+                device_manager.add_known_device(uuid, ip);
+            }
+        });
+
         // Two symmetric, decoupled hooks bridge `devlist` (canonical
         // reachability, in `ui/`) and `DeviceManager` (in `device/`, which
         // can't import `ui/devlist` types at all) — `ui::AppState` is the
