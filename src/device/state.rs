@@ -39,6 +39,8 @@ use std::time::{Duration, Instant};
 
 /// Slow poll (device info, outputs, presets) runs at most this often.
 const SLOW_POLL_INTERVAL: Duration = Duration::from_secs(10);
+/// `Simple`-mode poll cadence.
+const SIMPLE_POLL_INTERVAL: Duration = Duration::from_secs(5);
 /// Volume commands are rate-limited: at most one per this interval.
 const VOLUME_DEBOUNCE: Duration = Duration::from_millis(500);
 /// After sending a volume command, poll-reported volume is distrusted for
@@ -685,6 +687,16 @@ struct Inner {
     /// replaced when the next phase dispatches, cleared when that phase's
     /// `SlowPollResult` arrives in `start_slow_poll_processor()`.
     slow_poll_handle: Option<tokio::task::JoinHandle<()>>,
+    /// `Simple`-mode counterpart of `last_slow_poll` — when the last
+    /// `Simple`-mode poll was dispatched. Deliberately a separate field
+    /// rather than reusing `last_slow_poll`/`slow_poll_active`/
+    /// `slow_poll_phase`, which are all `Full`-mode's own rotation state
+    /// and don't apply while in `Simple` mode at all.
+    last_simple_poll: Option<Instant>,
+    /// `Simple`-mode counterpart of `slow_poll_handle` — same in-flight-
+    /// tracking reasoning, own field so a `Full`⇄`Simple` mode transition
+    /// can't confuse the two.
+    simple_poll_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl Default for Inner {
@@ -714,7 +726,9 @@ impl Default for Inner {
             rssi:             None,
             remote:           RemoteInfo::default(),
             connection_state: ConnectionState::Disconnected,
-            full_clients:     0,
+            // XXX Temporary: We don't yet switch to full mode from
+            // so let's hard wire one full mode client for now.
+            full_clients:     1,
             simple_mode_song_info: false,
             presets:          Vec::new(),
             preset_fp:        String::new(),
@@ -731,6 +745,8 @@ impl Default for Inner {
             slow_poll_phase:  SlowPollPhase::FIRST,
             fast_poll_handle: None,
             slow_poll_handle: None,
+            last_simple_poll: None,
+            simple_poll_handle: None,
         }
     }
 }
@@ -819,6 +835,7 @@ mod imp {
             // reason (same reasoning as `apply_disconnected()`'s abort).
             if let Some(h) = inner.fast_poll_handle.take() { h.abort(); }
             if let Some(h) = inner.slow_poll_handle.take() { h.abort(); }
+            if let Some(h) = inner.simple_poll_handle.take() { h.abort(); }
             drop(inner);
             dbg(&format!("DeviceState dropped: {}", id));
         }
@@ -1197,25 +1214,28 @@ impl DeviceState {
         let (poll_tx, poll_rx) = async_channel::unbounded::<PollData>();
         let (slow_tx, slow_rx) = async_channel::unbounded::<SlowPollResult>();
         let (art_tx,  art_rx)  = async_channel::unbounded::<(String, Vec<u8>)>();
+        let (simple_tx, simple_rx) = async_channel::unbounded::<Option<DeviceInfo>>();
 
         *self.imp().slow_poll_tx.borrow_mut() = Some(slow_tx.clone());
 
-        self.start_unified_timer(poll_tx, slow_tx);
+        self.start_unified_timer(poll_tx, slow_tx, simple_tx);
         self.start_poll_processor(poll_rx, art_tx);
         self.start_art_loader(art_rx);
         self.start_slow_poll_processor(slow_rx);
+        self.start_simple_poll_processor(simple_rx);
     }
 
     fn start_unified_timer(
         &self,
         poll_tx: async_channel::Sender<PollData>,
         slow_tx: async_channel::Sender<SlowPollResult>,
+        simple_tx: async_channel::Sender<Option<DeviceInfo>>,
     ) {
         *self.imp().poll_tx.borrow_mut() = Some(poll_tx.clone());
         let ds_weak = self.downgrade();
         glib::timeout_add_local(Duration::from_secs(1), move || {
             let Some(ds) = ds_weak.upgrade() else { return glib::ControlFlow::Break };
-            ds.do_poll(&poll_tx, &slow_tx)
+            ds.do_poll(&poll_tx, &slow_tx, &simple_tx)
         });
     }
 
@@ -1226,11 +1246,12 @@ impl DeviceState {
     /// interrelated pieces of state that don't split cleanly without just
     /// moving the borrow-juggling into another function's parameter list —
     /// then, once the borrow is dropped, hands off to a focused helper per
-    /// action: the fast poll, one slow-poll phase.
+    /// action: the simple poll or the fast poll and one slow-poll phase 0.
     fn do_poll(
         &self,
         poll_tx: &async_channel::Sender<PollData>,
         slow_tx: &async_channel::Sender<SlowPollResult>,
+        simple_tx: &async_channel::Sender<Option<DeviceInfo>>,
     ) -> glib::ControlFlow {
         let mut inner = self.imp().inner.borrow_mut();
         let state = inner.connection_state;
@@ -1251,6 +1272,11 @@ impl DeviceState {
         }
 
         let now = Instant::now();
+
+        if inner.full_clients == 0 {
+            self.do_simple_poll(&mut inner, now, simple_tx);
+            return glib::ControlFlow::Continue;
+        }
 
         // Is it time to start a new slow-poll cycle?
         let cycle_due = inner.last_slow_poll
@@ -1312,6 +1338,42 @@ impl DeviceState {
         self.dispatch_pending_preset_art(&client, poll_tx);
 
         glib::ControlFlow::Continue
+    }
+
+    /// `Simple`-mode poll dispatch — one reduced-cadence loop
+    /// (`SIMPLE_POLL_INTERVAL`) instead of `Full` mode's separate fast +
+    /// slow timers, and no volume/preset-art dispatch at all (nothing to
+    /// drive those without an open window). Always fetches `getStatusEx` —
+    /// that alone *is* this device's liveness/identity check now, handled
+    /// by the same `handle_slow_poll_device_info()` `Full` mode's
+    /// `SlowPollPhase::DeviceInfo` already uses (see
+    /// `start_simple_poll_processor()`), not a separate implementation.
+    ///
+    /// **Not yet implemented**: when `Inner::simple_mode_song_info` is set,
+    /// this should *also* fetch today's fast-poll content (status/metadata,
+    /// for title/artist/artwork). Right now this always does only the bare
+    /// liveness/identity check, regardless of `simple_mode_song_info`.
+    fn do_simple_poll(
+        &self,
+        inner: &mut Inner,
+        now: Instant,
+        simple_tx: &async_channel::Sender<Option<DeviceInfo>>,
+    ) {
+        let due = inner.last_simple_poll
+            .map_or(true, |t| now.duration_since(t) >= SIMPLE_POLL_INTERVAL);
+        // Same "don't pile on top of a still-outstanding call" reasoning as
+        // `fast_poll_handle`/`slow_poll_handle` (see their doc comments).
+        if !due || inner.simple_poll_handle.is_some() {
+            return;
+        }
+        let Some(client) = inner.client.clone() else { return };
+        inner.last_simple_poll = Some(now);
+        let tx = simple_tx.clone();
+        let handle = self.rt().spawn(async move {
+            let info = client.get_device_info().await.ok();
+            let _ = tx.send(info).await;
+        });
+        inner.simple_poll_handle = Some(handle);
     }
 
     /// Advances the slow-poll rotation (see `SlowPollPhase`), starting a
@@ -1507,6 +1569,7 @@ impl DeviceState {
                 // run out its full timeout/retry chain for no reason.
                 if let Some(h) = inner.fast_poll_handle.take() { h.abort(); }
                 if let Some(h) = inner.slow_poll_handle.take() { h.abort(); }
+                if let Some(h) = inner.simple_poll_handle.take() { h.abort(); }
                 true
             }
         };
@@ -1869,6 +1932,24 @@ impl DeviceState {
                     SlowPollResult::OutputStatus(status) => ds.handle_slow_poll_output_status(status),
                     SlowPollResult::DeviceInfo(info)     => ds.handle_slow_poll_device_info(info),
                 }
+            }
+        });
+    }
+
+    /// `Simple`-mode counterpart of `start_slow_poll_processor()` — its own
+    /// channel/loop rather than sharing `slow_tx`/`slow_rx`, specifically so
+    /// this can't accidentally clear `slow_poll_handle` (a `Full`-mode-only
+    /// field) for a result that has nothing to do with `Full` mode's
+    /// rotation. Reuses `handle_slow_poll_device_info()` unchanged — same
+    /// liveness/identity-check logic as `Full` mode's `getStatusEx` phase,
+    /// not a second implementation of it.
+    fn start_simple_poll_processor(&self, rx: async_channel::Receiver<Option<DeviceInfo>>) {
+        let ds_weak = self.downgrade();
+        glib::spawn_future_local(async move {
+            while let Ok(info) = rx.recv().await {
+                let Some(ds) = ds_weak.upgrade() else { break };
+                ds.imp().inner.borrow_mut().simple_poll_handle = None;
+                ds.handle_slow_poll_device_info(info);
             }
         });
     }
