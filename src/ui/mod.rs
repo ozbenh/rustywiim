@@ -756,7 +756,14 @@ impl DeviceWindow {
         // after the window is closed — broken upgrade() calls become no-ops.
         ds.connect_device_changed({
             let i = Rc::downgrade(&inner);
-            move |_| { if let Some(i) = i.upgrade() { i.populate_all(); } }
+            move |ds| {
+                let Some(i) = i.upgrade() else { return };
+                dbg_ui(&format!(
+                    "device-changed signal: device_info_present={}",
+                    ds.device_info().is_some(),
+                ));
+                i.populate_all();
+            }
         });
 
         ds.connect_network_changed({
@@ -771,27 +778,24 @@ impl DeviceWindow {
 
         ds.connect_playback_changed({
             let i = Rc::downgrade(&inner);
-            move |ds, mask| {
+            move |_, mask| {
                 let Some(i) = i.upgrade() else { return };
-                // A signal that raced with (or briefly preceded) a
-                // disconnect must not repaint from `playback_state()`'s
-                // still-cached fields — `ConnectionState::Failed`'s doc
-                // comment explains those are deliberately *not* cleared on
-                // disconnect (only `device_info` is, so a later reconnect
-                // can diff against them), which means acting on this
-                // signal while offline would silently undo whatever
-                // `reset_device_ui()` just cleared — most visibly: stale
-                // artwork left on screen behind "Disconnected".
-                if ds.device_info().is_none() { return; }
+                dbg_ui(&format!("playback-changed signal: mask={mask:#x}"));
+                // `update_playback_ui()`/`update_mini_playback()` no-op
+                // themselves while offline (`DeviceWindowInner::live()`) —
+                // needed since a signal can race with (or briefly precede) a
+                // disconnect, and acting on it anyway would repaint from
+                // `playback_state()`'s still-cached fields, undoing whatever
+                // `reset_device_ui()` just cleared.
                 if *i.mini_mode.borrow() { i.update_mini_playback(mask); } else { i.update_playback_ui(mask); }
             }
         });
 
         ds.connect_input_changed({
             let i = Rc::downgrade(&inner);
-            move |ds| {
+            move |_| {
                 let Some(i) = i.upgrade() else { return };
-                if ds.device_info().is_none() { return; }
+                // See the `playback-changed` handler above — same reasoning.
                 if *i.mini_mode.borrow() { i.update_mini_playback(crate::device::state::playback_changed::ALL); } else { i.update_input_display(); }
             }
         });

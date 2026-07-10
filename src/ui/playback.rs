@@ -206,6 +206,7 @@ impl DeviceWindowInner {
             ""
         };
 
+        super::dbg_ui(&format!("reset_device_ui: state={state:?} clearing pw+mini artwork"));
         self.pw.title.set_text(title);
         self.pw.artist.set_text("");
         self.pw.album.set_text("");
@@ -262,6 +263,24 @@ impl DeviceWindowInner {
         *self.ow.updating.borrow_mut()    = false;
     }
 
+    /// Whether there's a live `device_info` to render playback data from.
+    /// `update_artwork()`/`update_playback_ui()`/`update_mini_playback()`/
+    /// `update_input_display()`/`update_output_display()` all guard on this
+    /// themselves (rather than relying on every caller to check first) —
+    /// `playback_state()`/`output_status()` are deliberately *not* cleared
+    /// on disconnect (only `device_info` is, so a later reconnect can diff
+    /// against last-known values — see `ConnectionState::Failed`'s doc
+    /// comment), so any of these functions running while offline would
+    /// repaint stale data straight over whatever `reset_device_ui()` just
+    /// cleared. Confirmed live via `--debug=ui`: this bit three separate
+    /// callers before all being centralized here — the poll/signal path
+    /// (`ui/mod.rs`'s `playback-changed`/`input-changed` handlers), the old
+    /// unconditional tail of `populate_all()`, and `enter_mini_mode()`/
+    /// `exit_mini_mode()`.
+    fn live(&self) -> bool {
+        self.ds.device_info().is_some()
+    }
+
     /// Populate the entire UI from whatever the DeviceState currently has cached.
     /// Called on initial window creation and on every `device-changed` signal.
     /// Safe to call redundantly — all underlying setters are idempotent.
@@ -272,12 +291,6 @@ impl DeviceWindowInner {
         if self.ds.device_info().is_some() {
             self.apply_device_info();
             self.on_presets_changed();
-            // Both, regardless of `mini_mode` — see `reset_device_ui()`'s
-            // doc comment on why this must stay paired with (never run
-            // alongside) that branch, not this one specifically; here it's
-            // safe/correct since there's a live `device_info` to render.
-            self.update_playback_ui(playback_changed::ALL);
-            self.update_mini_playback(playback_changed::ALL);
         } else {
             // `Failed`/`Disconnected` show "Disconnected" text — a real,
             // potentially long-lived steady state (`set_device(...,
@@ -290,6 +303,19 @@ impl DeviceWindowInner {
             super::dbg_ui(&format!("populate_all: no device_info, connection_state={state:?}"));
             self.reset_device_ui(state);
         }
+        // All four no-op themselves while offline (see `live()`'s doc
+        // comment) rather than needing to be called only from the branch
+        // above — that used to be exactly the bug here: they ran
+        // unconditionally regardless of branch, and `update_input_display()`
+        // ends by calling `update_artwork()`, which repainted stale cached
+        // artwork immediately after `reset_device_ui()` (in the `else`
+        // branch) had just cleared it. Centralizing the guard in each
+        // function instead of duplicating an `if device_info().is_some()`
+        // at every caller (this one, `enter_mini_mode()`/`exit_mini_mode()`,
+        // `ui/mod.rs`'s `playback-changed`/`input-changed` handlers) is what
+        // actually fixed it for all of them at once.
+        self.update_playback_ui(playback_changed::ALL);
+        self.update_mini_playback(playback_changed::ALL);
         self.update_input_display();
         self.update_output_display();
     }
@@ -558,6 +584,9 @@ impl DeviceWindowInner {
         use crate::device::state::playback_changed as PC;
         use crate::device::playback::PlaybackStatus;
 
+        super::dbg_ui(&format!("update_playback_ui: mask={mask:#x} live={}", self.live()));
+        if !self.live() { return; }
+
         let ps = self.ds.playback_state();
 
         if mask & (PC::VOLUME | PC::TIME | PC::OTHER) != 0 {
@@ -652,6 +681,9 @@ impl DeviceWindowInner {
     /// (flipping or crossfading between them as appropriate) — no separate
     /// stack/icon widget needed.
     fn update_artwork(&self) {
+        super::dbg_ui(&format!("update_artwork: live={}", self.live()));
+        if !self.live() { return; }
+
         let mini = *self.mini_mode.borrow();
         let flip   = if mini { &self.mini.artwork } else { &self.pw.artwork };
         // Fed unconditionally regardless of whether Modern (and, for the
@@ -667,6 +699,8 @@ impl DeviceWindowInner {
             let gbytes = glib::Bytes::from(bytes.as_ref());
             gtk::gdk::Texture::from_bytes(&gbytes).ok()
         });
+
+        super::dbg_ui(&format!("update_artwork: mini={mini} has_tex={}", tex.is_some()));
 
         if let Some(tex) = &tex {
             let art_key = ps.art_url.as_deref().unwrap_or("");
@@ -687,6 +721,7 @@ impl DeviceWindowInner {
     // ── Input / Output display ────────────────────────────────────────────────
 
     pub(super) fn update_input_display(&self) {
+        if !self.live() { return; }
         let mode = self.ds.current_mode();
         let source_id = capabilities::mode_to_input_source(mode);
         let sv = self.sw.ids.borrow();
@@ -700,6 +735,11 @@ impl DeviceWindowInner {
     }
 
     pub(super) fn update_output_display(&self) {
+        // `output_status()`, like `playback_state()`, is deliberately not
+        // cleared on disconnect (see `live()`'s doc comment) — without this
+        // guard a stale cached output would repaint the dropdown as if
+        // still connected.
+        if !self.live() { return; }
         let Some(os) = self.ds.output_status() else { return };
         // Now that we actually know the current output, the dropdown no
         // longer needs to stay greyed out from the connect-time "unknown"
@@ -915,6 +955,9 @@ impl DeviceWindowInner {
         use crate::device::state::playback_changed as PC;
         use crate::device::playback::PlaybackStatus;
 
+        super::dbg_ui(&format!("update_mini_playback: mask={mask:#x} live={}", self.live()));
+        if !self.live() { return; }
+
         if mask & PC::OTHER != 0 {
             if let Some(di) = self.ds.device_info() {
                 self.mini.device_label.set_label(&di.device_name);
@@ -974,6 +1017,8 @@ impl DeviceWindowInner {
         super::dbg_ui(&format!("enter mini mode (uuid={})", self.applied_window_key.borrow()));
         *self.pre_mini_size.borrow_mut() = (self.window.width(), self.window.height());
         *self.mini_mode.borrow_mut() = true;
+        // `update_mini_playback()` no-ops itself while offline — see
+        // `live()`'s doc comment.
         self.update_mini_playback(crate::device::state::playback_changed::ALL);
         *self.mini_toggling.borrow_mut() = true;
         self.mini_btn.set_active(true);
@@ -991,6 +1036,7 @@ impl DeviceWindowInner {
         *self.mini_toggling.borrow_mut() = false;
         self.mini_win.set_visible(false);
         self.window.present();
+        // Both no-op themselves while offline — see `live()`'s doc comment.
         self.update_playback_ui(crate::device::state::playback_changed::ALL);
         self.update_input_display();
     }
