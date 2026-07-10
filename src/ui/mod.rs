@@ -771,16 +771,27 @@ impl DeviceWindow {
 
         ds.connect_playback_changed({
             let i = Rc::downgrade(&inner);
-            move |_, mask| {
+            move |ds, mask| {
                 let Some(i) = i.upgrade() else { return };
+                // A signal that raced with (or briefly preceded) a
+                // disconnect must not repaint from `playback_state()`'s
+                // still-cached fields — `ConnectionState::Failed`'s doc
+                // comment explains those are deliberately *not* cleared on
+                // disconnect (only `device_info` is, so a later reconnect
+                // can diff against them), which means acting on this
+                // signal while offline would silently undo whatever
+                // `reset_device_ui()` just cleared — most visibly: stale
+                // artwork left on screen behind "Disconnected".
+                if ds.device_info().is_none() { return; }
                 if *i.mini_mode.borrow() { i.update_mini_playback(mask); } else { i.update_playback_ui(mask); }
             }
         });
 
         ds.connect_input_changed({
             let i = Rc::downgrade(&inner);
-            move |_| {
+            move |ds| {
                 let Some(i) = i.upgrade() else { return };
+                if ds.device_info().is_none() { return; }
                 if *i.mini_mode.borrow() { i.update_mini_playback(crate::device::state::playback_changed::ALL); } else { i.update_input_display(); }
             }
         });
