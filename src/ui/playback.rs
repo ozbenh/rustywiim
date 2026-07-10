@@ -13,6 +13,7 @@ use super::*;
 
 fn is_unknown(s: &str) -> bool {
     s.is_empty() || s.eq_ignore_ascii_case("unknown") || s.eq_ignore_ascii_case("unknow")
+        || s.eq_ignore_ascii_case("<unknown>")
 }
 
 /// "▶ Playing · AirPlay" style label. Presentation only — `status`/
@@ -227,7 +228,8 @@ impl DeviceWindowInner {
         self.pw.seek.set_value(0.0);
         self.pw.pos.set_visible(false);
         self.pw.dur.set_visible(false);
-
+        // Deliberately not disabled: volume/mute control isn't tied to
+        // playable content/connection state.
         self.mini.title_label.set_text(title);
         self.mini.artist_label.set_text("");
         self.mini.status_label.set_label("");
@@ -338,12 +340,13 @@ impl DeviceWindowInner {
             self.sw.dropdown.set_sensitive(false);
             *self.sw.updating.borrow_mut() = false;
             *self.sw.ids.borrow_mut()      = Vec::new();
+            *self.sw.icon_keys.borrow_mut() = Vec::new();
             *self.sw.enabled.borrow_mut()  = Vec::new();
             return;
         }
 
         let labels: Vec<String> = ids.iter().zip(enabled_flags.iter()).map(|(id, _)| {
-            let std_name = capabilities::input_display_name(id).to_string();
+            let std_name = capabilities::input_display_name(Some(caps.device_id), id).to_string();
             if let Some(user) = renames.get(id.as_str()) {
                 if !user.is_empty() && user != &std_name {
                     return format!("{} ({})", user, std_name);
@@ -351,10 +354,14 @@ impl DeviceWindowInner {
             }
             std_name
         }).collect();
+        let icon_keys: Vec<String> = ids.iter()
+            .map(|id| capabilities::icon_canon_for_input(id, caps.device_id).to_string())
+            .collect();
 
         let label_refs: Vec<&str> = labels.iter().map(String::as_str).collect();
-        *self.sw.ids.borrow_mut()      = ids;
-        *self.sw.enabled.borrow_mut()  = enabled_flags;
+        *self.sw.ids.borrow_mut()       = ids;
+        *self.sw.icon_keys.borrow_mut() = icon_keys;
+        *self.sw.enabled.borrow_mut()   = enabled_flags;
         *self.sw.updating.borrow_mut() = true;
         self.sw.dropdown.set_model(Some(&gtk::StringList::new(&label_refs)));
         self.sw.dropdown.set_selected(0);
@@ -707,12 +714,16 @@ impl DeviceWindowInner {
         } else {
             let mode = self.ds.current_mode();
             let source_id = capabilities::mode_to_input_source(mode);
+            let icon_key = match self.ds.capabilities() {
+                Some(caps) => capabilities::icon_canon_for_input(source_id, caps.device_id),
+                None       => source_id,
+            };
             // Fixed key (not per-source) so switching between different
             // no-art sources doesn't re-trigger the background fade for a
             // gradient that looks the same either way.
             art_bg.set_art(None, "__no_art__");
             flip.set_icon(
-                self.icons.source_paintable(source_id), icon_size, &format!("icon:{source_id}"));
+                self.icons.source_paintable(icon_key), icon_size, &format!("icon:{icon_key}"));
         }
     }
 
@@ -792,7 +803,11 @@ impl DeviceWindowInner {
                     PresetKind::InputSwitch { input_id } => {
                         pic.set_pixel_size(26);
                         pic.add_css_class("preset-art-small");
-                        pic.set_paintable(Some(self.icons.source_paintable(input_id)));
+                        let icon_key = match device_id {
+                            Some(id) => capabilities::icon_canon_for_input(input_id, id),
+                            None     => input_id.as_str(),
+                        };
+                        pic.set_paintable(Some(self.icons.source_paintable(icon_key)));
                     }
                     PresetKind::OutputSwitch { output_id } => {
                         pic.set_pixel_size(26);

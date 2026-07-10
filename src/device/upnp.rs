@@ -454,9 +454,10 @@ fn strip_wiimu_name_suffix(name: &str) -> String {
 /// UI's fixed preset panel already use for HTTP presets) even though
 /// `MaxNumber` can be much larger (33 in both captures) — there's no UI
 /// concept for more than 12 yet, and no evidence `KeyN` numbering beyond
-/// that even corresponds to a playable slot at all (see `TODO.md`'s open
-/// question on how a `GetKeyMapping`-sourced preset would actually be
-/// triggered — this only covers *listing* them). `Url`/`Metadata` (present
+/// that even corresponds to a playable slot at all — how a
+/// `GetKeyMapping`-sourced preset beyond slot 12 would actually be
+/// triggered is still an open question; this only covers *listing* them.
+/// `Url`/`Metadata` (present
 /// for direct-URL presets like a TuneIn station, absent for a
 /// streaming-service Mix reference) aren't decoded here for the same
 /// reason — nothing yet needs them.
@@ -625,6 +626,32 @@ mod tests {
         let description_xml = blob_text(upnp.description.as_ref().unwrap());
         let url = extract_control_url_for_service(description_xml, description_url, ":service:AVTransport:").unwrap();
         assert_eq!(url, "http://xx.x.x.xx:49152/upnp/control/rendertransport1");
+    }
+
+    /// Real Audio Pro Addon C5 unit (old firmware, `state.rs`'s
+    /// `process_poll_upnp()` has a `CurrentTransportState` fallback for
+    /// exactly this device) — confirms `<PlayType>` is genuinely absent
+    /// from a real `GetInfoEx` response (`play_type` decodes to `-1`, the
+    /// "tag missing" sentinel — see `InfoEx::play_type`'s doc comment)
+    /// while a full, correct DIDL-Lite (title/artist/album/art) is present
+    /// regardless. This is the capture that showed HTTP's `getPlayerStatusEx`
+    /// has none of this for Spotify Connect (`Title`/`Artist`/`Album` are
+    /// all just `"Unknown"` there) — UPnP is the only usable source on this
+    /// device, once the `PlayType`-absence is worked around.
+    #[test]
+    fn audio_pro_addon_c5_spotify_capture_has_no_play_type_but_full_metadata_and_art() {
+        let cap = load_device_capture("AudioPro_C5I_20260710_102122.spotify.json");
+        let info = parse_info_ex_response(&get_info_ex_body(&cap)).unwrap();
+        assert_eq!(info.play_type, -1, "PlayType tag confirmed absent on this device");
+        assert_eq!(info.transport_state, "PLAYING");
+        assert_eq!(info.title, "Take Five");
+        assert_eq!(info.artist, "The Dave Brubeck Quartet");
+        assert_eq!(info.album, "Time Out");
+        assert_eq!(
+            info.album_art_uri.as_deref(),
+            Some("http://i.scdn.co/image/ab67616d0000b273b6bd44cf06bf8f4d5ce1e080"),
+        );
+        assert_eq!(info.play_medium, "SPOTIFY");
     }
 
     #[test]

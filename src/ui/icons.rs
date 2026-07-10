@@ -82,6 +82,7 @@ impl IconSet {
         if let Some(p) = try_texture(RCA_INOUT_SVG) {
             sources.insert("line-in",    p.clone());
             sources.insert("line-in-2",  p.clone());
+            sources.insert("RCA",        p.clone());
             outputs.insert("line-out",   p);
         }
         if let Some(p) = try_texture(OPTICAL_INOUT_SVG) {
@@ -101,6 +102,8 @@ impl IconSet {
             ("phono",     "media-record-symbolic"),
             ("udisk",     "drive-harddisk-usb-symbolic"),
             ("HDMI",      "tv-symbolic"),
+            // Find (or make) a better icon for a stereo jack
+            ("line-in-jack", "audio-headphones-symbolic"),
         ];
         let adwaita_outputs: &[(&'static str, &str)] = &[
             ("bluetooth-out", "bluetooth-symbolic"),

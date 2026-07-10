@@ -232,7 +232,17 @@ static FAMILY_AUDIO_PRO_WGEN: FamilyProfile = FamilyProfile {
     grouping: GroupingConfig { uses_wifi_direct: false },
 };
 
-/// Audio Pro Original (Gen1): WiFi Direct grouping.
+/// Audio Pro Original (Gen1): WiFi Direct grouping. Also covers the Addon
+/// C5 (`DeviceId::AudioProAddonC5`, physically confirmed) via
+/// `detect_audio_pro_family()`'s firmware-based generation detection.
+/// `supports_get_meta_info`/`supports_eq`/`supports_alarms` are known
+/// wrong for that specific unit (its `getMetaInfo` returns "unknown
+/// command"; `EQGetBand`/`EQGetList`/`getAlarmClock` do respond) but
+/// harmless: `getMetaInfo` support is only consulted on the `Http` access
+/// path, and this device is forced onto `UpnpPolled` anyway because its
+/// `<PlayType>` tag is permanently absent from `GetInfoEx` (see
+/// `playback::mode_from_play_medium_fallback()`); EQ/alarms aren't
+/// consumed by any real behavior yet at all.
 static FAMILY_AUDIO_PRO_ORIGINAL: FamilyProfile = FamilyProfile {
     display_name:     "Audio Pro Original",
     loop_mode_scheme: LoopModeScheme::Arylic,
@@ -398,13 +408,40 @@ impl DeviceId {
         // Audio Pro — specific models first, then generation-based generics
         if p.contains("link_2")   { return Self::AudioProLink2;   }
         if p.contains("a28")      { return Self::AudioProA28;     }
-        if p.contains("addon_c5") { return Self::AudioProAddonC5; }
+        // "addon_c5" is this model's *marketing* naming; a real unit
+        // (project "AudioPro_C5I") uses "c5i" on the wire instead —
+        // confirmed physically (Ben, 2026-07-13: "AddonC5" printed on the
+        // back of the actual device) rather than guessed from the string
+        // alone, so this maps straight to the same `AudioProAddonC5`
+        // variant rather than falling through to the generic
+        // generation-detection fallback.
+        if p.contains("addon_c5") || p.contains("c5i") { return Self::AudioProAddonC5; }
 
+        // "Known" Audio Pro model string — `audio_pro` (proper separator),
+        // `addon`, or one of the bare model codes. Distinct from the loose
+        // `audiopro`/firmware-only fallback just below — pywiim's own
+        // `detect_audio_pro_generation()` defaults *differently* depending
+        // on which of these got it here (known model → MkII; reached only
+        // via the loose fallback → Original), and this port had collapsed
+        // that distinction away — see `detect_audio_pro_gen()`'s doc
+        // comment for why that mattered on real hardware.
         if p.contains("audio_pro") || p.contains("addon")
             || matches!(p.as_str(), "a10" | "a15" | "c10")
-            || fw.contains("audiopro")
         {
-            return Self::detect_audio_pro_gen(&p, fw);
+            return Self::detect_audio_pro_gen(&p, fw, true);
+        }
+        // `audiopro` (no separator) and the firmware-only fallback — a real
+        // device ("AudioPro_C5I", confirmed live, 2026-07-13) reports
+        // `project` with "Audio"/"Pro" concatenated as one word, only
+        // underscored before the model suffix, so the separator-only check
+        // above missed it entirely and this fell through to
+        // `LinkPlayGeneric`. pywiim has the identical gap
+        // (`profiles.py`'s `detect_vendor()` only checks
+        // `"audio pro" in model_lower`, space-separated) — not something
+        // this port regressed from upstream, a genuinely new case neither
+        // project's *vendor* detection handled on its own.
+        if p.contains("audiopro") || fw.contains("audiopro") {
+            return Self::detect_audio_pro_gen(&p, fw, false);
         }
 
         // iEAST
@@ -413,7 +450,24 @@ impl DeviceId {
         Self::LinkPlayGeneric
     }
 
-    fn detect_audio_pro_gen(project: &str, fw: &str) -> Self {
+    /// `known_model` — whether `project` matched one of the "known Audio
+    /// Pro model string" checks above (`audio_pro`/`addon`/a10/a15/c10),
+    /// as opposed to only the loose `audiopro`(-no-separator)/firmware
+    /// fallback. Mirrors pywiim's `detect_audio_pro_generation()` exactly,
+    /// which has the *same* two-branch structure with different defaults
+    /// for each — this port had collapsed both into one function that
+    /// always defaulted to MkII, which is wrong for the loose-fallback
+    /// case: confirmed live (2026-07-13) against a real, very-old-firmware
+    /// ("3.7.4830") Audio Pro C5 unit — `project` "AudioPro_C5I", no
+    /// separator, so only the loose fallback matches at all, and the unit
+    /// turned out to be Gen1 hardware (HTTP-only — 443/4443 refuse the TCP
+    /// connection outright, not even a TLS/cert failure), not MkII (which
+    /// requires HTTPS + a client cert — `FAMILY_AUDIO_PRO_MKII`'s
+    /// `preferred_ports` doesn't even include plain HTTP). Defaulting a
+    /// loose-fallback match to MkII, as before this fix, would have made a
+    /// real device like this one *unreachable* over any port it actually
+    /// supports.
+    fn detect_audio_pro_gen(project: &str, fw: &str, known_model: bool) -> Self {
         if project.contains("mkii") || project.contains("mk2")
             || project.contains("mk_ii") || project.contains("mark_ii")
             || is_fw_audio_pro_mkii(fw)
@@ -426,9 +480,16 @@ impl DeviceId {
         {
             return Self::AudioProWGen;
         }
-        // Pywiim defaults to MkII for known modern Audio Pro models that don't
-        // have explicit generation markers in the project string.
-        Self::AudioProMkII
+        if known_model {
+            // Pywiim defaults to MkII for known modern Audio Pro models
+            // that don't have explicit generation markers in the project
+            // string.
+            Self::AudioProMkII
+        } else {
+            // Pywiim defaults to "original" (Gen1) when it only got here
+            // via the loose/non-standard-model-string fallback.
+            Self::AudioProOriginal
+        }
     }
 
     /// Vendor implied by this device ID.
@@ -483,8 +544,7 @@ impl DeviceId {
             Self::AudioProWGen                     => &FAMILY_AUDIO_PRO_WGEN,
             // Specific model IDs: fall back to Original; from_device_info
             // overrides with firmware-based detection.
-            Self::AudioProLink2 | Self::AudioProA28
-            | Self::AudioProAddonC5
+            Self::AudioProLink2 | Self::AudioProA28 | Self::AudioProAddonC5
             | Self::AudioProOriginal               => &FAMILY_AUDIO_PRO_ORIGINAL,
 
             Self::IEastAudioCast                    => &FAMILY_IEAST_AUDIOCAST,
@@ -517,6 +577,19 @@ pub struct DeviceProfile {
     /// reports `AUDIO_OUTPUT_SPEAKER_MODE` directly (already its own
     /// `"speaker-out"` canon, unaffected by this flag either way).
     pub line_out_is_speaker: bool,
+    /// Per-input display-name overrides: `(canonical_id, label)` pairs,
+    /// checked before `input_display_name()`'s generic table — for devices
+    /// whose own physical silkscreen/manual labeling differs from the
+    /// generic name (e.g. a front jack printed "AUX In" rather than the
+    /// generic "Line-In"). Empty for every profile except ones that need
+    /// it; order doesn't matter, only exact `canonical_id` matches.
+    pub input_labels:    &'static [(&'static str, &'static str)],
+    /// True for devices whose "line-in" input is a single 3.5mm jack
+    /// rather than the paired-RCA connector the generic "line-in" icon
+    /// (`ui/icons.rs`) depicts — see `icon_canon_for_input()`, the only
+    /// consumer. Doesn't affect the canonical id/switchmode value itself
+    /// (still `"line-in"` either way), only which icon key gets looked up.
+    pub line_in_is_jack: bool,
 }
 
 // ── Per-vendor profile arrays ─────────────────────────────────────────────────
@@ -530,6 +603,7 @@ static WIIM_PROFILES: [DeviceProfile; 9] = [
         extra_inputs:    &["bluetooth", "line-in"],
         outputs:         &["line-out", "optical-out"],
         line_out_is_speaker: false,
+        input_labels: &[], line_in_is_jack: false,
     },
     /* 1 WiimPro */ DeviceProfile {
         model_name:      Some("WiiM Pro"),
@@ -537,6 +611,7 @@ static WIIM_PROFILES: [DeviceProfile; 9] = [
         extra_inputs:    &["bluetooth", "line-in", "optical"],
         outputs:         &["line-out", "optical-out", "coax-out"],
         line_out_is_speaker: false,
+        input_labels: &[], line_in_is_jack: false,
     },
     /* 2 WiimProPlus */ DeviceProfile {
         model_name:      Some("WiiM Pro Plus"),
@@ -544,6 +619,7 @@ static WIIM_PROFILES: [DeviceProfile; 9] = [
         extra_inputs:    &["bluetooth", "line-in", "optical"],
         outputs:         &["line-out", "optical-out", "coax-out"],
         line_out_is_speaker: false,
+        input_labels: &[], line_in_is_jack: false,
     },
     /* 3 WiimAmp */ DeviceProfile {
         model_name:      Some("WiiM Amp"),
@@ -551,6 +627,7 @@ static WIIM_PROFILES: [DeviceProfile; 9] = [
         extra_inputs:    &["bluetooth", "line-in", "optical", "udisk", "HDMI"],
         outputs:         &["line-out", "usb-out"],
         line_out_is_speaker: true,
+        input_labels: &[], line_in_is_jack: false,
     },
     /* 4 WiimAmpPro */ DeviceProfile {
         model_name:      Some("WiiM Amp Pro"),
@@ -558,6 +635,7 @@ static WIIM_PROFILES: [DeviceProfile; 9] = [
         extra_inputs:    &["bluetooth", "line-in", "optical", "udisk"],
         outputs:         &["line-out", "usb-out"],
         line_out_is_speaker: true,
+        input_labels: &[], line_in_is_jack: false,
     },
     /* 5 WiimAmpUltra */ DeviceProfile {
         model_name:      Some("WiiM Amp Ultra"),
@@ -569,6 +647,7 @@ static WIIM_PROFILES: [DeviceProfile; 9] = [
         // is inert today — set for consistency/defense against firmware
         // variance.
         line_out_is_speaker: true,
+        input_labels: &[], line_in_is_jack: false,
     },
     /* 6 WiimUltra */ DeviceProfile {
         model_name:      Some("WiiM Ultra"),
@@ -576,6 +655,7 @@ static WIIM_PROFILES: [DeviceProfile; 9] = [
         extra_inputs:    &["bluetooth", "line-in", "optical", "coaxial", "udisk", "HDMI", "phono"],
         outputs:         &["line-out", "optical-out", "coax-out", "headphone-out", "usb-out"],
         line_out_is_speaker: false,
+        input_labels: &[], line_in_is_jack: false,
     },
     /* 7 WiimSound */ DeviceProfile {
         model_name:      Some("WiiM Sound"),
@@ -583,6 +663,7 @@ static WIIM_PROFILES: [DeviceProfile; 9] = [
         extra_inputs:    &["bluetooth", "line-in"],
         outputs:         &[],          // Internal speakers only
         line_out_is_speaker: true,
+        input_labels: &[], line_in_is_jack: false,
     },
     /* 8 WiimGeneric */ DeviceProfile {
         model_name:      None,
@@ -590,6 +671,7 @@ static WIIM_PROFILES: [DeviceProfile; 9] = [
         extra_inputs:    &["bluetooth", "line-in", "optical"],
         outputs:         &["optical-out", "line-out"],
         line_out_is_speaker: false,
+        input_labels: &[], line_in_is_jack: false,
     },
 ];
 
@@ -600,6 +682,7 @@ static ARYLIC_PROFILES: [DeviceProfile; 3] = [
         extra_inputs:    &["bluetooth", "line-in", "optical", "udisk"],
         outputs:         &["line-out"],
         line_out_is_speaker: false,
+        input_labels: &[], line_in_is_jack: false,
     },
     /* 101 ArylicH50 */ DeviceProfile {
         model_name:      Some("Arylic H50"),
@@ -607,6 +690,7 @@ static ARYLIC_PROFILES: [DeviceProfile; 3] = [
         extra_inputs:    &["bluetooth", "line-in", "optical", "udisk", "phono", "HDMI"],
         outputs:         &["line-out", "optical-out"],
         line_out_is_speaker: false,
+        input_labels: &[], line_in_is_jack: false,
     },
     /* 102 ArylicGeneric */ DeviceProfile {
         model_name:      None,
@@ -614,6 +698,7 @@ static ARYLIC_PROFILES: [DeviceProfile; 3] = [
         extra_inputs:    &["bluetooth", "line-in", "optical"],
         outputs:         &["line-out", "optical-out"],
         line_out_is_speaker: false,
+        input_labels: &[], line_in_is_jack: false,
     },
 ];
 
@@ -624,6 +709,7 @@ static AUDIO_PRO_PROFILES: [DeviceProfile; 6] = [
         extra_inputs:    &["bluetooth", "optical", "coaxial", "line-in"],
         outputs:         &[],
         line_out_is_speaker: false,
+        input_labels: &[], line_in_is_jack: false,
     },
     /* 201 AudioProA28 */ DeviceProfile {
         model_name:      Some("Audio Pro A28"),
@@ -631,13 +717,35 @@ static AUDIO_PRO_PROFILES: [DeviceProfile; 6] = [
         extra_inputs:    &["bluetooth", "optical", "line-in", "HDMI"],
         outputs:         &[],
         line_out_is_speaker: false,
+        input_labels: &[], line_in_is_jack: false,
     },
     /* 202 AudioProAddonC5 */ DeviceProfile {
         model_name:      Some("Audio Pro Addon C5"),
-        ignore_plm_bits: &[],
-        extra_inputs:    &["bluetooth", "line-in"],
-        outputs:         &[],
-        line_out_is_speaker: false,
+        // `plm_support` (confirmed live, 2026-07-13: `0x26`) decodes to
+        // bluetooth+udisk+coaxial via `PLM_BIT_TO_INPUT` — bluetooth is
+        // real, udisk/coaxial are not (this device has no USB or coaxial
+        // input at all), and it's also missing both real physical inputs
+        // entirely. Not a partial "ignore just the wrong bits" fix — the
+        // whole bitmap is unreliable on this device, so every bit it could
+        // ever assert is ignored outright and the real list comes purely
+        // from `extra_inputs` below, same as the WiiM Mini precedent
+        // (`WIIM_PROFILES[0]`'s doc comment) but total rather than partial.
+        ignore_plm_bits: &[0, 1, 2, 3, 5, 7],
+        // Confirmed live, 2026-07-13: front 3.5mm AUX jack ("line-in") and
+        // a second, back-panel RCA input ("RCA" — see `input_display_name()`
+        // for why this one id is uppercase). No optical/HDMI/phono/USB/
+        // coaxial on this unit.
+        extra_inputs:    &["bluetooth", "line-in", "RCA"],
+        // Built-in amp/speakers only — confirmed live, 2026-07-13, single
+        // "Speaker" output, no line/optical/coax/headphone/USB out.
+        outputs:         &["speaker-out"],
+        line_out_is_speaker: true,
+        // Device's own silkscreen/manual says "AUX In", not the generic
+        // "Line-In" — confirmed live, 2026-07-13.
+        input_labels:    &[("line-in", "AUX In")],
+        // Front jack is a single 3.5mm connector, not paired RCA — see
+        // `icon_canon_for_input()`.
+        line_in_is_jack: true,
     },
     /* 203 AudioProMkII (generic — model unknown) */ DeviceProfile {
         model_name:      None,
@@ -645,6 +753,7 @@ static AUDIO_PRO_PROFILES: [DeviceProfile; 6] = [
         extra_inputs:    &["bluetooth", "line-in", "optical"],
         outputs:         &[],
         line_out_is_speaker: false,
+        input_labels: &[], line_in_is_jack: false,
     },
     /* 204 AudioProWGen (generic — model unknown) */ DeviceProfile {
         model_name:      None,
@@ -652,6 +761,7 @@ static AUDIO_PRO_PROFILES: [DeviceProfile; 6] = [
         extra_inputs:    &["bluetooth", "line-in", "optical"],
         outputs:         &[],
         line_out_is_speaker: false,
+        input_labels: &[], line_in_is_jack: false,
     },
     /* 205 AudioProOriginal (generic — model unknown) */ DeviceProfile {
         model_name:      None,
@@ -659,6 +769,7 @@ static AUDIO_PRO_PROFILES: [DeviceProfile; 6] = [
         extra_inputs:    &["bluetooth", "line-in", "optical"],
         outputs:         &[],
         line_out_is_speaker: false,
+        input_labels: &[], line_in_is_jack: false,
     },
 ];
 
@@ -673,6 +784,7 @@ static IEAST_PROFILES: [DeviceProfile; 1] = [
         extra_inputs:    &[],
         outputs:         &["line-out"],
         line_out_is_speaker: false,
+        input_labels: &[], line_in_is_jack: false,
     },
 ];
 
@@ -701,6 +813,7 @@ static LINKPLAY_PROFILES: [DeviceProfile; 1] = [
         extra_inputs:    &[],
         outputs:         &["line-out"],
         line_out_is_speaker: false,
+        input_labels: &[], line_in_is_jack: false,
     },
 ];
 
@@ -785,6 +898,20 @@ pub struct DeviceCapabilities {
     /// (see `get_audio_output()`'s doc comment for that half of the bug).
     /// Set directly by `state.rs`, same reasoning as `probes_outputs`.
     pub probes_output_status: bool,
+    /// Whether `getbtstatus` actually works on this device — same shape as
+    /// `probes_outputs` above (a single confirmed `"unknown command"` is
+    /// enough to flip this, no threshold, since `ApiOutcome::Unsupported`
+    /// is already a definite answer — see `get_bt_status()`'s doc
+    /// comment). Confirmed unsupported on the Audio Pro Addon C5 (real
+    /// device, 2026-07-13: `curl .../getbtstatus` → literal `"unknown
+    /// command"`) — without this, a device where it always fails got
+    /// asked again every tick Bluetooth was the active input, and
+    /// (`has_playable_content()`'s Bluetooth branch requiring a confirmed
+    /// `connected: true`) permanently blanked playback content and
+    /// disabled transport controls on hardware that simply never answers
+    /// this call, regardless of whether a phone was actually connected.
+    /// Set directly by `state.rs`, same reasoning as `probes_outputs`.
+    pub probes_bt: bool,
     /// Resolved audio input list — `detect_inputs()`'s static plm_support-
     /// based list, `enabled` defaulting `true` for every entry, optionally
     /// amended by a one-time `getAudioInputEnable` probe in
@@ -795,6 +922,13 @@ pub struct DeviceCapabilities {
     /// a capability snapshot can't be right calling something "disabled"
     /// while it's demonstrably in active use.
     pub inputs:             Vec<InputEntry>,
+    /// Set when this device's *specific* family+firmware combination is
+    /// known to have a real functionality gap (not a general "outdated
+    /// firmware" nag) — a message meant to be shown to the user verbatim
+    /// (e.g. a Settings/About banner), `None` otherwise. See
+    /// `from_device_info()`'s computation for the one case that sets this
+    /// so far (Audio Pro Addon C5, fw < 4.0).
+    pub firmware_warning:   Option<&'static str>,
 }
 
 /// One resolved audio input: a canonical ID (from `detect_inputs()`'s fixed
@@ -852,6 +986,11 @@ impl DeviceCapabilities {
             family.display_name, family_source,
         ));
 
+        // Nothing sets this today — mechanism (this field, the
+        // warning-styled row in `ui/settings.rs`'s About panel) kept for a
+        // real future case.
+        let firmware_warning: Option<&'static str> = None;
+
         // WiiM Ultra on firmware ≥ 5.2 switches to Arylic loop mode (pywiim#17).
         let loop_mode_scheme = if device_id == DeviceId::WiimUltra
             && fw_ver_at_least(&info.firmware, 5, 2)
@@ -887,12 +1026,12 @@ impl DeviceCapabilities {
             device_id, vendor, model, family,
             loop_mode_scheme, uses_wifi_direct,
             preset_source: PresetSource::Unknown, supports_eq, supports_peq,
-            inputs,
+            inputs, firmware_warning,
             // Harmless placeholders — only `detect_capabilities()` (the real
             // probing entry point) sets these to something meaningful.
             // Standalone callers of `from_device_info()` (e.g. `wiim-capture`,
             // which only wants the model name) never see these matter.
-            outputs: Vec::new(), probes_outputs: true, probes_output_status: true,
+            outputs: Vec::new(), probes_outputs: true, probes_output_status: true, probes_bt: true,
         };
 
         if DEBUG_DEVICE.load(Ordering::Relaxed) {
@@ -904,6 +1043,9 @@ impl DeviceCapabilities {
                 caps.model, caps.loop_mode_scheme, caps.uses_wifi_direct));
             dbg(&format!("capabilities: preset_source={:?}  eq={}  peq={}",
                 caps.preset_source, caps.supports_eq, caps.supports_peq));
+            if let Some(w) = caps.firmware_warning {
+                dbg(&format!("firmware_warning: {w:?}"));
+            }
             dbg(&format!("playback_access: {pa:?}"));
             dbg(&format!(
                 "connection: ports={:?}  https_first={}  timeout={}ms  retries={}  client_cert={}",
@@ -1107,9 +1249,11 @@ fn detect_vendor_extended(project: &str, name_lc: &str, fw_lc: &str) -> Vendor {
         return Vendor::Arylic;
     }
     if project.contains("audio_pro")
+        || project.contains("audiopro") // see DeviceId::detect()'s doc comment
         || project.contains("addon")
         || matches!(project, "a10" | "a15" | "a28" | "c10")
         || name_lc.contains("audio pro")
+        || name_lc.contains("audiopro") // same no-separator case, in the device's own name
         || name_lc.contains("addon")
         || fw_lc.contains("audiopro")
     {
@@ -1140,9 +1284,15 @@ fn detect_family_from_info(
     }
 }
 
-/// Select the Audio Pro family profile from firmware-based generation detection.
+/// Select the Audio Pro family profile from firmware-based generation
+/// detection. Only ever reached via `detect_vendor_extended()`'s own
+/// loose/name-or-firmware-based fallback (never a "known model" project
+/// string — `DeviceId::detect()` would already have matched that directly,
+/// without ever falling through to `LinkPlayGeneric` and this path at
+/// all), so always `known_model: false` — see `detect_audio_pro_gen()`'s
+/// doc comment for why that default matters.
 fn detect_audio_pro_family(project: &str, fw: &str) -> &'static FamilyProfile {
-    match DeviceId::detect_audio_pro_gen(project, fw) {
+    match DeviceId::detect_audio_pro_gen(project, fw, false) {
         DeviceId::AudioProMkII => &FAMILY_AUDIO_PRO_MKII,
         DeviceId::AudioProWGen => &FAMILY_AUDIO_PRO_WGEN,
         _                      => &FAMILY_AUDIO_PRO_ORIGINAL,
@@ -1343,13 +1493,31 @@ pub fn output_display_name(name: &str) -> &'static str {
     }
 }
 
-/// Human-readable label for an input source ID.
-pub fn input_display_name(id: &str) -> &str {
+/// Human-readable label for an input source ID, optionally overridden by
+/// the device's own profile (`DeviceProfile::input_labels` — e.g. a device
+/// whose physical silkscreen says "AUX In" rather than the generic
+/// "Line-In"). `device_id` is `None` when no device context is available
+/// yet (e.g. before the first `getStatusEx` answers) — falls straight to
+/// the generic table in that case, same as before this override existed.
+pub fn input_display_name(device_id: Option<DeviceId>, id: &str) -> &str {
+    if let Some(device_id) = device_id {
+        if let Some((_, label)) = device_id.profile().input_labels.iter().find(|(i, _)| *i == id) {
+            return label;
+        }
+    }
     match id {
         "wifi"      => "Network",
         "bluetooth" => "Bluetooth",
         "line-in"   => "Line-In",
         "line-in-2" => "Line-In 2",
+        // Uppercase, unlike every sibling id here — matches this exact
+        // wire string verbatim (both `PlayMedium` and the working
+        // `setPlayerCmd:switchmode:RCA` argument, confirmed live,
+        // 2026-07-13, Audio Pro Addon C5's back-panel RCA input) since
+        // `switch_input()` sends `InputEntry.id` straight through with no
+        // translation layer — unlike outputs, inputs have no separate
+        // canon-to-wire mapping, so the id *is* the wire value.
+        "RCA"       => "RCA",
         "optical"   => "Optical",
         "coaxial"   => "Coaxial",
         "udisk"     => "USB",
@@ -1365,17 +1533,29 @@ pub fn input_display_name(id: &str) -> &str {
 /// why the older overloading with a canonical source-ID string was removed
 /// rather than converted).
 ///
-/// Every canonical input ID here is lowercase *except* `"HDMI"` — not a
-/// stylistic inconsistency, it matches the actual device wire format
-/// exactly. Confirmed both ways: `getAudioInputEnable` reports it capitalized
-/// (real captures), and the authoritative `wiim` SDK's own `InputMode` enum
-/// (`consts.py`) has `HDMI`'s wire command name capitalized while every
-/// other entry's is lowercase — this is genuinely how the device spells it,
-/// on both the read and write (`setPlayerCmd:switchmode:{id}`) sides.
-/// Sending lowercase `"hdmi"` back is silently rejected by real hardware.
+/// Every canonical input ID here is lowercase *except* `"HDMI"` and `"RCA"`
+/// — not a stylistic inconsistency, it matches the actual device wire
+/// format exactly. `"HDMI"` confirmed both ways: `getAudioInputEnable`
+/// reports it capitalized (real captures), and the authoritative `wiim`
+/// SDK's own `InputMode` enum (`consts.py`) has `HDMI`'s wire command name
+/// capitalized while every other entry's is lowercase — this is genuinely
+/// how the device spells it, on both the read and write
+/// (`setPlayerCmd:switchmode:{id}`) sides. Sending lowercase `"hdmi"` back
+/// is silently rejected by real hardware. `"RCA"` (mode 44) confirmed the
+/// same way, live, 2026-07-13, on an Audio Pro Addon C5 — a genuinely
+/// distinct second line-level input (back-panel RCA jacks) from `40|60`'s
+/// front 3.5mm AUX jack, not a firmware-numbering quirk for the *same*
+/// jack (this bucket previously grouped `44` in with `40|60` as one
+/// generic "line-in", which was already inconsistent with
+/// `decode_source_name_http`'s own separate `44 => "RCA"` display label in
+/// `playback.rs` — this device is what finally exposed the mismatch,
+/// since selecting "RCA" from the source dropdown, once the device
+/// actually reported mode 44, resolved back to `"line-in"` here and
+/// silently reselected the AUX entry instead).
 pub fn mode_to_input_source(mode: i32) -> &'static str {
     match mode {
-        40 | 44 | 60 => "line-in",
+        40 | 60      => "line-in",
+        44           => "RCA",
         47           => "line-in-2",
         41           => "bluetooth",
         42 | 11 | 51 => "udisk",
@@ -1431,6 +1611,21 @@ pub fn icon_canon_for_output(canon: &'static str, device_id: DeviceId) -> &'stat
     }
 }
 
+/// Same idea as `icon_canon_for_output()`, for inputs: adjusts the icon
+/// *lookup key* only, never the canonical id/switchmode value itself
+/// (`"line-in"` either way — see `DeviceProfile::line_in_is_jack`'s doc
+/// comment). `source_id` here is whatever `mode_to_input_source()`/
+/// `InputEntry.id` already produced, not necessarily `'static` — this
+/// still returns a borrow with that same lifetime (a `'static` literal
+/// coerces fine when the override fires).
+pub fn icon_canon_for_input<'a>(source_id: &'a str, device_id: DeviceId) -> &'a str {
+    if source_id == "line-in" && device_id.profile().line_in_is_jack {
+        "line-in-jack"
+    } else {
+        source_id
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1442,6 +1637,19 @@ mod tests {
             .unwrap_or_else(|e| panic!("reading fixture {path}: {e}"));
         serde_json::from_str(&text)
             .unwrap_or_else(|e| panic!("parsing fixture {path}: {e}"))
+    }
+
+    /// Regression test for a real bug: mode 44 ("RCA") used to be bucketed
+    /// together with 40/60 as plain "line-in", so selecting the "RCA"
+    /// dropdown entry on a device that actually has both (Audio Pro Addon
+    /// C5) would report back mode 44, resolve to `"line-in"` here, and
+    /// silently reselect the AUX entry instead — reported live, 2026-07-13.
+    #[test]
+    fn mode_to_input_source_rca_is_distinct_from_line_in() {
+        assert_eq!(mode_to_input_source(40), "line-in");
+        assert_eq!(mode_to_input_source(60), "line-in");
+        assert_eq!(mode_to_input_source(44), "RCA");
+        assert_ne!(mode_to_input_source(44), mode_to_input_source(40));
     }
 
     /// Real WiiM Mini unit (project "Muzo_Mini", hardware "ALLWINNER-R328")
@@ -1466,6 +1674,40 @@ mod tests {
         assert!(caps.inputs.iter().any(|i| i.id == "line-in"));
         assert!(!caps.inputs.iter().any(|i| i.id == "optical"), "real unit has no optical input");
         assert!(!caps.inputs.iter().any(|i| i.id == "udisk"), "real unit's USB-C is power-only");
+    }
+
+    /// Real Audio Pro Addon C5 unit (project "AudioPro_C5I", firmware
+    /// 3.7.4830 — physically confirmed, "AddonC5" printed on the device
+    /// itself). Resolves to `FAMILY_AUDIO_PRO_ORIGINAL` via
+    /// `detect_audio_pro_family()`'s firmware-based generation detection —
+    /// see that static's doc comment for the known-inaccurate fields.
+    #[test]
+    fn audio_pro_addon_c5_old_firmware_real_capture() {
+        let cap = load_capture("AudioPro_C5I_20260710_073433.FW3.7.x.json");
+        let body = cap.commands.iter()
+            .find(|c| c.command == "getStatusEx" && c.outcome == crate::capture::format::Outcome::Ok)
+            .expect("capture has no successful getStatusEx")
+            .body.clone()
+            .expect("getStatusEx has no body");
+        let info: DeviceInfo = serde_json::from_value(body).expect("parsing DeviceInfo");
+        let caps = DeviceCapabilities::from_device_info(&info);
+        assert_eq!(caps.device_id, DeviceId::AudioProAddonC5);
+        assert_eq!(caps.vendor, Vendor::AudioPro);
+        assert_eq!(caps.model, "Audio Pro Addon C5");
+        assert_eq!(caps.family.display_name, "Audio Pro Original");
+        assert_eq!(caps.family.playback_access, AccessMethod::UpnpPolled);
+        assert!(!caps.family.connection.requires_client_cert);
+        assert!(caps.family.connection.preferred_ports.contains(&80));
+        assert!(caps.family.endpoints.supports_player_status_ex);
+        assert!(caps.firmware_warning.is_none());
+        // Real `plm_support` (0x26) decodes to bluetooth+udisk+coaxial via
+        // the generic bitmap table — udisk/coaxial are spurious on this
+        // device (confirmed live: no USB or coaxial input at all), and the
+        // bitmap also misses both real inputs entirely (line-in, RCA).
+        // `ignore_plm_bits` should suppress the whole bitmap, leaving
+        // exactly `extra_inputs` (plus the always-present "wifi").
+        let ids: Vec<&str> = caps.inputs.iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(ids, vec!["wifi", "bluetooth", "line-in", "RCA"]);
     }
 
     /// Real iEAST AudioCast unit (project "iEAST-02", a bare network-audio

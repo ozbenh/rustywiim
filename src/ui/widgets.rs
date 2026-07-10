@@ -18,10 +18,17 @@ use super::scroll_fade_label::ScrollFadeLabel;
 
 #[derive(Clone)]
 pub(crate) struct SourceWidgets {
-    pub dropdown: gtk::DropDown,
-    pub ids:      Rc<RefCell<Vec<String>>>,
-    pub enabled:  Rc<RefCell<Vec<bool>>>,
-    pub updating: Rc<RefCell<bool>>,
+    pub dropdown:  gtk::DropDown,
+    pub ids:       Rc<RefCell<Vec<String>>>,
+    /// Icon lookup key per entry — usually identical to the matching `ids`
+    /// entry, except where `capabilities::icon_canon_for_input()` swaps it
+    /// (e.g. a jack-style "line-in" on some devices) — resolved once in
+    /// `populate_source()` (which has the device context this factory's
+    /// `connect_bind` closure, built at window-construction time before any
+    /// device is even connected, doesn't) rather than here.
+    pub icon_keys: Rc<RefCell<Vec<String>>>,
+    pub enabled:   Rc<RefCell<Vec<bool>>>,
+    pub updating:  Rc<RefCell<bool>>,
 }
 
 #[derive(Clone)]
@@ -281,10 +288,11 @@ pub(super) fn build_presets_panel() -> (PresetWidgets, gtk::ScrolledWindow) {
 pub(super) fn build_source_widgets(icons: &Rc<icons::IconSet>) -> SourceWidgets {
     let icons = Rc::clone(icons);
     let sw = SourceWidgets {
-        dropdown: gtk::DropDown::from_strings(&["—"]),
-        ids:      Rc::new(RefCell::new(Vec::new())),
-        enabled:  Rc::new(RefCell::new(Vec::new())),
-        updating: Rc::new(RefCell::new(false)),
+        dropdown:  gtk::DropDown::from_strings(&["—"]),
+        ids:       Rc::new(RefCell::new(Vec::new())),
+        icon_keys: Rc::new(RefCell::new(Vec::new())),
+        enabled:   Rc::new(RefCell::new(Vec::new())),
+        updating:  Rc::new(RefCell::new(false)),
     };
     sw.dropdown.add_css_class("panel-dropdown");
     sw.dropdown.set_sensitive(false);
@@ -304,11 +312,11 @@ pub(super) fn build_source_widgets(icons: &Rc<icons::IconSet>) -> SourceWidgets 
                 let Some(item) = obj.downcast_ref::<gtk::ListItem>() else { return };
                 let pos  = item.position() as usize;
                 if let Some(hbox) = item.child().and_downcast::<GtkBox>() {
-                    let enabled = sw.enabled.borrow().get(pos).copied().unwrap_or(true);
-                    let ids     = sw.ids.borrow();
-                    let id      = ids.get(pos).map(String::as_str).unwrap_or("");
+                    let enabled   = sw.enabled.borrow().get(pos).copied().unwrap_or(true);
+                    let icon_keys = sw.icon_keys.borrow();
+                    let icon_key  = icon_keys.get(pos).map(String::as_str).unwrap_or("");
                     if let Some(img) = hbox.first_child().and_downcast::<gtk::Image>() {
-                        img.set_paintable(Some(icons.source_paintable(id)));
+                        img.set_paintable(Some(icons.source_paintable(icon_key)));
                     }
                     if let Some(lbl) = hbox.last_child().and_downcast::<Label>() {
                         if let Some(so) = item.item().and_downcast::<gtk::StringObject>() {

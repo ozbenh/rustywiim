@@ -15,6 +15,7 @@
 use std::rc::Rc;
 use std::time::Duration;
 
+use super::capabilities::{self, DeviceId};
 use super::upnp::GuiBehavior;
 
 // ── Canonical playback state ──────────────────────────────────────────────────
@@ -236,7 +237,24 @@ pub fn decode_status_http(raw: &str) -> PlaybackStatus {
     }
 }
 
-fn mode_source(mode: i32) -> &'static str {
+fn mode_source(mode: i32, device_id: Option<DeviceId>) -> &'static str {
+    // Physical inputs route through `input_display_name()` so a
+    // per-device override (`DeviceProfile::input_labels` — e.g. a device's
+    // own "AUX In" labeling instead of the generic "Line-In") shows up
+    // consistently in status text and the source dropdown alike, rather
+    // than the two drifting out of sync (as they did before this existed).
+    let physical_id = match mode {
+        40 | 60 => Some("line-in"),
+        44      => Some("RCA"),
+        43      => Some("optical"),
+        49      => Some("HDMI"),
+        54      => Some("phono"),
+        41      => Some("bluetooth"),
+        _       => None,
+    };
+    if let Some(id) = physical_id {
+        return capabilities::input_display_name(device_id, id);
+    }
     match mode {
         -1              => "Idle", // missing/unparseable sentinel — see de_i32_or_neg1
         0               => "Idle",
@@ -249,12 +267,6 @@ fn mode_source(mode: i32) -> &'static str {
         32              => "TIDAL Connect",
         34              => "Lyrion",
         36              => "Qobuz",
-        40 | 60         => "Line-In",
-        41              => "Bluetooth",
-        43              => "Optical",
-        44              => "RCA",
-        49              => "HDMI",
-        54              => "Phono",
         99              => "Follower",
         _               => "",
     }
@@ -292,13 +304,15 @@ fn vendor_display(vendor: &str) -> &'static str {
 
 /// `None` when idle or the decoded label isn't meaningful (mirrors the
 /// display-omission rule the old `format_status()` used to apply inline).
-pub fn decode_source_name_http(mode: i32, vendor: &str) -> Option<Rc<str>> {
+/// `device_id` — see `mode_source()`'s doc comment; `None` when no device
+/// context is available yet (falls straight to the generic table).
+pub fn decode_source_name_http(mode: i32, vendor: &str, device_id: Option<DeviceId>) -> Option<Rc<str>> {
     let source_name = match mode {
         10 | 20 | 0 | 5 => {
             let vn = vendor_display(vendor);
-            if !vn.is_empty() { vn } else { mode_source(mode) }
+            if !vn.is_empty() { vn } else { mode_source(mode, device_id) }
         }
-        _ => mode_source(mode),
+        _ => mode_source(mode, device_id),
     };
     match source_name {
         "" | "Idle" => None,
@@ -390,6 +404,43 @@ fn decode_next_prev_http(mode: i32, vendor: &str) -> (bool, bool) {
 /// seek are meaningless by construction.
 fn is_physical_input_mode(mode: i32) -> bool {
     matches!(mode, 40 | 60 | 43 | 44 | 49 | 54)
+}
+
+/// Fabricates a substitute `mode`/`play_type` value from `PlayMedium` for
+/// devices whose `GetInfoEx` never carries `<PlayType>` at all (confirmed,
+/// 2026-07-13, on an Audio Pro Addon C5 — see `capabilities.rs`'s
+/// `FAMILY_AUDIO_PRO_ADDON_C5` doc comment). Zero extra network cost,
+/// unlike the alternative considered (fetching `getPlayerStatusEx` too,
+/// purely for its `mode` field) — `PlayMedium` is already present in the
+/// exact same `GetInfoEx` response, and its vocabulary is already fully
+/// mapped for input-source purposes elsewhere in this file
+/// (`decode_source_name_upnp`/`loop_tier_upnp`), so this just reuses that
+/// same mapping in the numeric direction instead. Confirmed against real
+/// captures both ways: `"NONE"` while genuinely idle
+/// (`NO_MEDIA_PRESENT`/no track), `"SPOTIFY"`/`"RADIO-NETWORK"` while
+/// playing.
+///
+/// The exact numeric value returned only matters for two things:
+/// `mode_to_input_source()`'s bucket (line-in/optical/HDMI/phono/
+/// bluetooth/"everything else is wifi") and `is_physical_input_mode()`'s
+/// bool — *not* for distinguishing between different streaming services
+/// (Spotify vs. TuneIn vs. Tidal), which `process_poll_upnp`'s separate
+/// `play_medium`/`track_source` diffing already handles on its own. So
+/// every unrecognized/streaming `PlayMedium` collapses to one arbitrary
+/// non-physical, non-idle placeholder (`10`) rather than needing its own
+/// distinct value.
+pub fn mode_from_play_medium_fallback(play_medium: &str) -> i32 {
+    match play_medium {
+        "" | "NONE" | "UNKNOWN" => 0, // idle — matches `has_playable_content()`'s own `0` sentinel
+        "BLUETOOTH"  => 41,
+        "LINE-IN"    => 40,
+        "RCA"        => 44,
+        "OPTICAL"    => 43,
+        "HDMI"       => 49,
+        "PHONO"      => 54,
+        "SPOTIFY"    => 31, // confirmed live, 2026-07-13 — matches HTTP's own `31 => "Spotify"`
+        _            => 10, // any other/unknown streaming source — bucket-only, not a confirmed value
+    }
 }
 
 /// `pywiim`'s `SOURCE_CAPABILITIES` table, translated into HTTP's
@@ -561,11 +612,8 @@ pub fn decode_hms_duration(s: &str) -> Duration {
 /// opposed to `SONGLIST-LOCAL`'s own local/USB playback; `TrackSource` is
 /// empty for this one, no vendor to look up), `LINE-IN`, `OPTICAL`,
 /// `HDMI`, `PHONO` (matches HTTP's `mode_source()` display strings for the
-/// same inputs — note `decode_source_name_upnp`'s result never drives the
-/// actual input selector regardless: see `state.rs`'s UPnP `process_poll`
-/// block, `current_mode` is only ever set from HTTP's `mode` field,
-/// unconditionally, independent of `access` — UPnP polling can only affect
-/// this display label, never input detection), `BLUETOOTH`, `SPOTIFY`
+/// same inputs, both routed through `input_display_name()` for any
+/// per-device label override), `BLUETOOTH`, `SPOTIFY`
 /// (`TrackSource` is a `spotify:user:...:collection` URI here, not a
 /// plain vendor name, so this needs its own entry rather than relying on
 /// `vendor_display()`), and `CAST` (Chromecast — resolves via
@@ -575,7 +623,12 @@ pub fn decode_hms_duration(s: &str) -> Duration {
 /// Connect). `track_source` values reuse `vendor_display()`, the same
 /// table HTTP's `vendor` field already maps through (`"Tidal"`/
 /// `"newTuneIn"`/`"CAST"` etc. match that table's keys after lowercasing).
-pub fn decode_source_name_upnp(play_medium: &str, track_source: &str) -> Option<Rc<str>> {
+/// `device_id` — see `mode_source()`'s doc comment; the physical-input
+/// cases below (`LINE-IN`/`RCA`/`OPTICAL`/`HDMI`/`PHONO`/`BLUETOOTH`) route
+/// through the same `input_display_name()` table `mode_source()` does, so
+/// a per-device override applies identically whether this device is
+/// polled over HTTP or UPnP.
+pub fn decode_source_name_upnp(play_medium: &str, track_source: &str, device_id: Option<DeviceId>) -> Option<Rc<str>> {
     if play_medium.is_empty() {
         return None;
     }
@@ -583,15 +636,35 @@ pub fn decode_source_name_upnp(play_medium: &str, track_source: &str) -> Option<
         "TIDAL_CONNECT"  => "TIDAL Connect".to_string(),
         "SONGLIST-LOCAL" => "USB".to_string(),
         "THIRD-DLNA"     => "DLNA".to_string(),
-        "LINE-IN"        => "Line-In".to_string(),
-        "OPTICAL"        => "Optical".to_string(),
-        "HDMI"           => "HDMI".to_string(),
-        "PHONO"          => "Phono".to_string(),
-        "BLUETOOTH"      => "Bluetooth".to_string(),
+        "LINE-IN"        => capabilities::input_display_name(device_id, "line-in").to_string(),
+        // Second physical line-level input (RCA jacks on the back, vs.
+        // "LINE-IN"'s front 3.5mm AUX jack) — confirmed live, 2026-07-13,
+        // Audio Pro Addon C5, both the `PlayMedium` string and (via
+        // `getPlayerStatusEx`) the numeric `mode`: 44, matching HTTP's
+        // already-existing `44 => "RCA"` case in `decode_source_name_http`
+        // above — same mode, same label, not the separate `47`/
+        // "line-in-2" id (`capabilities.rs`'s `mode_to_input_source()`)
+        // that name might suggest.
+        "RCA"            => capabilities::input_display_name(device_id, "RCA").to_string(),
+        "OPTICAL"        => capabilities::input_display_name(device_id, "optical").to_string(),
+        "HDMI"           => capabilities::input_display_name(device_id, "HDMI").to_string(),
+        "PHONO"          => capabilities::input_display_name(device_id, "phono").to_string(),
+        "BLUETOOTH"      => capabilities::input_display_name(device_id, "bluetooth").to_string(),
         "SPOTIFY"        => "Spotify".to_string(),
         "RADIO-NETWORK"  => {
             let vn = vendor_display(track_source);
             if vn.is_empty() { "Radio".to_string() } else { vn.to_string() }
+        }
+        // A network-pushed queue (e.g. DLNA/cast of local files from a
+        // phone) whose `TrackSource` doesn't identify a recognized
+        // service — confirmed live, 2026-07-13, playing local media on an
+        // Audio Pro Addon C5: showed the raw wire string verbatim instead
+        // of a real label. `"SONGLIST-LOCAL"` (this device's own USB/local
+        // case) already has the same "generic fallback, recognized vendor
+        // still wins" shape — mirrored here rather than invented fresh.
+        "SONGLIST-NETWORK" => {
+            let vn = vendor_display(track_source);
+            if vn.is_empty() { "Streaming".to_string() } else { vn.to_string() }
         }
         other => {
             let vn = vendor_display(track_source);
@@ -611,7 +684,7 @@ pub fn decode_source_name_upnp(play_medium: &str, track_source: &str) -> Option<
 /// radio stream, a third-party DLNA push, or a physical input. Ported
 /// verbatim from the `wiim` Python SDK's `PLAY_MEDIUMS_CTRL`
 /// (`consts.py`) — real-hardware-validated, not a novel guess.
-const PLAY_MEDIUMS_CTRL: &[&str] = &["RADIO-NETWORK", "THIRD-DLNA", "LINE-IN", "OPTICAL", "HDMI", "PHONO"];
+const PLAY_MEDIUMS_CTRL: &[&str] = &["RADIO-NETWORK", "THIRD-DLNA", "LINE-IN", "RCA", "OPTICAL", "HDMI", "PHONO"];
 
 /// `gui_behavior` (from `upnp::InfoEx`, `song:guibehavior`'s parsed
 /// `next`/`prev` flags — see its doc comment) is trusted directly
@@ -642,19 +715,30 @@ const PLAY_MEDIUMS_CTRL: &[&str] = &["RADIO-NETWORK", "THIRD-DLNA", "LINE-IN", "
 /// both of which are sometimes wrong here) confirmed it always works
 /// regardless of what `gui_behavior` claims (it reported `next: false`
 /// on the free-tier capture even though pressing the button worked).
-/// `prev` is left to `gui_behavior` as normal — confirmed to correctly
-/// track the free/premium distinction — falling back to `false`
-/// (conservative — matches the free-tier default) only in the
-/// unobserved case of a Spotify session with no `gui_behavior` at all.
+/// `prev` is left to `gui_behavior` as normal when present — confirmed to
+/// correctly track the free/premium distinction on WiiM hardware (every
+/// WiiM-Ultra-plus-Spotify capture examined has `gui_behavior` present,
+/// 5/5). When it's genuinely absent (confirmed live, 2026-07-13, on a
+/// non-WiiM device — Audio Pro Addon C5, whose `GetInfoEx` never carries
+/// `song:guibehavior` at all, for any source, regardless of account tier),
+/// `prev` now defaults to `true` rather than the `false` this used to fall
+/// back to — Spotify isn't a radio-style source (it has a real track
+/// queue/history), so it shouldn't inherit `PLAY_MEDIUMS_CTRL`'s
+/// no-track-concept heuristic below; erring toward enabled (same
+/// "trust real behavior, don't assume broken" philosophy as the `next`
+/// override above) beats permanently hiding a working control on any
+/// device whose firmware just doesn't send this WiiM-authored DIDL
+/// extension tag at all.
 ///
-/// Base static heuristic (used for everything else, and for Spotify's
-/// `prev` when `gui_behavior` is absent) is the `wiim` Python SDK's
-/// `async_get_transport_capabilities()`: `play_medium` in
-/// `PLAY_MEDIUMS_CTRL` means there's no track to skip to/from at all;
-/// failing that, `track_source` in `TRACK_SOURCES_CTRL` means a
-/// station-style service that supports skipping forward but not
-/// rewinding back into history (confirmed on `"Pandora2"` via a real
-/// capture — see `TRACK_SOURCES_CTRL`'s doc comment).
+/// Base static heuristic (used for everything else) is the `wiim` Python
+/// SDK's `async_get_transport_capabilities()`: `play_medium` in
+/// `PLAY_MEDIUMS_CTRL` means there's no track to skip to/from at all —
+/// this is the actual "radio" heuristic, and still applies with
+/// `gui_behavior` absent exactly as before; failing that, `track_source`
+/// in `TRACK_SOURCES_CTRL` means a station-style service that supports
+/// skipping forward but not rewinding back into history (confirmed on
+/// `"Pandora2"` via a real capture — see `TRACK_SOURCES_CTRL`'s doc
+/// comment).
 pub fn decode_transport_caps_upnp(
     play_medium: &str, track_source: &str, play_type: i32, gui_behavior: Option<GuiBehavior>,
 ) -> SourceCapabilities {
@@ -698,7 +782,7 @@ fn decode_next_prev_upnp(
     play_medium: &str, track_source: &str, gui_behavior: Option<GuiBehavior>,
 ) -> (bool, bool) {
     if play_medium == "SPOTIFY" {
-        return (true, gui_behavior.map_or(false, |g| g.prev));
+        return (true, gui_behavior.map_or(true, |g| g.prev));
     }
     if let Some(g) = gui_behavior {
         return (g.next, g.prev);
@@ -823,6 +907,23 @@ mod tests {
         SourceCapabilities { can_next, can_previous, can_shuffle: false, can_repeat: false, can_seek: true, can_playpause: true }
     }
 
+    /// All confirmed live, 2026-07-13, against a real Audio Pro Addon C5
+    /// (whose `GetInfoEx` never carries `<PlayType>` at all — see
+    /// `capabilities.rs`'s `FAMILY_AUDIO_PRO_ADDON_C5` doc comment): each
+    /// value here is what `getPlayerStatusEx`'s real `mode` field reported
+    /// while the device's `GetInfoEx` simultaneously showed the given
+    /// `PlayMedium`, checked one input at a time, not guessed.
+    #[test]
+    fn mode_from_play_medium_fallback_matches_real_device_values() {
+        assert_eq!(mode_from_play_medium_fallback("NONE"), 0);
+        assert_eq!(mode_from_play_medium_fallback("UNKNOWN"), 0);
+        assert_eq!(mode_from_play_medium_fallback(""), 0);
+        assert_eq!(mode_from_play_medium_fallback("BLUETOOTH"), 41);
+        assert_eq!(mode_from_play_medium_fallback("LINE-IN"), 40);
+        assert_eq!(mode_from_play_medium_fallback("RCA"), 44);
+        assert_eq!(mode_from_play_medium_fallback("SPOTIFY"), 31);
+    }
+
     #[test]
     fn quality_badge_rule_hi_res_lossless_becomes_flac() {
         let (quality, label) = decode_quality_upnp(
@@ -885,22 +986,22 @@ mod tests {
 
     #[test]
     fn source_name_tidal_connect() {
-        assert_eq!(decode_source_name_upnp("TIDAL_CONNECT", "Tidal").as_deref(), Some("TIDAL Connect"));
+        assert_eq!(decode_source_name_upnp("TIDAL_CONNECT", "Tidal", None).as_deref(), Some("TIDAL Connect"));
     }
 
     #[test]
     fn source_name_radio_network_uses_vendor_table() {
-        assert_eq!(decode_source_name_upnp("RADIO-NETWORK", "newTuneIn").as_deref(), Some("TuneIn"));
+        assert_eq!(decode_source_name_upnp("RADIO-NETWORK", "newTuneIn", None).as_deref(), Some("TuneIn"));
     }
 
     #[test]
     fn source_name_songlist_local() {
-        assert_eq!(decode_source_name_upnp("SONGLIST-LOCAL", "UPnPServer").as_deref(), Some("USB"));
+        assert_eq!(decode_source_name_upnp("SONGLIST-LOCAL", "UPnPServer", None).as_deref(), Some("USB"));
     }
 
     #[test]
     fn source_name_bluetooth() {
-        assert_eq!(decode_source_name_upnp("BLUETOOTH", "").as_deref(), Some("Bluetooth"));
+        assert_eq!(decode_source_name_upnp("BLUETOOTH", "", None).as_deref(), Some("Bluetooth"));
     }
 
     #[test]
@@ -908,32 +1009,62 @@ mod tests {
         // TrackSource is a spotify: URI here, not a plain vendor name —
         // must resolve via the dedicated PlayMedium match, not vendor_display.
         assert_eq!(
-            decode_source_name_upnp("SPOTIFY", "spotify:user:1516emh5k43jthv55arsid1k6:collection").as_deref(),
+            decode_source_name_upnp("SPOTIFY", "spotify:user:1516emh5k43jthv55arsid1k6:collection", None).as_deref(),
             Some("Spotify"),
         );
     }
 
     #[test]
     fn source_name_chromecast_via_vendor_display() {
-        assert_eq!(decode_source_name_upnp("CAST", "CAST").as_deref(), Some("Chromecast"));
+        assert_eq!(decode_source_name_upnp("CAST", "CAST", None).as_deref(), Some("Chromecast"));
     }
 
     #[test]
     fn source_name_songlist_network_builtin_tidal_via_vendor_display() {
-        assert_eq!(decode_source_name_upnp("SONGLIST-NETWORK", "Tidal").as_deref(), Some("TIDAL"));
+        assert_eq!(decode_source_name_upnp("SONGLIST-NETWORK", "Tidal", None).as_deref(), Some("TIDAL"));
+    }
+
+    /// Regression test for a real bug: an unrecognized/empty `TrackSource`
+    /// showed the raw wire string "SONGLIST-NETWORK" verbatim instead of a
+    /// real label — reported live, 2026-07-13, playing local media (DLNA
+    /// push, no identifiable vendor) on an Audio Pro Addon C5.
+    #[test]
+    fn source_name_songlist_network_unknown_vendor_shows_generic_label() {
+        assert_eq!(decode_source_name_upnp("SONGLIST-NETWORK", "", None).as_deref(), Some("Streaming"));
     }
 
     #[test]
     fn source_name_third_dlna() {
-        assert_eq!(decode_source_name_upnp("THIRD-DLNA", "").as_deref(), Some("DLNA"));
+        assert_eq!(decode_source_name_upnp("THIRD-DLNA", "", None).as_deref(), Some("DLNA"));
     }
 
     #[test]
     fn source_name_analog_digital_inputs() {
-        assert_eq!(decode_source_name_upnp("LINE-IN", "").as_deref(), Some("Line-In"));
-        assert_eq!(decode_source_name_upnp("OPTICAL", "").as_deref(), Some("Optical"));
-        assert_eq!(decode_source_name_upnp("HDMI", "").as_deref(), Some("HDMI"));
-        assert_eq!(decode_source_name_upnp("PHONO", "").as_deref(), Some("Phono"));
+        assert_eq!(decode_source_name_upnp("LINE-IN", "", None).as_deref(), Some("Line-In"));
+        assert_eq!(decode_source_name_upnp("OPTICAL", "", None).as_deref(), Some("Optical"));
+        assert_eq!(decode_source_name_upnp("HDMI", "", None).as_deref(), Some("HDMI"));
+        assert_eq!(decode_source_name_upnp("PHONO", "", None).as_deref(), Some("Phono"));
+    }
+
+    /// Regression test for a real bug: the status text ("Stopped Line-in")
+    /// used to stay generic even when the source dropdown correctly showed
+    /// a per-device override ("AUX In") for the exact same input, because
+    /// `decode_source_name_upnp`/`decode_source_name_http` had their own
+    /// separate hardcoded labels instead of routing through
+    /// `input_display_name()` like the dropdown does — reported live,
+    /// 2026-07-13, on the Audio Pro Addon C5 profile that defines the
+    /// override.
+    #[test]
+    fn source_name_honors_per_device_input_label_override() {
+        let dev = Some(DeviceId::AudioProAddonC5);
+        assert_eq!(decode_source_name_upnp("LINE-IN", "", dev).as_deref(), Some("AUX In"));
+        assert_eq!(decode_source_name_http(40, "", dev).as_deref(), Some("AUX In"));
+        // Unaffected inputs on the same device still use the generic label.
+        assert_eq!(decode_source_name_upnp("RCA", "", dev).as_deref(), Some("RCA"));
+        assert_eq!(decode_source_name_http(44, "", dev).as_deref(), Some("RCA"));
+        // No device context at all: falls back to the generic label, same
+        // as before this override existed.
+        assert_eq!(decode_source_name_upnp("LINE-IN", "", None).as_deref(), Some("Line-In"));
     }
 
     #[test]
@@ -962,12 +1093,17 @@ mod tests {
     }
 
     #[test]
-    fn transport_caps_upnp_spotify_falls_back_to_previous_false_without_guibehavior() {
-        // Real-device-tested (transport buttons, not just guibehavior/app
-        // display, both of which wrongly claim neither works) — `next` is
-        // always forced true for Spotify; `prev` without a `gui_behavior`
-        // reading defaults to the conservative (free-tier-like) `false`.
-        assert_eq!(decode_transport_caps_upnp("SPOTIFY", "spotify:playlist:37i9dQZF1EIZAuCHB2O9dH", 31, None), caps(true, false));
+    fn transport_caps_upnp_spotify_falls_back_to_previous_true_without_guibehavior() {
+        // `next` is always forced true for Spotify regardless of
+        // `gui_behavior`. `prev` without a `gui_behavior` reading now also
+        // defaults to `true` — real-device-confirmed (Audio Pro Addon C5,
+        // 2026-07-13, Premium account, no `song:guibehavior` in its
+        // `GetInfoEx` for any source) that `gui_behavior`'s absence isn't a
+        // free-tier signal, just a trait of firmware that doesn't send
+        // this WiiM-authored DIDL extension tag at all — every archived
+        // WiiM-Ultra-plus-Spotify capture has it present (5/5), so there's
+        // no confirmed case left of a *WiiM* device genuinely lacking it.
+        assert_eq!(decode_transport_caps_upnp("SPOTIFY", "spotify:playlist:37i9dQZF1EIZAuCHB2O9dH", 31, None), caps(true, true));
     }
 
     #[test]

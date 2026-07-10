@@ -482,6 +482,15 @@ async fn fetch_upnp_fast_poll(
             info.current_mute = Some(muted);
         }
     }
+    if info.play_type == -1 {
+        // `<PlayType>` confirmed permanently absent on some devices (Audio
+        // Pro Addon C5) — fabricate a substitute from `PlayMedium` instead
+        // of leaving input-source tracking stuck at "unknown" forever. See
+        // `mode_from_play_medium_fallback()`'s doc comment for why this is
+        // preferred over a supplementary HTTP call (an earlier version of
+        // this fix): zero extra network cost, same data already in hand.
+        info.play_type = playback::mode_from_play_medium_fallback(&info.play_medium);
+    }
     (Some(info), bt_status)
 }
 
@@ -2328,7 +2337,8 @@ impl DeviceState {
                 }
                 if other_changed {
                     inner.playback.status      = playback::decode_status_http(&st.status);
-                    inner.playback.source_name = playback::decode_source_name_http(st.mode, &st.vendor);
+                    let dev_id = inner.capabilities.as_ref().map(|c| c.device_id);
+                    inner.playback.source_name = playback::decode_source_name_http(st.mode, &st.vendor, dev_id);
                     let (shuffle, repeat) = playback::decode_loop_mode_http(st.loop_mode);
                     inner.playback.shuffle = shuffle;
                     inner.playback.repeat  = repeat;
@@ -2527,6 +2537,11 @@ impl DeviceState {
             )
         };
 
+        // `info.play_type` is never the `-1` "tag absent" sentinel by this
+        // point — `fetch_upnp_fast_poll()` already substitutes a real value
+        // from `PlayMedium` when `GetInfoEx` doesn't carry `<PlayType>` at
+        // all (confirmed permanent on some devices, e.g. Audio Pro Addon
+        // C5), so this needs no special-casing here the way it briefly did.
         let has_content = Self::has_playable_content(info.play_type, &bt_status);
         if (has_content != had_content) || mode_changed {
             playback_mask |= playback_changed::ALL
@@ -2578,8 +2593,9 @@ impl DeviceState {
             // the Bluetooth status line needs it current immediately) —
             // only the transport-capability decode is gated.
             if source_changed || (has_content && !had_content) {
+                let dev_id = inner.capabilities.as_ref().map(|c| c.device_id);
                 inner.playback.source_name =
-                    playback::decode_source_name_upnp(&info.play_medium, &info.track_source);
+                    playback::decode_source_name_upnp(&info.play_medium, &info.track_source, dev_id);
             }
             if has_content {
                 if source_changed || (has_content != had_content) {

@@ -727,15 +727,30 @@ fn about_row(title: &str, value: &str) -> adw::ActionRow {
 }
 
 fn build_about_page(ds: &DeviceState) -> adw::PreferencesPage {
+    let page = adw::PreferencesPage::new();
     let group = adw::PreferencesGroup::builder().title("Device").build();
 
     let Some(info) = ds.device_info() else {
         group.add(&about_row("Status", "Not connected yet"));
-        let page = adw::PreferencesPage::new();
         page.add(&group);
         return page;
     };
     let caps = ds.capabilities();
+
+    // A per-family+firmware known functionality gap (see
+    // `DeviceCapabilities::firmware_warning`'s doc comment) — shown as its
+    // own group, above the regular device details, so it's the first thing
+    // seen rather than buried at the bottom.
+    if let Some(warning) = caps.as_ref().and_then(|c| c.firmware_warning) {
+        let notice_group = adw::PreferencesGroup::new();
+        let notice_row = adw::ActionRow::builder()
+            .title("Firmware Notice")
+            .subtitle(warning)
+            .build();
+        notice_row.add_css_class("warning");
+        notice_group.add(&notice_row);
+        page.add(&notice_group);
+    }
 
     let vendor_model = match &caps {
         Some(c) => format!("{} · {}", c.vendor.display_name(), c.model),
@@ -759,7 +774,6 @@ fn build_about_page(ds: &DeviceState) -> adw::PreferencesPage {
     group.add(&about_row("Hardware", &info.hardware));
     group.add(&about_row("Network", &network));
 
-    let page = adw::PreferencesPage::new();
     page.add(&group);
     page
 }
