@@ -119,6 +119,21 @@ pub struct DeviceConfig {
     /// above for the same offline-default-resolution purpose.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub firmware: Option<String>,
+    /// Last known working `TlsMode`, as its raw discriminant
+    /// (`TlsMode::Http` = 1, `HttpsWiiM` = 3, etc. — see `device::api::TlsMode`).
+    /// Confirmed bug (Ben, 2026-07-13): without this, `ui/devlist.rs`'s
+    /// `load_known_devices_from_config()` always hardcoded `HttpsWiiM` when
+    /// reloading a pinned device at startup — fine for most devices, but a
+    /// device that was manually added specifically because it only answers
+    /// on plain HTTP (confirmed no TLS listener at all, not a cert issue —
+    /// an old-firmware Audio Pro C5 unit) would work for that one session
+    /// (the manual-add flow probes and remembers the right mode in memory)
+    /// and then silently go back to only trying HTTPS on next launch,
+    /// failing outright. Not a `TlsMode` field directly — that type isn't
+    /// `Serialize`/`Deserialize` — a plain integer avoids needing to derive
+    /// that just for this one persisted field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tls_mode: Option<u8>,
     /// Field-diagnostics override of the device profile's default
     /// `AccessMethod`, editable via Settings' "Device -> Advanced" panel.
     /// `None` means "use the device profile's default".
@@ -174,6 +189,7 @@ impl Default for DeviceConfig {
             model:           None,
             project:         None,
             firmware:        None,
+            tls_mode:        None,
             playback_access_override: None,
             mute_access_override: None,
         }

@@ -743,7 +743,19 @@ impl DiscoveryManager {
                 if !pinned && !dev_cfg.window_open { continue; }
                 let Some(ref ip) = dev_cfg.last_ip else { continue };
                 if inner.devices.contains_key(uuid) { continue; }
-                let tls   = TlsMode::HttpsWiiM;
+                // Confirmed bug (Ben, 2026-07-13): this used to always be
+                // `HttpsWiiM` regardless of what actually worked for this
+                // device — fine for most, but a device manually added
+                // specifically because it only answers on plain HTTP (no
+                // TLS listener at all — an old-firmware Audio Pro C5 unit,
+                // confirmed live, not a cert issue) worked for that one
+                // session (the manual-add flow probes and remembers the
+                // right mode in memory) and then silently reverted to
+                // HTTPS-only on the next launch, failing outright. See
+                // `config::DeviceConfig::tls_mode`'s doc comment.
+                let tls = dev_cfg.tls_mode
+                    .map(|n| TlsMode::from_usize(n as usize))
+                    .unwrap_or(TlsMode::HttpsWiiM);
                 let name     = dev_cfg.name.clone().unwrap_or_else(|| format!("Device @ {ip}"));
                 let model    = dev_cfg.model.clone().unwrap_or_default();
                 let project  = dev_cfg.project.clone().unwrap_or_default();
@@ -781,6 +793,7 @@ impl DiscoveryManager {
                 let dev     = cfg.device_mut(&rec.entry.uuid);
                 dev.pinned  = Some(rec.entry.pinned); // Explicit Some(true/false) ends legacy treatment.
                 dev.last_ip = Some(rec.entry.ip.clone());
+                dev.tls_mode = Some(rec.entry.tls_mode as u8);
                 dev.name    = Some(rec.entry.name.clone());
                 if !rec.entry.model.is_empty() {
                     dev.model = Some(rec.entry.model.clone());
