@@ -15,6 +15,8 @@ use gtk::glib;
 use gtk::Orientation;
 
 use crate::config::{self, ThemeMode};
+use crate::device::api::DeviceInfo;
+use crate::device::capabilities::DeviceCapabilities;
 use crate::device::playback::AccessMethod;
 use crate::device::state::DeviceState;
 use crate::ui::DEBUG_UI;
@@ -459,11 +461,21 @@ fn access_method_label(v: AccessMethod) -> &'static str {
 /// configured for multi-line wrapping, and this couldn't be visually
 /// verified here (no display server in this environment) — a guaranteed-
 /// safe single line beats an unverified assumption about wrapping.
-fn build_access_row(title: &str, subtitle: &str, default: AccessMethod, current: Option<AccessMethod>) -> adw::ComboRow {
+///
+/// `None` means the default genuinely can't be resolved right now (device
+/// offline and no cached `project`/`firmware` to fall back on — see
+/// `build_advanced_page()`) — shown honestly rather than guessing wrong
+/// (a real bug this fixed: it used to silently fall back to `Http`, wrong
+/// for every family except plain LinkPlay/Arylic).
+fn build_access_row(title: &str, subtitle: &str, default: Option<AccessMethod>, current: Option<AccessMethod>) -> adw::ComboRow {
     let names: Vec<&str> = ACCESS_METHOD_CHOICES.iter().map(|(n, _)| *n).collect();
+    let default_text = match default {
+        Some(d) => access_method_label(d).to_string(),
+        None    => "unknown — reconnect to see".to_string(),
+    };
     let row = adw::ComboRow::builder()
         .title(title)
-        .subtitle(format!("{subtitle} · Default: {}", access_method_label(default)))
+        .subtitle(format!("{subtitle} · Default: {default_text}"))
         .model(&gtk::StringList::new(&names))
         .build();
     row.set_selected(access_method_index(current));
@@ -492,14 +504,17 @@ fn wire_access_row(
     let ds_weak = ds.downgrade();
     row.connect_selected_notify(move |r| {
         let (_, method) = ACCESS_METHOD_CHOICES[r.selected() as usize];
-        // `uuid` is empty while the device is offline/still connecting
-        // (`build_advanced_page()` derives it from `device_info()`, which
-        // is `None` then) — never write that into config (see TODO.md's
-        // "Settings Advanced panel while offline" entry for the full
-        // story; `config::write_to_disk()` also guards this generally,
-        // but skip the write outright here rather than relying on that).
-        // Still push the override live to the DeviceState — harmless and
-        // arguably still useful for this session even though it won't
+        // `uuid` is only empty for a device that has never resolved a real
+        // uuid at all (still on its very first connection attempt) —
+        // `build_advanced_page()` derives it from the stable
+        // `DeviceState::uuid()` accessor, fixed at construction and unlike
+        // `device_info()` it does *not* go back to empty on disconnect, so
+        // this only guards the genuinely-never-connected case. Never write
+        // an empty uuid into config (see `config::write_to_disk()`'s
+        // blanket second line of defense against a bogus `""`-keyed
+        // entry) — skip the write outright here rather than relying on
+        // that. Still push the override live to the DeviceState — harmless
+        // and arguably still useful for this session even though it won't
         // persist.
         if !uuid.is_empty() {
             config::update(|cfg| save(cfg.device_mut(&uuid), method));
@@ -511,7 +526,14 @@ fn wire_access_row(
 }
 
 fn build_advanced_page(ds: &DeviceState) -> adw::PreferencesPage {
-    let uuid = ds.device_info().map(|i| i.uuid).unwrap_or_default();
+    // Stable — fixed at construction, survives a `Failed`/disconnect
+    // transition (unlike `device_info()`, which goes back to `None` then).
+    // Using that instead of `device_info().map(|i| i.uuid)` used to mean
+    // opening Advanced while offline and changing a dropdown silently
+    // wrote into a bogus `""`-keyed config entry instead of the real
+    // device's — see `wire_access_row()`'s doc comment for the write-side
+    // half of this fix.
+    let uuid = ds.uuid();
     let over = config::with(|cfg| cfg.device(&uuid).playback_access_override);
     // This device's actual profile default (not just a single global
     // fallback) — every family currently defaults to `UpnpPolled` (HTTP
@@ -519,7 +541,34 @@ fn build_advanced_page(ds: &DeviceState) -> adw::PreferencesPage {
     // switched over once UPnP polling proved out), but `Http` is still
     // selectable per-device here for diagnosis if a specific unit's UPnP
     // path turns out broken.
-    let defaults = ds.capabilities().map(|c| c.playback_access()).unwrap_or(AccessMethod::Http);
+    //
+    // While connected, `capabilities()` already has the real answer. While
+    // offline, fall back to the `project`/`firmware` strings cached into
+    // config the last time devlist's health check (or this device's own
+    // polling) saw this device — `capabilities::DeviceId::detect()` is
+    // keyed on those, not on the marketing `model` name also stored
+    // there, so a synthetic `DeviceInfo` carrying just those two fields is
+    // enough to run the *exact* same family/default-detection logic
+    // `from_device_info()` would run live, reusing it rather than
+    // duplicating it. If neither is cached yet (never successfully
+    // connected), the default genuinely isn't knowable — `build_access_row()`
+    // shows that honestly instead of guessing.
+    let defaults = match ds.capabilities() {
+        Some(c) => Some(c.playback_access()),
+        None => {
+            let (project, firmware) = config::with(|cfg| {
+                let d = cfg.device(&uuid);
+                (d.project, d.firmware)
+            });
+            match (project, firmware) {
+                (Some(project), Some(firmware)) if !project.is_empty() => {
+                    let synthetic = DeviceInfo { project, firmware, ..Default::default() };
+                    Some(DeviceCapabilities::from_device_info(&synthetic).playback_access())
+                }
+                _ => None,
+            }
+        }
+    };
 
     let player_status_row = build_access_row(
         "Player Status", "Playback informations",
@@ -533,11 +582,12 @@ fn build_advanced_page(ds: &DeviceState) -> adw::PreferencesPage {
 
     // Mute's own default is a fixed `UpnpPolled` global, not a
     // per-`FamilyProfile` field like `playback_access()` — see
-    // `DeviceState::recompute_access()`'s doc comment for why.
+    // `DeviceState::recompute_access()`'s doc comment for why. Always
+    // known, unlike Player Status's above.
     let mute_over = config::with(|cfg| cfg.device(&uuid).mute_access_override);
     let mute_row = build_access_row(
         "Mute", "Mute state",
-        AccessMethod::UpnpPolled, mute_over,
+        Some(AccessMethod::UpnpPolled), mute_over,
     );
     wire_access_row(
         &mute_row, uuid.clone(), ds,

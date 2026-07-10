@@ -107,6 +107,18 @@ pub struct DeviceConfig {
     /// Last known marketing model name (e.g. "WiiM Pro Plus").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// Last known internal `project` string from `getStatusEx` (e.g.
+    /// `"Muzo_Mini"`) — a different namespace from the marketing `model`
+    /// name above; `capabilities::DeviceId::detect()` is keyed on this
+    /// (plus `firmware` below), not on `model`. Cached alongside `firmware`
+    /// so Settings' "Device -> Advanced" panel can resolve the device's
+    /// actual profile default while offline instead of guessing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
+    /// Last known firmware string from `getStatusEx`, paired with `project`
+    /// above for the same offline-default-resolution purpose.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub firmware: Option<String>,
     /// Field-diagnostics override of the device profile's default
     /// `AccessMethod`, editable via Settings' "Device -> Advanced" panel.
     /// `None` means "use the device profile's default".
@@ -160,6 +172,8 @@ impl Default for DeviceConfig {
             last_ip:         None,
             name:            None,
             model:           None,
+            project:         None,
+            firmware:        None,
             playback_access_override: None,
             mute_access_override: None,
         }

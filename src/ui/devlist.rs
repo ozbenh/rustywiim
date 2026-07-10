@@ -63,6 +63,13 @@ pub struct ManagedEntry {
     pub uuid:     String,
     pub name:     String,
     pub model:    String,
+    /// Internal `project`/`firmware` strings from `getStatusEx` — a
+    /// different namespace from `model` (the marketing name), needed to
+    /// resolve the device's profile default while offline (see
+    /// `config::DeviceConfig::project`'s doc comment). Empty until the
+    /// first successful health check or SSDP probe.
+    pub project:  String,
+    pub firmware: String,
     pub ip:       String,
     pub tls_mode: TlsMode,
     pub pinned:   bool,
@@ -94,6 +101,17 @@ struct HealthResult {
     /// Device name and model from a successful `getStatusEx` call; None when offline.
     name:  Option<String>,
     model: Option<String>,
+    /// Internal `project`/`firmware` strings from the same call — cached
+    /// into config so Settings' Advanced panel can resolve the device's
+    /// profile default while offline (see `config::DeviceConfig::project`).
+    project:  Option<String>,
+    firmware: Option<String>,
+    /// The uuid the responding device actually reports — compared against
+    /// the *probed* entry's own `rec.entry.uuid` in `on_health_result()` to
+    /// catch a different device having taken over this IP (DHCP lease
+    /// reassignment). `None` when offline (nothing answered to report a
+    /// uuid from).
+    uuid: Option<String>,
 }
 
 struct Inner {
@@ -315,6 +333,7 @@ impl DiscoveryManager {
             }
             let entry = ManagedEntry {
                 uuid: uuid.clone(), name: name.clone(), model: String::new(),
+                project: String::new(), firmware: String::new(),
                 ip: ip.clone(), tls_mode, pinned: true, presence: DevicePresence::Active,
             };
             inner.devices.insert(key.clone(), DeviceRecord {
@@ -396,11 +415,17 @@ impl DiscoveryManager {
                             .unwrap_or_else(|| dev.name.clone());
                         let model = cached.and_then(|c| c.model.clone())
                             .unwrap_or_default();
+                        let project = cached.and_then(|c| c.project.clone())
+                            .unwrap_or_default();
+                        let firmware = cached.and_then(|c| c.firmware.clone())
+                            .unwrap_or_default();
                         dbg(&format!("discovery: new device {} ({}) uuid={:?}", name, dev.ip, dev.uuid));
                         let entry = ManagedEntry {
                             uuid:     dev.uuid.clone(),
                             name,
                             model,
+                            project,
+                            firmware,
                             ip:       dev.ip.clone(),
                             tls_mode: dev.tls_mode,
                             pinned:   false,
@@ -513,30 +538,70 @@ impl DiscoveryManager {
             } else {
                 client.get_device_info_quiet().await
             };
-            let (alive, name, model) = match probe {
+            let (alive, name, model, project, firmware, uuid) = match probe {
                 Ok(info) => (true,
                              Some(info.device_name.clone()),
-                             Some(DeviceCapabilities::from_device_info(&info).model)),
-                Err(_)   => (false, None, None),
+                             Some(DeviceCapabilities::from_device_info(&info).model),
+                             Some(info.project.clone()),
+                             Some(info.firmware.clone()),
+                             Some(info.uuid.clone())),
+                Err(_)   => (false, None, None, None, None, None),
             };
-            let _ = tx.send(HealthResult { key, alive, name, model }).await;
+            let _ = tx.send(HealthResult { key, alive, name, model, project, firmware, uuid }).await;
         });
     }
 
     fn on_health_result(&self, result: HealthResult) {
         let mut needs_persist = false;
         let mut retry_soon = false;
-        let mut presence_change: Option<(String, bool)> = None;
+        let mut presence_changes: Vec<(String, bool)> = Vec::new();
+
+        // Identity check: does the uuid the responding device actually
+        // reports match what `result.key` is supposed to be tracking? A
+        // mismatch means a different device now sits at this IP (e.g. a
+        // DHCP lease reassignment) — there is no such thing as "the uuid
+        // changed" for a tracked entry (same reasoning as
+        // `device/state.rs`'s own per-connection identity check), so this
+        // probe does *not* count as a real confirmation of the probed
+        // entry's liveness, and its name/model/project/firmware must not
+        // be overwritten with data that actually describes a different
+        // device. Skipped entirely for legacy `ip:`-keyed entries with no
+        // resolved uuid yet (`rec.entry.uuid` empty) — anything answering
+        // there is expected/normal.
+        let mut alive = result.alive;
+        let mut mismatch = false;
+        let mut poke: Option<(String, String, TlsMode)> = None; // (observed_uuid, ip, tls_mode)
+        {
+            let inner = self.imp().inner.borrow();
+            if let Some(rec) = inner.devices.get(&result.key) {
+                if alive && !rec.entry.uuid.is_empty() {
+                    if let Some(observed) = &result.uuid {
+                        if !observed.is_empty() && *observed != rec.entry.uuid {
+                            mismatch = true;
+                            poke = Some((observed.clone(), rec.entry.ip.clone(), rec.entry.tls_mode));
+                        }
+                    }
+                }
+            }
+        }
+        if mismatch {
+            dbg(&format!(
+                "health result: {} answered with a different uuid than expected — not a real confirmation",
+                result.key,
+            ));
+            alive = false;
+        }
+
         {
             let mut inner = self.imp().inner.borrow_mut();
             if let Some(rec) = inner.devices.get_mut(&result.key) {
-                if result.alive {
+                if alive {
                     rec.consecutive_failures = 0;
                     if rec.entry.presence != DevicePresence::Active {
                         dbg(&format!("health result: {} ({}) {:?} → Active",
                             rec.entry.name, rec.entry.ip, rec.entry.presence));
                         rec.entry.presence = DevicePresence::Active;
-                        presence_change = Some((rec.entry.uuid.clone(), true));
+                        presence_changes.push((rec.entry.uuid.clone(), true));
                     }
                 } else if rec.entry.presence == DevicePresence::Active {
                     rec.consecutive_failures += 1;
@@ -548,7 +613,7 @@ impl DiscoveryManager {
                             rec.entry.name, rec.entry.ip, new_presence, rec.consecutive_failures,
                         ));
                         rec.entry.presence = new_presence;
-                        presence_change = Some((rec.entry.uuid.clone(), false));
+                        presence_changes.push((rec.entry.uuid.clone(), false));
                     } else {
                         dbg(&format!(
                             "health result: {} ({}) failed ({}/{HEALTH_FAIL_THRESHOLD}); retrying in {}s",
@@ -558,28 +623,81 @@ impl DiscoveryManager {
                     }
                 }
                 // else: already Ghost/Dead and the quiet recovery probe
-                // just failed again — nothing to do, presence stays as-is.
-                if let Some(name) = result.name {
-                    if !name.is_empty() && rec.entry.name != name {
-                        dbg(&format!("health result: {} name → {:?}", rec.entry.ip, name));
-                        rec.entry.name = name;
-                        needs_persist = true;
+                // just failed again (or a mismatch overrode `alive` to
+                // false) — nothing to do, presence stays as-is.
+
+                // A mismatch means this name/model/project/firmware
+                // describes a *different* device — never attribute it to
+                // this entry.
+                if !mismatch {
+                    if let Some(name) = result.name {
+                        if !name.is_empty() && rec.entry.name != name {
+                            dbg(&format!("health result: {} name → {:?}", rec.entry.ip, name));
+                            rec.entry.name = name;
+                            needs_persist = true;
+                        }
                     }
-                }
-                if let Some(model) = result.model {
-                    if !model.is_empty() && rec.entry.model != model {
-                        dbg(&format!("health result: {} model = {:?}", rec.entry.name, model));
-                        rec.entry.model = model;
-                        needs_persist = true;
+                    if let Some(model) = result.model {
+                        if !model.is_empty() && rec.entry.model != model {
+                            dbg(&format!("health result: {} model = {:?}", rec.entry.name, model));
+                            rec.entry.model = model;
+                            needs_persist = true;
+                        }
+                    }
+                    if let Some(project) = result.project {
+                        if !project.is_empty() && rec.entry.project != project {
+                            rec.entry.project = project;
+                            needs_persist = true;
+                        }
+                    }
+                    if let Some(firmware) = result.firmware {
+                        if !firmware.is_empty() && rec.entry.firmware != firmware {
+                            rec.entry.firmware = firmware;
+                            needs_persist = true;
+                        }
                     }
                 }
             } else {
                 dbg(&format!("health result: unknown key {}", result.key));
             }
+
+            // "Poke" the *actual* device we just found, if we already know
+            // about it under its own uuid elsewhere — same treatment as
+            // `on_discovery_updated()`'s "moved IP" branch: it's a device
+            // we already track, just reachable somewhere new (Ben: "which
+            // we also need to test the GUI about," i.e. an open window for
+            // that uuid should reconnect cleanly once poked). A health
+            // check response must never *create* a new devlist entry — if
+            // we don't already know this uuid, it's ignored outright;
+            // the device will show up normally later via SSDP or a manual
+            // add.
+            if let Some((observed_uuid, ip, tls_mode)) = poke {
+                if let Some(target) = inner.devices.get_mut(&observed_uuid) {
+                    if target.entry.ip != ip || target.entry.tls_mode != tls_mode {
+                        dbg(&format!(
+                            "health result: {} found alive at {} (was tracking {}) — poking",
+                            target.entry.name, ip, target.entry.ip,
+                        ));
+                        target.entry.ip       = ip;
+                        target.entry.tls_mode = tls_mode;
+                        target.client         = WiimClient::new(&target.entry.ip, tls_mode);
+                    }
+                    let was_active = target.entry.presence == DevicePresence::Active;
+                    target.entry.presence = DevicePresence::Active;
+                    target.consecutive_failures = 0;
+                    if !was_active {
+                        presence_changes.push((observed_uuid.clone(), true));
+                    }
+                } else {
+                    dbg(&format!(
+                        "health result: unknown uuid={observed_uuid} answered at a tracked IP — ignoring (not creating a new entry)"
+                    ));
+                }
+            }
         }
         self.do_prune();
-        if let Some((uuid, reachable)) = presence_change {
-            self.fire_presence_hook(&uuid, reachable);
+        for (uuid, reachable) in &presence_changes {
+            self.fire_presence_hook(uuid, *reachable);
         }
         if needs_persist { self.persist_pinned(); }
         // Always emit so the scanning indicator clears even when presence is unchanged.
@@ -626,11 +744,13 @@ impl DiscoveryManager {
                 let Some(ref ip) = dev_cfg.last_ip else { continue };
                 if inner.devices.contains_key(uuid) { continue; }
                 let tls   = TlsMode::HttpsWiiM;
-                let name  = dev_cfg.name.clone().unwrap_or_else(|| format!("Device @ {ip}"));
-                let model = dev_cfg.model.clone().unwrap_or_default();
+                let name     = dev_cfg.name.clone().unwrap_or_else(|| format!("Device @ {ip}"));
+                let model    = dev_cfg.model.clone().unwrap_or_default();
+                let project  = dev_cfg.project.clone().unwrap_or_default();
+                let firmware = dev_cfg.firmware.clone().unwrap_or_default();
                 dbg(&format!("load from config: {name} ({ip}) uuid={uuid} pinned={pinned}"));
                 let entry = ManagedEntry {
-                    uuid: uuid.clone(), name, model, ip: ip.clone(),
+                    uuid: uuid.clone(), name, model, project, firmware, ip: ip.clone(),
                     // Start believed offline (Ghost if pinned, Dead
                     // otherwise) rather than optimistically Active — this is
                     // a config-remembered entry, not something SSDP or a
@@ -664,6 +784,12 @@ impl DiscoveryManager {
                 dev.name    = Some(rec.entry.name.clone());
                 if !rec.entry.model.is_empty() {
                     dev.model = Some(rec.entry.model.clone());
+                }
+                if !rec.entry.project.is_empty() {
+                    dev.project = Some(rec.entry.project.clone());
+                }
+                if !rec.entry.firmware.is_empty() {
+                    dev.firmware = Some(rec.entry.firmware.clone());
                 }
             }
         });
@@ -866,8 +992,7 @@ impl DiscoveryWindow {
 
         let status_suffix = match entry.presence {
             DevicePresence::Active => String::new(),
-            DevicePresence::Ghost  => " · offline (pinned)".to_string(),
-            DevicePresence::Dead   => " · offline".to_string(),
+            DevicePresence::Ghost | DevicePresence::Dead => " · offline".to_string(),
         };
         let ip_label_text = format!("{}{}", entry.ip, status_suffix);
 
