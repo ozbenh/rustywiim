@@ -82,6 +82,21 @@ pub struct ManagedEntry {
     pub tls_mode: TlsMode,
     pub pinned:   bool,
     pub presence: DevicePresence,
+    /// Live now-playing snapshot for row rendering — unlike the identity
+    /// fields above (cached on `DeviceRecord.entry`, refreshed only on
+    /// `device-changed`), this is computed fresh every `entries()` call
+    /// straight from the tracked `DeviceState::playback_state()`, since
+    /// title/artist change far more often than identity does. `None`
+    /// unless `devlist_song_info` is on, the device is `Active`, and it
+    /// actually has a track loaded.
+    pub now_playing: Option<NowPlaying>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NowPlaying {
+    pub title:   String,
+    pub artist:  String,
+    pub artwork: Option<Rc<Vec<u8>>>,
 }
 
 // ── Internal record ───────────────────────────────────────────────────────────
@@ -216,8 +231,20 @@ impl DiscoveryManager {
     }
 
     pub fn entries(&self) -> Vec<ManagedEntry> {
-        let mut v: Vec<ManagedEntry> = self.imp().inner.borrow()
-            .devices.values().map(|r| r.entry.clone()).collect();
+        let inner = self.imp().inner.borrow();
+        let song_info = inner.song_info;
+        let mut v: Vec<ManagedEntry> = inner.devices.values().map(|r| {
+            let mut entry = r.entry.clone();
+            entry.now_playing = (song_info && entry.presence == DevicePresence::Active)
+                .then(|| r.ds.playback_state())
+                .filter(|ps| !ps.title.is_empty() || !ps.artist.is_empty())
+                .map(|ps| NowPlaying {
+                    title:   ps.title.to_string(),
+                    artist:  ps.artist.to_string(),
+                    artwork: ps.artwork.clone(),
+                });
+            entry
+        }).collect();
         v.sort_by(|a, b| a.name.cmp(&b.name));
         v
     }
@@ -416,6 +443,7 @@ impl DiscoveryManager {
             uuid: uuid.to_string(), name, model, project, firmware,
             ip: ip.to_string(), tls_mode: tls, pinned,
             presence: DevicePresence::compute(ds.connection_state(), pinned),
+            now_playing: None,
         };
         let weak = self.downgrade();
         let key_owned = key.to_string();
@@ -795,7 +823,16 @@ impl DiscoveryWindow {
         open_device: &Rc<dyn Fn(&ManagedEntry)>,
         manager:     &DiscoveryManager,
     ) -> adw::ActionRow {
-        let subtitle = if entry.model.is_empty() { String::new() } else { entry.model.clone() };
+        // Now-playing title/artist takes over the subtitle line when
+        // available (`devlist_song_info` on, device `Active`, track
+        // loaded — see `entries()`); falls back to the model name
+        // otherwise, same as before this existed.
+        let subtitle = match &entry.now_playing {
+            Some(np) if !np.title.is_empty() && !np.artist.is_empty() => format!("{} – {}", np.artist, np.title),
+            Some(np) if !np.title.is_empty()  => np.title.clone(),
+            Some(np) if !np.artist.is_empty() => np.artist.clone(),
+            _ => entry.model.clone(),
+        };
 
         let status_suffix = match entry.presence {
             DevicePresence::Active => String::new(),
@@ -811,6 +848,22 @@ impl DiscoveryWindow {
 
         if entry.presence != DevicePresence::Active {
             row.add_css_class("dim-label");
+        }
+
+        // Small artwork thumbnail, only when now-playing content actually
+        // has art — same bytes-to-texture conversion `ui/playback.rs`'s
+        // `update_artwork()` uses for the main window, just a smaller size.
+        if let Some(bytes) = entry.now_playing.as_ref().and_then(|np| np.artwork.as_ref()) {
+            let gbytes = glib::Bytes::from(bytes.as_ref().as_slice());
+            if let Ok(tex) = gtk::gdk::Texture::from_bytes(&gbytes) {
+                let art = gtk::Image::builder()
+                    .paintable(&tex)
+                    .pixel_size(32)
+                    .valign(gtk::Align::Center)
+                    .css_classes(["devlist-art"])
+                    .build();
+                row.add_prefix(&art);
+            }
         }
 
         let ip_label = gtk::Label::builder()
