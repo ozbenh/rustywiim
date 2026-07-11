@@ -20,6 +20,7 @@ use crate::device::api::DeviceInfo;
 use crate::device::capabilities::DeviceCapabilities;
 use crate::device::playback::AccessMethod;
 use crate::device::state::DeviceState;
+use crate::ui::devlist::DiscoveryManager;
 use crate::ui::DEBUG_UI;
 use std::sync::atomic::Ordering;
 
@@ -43,7 +44,7 @@ pub(crate) struct SettingsWindow {
 }
 
 impl SettingsWindow {
-    pub(crate) fn new(ds: Option<DeviceState>) -> Self {
+    pub(crate) fn new(ds: Option<DeviceState>, disc_mgr: &DiscoveryManager) -> Self {
         // ── Navigation sidebar ─────────────────────────────────────────────────
         let sidebar_box = gtk::Box::builder()
             .orientation(Orientation::Vertical)
@@ -70,6 +71,13 @@ impl SettingsWindow {
             .activatable(true)
             .build();
         sidebar_list.append(&appearance_row);
+
+        let general_row = adw::ActionRow::builder()
+            .title("General")
+            .selectable(true)
+            .activatable(true)
+            .build();
+        sidebar_list.append(&general_row);
         sidebar_box.append(&sidebar_list);
 
         // "Device" section — only when opened from a device window (`ds`
@@ -163,6 +171,9 @@ impl SettingsWindow {
         let appearance_page = build_appearance_page();
         content_stack.add_named(&appearance_page, Some("appearance"));
 
+        let general_page = build_general_page(disc_mgr);
+        content_stack.add_named(&general_page, Some("general"));
+
         if let Some((_, ref advanced_holder, _, ref about_holder)) = device_panels {
             content_stack.add_named(advanced_holder, Some("advanced"));
             content_stack.add_named(about_holder, Some("about"));
@@ -179,6 +190,7 @@ impl SettingsWindow {
                 device_list.unselect_all();
                 let name = match row.index() {
                     0 => "appearance",
+                    1 => "general",
                     _ => return,
                 };
                 stack.set_visible_child_name(name);
@@ -499,6 +511,29 @@ fn build_appearance_page() -> adw::PreferencesPage {
     let page = adw::PreferencesPage::new();
     page.add(&group);
     page.add(&actions_group);
+    page
+}
+
+fn build_general_page(disc_mgr: &DiscoveryManager) -> adw::PreferencesPage {
+    let song_info = config::with(|cfg| cfg.devlist_song_info);
+    let song_info_row = adw::SwitchRow::builder()
+        .title("Song info in device list")
+        .subtitle("Show title/artist/artwork for every device in the picker, \
+                   not just ones with an open window — costs extra background \
+                   network traffic per device")
+        .active(song_info)
+        .build();
+    song_info_row.connect_active_notify(glib::clone!(@weak disc_mgr => move |row| {
+        disc_mgr.set_song_info(row.is_active());
+    }));
+
+    let group = adw::PreferencesGroup::builder()
+        .title("Device List")
+        .build();
+    group.add(&song_info_row);
+
+    let page = adw::PreferencesPage::new();
+    page.add(&group);
     page
 }
 

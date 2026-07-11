@@ -119,10 +119,15 @@ struct DeviceRecord {
 
 struct Inner {
     devices: HashMap<String, DeviceRecord>,
+    /// Mirrors `config::Config::devlist_song_info` — cached here rather
+    /// than re-read from config on every device creation, refreshed once
+    /// in `start()` and again on every `set_song_info()` call. See
+    /// `set_song_info()`'s doc comment for the full fan-out story.
+    song_info: bool,
 }
 
 impl Default for Inner {
-    fn default() -> Self { Self { devices: HashMap::new() } }
+    fn default() -> Self { Self { devices: HashMap::new(), song_info: false } }
 }
 
 // ── DiscoveryManager GObject ──────────────────────────────────────────────────
@@ -193,6 +198,7 @@ impl DiscoveryManager {
     }
 
     pub fn start(&self) {
+        self.imp().inner.borrow_mut().song_info = config::with(|cfg| cfg.devlist_song_info);
         self.load_known_devices_from_config();
         // initial-load fires once synchronously so AppState can open any windows
         // that config says should be restored — before async discovery arrives.
@@ -263,6 +269,28 @@ impl DiscoveryManager {
             self.do_prune();
             self.emit_list_changed();
         }
+    }
+
+    /// Toggles whether every tracked device additionally fetches title/
+    /// artist/artwork (`config::Config::devlist_song_info`, surfaced as the
+    /// "Song info in device list" switch in Settings' General page).
+    /// Persists immediately, updates the cached `Inner.song_info` new
+    /// devices read at creation (`create_and_track()`), and pushes the new
+    /// value onto every currently-tracked `DeviceState` right away — so
+    /// toggling takes effect immediately, not just for devices tracked
+    /// afterward. No effect on a device already in `Full` mode (an open
+    /// window already fetches this content regardless — see
+    /// `DeviceState::configure_simple_mode()`'s doc comment).
+    pub fn set_song_info(&self, want: bool) {
+        {
+            let inner = self.imp().inner.borrow_mut();
+            for rec in inner.devices.values() {
+                rec.ds.configure_simple_mode(want);
+            }
+        }
+        self.imp().inner.borrow_mut().song_info = want;
+        config::update(|cfg| cfg.devlist_song_info = want);
+        self.emit_list_changed();
     }
 
     /// Records whether a device window is currently open for `uuid` — see
@@ -383,6 +411,7 @@ impl DiscoveryManager {
     ) {
         dbg(&format!("track_device: new {name} ({ip}) uuid={uuid:?} key={key:?}"));
         let ds = self.device_manager().create_and_configure(uuid, ip, tls);
+        ds.configure_simple_mode(self.imp().inner.borrow().song_info);
         let entry = ManagedEntry {
             uuid: uuid.to_string(), name, model, project, firmware,
             ip: ip.to_string(), tls_mode: tls, pinned,
@@ -393,6 +422,24 @@ impl DiscoveryManager {
         ds.connect_device_changed(move |ds| {
             let Some(mgr) = weak.upgrade() else { return };
             mgr.on_tracked_device_changed(&key_owned, ds);
+        });
+        // Rebuilds the row list on an actual now-playing content change
+        // (not every poll tick — filtered to the TITLE/ARTIST/ARTWORK bits)
+        // so a picker row showing song info stays live. No-op, cheaply,
+        // when `song_info` is off — `entries()` doesn't populate now-playing
+        // fields in that case, so there'd be nothing to redraw.
+        let weak2 = self.downgrade();
+        ds.connect_playback_changed(move |_, mask| {
+            if mask & (crate::device::state::playback_changed::TITLE
+                | crate::device::state::playback_changed::ARTIST
+                | crate::device::state::playback_changed::ARTWORK) == 0
+            {
+                return;
+            }
+            let Some(mgr) = weak2.upgrade() else { return };
+            if mgr.imp().inner.borrow().song_info {
+                mgr.emit_list_changed();
+            }
         });
         self.imp().inner.borrow_mut().devices.insert(key.to_string(), DeviceRecord {
             entry, in_discovery, has_open_window: false, ds,

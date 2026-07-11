@@ -247,6 +247,15 @@ pub struct Config {
     /// true`) if it turns up again.
     #[serde(default)]
     pub mini_stale_pixel_workaround: bool,
+    /// Whether the device-picker list additionally fetches and shows
+    /// title/artist/artwork for every tracked device, not just ones with an
+    /// open window. Off by default: every known device is already polled
+    /// continuously for liveness (Simple mode) regardless of this setting,
+    /// so turning it on adds real background HTTP/UPnP traffic per device
+    /// rather than being free — opt-in rather than a surprise on a fresh
+    /// install.
+    #[serde(default)]
+    pub devlist_song_info: bool,
 }
 
 impl Default for Config {
@@ -263,6 +272,7 @@ impl Default for Config {
             mini_modern: default_mini_modern(),
             accent_color: default_accent_color(),
             mini_stale_pixel_workaround: false,
+            devlist_song_info: false,
         }
     }
 }

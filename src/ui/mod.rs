@@ -1359,7 +1359,7 @@ impl AppState {
             }
         }
         dbg_state(&format!("settings: opening new for {:?}", ds_uuid));
-        let s = settings::SettingsWindow::new(ds);
+        let s = settings::SettingsWindow::new(ds, &self_rc.disc_mgr);
         let win_clone  = s.window_ref().clone();
         let weak_self  = Rc::downgrade(self_rc);
         let close_uuid = ds_uuid.clone();
