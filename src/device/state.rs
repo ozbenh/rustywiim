@@ -1274,7 +1274,21 @@ impl DeviceState {
         let now = Instant::now();
 
         if inner.full_clients == 0 {
-            self.do_simple_poll(&mut inner, now, simple_tx);
+            let dispatched = self.do_simple_poll(&mut inner, now, simple_tx);
+            // Only piggyback the song-info fetch onto the *same* tick
+            // `do_simple_poll()` actually dispatched on — not every tick —
+            // or this would run at 1s cadence instead of
+            // `SIMPLE_POLL_INTERVAL`, defeating the point of `Simple` mode
+            // being cheaper. Reuses `dispatch_fast_poll()` (and its
+            // existing `fast_poll_handle` in-flight guard/`process_poll()`
+            // decode pipeline) unchanged rather than a second
+            // implementation — same content `Full` mode's fast poll
+            // fetches, just gated to a slower cadence here.
+            let want_song_info = dispatched && inner.simple_mode_song_info;
+            drop(inner);
+            if want_song_info {
+                self.dispatch_fast_poll();
+            }
             return glib::ControlFlow::Continue;
         }
 
@@ -1349,24 +1363,25 @@ impl DeviceState {
     /// `SlowPollPhase::DeviceInfo` already uses (see
     /// `start_simple_poll_processor()`), not a separate implementation.
     ///
-    /// **Not yet implemented**: when `Inner::simple_mode_song_info` is set,
-    /// this should *also* fetch today's fast-poll content (status/metadata,
-    /// for title/artist/artwork). Right now this always does only the bare
-    /// liveness/identity check, regardless of `simple_mode_song_info`.
+    /// Returns whether this tick actually dispatched (vs. skipped: not due
+    /// yet, or a previous call still in flight) — `do_poll()`'s caller uses
+    /// this to piggyback the optional song-info fetch
+    /// (`Inner::simple_mode_song_info`) onto the exact same cadence, rather
+    /// than every 1s tick.
     fn do_simple_poll(
         &self,
         inner: &mut Inner,
         now: Instant,
         simple_tx: &async_channel::Sender<Option<DeviceInfo>>,
-    ) {
+    ) -> bool {
         let due = inner.last_simple_poll
             .map_or(true, |t| now.duration_since(t) >= SIMPLE_POLL_INTERVAL);
         // Same "don't pile on top of a still-outstanding call" reasoning as
         // `fast_poll_handle`/`slow_poll_handle` (see their doc comments).
         if !due || inner.simple_poll_handle.is_some() {
-            return;
+            return false;
         }
-        let Some(client) = inner.client.clone() else { return };
+        let Some(client) = inner.client.clone() else { return false };
         inner.last_simple_poll = Some(now);
         let tx = simple_tx.clone();
         let handle = self.rt().spawn(async move {
@@ -1374,6 +1389,7 @@ impl DeviceState {
             let _ = tx.send(info).await;
         });
         inner.simple_poll_handle = Some(handle);
+        true
     }
 
     /// Advances the slow-poll rotation (see `SlowPollPhase`), starting a
