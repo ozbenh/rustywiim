@@ -50,6 +50,20 @@ fn dbg(msg: &str) {
     }
 }
 
+/// Human-readable form of a `device::state::playback_changed` bitmask, for
+/// `--debug=discovery`'s `song-info-changed` line — lets a live session
+/// show exactly which bits triggered a given row update instead of just
+/// the raw hex value.
+fn describe_playback_mask(mask: u32) -> String {
+    use crate::device::state::playback_changed as PC;
+    let names: &[(u32, &str)] = &[
+        (PC::ARTWORK, "ARTWORK"), (PC::TITLE, "TITLE"), (PC::ARTIST, "ARTIST"),
+        (PC::ALBUM, "ALBUM"), (PC::TIME, "TIME"), (PC::VOLUME, "VOLUME"), (PC::OTHER, "OTHER"),
+    ];
+    let bits: Vec<&str> = names.iter().filter(|(bit, _)| mask & bit != 0).map(|(_, name)| *name).collect();
+    if bits.is_empty() { "none".to_string() } else { bits.join("|") }
+}
+
 // ── Public types ──────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -221,12 +235,22 @@ mod mgr_imp {
                 // structural), which is both wasteful
                 // and defeats FlipCover's flip-vs-fade logic: a freshly
                 // reconstructed FlipCover never has "previous real art" on
-                // the same widget instance to flip from. Param: the
+                // the same widget instance to flip from. Params: the
                 // tracked device's key (`device_key()`'s result — same
                 // string `entries()`'s rows/`current_entries` are indexed
-                // by), so a listener can update just that one row in place.
+                // by) and the raw `playback_changed` bitmask. The mask
+                // matters, not just the key — `ui/playback.rs`'s own
+                // `update_playback_ui()` only ever re-evaluates artwork
+                // when `mask & ARTWORK != 0`, never on a bare title/artist
+                // tick, because the two don't necessarily update on the
+                // same poll (title/artist can land before the async art
+                // fetch resolves). A handler that re-ran `apply_now_playing()`
+                // unconditionally on *every* firing would catch that gap —
+                // artwork transiently `None` mid-transition — and flash the
+                // fallback icon before the real flip; the mask lets it only
+                // touch each widget when its own bit actually fired.
                 Signal::builder("song-info-changed")
-                    .param_types([String::static_type()])
+                    .param_types([String::static_type(), u32::static_type()])
                     .build(),
             ])
         }
@@ -317,9 +341,9 @@ impl DiscoveryManager {
     /// Fired from `create_and_track()`'s `playback-changed` handler
     /// instead of `emit_list_changed()` — see `song-info-changed`'s own
     /// doc comment (`signals()`) for why the two are kept separate.
-    fn emit_song_info_changed(&self, key: &str) {
-        dbg(&format!("song info changed: {key}"));
-        self.emit_by_name::<()>("song-info-changed", &[&key.to_string()]);
+    fn emit_song_info_changed(&self, key: &str, mask: u32) {
+        dbg(&format!("song info changed: {key} mask={mask:#04x} ({})", describe_playback_mask(mask)));
+        self.emit_by_name::<()>("song-info-changed", &[&key.to_string(), &mask]);
     }
 
     fn dump_devices(&self) {
@@ -420,11 +444,12 @@ impl DiscoveryManager {
     /// why this is separate from `list-changed`. The callback's `&str` is
     /// the device's key (`device_key()`'s result); use `entry_for(key)` to
     /// get its fresh content.
-    pub fn connect_song_info_changed<F: Fn(&Self, &str) + 'static>(&self, f: F) -> glib::SignalHandlerId {
+    pub fn connect_song_info_changed<F: Fn(&Self, &str, u32) + 'static>(&self, f: F) -> glib::SignalHandlerId {
         self.connect_local("song-info-changed", false, move |args| {
-            let obj = args[0].get::<Self>().unwrap();
-            let key = args[1].get::<String>().unwrap();
-            f(&obj, &key);
+            let obj  = args[0].get::<Self>().unwrap();
+            let key  = args[1].get::<String>().unwrap();
+            let mask = args[2].get::<u32>().unwrap();
+            f(&obj, &key, mask);
             None
         })
     }
@@ -549,7 +574,7 @@ impl DiscoveryManager {
             }
             let Some(mgr) = weak2.upgrade() else { return };
             if mgr.imp().inner.borrow().song_info {
-                mgr.emit_song_info_changed(&key_for_song_info);
+                mgr.emit_song_info_changed(&key_for_song_info, mask);
             }
         });
         self.imp().inner.borrow_mut().devices.insert(key.to_string(), DeviceRecord {
@@ -879,6 +904,18 @@ struct RowWidgets {
     vol_label:    gtk::Label,
     vol_scale:    gtk::Scale,
     mute_btn:     gtk::Button,
+    /// `gtk::Popover::set_parent()` (not box-packing) attaches this to
+    /// `vol_btn` — GTK4 doesn't unparent a `set_parent()`-attached child
+    /// automatically when the parent widget itself is torn down, so
+    /// without an explicit `unparent()` call first, destroying old rows
+    /// on every `rebuild_list()` logs "Finalizing GtkButton but still has
+    /// children left: GtkPopover" (confirmed live, first SSDP response —
+    /// exactly the first time old rows get torn down). Kept here so
+    /// `rebuild_list()` can unparent every outgoing row's popover before
+    /// removing it from the list. `widgets.rs`'s main/mini window
+    /// `vol_popover`s have the identical latent gap — just never exercised
+    /// repeatedly there (built once, torn down once at window close).
+    vol_popover: gtk::Popover,
     /// Same drag-protection pattern as the main/mini windows'
     /// `DeviceWindowInner::ui_state.drag_timer` — while set, a live poll
     /// update (`song-info-changed`) skips repositioning the slider so it
@@ -1009,14 +1046,31 @@ impl DiscoveryWindow {
 
         // One device's now-playing content changed — update just its row
         // in place instead of rebuilding the whole list.
-        manager.connect_song_info_changed(clone!(@strong row_widgets, @strong icons => move |mgr, key| {
+        // Only touches the widget(s) whose own bit actually fired — in
+        // particular, never re-evaluates artwork on a bare title/artist
+        // tick (matching `ui/playback.rs`'s `update_playback_ui()`, which
+        // only calls `update_artwork()` when `mask & ARTWORK != 0`).
+        // Title/artist and artwork don't necessarily land on the same poll
+        // (artwork is fetched asynchronously after the metadata that
+        // announces a track change), so applying every update unconditionally
+        // here would catch that gap — artwork transiently absent — and flash
+        // the fallback icon before the real flip instead of holding the old
+        // art until the new art is actually ready to flip to.
+        manager.connect_song_info_changed(clone!(@strong row_widgets, @strong icons => move |mgr, key, mask| {
+            use crate::device::state::playback_changed as PC;
             let Some(entry) = mgr.entry_for(key) else { return };
             let widgets = row_widgets.borrow();
             let Some(rw) = widgets.get(key) else { return };
-            apply_now_playing(&rw.flip, &icons, &entry);
-            rw.subtitle.set_text(&subtitle_text_for(&entry));
-            if let Some(ds) = mgr.device_state_for(key) {
-                sync_devlist_vol_display(rw, &ds);
+            if mask & (PC::TITLE | PC::ARTIST) != 0 {
+                rw.subtitle.set_text(&subtitle_text_for(&entry));
+            }
+            if mask & PC::ARTWORK != 0 {
+                apply_now_playing(&rw.flip, &icons, &entry);
+            }
+            if mask & PC::VOLUME != 0 {
+                if let Some(ds) = mgr.device_state_for(key) {
+                    sync_devlist_vol_display(rw, &ds);
+                }
             }
         }));
 
@@ -1091,6 +1145,16 @@ impl DiscoveryWindow {
         manager:         &DiscoveryManager,
         icons:           &Rc<IconSet>,
     ) {
+        // Explicit `unparent()` before the row widgets themselves are torn
+        // down below — `gtk::Popover::set_parent()` (used for each row's
+        // volume popover) isn't automatically unparented when its owning
+        // button is destroyed, so skipping this logs "Finalizing GtkButton
+        // but still has children left: GtkPopover" on every rebuild that
+        // drops a row with song info on (confirmed live, first SSDP
+        // response). See `RowWidgets::vol_popover`'s doc comment.
+        for rw in row_widgets.borrow().values() {
+            rw.vol_popover.unparent();
+        }
         while let Some(child) = list_box.first_child() {
             list_box.remove(&child);
         }
@@ -1206,10 +1270,10 @@ impl DiscoveryWindow {
                 if vol_popover.is_visible() { vol_popover.popdown(); } else { vol_popover.popup(); }
             }));
             hbox.append(&vol_btn);
-            (vol_icon_img, vol_label, vol_scale, mute_btn)
+            (vol_icon_img, vol_label, vol_scale, mute_btn, vol_popover)
         });
 
-        if let (Some(flip), Some((vol_icon_img, vol_label, vol_scale, mute_btn))) = (flip, vol_widgets) {
+        if let (Some(flip), Some((vol_icon_img, vol_label, vol_scale, mute_btn, vol_popover))) = (flip, vol_widgets) {
             let vol_drag_timer: Rc<RefCell<Option<glib::SourceId>>> = Rc::new(RefCell::new(None));
 
             if let Some(ds) = manager.device_state_for(&key) {
@@ -1217,6 +1281,7 @@ impl DiscoveryWindow {
                     flip: flip.clone(), subtitle: subtitle.clone(),
                     vol_icon_img: vol_icon_img.clone(), vol_label: vol_label.clone(),
                     vol_scale: vol_scale.clone(), mute_btn: mute_btn.clone(),
+                    vol_popover: vol_popover.clone(),
                     vol_drag_timer: vol_drag_timer.clone(),
                 };
                 sync_devlist_vol_display(&rw_for_sync, &ds);
@@ -1245,6 +1310,7 @@ impl DiscoveryWindow {
             row_widgets.borrow_mut().insert(key, RowWidgets {
                 flip, subtitle: subtitle.clone(),
                 vol_icon_img, vol_label, vol_scale, mute_btn,
+                vol_popover,
                 vol_drag_timer,
             });
         }
