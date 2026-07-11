@@ -36,6 +36,8 @@ use crate::device::discovery::{DEBUG_DISCOVERY, DiscoveredDevice, DiscoveryServi
 use crate::device::manager::DeviceManager;
 use crate::device::state::{ConnectionState, DeviceState};
 use crate::ui::icons::IconSet;
+use super::flip_cover::FlipCover;
+use super::scroll_fade_label::ScrollFadeLabel;
 
 /// `[disc-mgr]` — `DiscoveryManager`, the picker-list backend (this file's
 /// `impl DiscoveryManager` block). Distinct from `device/discovery.rs`'s
@@ -84,13 +86,20 @@ pub struct ManagedEntry {
     pub tls_mode: TlsMode,
     pub pinned:   bool,
     pub presence: DevicePresence,
+    /// Mirrors `devlist_song_info` at the moment `entries()` was called —
+    /// separate from `now_playing` below so a row can reserve its
+    /// artwork/icon slot (fixed size, so the row's right-hand side never
+    /// shifts as devices update) even when this particular device has
+    /// nothing to show there yet (not `Active`, e.g.).
+    pub song_info_enabled: bool,
     /// Live now-playing snapshot for row rendering — unlike the identity
     /// fields above (cached on `DeviceRecord.entry`, refreshed only on
     /// `device-changed`), this is computed fresh every `entries()` call
     /// straight from the tracked `DeviceState::playback_state()`, since
     /// title/artist change far more often than identity does. `None`
-    /// unless `devlist_song_info` is on, the device is `Active`, and it
-    /// actually has a track loaded.
+    /// unless `devlist_song_info` is on and the device is `Active` — *not*
+    /// further gated on actually having a track loaded, so an idle-but-
+    /// connected device still gets its input/mode icon rather than nothing.
     pub now_playing: Option<NowPlaying>,
 }
 
@@ -244,6 +253,7 @@ impl DiscoveryManager {
         let song_info = inner.song_info;
         let mut v: Vec<ManagedEntry> = inner.devices.values().map(|r| {
             let mut entry = r.entry.clone();
+            entry.song_info_enabled = song_info;
             entry.now_playing = (song_info && entry.presence == DevicePresence::Active)
                 .then(|| {
                     let ps = r.ds.playback_state();
@@ -459,6 +469,7 @@ impl DiscoveryManager {
             uuid: uuid.to_string(), name, model, project, firmware,
             ip: ip.to_string(), tls_mode: tls, pinned,
             presence: DevicePresence::compute(ds.connection_state(), pinned),
+            song_info_enabled: self.imp().inner.borrow().song_info,
             now_playing: None,
         };
         let weak = self.downgrade();
@@ -751,16 +762,33 @@ impl DiscoveryWindow {
         toolbar_view.set_content(Some(&content));
         window.set_content(Some(&toolbar_view));
 
+        // The entries backing the currently-rendered rows, kept in the same
+        // order they were appended in — `list_box.connect_row_activated()`
+        // below looks a clicked/Enter-activated row up by index into this
+        // rather than each row closing over its own entry, since GtkListBox
+        // already fires `row-activated` for any child row type (not just
+        // AdwActionRow) on click or keyboard activation, and reusing that
+        // is simpler than reimplementing it per row.
+        let current_entries: Rc<RefCell<Vec<ManagedEntry>>> = Rc::new(RefCell::new(Vec::new()));
+
         // Populate list and subscribe to manager changes.
-        Self::rebuild_list(&list_box, &manager.entries(), &open_device, manager, &icons);
+        Self::rebuild_list(&list_box, &manager.entries(), &current_entries, manager, &icons);
 
         // List rebuild: fires on every discovery event or tracked-device change.
         manager.connect_list_changed(clone!(
-            @strong list_box, @strong open_device, @strong icons
+            @strong list_box, @strong current_entries, @strong icons
                 => move |mgr| {
-                    Self::rebuild_list(&list_box, &mgr.entries(), &open_device, mgr, &icons);
+                    Self::rebuild_list(&list_box, &mgr.entries(), &current_entries, mgr, &icons);
                 }
         ));
+
+        list_box.connect_row_activated(clone!(@strong current_entries, @strong open_device => move |_, row| {
+            let idx = row.index();
+            if idx < 0 { return; }
+            if let Some(entry) = current_entries.borrow().get(idx as usize) {
+                open_device(entry);
+            }
+        }));
 
         // Scanning indicator: clear only when the SSDP scan cycle reports in.
         let scanning = Rc::new(std::cell::Cell::new(true));
@@ -818,15 +846,18 @@ impl DiscoveryWindow {
     }
 
     fn rebuild_list(
-        list_box:    &gtk::ListBox,
-        entries:     &[ManagedEntry],
-        open_device: &Rc<dyn Fn(&ManagedEntry)>,
-        manager:     &DiscoveryManager,
-        icons:       &Rc<IconSet>,
+        list_box:        &gtk::ListBox,
+        entries:         &[ManagedEntry],
+        current_entries: &Rc<RefCell<Vec<ManagedEntry>>>,
+        manager:         &DiscoveryManager,
+        icons:           &Rc<IconSet>,
     ) {
         while let Some(child) = list_box.first_child() {
             list_box.remove(&child);
         }
+        // Must match row append order exactly — `list_box.connect_row_activated`
+        // looks a clicked row up by index into this.
+        *current_entries.borrow_mut() = entries.to_vec();
         if entries.is_empty() {
             let placeholder = adw::ActionRow::builder()
                 .title("No devices found")
@@ -836,72 +867,99 @@ impl DiscoveryWindow {
             return;
         }
         for entry in entries {
-            list_box.append(&Self::build_row(entry, open_device, manager, icons));
+            list_box.append(&Self::build_row(entry, manager, icons));
         }
     }
 
     fn build_row(
-        entry:       &ManagedEntry,
-        open_device: &Rc<dyn Fn(&ManagedEntry)>,
-        manager:     &DiscoveryManager,
-        icons:       &Rc<IconSet>,
-    ) -> adw::ActionRow {
-        // Now-playing title/artist takes over the subtitle line when
-        // available (`devlist_song_info` on, device `Active`, track
-        // loaded — see `entries()`); falls back to the model name
-        // otherwise, same as before this existed.
-        let subtitle = match &entry.now_playing {
-            Some(np) if !np.title.is_empty() && !np.artist.is_empty() => format!("{} – {}", np.artist, np.title),
+        entry:   &ManagedEntry,
+        manager: &DiscoveryManager,
+        icons:   &Rc<IconSet>,
+    ) -> gtk::ListBoxRow {
+        let hbox = gtk::Box::builder()
+            .orientation(Orientation::Horizontal)
+            .spacing(12)
+            .margin_top(8).margin_bottom(8)
+            .margin_start(12).margin_end(12)
+            .build();
+
+        // Artwork/icon slot — reserved at a fixed size (`.devlist-art`'s
+        // CSS min-width/min-height) whenever song-info display is on
+        // globally, regardless of whether *this* device currently has
+        // anything to show there, so the row's right-hand side (ip label,
+        // pin button) never shifts as devices update. Same FlipCover
+        // widget (flip/crossfade between real art and the fallback icon)
+        // the main and mini windows use, not a separate plain-image path.
+        if entry.song_info_enabled {
+            let flip = FlipCover::new();
+            flip.set_hexpand(false);
+            flip.set_vexpand(false);
+            flip.set_valign(gtk::Align::Center);
+            flip.add_css_class("devlist-art");
+            flip.set_overflow(gtk::Overflow::Hidden);
+            match &entry.now_playing {
+                Some(np) => {
+                    let tex = np.artwork.as_ref().and_then(|bytes| {
+                        let gbytes = glib::Bytes::from(bytes.as_ref().as_slice());
+                        gtk::gdk::Texture::from_bytes(&gbytes).ok()
+                    });
+                    match &tex {
+                        Some(t) => flip.set_art(Some(t), &entry.uuid),
+                        None    => flip.set_icon(icons.source_paintable(&np.icon_key), 32.0, &entry.uuid),
+                    }
+                }
+                None => flip.clear(),
+            }
+            hbox.append(&flip);
+        }
+
+        let text_box = gtk::Box::builder()
+            .orientation(Orientation::Vertical)
+            .valign(gtk::Align::Center)
+            .hexpand(true)
+            .build();
+
+        let title_label = gtk::Label::builder()
+            .label(&entry.name)
+            .halign(gtk::Align::Start)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .build();
+        text_box.append(&title_label);
+
+        // "Title · Artist" (round-dot separator, same as the mini window's
+        // artist/album line) when now-playing content is available; falls
+        // back to the model name otherwise. A ScrollFadeLabel — not a
+        // plain Label, and deliberately not AdwActionRow's own `subtitle`
+        // property — for two reasons: it scrolls long text instead of
+        // silently truncating, and it sets plain Pango text rather than
+        // markup (`subtitle` interprets markup, which broke on a literal
+        // "&" in a device or track name — moot here since ScrollFadeLabel
+        // never parses its text as markup at all).
+        let subtitle_text = match &entry.now_playing {
+            Some(np) if !np.title.is_empty() && !np.artist.is_empty() => format!("{} \u{00b7} {}", np.title, np.artist),
             Some(np) if !np.title.is_empty()  => np.title.clone(),
             Some(np) if !np.artist.is_empty() => np.artist.clone(),
             _ => entry.model.clone(),
         };
+        let subtitle = ScrollFadeLabel::new(&subtitle_text);
+        subtitle.set_halign(gtk::Align::Start);
+        subtitle.set_hexpand(true);
+        subtitle.add_label_css_class("dim-label");
+        subtitle.add_label_css_class("caption");
+        text_box.append(&subtitle);
+
+        hbox.append(&text_box);
 
         let status_suffix = match entry.presence {
             DevicePresence::Active => String::new(),
             DevicePresence::Ghost | DevicePresence::Dead => " · offline".to_string(),
         };
-        let ip_label_text = format!("{}{}", entry.ip, status_suffix);
-
-        let row = adw::ActionRow::builder()
-            .title(&entry.name)
-            .subtitle(&subtitle)
-            .activatable(true)
-            .build();
-
-        if entry.presence != DevicePresence::Active {
-            row.add_css_class("dim-label");
-        }
-
-        // Artwork thumbnail when now-playing content has real art; falls
-        // back to the input/mode icon (same lookup `ui/playback.rs`'s
-        // `update_artwork()` uses for the main window's own no-art
-        // fallback) when it doesn't — never just blank, matching how a
-        // device window always shows either art or an icon.
-        if let Some(np) = &entry.now_playing {
-            let tex = np.artwork.as_ref().and_then(|bytes| {
-                let gbytes = glib::Bytes::from(bytes.as_ref().as_slice());
-                gtk::gdk::Texture::from_bytes(&gbytes).ok()
-            });
-            let paintable: gtk::gdk::Paintable = match &tex {
-                Some(tex) => tex.clone().upcast(),
-                None      => icons.source_paintable(&np.icon_key).clone(),
-            };
-            let art = gtk::Image::builder()
-                .paintable(&paintable)
-                .pixel_size(32)
-                .valign(gtk::Align::Center)
-                .css_classes(["devlist-art"])
-                .build();
-            row.add_prefix(&art);
-        }
-
         let ip_label = gtk::Label::builder()
-            .label(&ip_label_text)
+            .label(&format!("{}{}", entry.ip, status_suffix))
             .valign(gtk::Align::Center)
             .css_classes(["dim-label", "caption"])
             .build();
-        row.add_suffix(&ip_label);
+        hbox.append(&ip_label);
 
         // Pin / unpin toggle button.
         let pin_btn = gtk::ToggleButton::builder()
@@ -914,20 +972,19 @@ impl DiscoveryWindow {
         if entry.pinned {
             pin_btn.add_css_class("accent");
         }
-
         let uuid_for_pin = entry.uuid.clone();
         pin_btn.connect_toggled(clone!(@strong manager => move |btn| {
             manager.set_pinned(&uuid_for_pin, btn.is_active());
         }));
-        row.add_suffix(&pin_btn);
+        hbox.append(&pin_btn);
 
-        // Single click or Enter key opens the device window.
-        let entry_clone = entry.clone();
-        let open_fn     = Rc::clone(open_device);
-        row.connect_activated(move |_| {
-            open_fn(&entry_clone);
-        });
-
+        let row = gtk::ListBoxRow::builder()
+            .activatable(true)
+            .child(&hbox)
+            .build();
+        if entry.presence != DevicePresence::Active {
+            row.add_css_class("dim-label");
+        }
         row
     }
 

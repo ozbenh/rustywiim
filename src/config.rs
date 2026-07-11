@@ -44,6 +44,7 @@ fn default_mini_modern() -> bool { true }
 /// Matches the accent colour hardcoded in dark.css before it became
 /// user-configurable, so existing users see no visual change by default.
 fn default_accent_color() -> String { "#4ecdc4".to_string() }
+fn default_devlist_song_info() -> bool { true }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -249,12 +250,13 @@ pub struct Config {
     pub mini_stale_pixel_workaround: bool,
     /// Whether the device-picker list additionally fetches and shows
     /// title/artist/artwork for every tracked device, not just ones with an
-    /// open window. Off by default: every known device is already polled
-    /// continuously for liveness (Simple mode) regardless of this setting,
-    /// so turning it on adds real background HTTP/UPnP traffic per device
-    /// rather than being free — opt-in rather than a surprise on a fresh
-    /// install.
-    #[serde(default)]
+    /// open window. On by default (Ben, 2026-07-11) — every known device is
+    /// already polled continuously for liveness (Simple mode) regardless of
+    /// this setting, and showing what's playing is the more useful default
+    /// experience; the extra background HTTP/UPnP traffic it costs per
+    /// device is the accepted trade-off, not something to hide behind an
+    /// opt-in.
+    #[serde(default = "default_devlist_song_info")]
     pub devlist_song_info: bool,
 }
 
@@ -272,7 +274,7 @@ impl Default for Config {
             mini_modern: default_mini_modern(),
             accent_color: default_accent_color(),
             mini_stale_pixel_workaround: false,
-            devlist_song_info: false,
+            devlist_song_info: default_devlist_song_info(),
         }
     }
 }

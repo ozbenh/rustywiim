@@ -92,7 +92,7 @@ window { background-color: #0a0a0a; }
 .preset-tile:hover { background-color: #202020; }
 .preset-art   { border-radius: 5px; min-width: 40px; min-height: 40px; }
 .preset-art-small { min-width: 26px; min-height: 26px; padding: 7px; }
-.devlist-art  { border-radius: 4px; }
+.devlist-art  { border-radius: 4px; min-width: 32px; min-height: 32px; }
 .preset-name  { font-size: 12px; color: #a0a0a0; }
 .preset-badge { font-size: 9px; font-weight: 700; color: #1a1a1a; background-color: #606060; border-radius: 50%; min-width: 16px; min-height: 16px; padding: 1px; }
 window.mini-window { background-color: transparent; }
