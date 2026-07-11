@@ -108,6 +108,13 @@ pub struct NowPlaying {
     pub title:    String,
     pub artist:   String,
     pub artwork:  Option<Rc<Vec<u8>>>,
+    /// Doubles as `FlipCover::set_art()`'s de-dupe key (same as
+    /// `ui/playback.rs`'s `update_artwork()` uses for the main window) —
+    /// `apply_now_playing()` must never use a constant-per-device value
+    /// (e.g. uuid) for that key, or every update after the first becomes a
+    /// silent no-op once the row's `FlipCover` is a persistent widget
+    /// (`RowWidgets`) rather than rebuilt fresh each time.
+    pub art_url:  Option<String>,
     /// Icon key for the row's fallback icon when `artwork` is `None` —
     /// same `IconSet::source_paintable()` lookup key the main window's
     /// `update_artwork()` uses for its own no-art fallback, computed the
@@ -284,6 +291,14 @@ impl DiscoveryManager {
         let inner = self.imp().inner.borrow();
         let song_info = inner.song_info;
         inner.devices.get(key).map(|r| build_managed_entry(r, song_info))
+    }
+
+    /// The tracked `DeviceState` for `key` — cheap to clone (GObject
+    /// refcount). Used for the picker row's volume/mute control, which
+    /// talks to the device directly rather than going through `ManagedEntry`
+    /// (volume isn't part of the rendered snapshot anywhere else).
+    pub fn device_state_for(&self, key: &str) -> Option<DeviceState> {
+        self.imp().inner.borrow().devices.get(key).map(|r| r.ds.clone())
     }
 
     /// The one place `list-changed` actually fires — dumps the full
@@ -723,6 +738,7 @@ fn compute_now_playing(ds: &DeviceState) -> NowPlaying {
         title:   ps.title.to_string(),
         artist:  ps.artist.to_string(),
         artwork: ps.artwork.clone(),
+        art_url: ps.art_url.as_deref().map(|s| s.to_string()),
         icon_key,
     }
 }
@@ -754,9 +770,15 @@ fn apply_now_playing(flip: &FlipCover, icons: &IconSet, entry: &ManagedEntry) {
                 let gbytes = glib::Bytes::from(bytes.as_ref().as_slice());
                 gtk::gdk::Texture::from_bytes(&gbytes).ok()
             });
+            // Keys must vary with the actual content (matching
+            // `ui/playback.rs`'s `update_artwork()`), never a constant
+            // per-device value like `entry.uuid` — `FlipCover` treats a
+            // repeated key as "nothing changed" and no-ops, which on this
+            // persistent-per-row widget would silently drop every update
+            // after the first.
             match &tex {
-                Some(t) => flip.set_art(Some(t), &entry.uuid),
-                None    => flip.set_icon(icons.source_paintable(&np.icon_key), 32.0, &entry.uuid),
+                Some(t) => flip.set_art(Some(t), np.art_url.as_deref().unwrap_or("")),
+                None    => flip.set_icon(icons.source_paintable(&np.icon_key), 32.0, &format!("icon:{}", np.icon_key)),
             }
         }
         None => flip.clear(),
