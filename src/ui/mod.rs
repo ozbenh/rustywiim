@@ -1253,6 +1253,17 @@ impl DeviceWindow {
             // Seed pre_mini_size from saved config so exit_mini_mode() can restore
             // the right size even before the main window has ever been realised.
             *inner.pre_mini_size.borrow_mut() = (win_w, win_h);
+            // Re-populate now that mini_mode is finally true: the earlier
+            // populate_all() call above ran while mini_mode was still
+            // false, so update_artwork() (mini_mode-gated — it targets
+            // exactly one of pw/mini per call, not both) applied the
+            // current art to the main window's (never-shown, in this case)
+            // art_bg instead of the mini window's — leaving the mini
+            // window's own ArtBackground with no art at all, showing its
+            // static-gradient fallback instead of a blurred photo even
+            // with Modern + mini_modern on. Safe to call again — populate_all()
+            // is explicitly idempotent (see its own doc comment).
+            inner.populate_all();
         }
 
         Self { window, inner }
