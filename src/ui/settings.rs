@@ -19,7 +19,7 @@ use crate::config::{self, ThemeMode};
 use crate::device::api::DeviceInfo;
 use crate::device::capabilities::DeviceCapabilities;
 use crate::device::playback::AccessMethod;
-use crate::device::state::DeviceState;
+use crate::device::state::{DeviceState, FullModeGuard};
 use crate::device::discovery_manager::DiscoveryManager;
 use crate::ui::DEBUG_UI;
 use std::sync::atomic::Ordering;
@@ -41,10 +41,27 @@ pub(crate) struct SettingsWindow {
     /// Stored for future device-specific settings pages.
     #[allow(dead_code)]
     pub(crate) ds: Option<DeviceState>,
+    /// Acquired once, right after `ds` is obtained, for the lifetime of
+    /// this window — same pattern as `DeviceWindowInner::_full_mode`.
+    /// Independent of whatever guard the parent device window already
+    /// holds (`acquire_full()` is refcounted and safe to call
+    /// redundantly): today a Settings window can only ever be opened
+    /// from an already-open device window, which force-closes it in turn
+    /// (see `open_device_spec()`'s close-request handler) — but that's
+    /// coupling between two separate windows/handlers, not this window
+    /// owning its own requirement. Without its own guard, the Advanced/
+    /// About pages' live device reads (`DeviceInfo`/`DeviceCapabilities`,
+    /// `player_status` diagnostics) would be reading from a device that
+    /// could have already reverted to `Simple` mode's reduced polling for
+    /// however long it takes the paired close to actually finish tearing
+    /// this window down.
+    #[allow(dead_code)]
+    _full_mode: Option<FullModeGuard>,
 }
 
 impl SettingsWindow {
     pub(crate) fn new(ds: Option<DeviceState>, disc_mgr: &DiscoveryManager) -> Self {
+        let full_mode = ds.as_ref().map(|d| d.acquire_full());
         // ── Navigation sidebar ─────────────────────────────────────────────────
         let sidebar_box = gtk::Box::builder()
             .orientation(Orientation::Vertical)
@@ -312,7 +329,7 @@ impl SettingsWindow {
             });
         }
 
-        Self { window, ds }
+        Self { window, ds, _full_mode: full_mode }
     }
 
     pub(crate) fn present(&self) {
