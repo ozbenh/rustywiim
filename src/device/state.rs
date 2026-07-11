@@ -653,6 +653,9 @@ struct Inner {
     target_volume:    i32,
     /// When the last volume API command was sent (None = never).
     last_volume_cmd:  Option<Instant>,
+    /// When the last `SetMute` command was sent (None = never) — same
+    /// settle-window role as `last_volume_cmd`, see `do_set_mute()`.
+    last_mute_cmd:    Option<Instant>,
     /// When the current/most recent slow-poll cycle started (None = never;
     /// triggers a new cycle immediately).
     last_slow_poll:   Option<Instant>,
@@ -737,6 +740,7 @@ impl Default for Inner {
             preset_art_inflight: HashSet::new(),
             target_volume:    -1,
             last_volume_cmd:  None,
+            last_mute_cmd:    None,
             last_slow_poll:   None,
             last_poll:        None,
             slow_poll_active: false,
@@ -2407,28 +2411,30 @@ impl DeviceState {
             let (mode_changed, prev_mode, mute_changed, vol_changed, timing_valid, time_changed, other_changed) = {
                 let inner = self.imp().inner.borrow();
                 let prev = inner.player_status.as_ref();
-                let mute_changed = prev.map_or(true, |p| p.mute != st.mute);
-                // Volume is the one field with an optimistic write
-                // (`do_set_volume`, for slider responsiveness while
-                // dragging), so a plain diff against the *previous* raw
-                // response isn't enough: if a `SetVolume` command silently
-                // failed to stick device-side, the device's own answer
-                // never changes between polls, so that diff would never
-                // fire and `playback.volume` would stay wrong forever.
-                // Instead, resync straight against the device's answer
-                // whenever nothing we sent is still in flight
-                // (`target_volume < 0`) — this self-heals a rejected/
+                // Mute and volume both have an optimistic write
+                // (`do_set_mute()`/`do_set_volume()`, for instant UI
+                // feedback), so a plain diff against the *previous* raw
+                // response isn't enough for either: if a `SetMute`/
+                // `SetVolume` command silently failed to stick device-side,
+                // the device's own answer never changes between polls, so
+                // that diff would never fire and `playback.muted`/`.volume`
+                // would stay wrong forever. Instead, resync straight
+                // against the device's answer whenever nothing we sent is
+                // still in flight/settling — this self-heals a rejected/
                 // clamped command exactly the same way it picks up a
                 // genuine remote change (physical remote, another app,
                 // slave-speaker sync): both look like "device says X,
                 // canonical state says Y" from here. Also gated on
                 // `VOLUME_POLL_SETTLE` — a real device can keep reporting
-                // its pre-command volume for a moment after accepting a
-                // `SetVolume`, so `target_volume < 0` (command sent) alone
+                // its pre-command value for a moment after accepting a
+                // command, so "nothing in flight" alone
                 // isn't enough; see that constant's doc comment.
                 let vol_settled = inner.last_volume_cmd
                     .map_or(true, |t| Instant::now().duration_since(t) >= VOLUME_POLL_SETTLE);
                 let vol_changed = inner.target_volume < 0 && vol_settled && st.vol != inner.playback.volume;
+                let mute_settled = inner.last_mute_cmd
+                    .map_or(true, |t| Instant::now().duration_since(t) >= VOLUME_POLL_SETTLE);
+                let mute_changed = mute_settled && st.mute != inner.playback.muted;
                 let timing_valid = playback::timing_looks_valid(st.curpos, st.totlen);
                 let time_changed = timing_valid
                     && prev.map_or(true, |p| p.curpos != st.curpos || p.totlen != st.totlen);
@@ -2645,9 +2651,17 @@ impl DeviceState {
             });
             // `None` (still-unresolved mute, even after `fetch_upnp_fast_poll`'s
             // supplementary call) means "no new information" — never treated
-            // as a change, and never written below.
-            let mute_changed = info.current_mute.is_some()
-                && prev.map_or(true, |p| p.current_mute != info.current_mute);
+            // as a change, and never written below. Self-heals against
+            // `playback.muted` (not the raw previous response), same
+            // reasoning as `process_poll_http()`'s `mute_changed` — see its
+            // doc comment. `SetMute`/`SetVolume` still go over HTTP or UPnP
+            // per `mute_access`/`access`, but `last_mute_cmd`/
+            // `last_volume_cmd` themselves are shared between both poll
+            // backends regardless of which one actually sent the command.
+            let mute_settled = inner.last_mute_cmd
+                .map_or(true, |t| Instant::now().duration_since(t) >= VOLUME_POLL_SETTLE);
+            let mute_changed = info.current_mute.is_some_and(|m| m != inner.playback.muted)
+                && mute_settled;
             // Same self-heal reasoning as process_poll_http()'s vol_changed
             // — see its doc comment (including `VOLUME_POLL_SETTLE`).
             // `SetVolume` still goes over HTTP regardless of poll backend,
@@ -2879,9 +2893,26 @@ impl DeviceState {
     /// precedent `access`/`do_set_volume` already follow.
     pub fn do_set_mute(&self, muted: bool) {
         let (mute_access, client, upnp_client) = {
-            let inner = self.imp().inner.borrow();
+            // Optimistic update of the *canonical* playback.muted, for
+            // instant UI feedback (a picker row, for instance, has no other
+            // way to know a mute click landed before the next poll) —
+            // deliberately not touching `player_status`/`GetInfoEx` cache,
+            // which must stay a read-only diffing baseline written only by
+            // process_poll() itself (see that field's doc comment — an
+            // in-place command write there once caused the next real poll's
+            // diff to silently see "no change" and skip ever correcting
+            // `playback.muted` again). `last_mute_cmd` starts the settle
+            // window `process_poll_http()`/`process_poll_upnp()`'s
+            // self-healing `mute_changed` comparison waits out — same
+            // reasoning as `do_set_volume()`'s `last_volume_cmd`/
+            // `VOLUME_POLL_SETTLE`: a poll already in flight when this was
+            // called can still report the pre-command value for a moment.
+            let mut inner = self.imp().inner.borrow_mut();
+            inner.playback.muted = muted;
+            inner.last_mute_cmd = Some(Instant::now());
             (inner.mute_access, inner.client.clone(), inner.upnp_client.clone())
         };
+        self.emit_by_name::<()>("playback-changed", &[&playback_changed::VOLUME]);
         match mute_access {
             AccessMethod::UpnpPolled => {
                 let Some(upnp_client) = upnp_client else { return };
