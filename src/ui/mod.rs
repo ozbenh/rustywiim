@@ -1590,6 +1590,25 @@ impl AppState {
         // `Connecting…` bug for presence; not resurrecting that shape for
         // IP changes either).
 
+        // Show the device list (if it should appear at all) *before*
+        // starting discovery/restoring per-device windows below, so it
+        // ends up at the bottom of the window stack instead of on top of
+        // (potentially hiding) smaller device windows that open right
+        // after it — GTK/GNOME gives no direct stacking-order control,
+        // but a newly-presented window consistently lands above ones
+        // already presented, so ordering these calls is the only lever
+        // available. Reading `discovery_open`/`has_pending_windows`
+        // directly from config rather than via `disc_mgr` — neither
+        // depends on `start()` having run yet.
+        let (discovery_open, has_pending_windows) = config::with(|cfg| (
+            cfg.discovery_open,
+            cfg.devices.values().any(|d| d.window_open),
+        ));
+        if discovery_open || !has_pending_windows {
+            dbg_state("activate: showing device list");
+            Self::show_devices(self_rc);
+        }
+
         // Restore windows from config on startup.  initial-load fires once,
         // synchronously inside start(), so open_device() here is safe — no
         // risk of raising already-open windows on subsequent list changes.
@@ -1611,15 +1630,6 @@ impl AppState {
         }
 
         self_rc.disc_mgr.start();
-
-        let (discovery_open, has_pending_windows) = config::with(|cfg| (
-            cfg.discovery_open,
-            cfg.devices.values().any(|d| d.window_open),
-        ));
-        if discovery_open || !has_pending_windows {
-            dbg_state("activate: showing device list");
-            Self::show_devices(self_rc);
-        }
     }
 }
 
