@@ -37,6 +37,7 @@ use crate::device::manager::DeviceManager;
 use crate::device::state::{ConnectionState, DeviceState};
 use crate::ui::icons::IconSet;
 use super::flip_cover::FlipCover;
+use super::playback::vol_icon;
 use super::scroll_fade_label::ScrollFadeLabel;
 
 /// `[disc-mgr]` — `DiscoveryManager`, the picker-list backend (this file's
@@ -213,10 +214,11 @@ mod mgr_imp {
                 // load — before any async discovery results arrive.
                 Signal::builder("initial-load").build(),
                 // A single tracked device's now-playing content (title/
-                // artist/artwork) changed — deliberately *not* folded into
-                // `list-changed`. That would rebuild every row's widgets
-                // from scratch on every track change (this fires far more
-                // often than anything structural), which is both wasteful
+                // artist/artwork) or volume/mute changed — deliberately
+                // *not* folded into `list-changed`. That would rebuild
+                // every row's widgets from scratch on every track/volume
+                // change (this fires far more often than anything
+                // structural), which is both wasteful
                 // and defeats FlipCover's flip-vs-fade logic: a freshly
                 // reconstructed FlipCover never has "previous real art" on
                 // the same widget instance to flip from. Param: the
@@ -526,20 +528,22 @@ impl DiscoveryManager {
             let Some(mgr) = weak.upgrade() else { return };
             mgr.on_tracked_device_changed(&key_owned, ds);
         });
-        // Updates just this row's content on an actual now-playing change
-        // (not every poll tick — filtered to the TITLE/ARTIST/ARTWORK bits)
-        // via the dedicated `song-info-changed` signal, *not*
-        // `emit_list_changed()` — this fires far more often than anything
-        // structural, and rebuilding every row's widgets on every track
-        // change is both wasteful and defeats FlipCover's flip transition
-        // (see `song-info-changed`'s doc comment in `signals()`). No-op,
+        // Updates just this row's content on an actual now-playing or
+        // volume/mute change (not every poll tick — filtered to the
+        // TITLE/ARTIST/ARTWORK/VOLUME bits) via the dedicated
+        // `song-info-changed` signal, *not* `emit_list_changed()` — this
+        // fires far more often than anything structural, and rebuilding
+        // every row's widgets on every track/volume change is both
+        // wasteful and defeats FlipCover's flip transition (see
+        // `song-info-changed`'s doc comment in `signals()`). No-op,
         // cheaply, when `song_info` is off.
         let weak2 = self.downgrade();
         let key_for_song_info = key.to_string();
         ds.connect_playback_changed(move |_, mask| {
             if mask & (crate::device::state::playback_changed::TITLE
                 | crate::device::state::playback_changed::ARTIST
-                | crate::device::state::playback_changed::ARTWORK) == 0
+                | crate::device::state::playback_changed::ARTWORK
+                | crate::device::state::playback_changed::VOLUME) == 0
             {
                 return;
             }
@@ -785,6 +789,82 @@ fn apply_now_playing(flip: &FlipCover, icons: &IconSet, entry: &ManagedEntry) {
     }
 }
 
+/// Volume button + popover slider + mute button, same shape as the mini
+/// window's own (`widgets.rs`'s `build_mini_flip_cover()`'s sibling —
+/// see `.devlist-vol-*` CSS) sized for a compact row rather than a
+/// standalone window. Caller wires the actual click/drag/mute handlers.
+fn build_devlist_vol_popover() -> (gtk::Button, gtk::Image, gtk::Label, gtk::Scale, gtk::Button, gtk::Popover) {
+    let vol_icon_img = gtk::Image::builder()
+        .icon_name("audio-volume-high-symbolic")
+        .pixel_size(13) // ~20% bigger than the mini-window-derived 11px original
+        .build();
+    let vol_label = gtk::Label::builder()
+        .label("—")
+        .width_chars(3)
+        .xalign(1.0)
+        .css_classes(["devlist-vol-label"])
+        .build();
+    let btn_box = gtk::Box::builder()
+        .orientation(Orientation::Horizontal)
+        .spacing(1)
+        .build();
+    btn_box.append(&vol_icon_img);
+    btn_box.append(&vol_label);
+    let vol_btn = gtk::Button::builder()
+        .css_classes(["devlist-vol-btn", "flat"])
+        .tooltip_text("Volume")
+        .valign(gtk::Align::Center)
+        .build();
+    vol_btn.set_child(Some(&btn_box));
+
+    let vol_scale = gtk::Scale::with_range(Orientation::Vertical, 0.0, 100.0, 1.0);
+    vol_scale.set_inverted(true);
+    vol_scale.set_vexpand(true);
+    vol_scale.set_height_request(120);
+    vol_scale.set_draw_value(false);
+    vol_scale.set_width_request(20);
+    vol_scale.set_round_digits(0);
+    vol_scale.add_css_class("devlist-vol-pop");
+    vol_scale.set_increments(5.0, 20.0);
+
+    let mute_btn = gtk::Button::builder()
+        .icon_name("audio-volume-muted-symbolic")
+        .css_classes(["flat"])
+        .tooltip_text("Mute")
+        .halign(gtk::Align::Center)
+        .build();
+
+    let vol_pop_box = gtk::Box::builder()
+        .orientation(Orientation::Vertical)
+        .margin_top(4).margin_bottom(4).margin_start(4).margin_end(4)
+        .spacing(4)
+        .build();
+    vol_pop_box.append(&vol_scale);
+    vol_pop_box.append(&mute_btn);
+    let vol_popover = gtk::Popover::new();
+    vol_popover.add_css_class("devlist-vol-popover");
+    vol_popover.set_child(Some(&vol_pop_box));
+    vol_popover.set_parent(&vol_btn);
+
+    (vol_btn, vol_icon_img, vol_label, vol_scale, mute_btn, vol_popover)
+}
+
+/// Syncs a row's volume icon/label/slider from `ds`'s live state — called
+/// both at row construction and from the `song-info-changed` handler.
+/// Skips repositioning the slider while `drag_timer` is set (same
+/// protection the main/mini windows use), so a poll update arriving
+/// mid-drag doesn't fight the user's own gesture.
+fn sync_devlist_vol_display(rw: &RowWidgets, ds: &DeviceState) {
+    let vol = ds.get_vol() as f64;
+    let muted = ds.muted();
+    if rw.vol_drag_timer.borrow().is_none() {
+        rw.vol_scale.set_value(vol);
+    }
+    rw.vol_icon_img.set_icon_name(Some(vol_icon(muted, vol)));
+    rw.vol_label.set_label(&format!("{}", vol as u32));
+    rw.mute_btn.set_icon_name(if muted { "audio-volume-muted-symbolic" } else { "audio-volume-high-symbolic" });
+}
+
 // ── DiscoveryWindow ───────────────────────────────────────────────────────────
 
 /// The subset of a row's widgets `song-info-changed` needs to update in
@@ -793,8 +873,17 @@ fn apply_now_playing(flip: &FlipCover, icons: &IconSet, entry: &ManagedEntry) {
 /// `rebuild_list()` runs. Only present for rows built while
 /// `entry.song_info_enabled` was true (see `build_row()`).
 struct RowWidgets {
-    flip:     FlipCover,
-    subtitle: ScrollFadeLabel,
+    flip:         FlipCover,
+    subtitle:     ScrollFadeLabel,
+    vol_icon_img: gtk::Image,
+    vol_label:    gtk::Label,
+    vol_scale:    gtk::Scale,
+    mute_btn:     gtk::Button,
+    /// Same drag-protection pattern as the main/mini windows'
+    /// `DeviceWindowInner::ui_state.drag_timer` — while set, a live poll
+    /// update (`song-info-changed`) skips repositioning the slider so it
+    /// doesn't fight an in-progress drag.
+    vol_drag_timer: Rc<RefCell<Option<glib::SourceId>>>,
 }
 
 pub struct DiscoveryWindow {
@@ -926,6 +1015,9 @@ impl DiscoveryWindow {
             let Some(rw) = widgets.get(key) else { return };
             apply_now_playing(&rw.flip, &icons, &entry);
             rw.subtitle.set_text(&subtitle_text_for(&entry));
+            if let Some(ds) = mgr.device_state_for(key) {
+                sync_devlist_vol_display(rw, &ds);
+            }
         }));
 
         list_box.connect_row_activated(clone!(@strong current_entries, @strong open_device => move |_, row| {
@@ -1028,6 +1120,8 @@ impl DiscoveryWindow {
         manager:     &DiscoveryManager,
         icons:       &Rc<IconSet>,
     ) -> gtk::ListBoxRow {
+        let key = device_key(&entry.uuid, &entry.ip);
+
         let hbox = gtk::Box::builder()
             .orientation(Orientation::Horizontal)
             .spacing(12)
@@ -1038,13 +1132,11 @@ impl DiscoveryWindow {
         // Artwork/icon slot — reserved at a fixed size (`.devlist-art`'s
         // CSS min-width/min-height) whenever song-info display is on
         // globally, regardless of whether *this* device currently has
-        // anything to show there, so the row's right-hand side (ip label,
-        // pin button) never shifts as devices update. Same FlipCover
-        // widget (flip/crossfade between real art and the fallback icon)
-        // the main and mini windows use, not a separate plain-image path.
-        // Registered into `row_widgets` (keyed the same as `entries()`'s
-        // rows) so `song-info-changed` can update it in place later
-        // without rebuilding the row — see that signal's doc comment.
+        // anything to show there, so the row's right-hand side (volume
+        // control, pin button) never shifts as devices update. Same
+        // FlipCover widget (flip/crossfade between real art and the
+        // fallback icon) the main and mini windows use, not a separate
+        // plain-image path.
         let flip = entry.song_info_enabled.then(|| {
             let flip = FlipCover::new();
             flip.set_hexpand(false);
@@ -1086,23 +1178,76 @@ impl DiscoveryWindow {
         subtitle.add_label_css_class("caption");
         text_box.append(&subtitle);
 
-        if let Some(flip) = flip {
-            let key = device_key(&entry.uuid, &entry.ip);
-            row_widgets.borrow_mut().insert(key, RowWidgets { flip, subtitle: subtitle.clone() });
-        }
-
         hbox.append(&text_box);
 
+        // IP address moved from a permanently-visible label to a hover
+        // tooltip on the whole row — freeing that space for the volume
+        // control below.
         let status_suffix = match entry.presence {
             DevicePresence::Active => String::new(),
             DevicePresence::Ghost | DevicePresence::Dead => " · offline".to_string(),
         };
-        let ip_label = gtk::Label::builder()
-            .label(&format!("{}{}", entry.ip, status_suffix))
-            .valign(gtk::Align::Center)
-            .css_classes(["dim-label", "caption"])
-            .build();
-        hbox.append(&ip_label);
+        let row_tooltip = format!("{}{}", entry.ip, status_suffix);
+
+        // Volume button + popover slider + mute, same widget shape as the
+        // mini window's own. Reserved alongside the artwork slot (same
+        // `song_info_enabled` gate — volume data is only kept fresh while
+        // Simple-mode's fuller poll is active, same as title/artist), and
+        // greyed out for a device that isn't `Active` right now rather
+        // than hidden, so the row's layout doesn't shift either way. A
+        // click on it doesn't open the device window — a `GtkButton`
+        // child claims its own click before the row's own click-to-
+        // activate gesture sees it, same as the pin button already relies
+        // on (never special-cased, just how GTK widgets nest).
+        let vol_widgets = entry.song_info_enabled.then(|| {
+            let (vol_btn, vol_icon_img, vol_label, vol_scale, mute_btn, vol_popover) = build_devlist_vol_popover();
+            vol_btn.set_sensitive(entry.presence == DevicePresence::Active);
+            vol_btn.connect_clicked(clone!(@weak vol_popover => move |_| {
+                if vol_popover.is_visible() { vol_popover.popdown(); } else { vol_popover.popup(); }
+            }));
+            hbox.append(&vol_btn);
+            (vol_icon_img, vol_label, vol_scale, mute_btn)
+        });
+
+        if let (Some(flip), Some((vol_icon_img, vol_label, vol_scale, mute_btn))) = (flip, vol_widgets) {
+            let vol_drag_timer: Rc<RefCell<Option<glib::SourceId>>> = Rc::new(RefCell::new(None));
+
+            if let Some(ds) = manager.device_state_for(&key) {
+                let rw_for_sync = RowWidgets {
+                    flip: flip.clone(), subtitle: subtitle.clone(),
+                    vol_icon_img: vol_icon_img.clone(), vol_label: vol_label.clone(),
+                    vol_scale: vol_scale.clone(), mute_btn: mute_btn.clone(),
+                    vol_drag_timer: vol_drag_timer.clone(),
+                };
+                sync_devlist_vol_display(&rw_for_sync, &ds);
+
+                mute_btn.connect_clicked(clone!(@strong ds => move |_| {
+                    ds.do_set_mute(!ds.muted());
+                }));
+                vol_scale.connect_change_value(clone!(
+                    @strong ds, @strong vol_icon_img, @strong vol_label, @strong vol_drag_timer
+                        => move |_, _, vol| {
+                            let icon = vol_icon(ds.muted(), vol);
+                            vol_icon_img.set_icon_name(Some(icon));
+                            vol_label.set_label(&format!("{}", vol as u32));
+                            ds.do_set_volume(vol as u32);
+                            if let Some(id) = vol_drag_timer.borrow_mut().take() { id.remove(); }
+                            let timer_cell = Rc::clone(&vol_drag_timer);
+                            let id = glib::timeout_add_local_once(std::time::Duration::from_millis(500), move || {
+                                timer_cell.borrow_mut().take();
+                            });
+                            *vol_drag_timer.borrow_mut() = Some(id);
+                            glib::Propagation::Proceed
+                        }
+                ));
+            }
+
+            row_widgets.borrow_mut().insert(key, RowWidgets {
+                flip, subtitle: subtitle.clone(),
+                vol_icon_img, vol_label, vol_scale, mute_btn,
+                vol_drag_timer,
+            });
+        }
 
         // Pin / unpin toggle button.
         let pin_btn = gtk::ToggleButton::builder()
@@ -1124,6 +1269,7 @@ impl DiscoveryWindow {
         let row = gtk::ListBoxRow::builder()
             .activatable(true)
             .child(&hbox)
+            .tooltip_text(&row_tooltip)
             .build();
         if entry.presence != DevicePresence::Active {
             row.add_css_class("dim-label");

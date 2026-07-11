@@ -75,7 +75,7 @@ fn format_quality_line(q: &AudioQuality, codec_label: Option<&str>) -> String {
     }
 }
 
-fn vol_icon(muted: bool, vol: f64) -> &'static str {
+pub(super) fn vol_icon(muted: bool, vol: f64) -> &'static str {
     if muted || vol == 0.0 { return "audio-volume-muted-symbolic"; }
     if vol <= 33.0 { "audio-volume-low-symbolic" }
     else if vol <= 66.0 { "audio-volume-medium-symbolic" }
