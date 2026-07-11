@@ -81,6 +81,7 @@ impl IconSet {
             ("line-in",       "rustywiim-rca-inout"),
             ("line-in-2",     "rustywiim-rca-inout"),
             ("RCA",           "rustywiim-rca-inout"),
+            ("line-in-jack",  "rustywiim-jack-inout"),
             ("optical",       "rustywiim-optical-inout"),
             ("coaxial",       "rustywiim-coax-inout"),
             ("wifi",          "network-wireless-symbolic"),
@@ -88,8 +89,6 @@ impl IconSet {
             ("phono",         "media-record-symbolic"),
             ("udisk",         "drive-harddisk-usb-symbolic"),
             ("HDMI",          "tv-symbolic"),
-            // Find (or make) a better icon for a stereo jack
-            ("line-in-jack",  "audio-headphones-symbolic"),
         ];
         let output_names: &[(&'static str, &str)] = &[
             ("line-out",      "rustywiim-rca-inout"),

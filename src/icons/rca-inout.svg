@@ -1,151 +1,198 @@
 <?xml version="1.0" encoding="UTF-8" standalone="no"?>
-<!-- Created with Inkscape (http://www.inkscape.org/) -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 500 500" width="500" height="500" version="1.1" id="svg-rca-pair">
+  <!-- RCA connector pair (red + white). Hand-built to match jack-inout.svg's
+       metallic-gradient style: gold-tinted chrome cylinders shaded
+       top->highlight->bottom and a soft radial drop shadow (no SVG filters).
 
-<svg
-   width="64"
-   height="64"
-   viewBox="0 0 16.933333 16.933333"
-   version="1.1"
-   id="svg329"
-   inkscape:version="1.2.2 (b0a8486541, 2022-12-01)"
-   sodipodi:docname="rca-inout.svg"
-   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
-   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
-   xmlns="http://www.w3.org/2000/svg"
-   xmlns:svg="http://www.w3.org/2000/svg">
-  <sodipodi:namedview
-     id="namedview331"
-     pagecolor="#939393"
-     bordercolor="#000000"
-     borderopacity="0.25"
-     inkscape:showpageshadow="2"
-     inkscape:pageopacity="0"
-     inkscape:pagecheckerboard="0"
-     inkscape:deskcolor="#d1d1d1"
-     inkscape:document-units="mm"
-     showgrid="false"
-     inkscape:zoom="8"
-     inkscape:cx="49.0625"
-     inkscape:cy="8.5625"
-     inkscape:window-width="1280"
-     inkscape:window-height="1371"
-     inkscape:window-x="20"
-     inkscape:window-y="20"
-     inkscape:window-maximized="0"
-     inkscape:current-layer="g4127" />
-  <defs
-     id="defs326" />
-  <g
-     inkscape:label="Layer 1"
-     inkscape:groupmode="layer"
-     id="layer1">
-    <g
-       id="g4127"
-       transform="translate(0,-0.08222497)">
-      <g
-         id="g4165"
-         transform="translate(0.46638821)">
-        <g
-           id="g4137"
-           transform="translate(0.03307292,0.08222497)">
-          <rect
-             style="fill:#ff2626;fill-opacity:1;stroke:#ffffff;stroke-width:0.15;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:none;stroke-opacity:1"
-             id="rect414"
-             width="3.2651281"
-             height="7.2175102"
-             x="3.408196"
-             y="5.6149874" />
-          <rect
-             style="fill:#fdeb28;fill-opacity:1;stroke:#ffffff;stroke-width:0.1;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:none;stroke-opacity:1"
-             id="rect2391"
-             width="2.2313118"
-             height="1.553641"
-             x="3.9251041"
-             y="4.0560865" />
-          <g
-             id="rect2445"
-             transform="translate(-3.4496602,1.8837351)">
-            <path
-               style="color:#000000;fill:#fdeb28;stroke-width:0.1;stroke-linecap:round;stroke-linejoin:round;-inkscape-stroke:none"
-               d="M 8.3433437,0.85271013 H 8.6374971 V 2.1714087 H 8.3433437 Z"
-               id="path3992" />
-            <path
-               style="color:#000000;fill:#ffffff;stroke-linecap:round;stroke-linejoin:round;-inkscape-stroke:none"
-               d="M 8.4244621,0.80273438 C 8.35507,0.8016489 8.292969,0.85209474 8.292969,0.92765521 V 2.171875 C 8.2936121,2.199336 8.316285,2.221137 8.34375,2.220703 H 8.6367188 C 8.6641838,2.221137 8.6868569,2.1993359 8.6875,2.171875 V 0.928939 C 8.6869082,0.85472849 8.6317922,0.80167755 8.5642348,0.80273433 Z M 8.392578,0.90234378 H 8.5878906 V 2.1210938 H 8.3925781 Z"
-               id="path3989"
-               sodipodi:nodetypes="cccccccccccccc" />
-          </g>
-          <rect
-             style="fill:#ffffff;fill-opacity:1;stroke:#ffffff;stroke-width:0.15;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:none;stroke-opacity:1"
-             id="rect3994"
-             width="1.5528122"
-             height="0.1129776"
-             x="4.2643538"
-             y="13.136213" />
-          <rect
-             style="fill:#ffffff;fill-opacity:1;stroke:#ffffff;stroke-width:0.141395;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:none;stroke-opacity:1"
-             id="rect3994-3"
-             width="1.2821063"
-             height="0.12158275"
-             x="4.3997068"
-             y="13.509698" />
-          <rect
-             style="fill:#ffffff;fill-opacity:1;stroke:#ffffff;stroke-width:0.122259;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:none;stroke-opacity:1"
-             id="rect3994-3-6"
-             width="1.0045546"
-             height="0.11601623"
-             x="4.5384827"
-             y="13.875054" />
-        </g>
-        <rect
-           style="fill:#b3eff8;fill-opacity:1;stroke:#ffffff;stroke-width:0.15;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:none;stroke-opacity:1"
-           id="rect414-7"
-           width="3.2651281"
-           height="7.2175102"
-           x="9.2941599"
-           y="5.6972127" />
-        <rect
-           style="fill:#fdeb28;fill-opacity:1;stroke:#ffffff;stroke-width:0.1;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:none;stroke-opacity:1"
-           id="rect2391-5"
-           width="2.2313118"
-           height="1.553641"
-           x="9.8110676"
-           y="4.1383114" />
-        <g
-           id="rect2445-3"
-           transform="translate(2.436303,1.9659602)">
-          <path
-             style="color:#000000;fill:#fdeb28;stroke-width:0.1;stroke-linecap:round;stroke-linejoin:round;-inkscape-stroke:none"
-             d="M 8.3433437,0.85271013 H 8.6374971 V 2.1714087 H 8.3433437 Z"
-             id="path3992-5" />
-          <path
-             style="color:#000000;fill:#ffffff;stroke-linecap:round;stroke-linejoin:round;-inkscape-stroke:none"
-             d="M 8.4244621,0.80273438 C 8.35507,0.8016489 8.292969,0.85209474 8.292969,0.92765521 V 2.171875 C 8.2936121,2.199336 8.316285,2.221137 8.34375,2.220703 H 8.6367188 C 8.6641838,2.221137 8.6868569,2.1993359 8.6875,2.171875 V 0.928939 C 8.6869082,0.85472849 8.6317922,0.80167755 8.5642348,0.80273433 Z M 8.392578,0.90234378 H 8.5878906 V 2.1210938 H 8.3925781 Z"
-             id="path3989-6"
-             sodipodi:nodetypes="cccccccccccccc" />
-        </g>
-        <rect
-           style="fill:#ffffff;fill-opacity:1;stroke:#ffffff;stroke-width:0.15;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:none;stroke-opacity:1"
-           id="rect3994-2"
-           width="1.5528122"
-           height="0.1129776"
-           x="10.150317"
-           y="13.218439" />
-        <rect
-           style="fill:#ffffff;fill-opacity:1;stroke:#ffffff;stroke-width:0.141395;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:none;stroke-opacity:1"
-           id="rect3994-3-9"
-           width="1.2821063"
-           height="0.12158275"
-           x="10.28567"
-           y="13.591923" />
-        <rect
-           style="fill:#ffffff;fill-opacity:1;stroke:#ffffff;stroke-width:0.122259;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:none;stroke-opacity:1"
-           id="rect3994-3-6-1"
-           width="1.0045546"
-           height="0.11601623"
-           x="10.424446"
-           y="13.957279" />
-      </g>
+       IMPORTANT — keep the <svg> element as the very first thing after the XML
+       declaration (this comment lives INSIDE it, not before it). GTK's icon
+       theme rasterizes scalable SVG icons through the gdk-pixbuf SVG loader,
+       whose format sniffer only recognizes the file as SVG if it finds "<svg"
+       near the start, within a small sniff window. A long comment block before
+       <svg> pushes the tag past that window and the loader reports
+       "Unrecognised image file format" — the icon silently fails to load.
+
+       NOTE ON PORTABILITY: the shared connector metalwork is inlined verbatim
+       into each plug group rather than defined once and reused by cross-
+       reference; some gdk-pixbuf SVG loaders mishandle that. Keep both copies
+       in sync when editing. Gradients in defs referenced by url(#...) fills are
+       fine and widely supported.
+
+       PERSPECTIVE: one perspective-scale ramp s(x)=0.60+0.001449x along each
+       plug's axis (s=1.0 at the near rim x=248, ~0.60 at the far cable), and
+       EVERY part's on-screen half-height is its true radius * s(x). So cable,
+       knurled body, ferrule lip, sleeve and rim foreshorten at the same rate
+       and share one vanishing point. The pin end tips toward the viewer, so the
+       open rim shows the dark bore oval and the ferrule collar shows a solid
+       metal oval — both drawn with the same rx/ry ratio (~0.47). Every
+       circumferential feature (body ends, seam, grooves) is an elliptical arc,
+       not a flat line. The two plugs sit at slightly different tilts (-16 /
+       -24) so they converge as a pair. -->
+  <defs id="defs-rca">
+    <!-- Chrome/metal, warmed to a slight gold: dark rim -> bright highlight
+         band -> dark rim, mirroring linearGradient5135/4927's reflective look. -->
+    <linearGradient id="metalGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0"    stop-color="#3a3320" />
+      <stop offset="0.12" stop-color="#b3a878" />
+      <stop offset="0.40" stop-color="#fffdf2" />
+      <stop offset="0.50" stop-color="#f2e9c9" />
+      <stop offset="0.62" stop-color="#cbbc8a" />
+      <stop offset="0.85" stop-color="#5a4f2c" />
+      <stop offset="1"    stop-color="#2a2413" />
+    </linearGradient>
+    <!-- Center pin: same gold chrome, tuned a touch brighter for the small part. -->
+    <linearGradient id="pinGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0"    stop-color="#4e4527" />
+      <stop offset="0.16" stop-color="#d7c993" />
+      <stop offset="0.42" stop-color="#fffdf3" />
+      <stop offset="0.58" stop-color="#efe4bf" />
+      <stop offset="0.82" stop-color="#6a5d33" />
+      <stop offset="1"    stop-color="#332c17" />
+    </linearGradient>
+    <!-- Red body -->
+    <linearGradient id="redGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0"    stop-color="#5e0606" />
+      <stop offset="0.14" stop-color="#c81616" />
+      <stop offset="0.40" stop-color="#ff7a7a" />
+      <stop offset="0.50" stop-color="#f22b2b" />
+      <stop offset="0.62" stop-color="#cf1414" />
+      <stop offset="0.85" stop-color="#6e0808" />
+      <stop offset="1"    stop-color="#3d0303" />
+    </linearGradient>
+    <!-- White body (silvered off-white) -->
+    <linearGradient id="whiteGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0"    stop-color="#6f7276" />
+      <stop offset="0.14" stop-color="#cfd2d6" />
+      <stop offset="0.40" stop-color="#ffffff" />
+      <stop offset="0.50" stop-color="#f0f1f3" />
+      <stop offset="0.62" stop-color="#d2d5d9" />
+      <stop offset="0.85" stop-color="#83878c" />
+      <stop offset="1"    stop-color="#4c4f53" />
+    </linearGradient>
+    <!-- Dark rubber cable -->
+    <linearGradient id="cableGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0"    stop-color="#2a2c2e" />
+      <stop offset="0.4"  stop-color="#55585c" />
+      <stop offset="0.5"  stop-color="#46484b" />
+      <stop offset="0.85" stop-color="#202224" />
+      <stop offset="1"    stop-color="#101112" />
+    </linearGradient>
+    <!-- Hollow tube interior at the open end -->
+    <radialGradient id="boreGrad" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0"    stop-color="#000000" />
+      <stop offset="0.7"  stop-color="#141414" />
+      <stop offset="1"    stop-color="#2b2b2b" />
+    </radialGradient>
+    <!-- Soft contact shadow, radial fading to transparent (matches
+         radialGradient3231's fade-to-nothing shadow in the jack art). -->
+    <radialGradient id="shadowGrad" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0"   stop-color="#000000" stop-opacity="0.42" />
+      <stop offset="0.6" stop-color="#000000" stop-opacity="0.22" />
+      <stop offset="1"   stop-color="#000000" stop-opacity="0" />
+    </radialGradient>
+    <!-- Reflective gloss streak laid over the colored body -->
+    <linearGradient id="glossGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0"   stop-color="#ffffff" stop-opacity="0" />
+      <stop offset="0.5" stop-color="#ffffff" stop-opacity="0.75" />
+      <stop offset="1"   stop-color="#ffffff" stop-opacity="0" />
+    </linearGradient>
+  </defs>
+
+  <!-- ===================== WHITE (front / lower channel) ===================== -->
+  <!-- shallower tilt; near "rail" of the converging pair -->
+  <g transform="translate(116,352) rotate(-16) scale(0.8)">
+    <!-- contact shadow -->
+    <ellipse cx="150" cy="80" rx="180" ry="30" fill="url(#shadowGrad)" />
+    <!-- cable: far end droops ~4px below the axis (gravity sag) -->
+    <path fill="url(#cableGrad)"
+          d="M8,-4.5 L54,-9.5 Q58,-9.5 58,-5.5 L58,5.5 Q58,9.5 54,9.5
+             L8,12.5 Q4,12.5 4,8.5 L4,-0.5 Q4,-4.5 8,-4.5 Z" />
+    <!-- body: both ends are elliptical arcs (near seam + far cable end) -->
+    <path fill="url(#whiteGrad)"
+          d="M64,-27.7 L184,-34.9 A16.4,34.9 0 0 0 184,34.9
+             L64,27.7 A13.0,27.7 0 0 1 64,-27.7 Z" />
+    <!-- knurled grip grooves: elliptical arcs, spacing widens toward the near end -->
+    <g fill="none" stroke-width="2" opacity="0.55">
+      <path stroke="#4a4d51" d="M88,-26.0  A12.2,26.0 0 0 0 88,26.0" />
+      <path stroke="#ffffff" opacity="0.5" d="M90,-26.0  A12.2,26.0 0 0 0 90,26.0" />
+      <path stroke="#4a4d51" d="M100,-26.7 A12.5,26.7 0 0 0 100,26.7" />
+      <path stroke="#ffffff" opacity="0.5" d="M102,-26.7 A12.5,26.7 0 0 0 102,26.7" />
+      <path stroke="#4a4d51" d="M113,-27.5 A12.9,27.5 0 0 0 113,27.5" />
+      <path stroke="#ffffff" opacity="0.5" d="M115,-27.5 A12.9,27.5 0 0 0 115,27.5" />
+      <path stroke="#4a4d51" d="M128,-28.4 A13.3,28.4 0 0 0 128,28.4" />
+      <path stroke="#ffffff" opacity="0.5" d="M130,-28.4 A13.3,28.4 0 0 0 130,28.4" />
+      <path stroke="#4a4d51" d="M145,-29.4 A13.8,29.4 0 0 0 145,29.4" />
+      <path stroke="#ffffff" opacity="0.5" d="M147,-29.4 A13.8,29.4 0 0 0 147,29.4" />
+      <path stroke="#4a4d51" d="M164,-30.5 A14.3,30.5 0 0 0 164,30.5" />
+      <path stroke="#ffffff" opacity="0.5" d="M166,-30.5 A14.3,30.5 0 0 0 166,30.5" />
     </g>
+    <!-- body gloss streak -->
+    <path fill="url(#glossGrad)" opacity="0.7"
+          d="M74,-20 L182,-28 L182,-22 L74,-14 Z" />
+    <!-- ===== metalwork (inlined; keep in sync with the red copy) ===== -->
+    <!-- ferrule lip: forward edge is a convex arc matching the plastic seam -->
+    <path fill="url(#metalGrad)"
+          d="M184,-35.5 L204,-36.8 Q206,-36.8 206,-34.8 L206,34.8
+             Q206,36.8 204,36.8 L184,35.5 A16.4,35.5 0 0 1 184,-35.5 Z" />
+    <!-- ferrule collar: solid metal oval face, rx/ry matches the rim -->
+    <ellipse cx="203" cy="0" rx="16" ry="33" fill="#2a2413" opacity="0.5" />
+    <ellipse cx="206" cy="0" rx="16" ry="33" fill="url(#metalGrad)" />
+    <!-- ground sleeve / outer barrel -->
+    <path fill="url(#metalGrad)"
+          d="M209,-30.5 L244,-32.7 Q248,-32.7 248,-28.7 L248,28.7
+             Q248,32.7 244,32.7 L209,30.5 Q205,30.5 205,26.5
+             L205,-26.5 Q205,-30.5 209,-30.5 Z" />
+    <!-- open rim + hollow bore (bore offset -x, toward the receding side) -->
+    <ellipse cx="248" cy="0" rx="16" ry="33" fill="url(#metalGrad)" />
+    <ellipse cx="243" cy="0" rx="10" ry="25" fill="url(#boreGrad)" />
+    <!-- pin + rounded tip: one continuous shape, unbroken vertical shading -->
+    <path fill="url(#pinGrad)"
+          d="M251,-7 L272,-7 A8,7 0 0 1 272,7 L251,7 A3.3,7 0 0 1 251,-7 Z" />
+    <rect x="254" y="-5.5" width="16" height="3" rx="1.5" fill="#fffdf2" opacity="0.7" />
+    <ellipse cx="274" cy="-2.2" rx="2.2" ry="2.6" fill="#fffef7" opacity="0.75" />
+  </g>
+
+  <!-- ====================== RED (back / upper channel) ===================== -->
+  <!-- steeper tilt; far "rail", converging with white's -->
+  <g transform="translate(78,236) rotate(-24) scale(0.8)">
+    <ellipse cx="150" cy="80" rx="180" ry="30" fill="url(#shadowGrad)" />
+    <path fill="url(#cableGrad)"
+          d="M8,-4.5 L54,-9.5 Q58,-9.5 58,-5.5 L58,5.5 Q58,9.5 54,9.5
+             L8,12.5 Q4,12.5 4,8.5 L4,-0.5 Q4,-4.5 8,-4.5 Z" />
+    <path fill="url(#redGrad)"
+          d="M64,-27.7 L184,-34.9 A16.4,34.9 0 0 0 184,34.9
+             L64,27.7 A13.0,27.7 0 0 1 64,-27.7 Z" />
+    <g fill="none" stroke-width="2" opacity="0.55">
+      <path stroke="#3a0303" d="M88,-26.0  A12.2,26.0 0 0 0 88,26.0" />
+      <path stroke="#ff9a9a" opacity="0.55" d="M90,-26.0  A12.2,26.0 0 0 0 90,26.0" />
+      <path stroke="#3a0303" d="M100,-26.7 A12.5,26.7 0 0 0 100,26.7" />
+      <path stroke="#ff9a9a" opacity="0.55" d="M102,-26.7 A12.5,26.7 0 0 0 102,26.7" />
+      <path stroke="#3a0303" d="M113,-27.5 A12.9,27.5 0 0 0 113,27.5" />
+      <path stroke="#ff9a9a" opacity="0.55" d="M115,-27.5 A12.9,27.5 0 0 0 115,27.5" />
+      <path stroke="#3a0303" d="M128,-28.4 A13.3,28.4 0 0 0 128,28.4" />
+      <path stroke="#ff9a9a" opacity="0.55" d="M130,-28.4 A13.3,28.4 0 0 0 130,28.4" />
+      <path stroke="#3a0303" d="M145,-29.4 A13.8,29.4 0 0 0 145,29.4" />
+      <path stroke="#ff9a9a" opacity="0.55" d="M147,-29.4 A13.8,29.4 0 0 0 147,29.4" />
+      <path stroke="#3a0303" d="M164,-30.5 A14.3,30.5 0 0 0 164,30.5" />
+      <path stroke="#ff9a9a" opacity="0.55" d="M166,-30.5 A14.3,30.5 0 0 0 166,30.5" />
+    </g>
+    <path fill="url(#glossGrad)" opacity="0.6"
+          d="M74,-20 L182,-28 L182,-22 L74,-14 Z" />
+    <!-- ===== metalwork (inlined; keep in sync with the white copy) ===== -->
+    <path fill="url(#metalGrad)"
+          d="M184,-35.5 L204,-36.8 Q206,-36.8 206,-34.8 L206,34.8
+             Q206,36.8 204,36.8 L184,35.5 A16.4,35.5 0 0 1 184,-35.5 Z" />
+    <ellipse cx="203" cy="0" rx="16" ry="33" fill="#2a2413" opacity="0.5" />
+    <ellipse cx="206" cy="0" rx="16" ry="33" fill="url(#metalGrad)" />
+    <path fill="url(#metalGrad)"
+          d="M209,-30.5 L244,-32.7 Q248,-32.7 248,-28.7 L248,28.7
+             Q248,32.7 244,32.7 L209,30.5 Q205,30.5 205,26.5
+             L205,-26.5 Q205,-30.5 209,-30.5 Z" />
+    <ellipse cx="248" cy="0" rx="16" ry="33" fill="url(#metalGrad)" />
+    <ellipse cx="243" cy="0" rx="10" ry="25" fill="url(#boreGrad)" />
+    <path fill="url(#pinGrad)"
+          d="M251,-7 L272,-7 A8,7 0 0 1 272,7 L251,7 A3.3,7 0 0 1 251,-7 Z" />
+    <rect x="254" y="-5.5" width="16" height="3" rx="1.5" fill="#fffdf2" opacity="0.7" />
+    <ellipse cx="274" cy="-2.2" rx="2.2" ry="2.6" fill="#fffef7" opacity="0.75" />
   </g>
 </svg>
