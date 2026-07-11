@@ -198,10 +198,27 @@ mod mgr_imp {
         fn signals() -> &'static [Signal] {
             static SIGNALS: OnceLock<Vec<Signal>> = OnceLock::new();
             SIGNALS.get_or_init(|| vec![
+                // Structural changes only: device added/removed/renamed/
+                // pinned/moved, presence flips. Rebuilding every row is
+                // acceptable here — these are comparatively rare.
                 Signal::builder("list-changed").build(),
                 // Fired once, synchronously in start(), after the initial config
                 // load — before any async discovery results arrive.
                 Signal::builder("initial-load").build(),
+                // A single tracked device's now-playing content (title/
+                // artist/artwork) changed — deliberately *not* folded into
+                // `list-changed`. That would rebuild every row's widgets
+                // from scratch on every track change (this fires far more
+                // often than anything structural), which is both wasteful
+                // and defeats FlipCover's flip-vs-fade logic: a freshly
+                // reconstructed FlipCover never has "previous real art" on
+                // the same widget instance to flip from. Param: the
+                // tracked device's key (`device_key()`'s result — same
+                // string `entries()`'s rows/`current_entries` are indexed
+                // by), so a listener can update just that one row in place.
+                Signal::builder("song-info-changed")
+                    .param_types([String::static_type()])
+                    .build(),
             ])
         }
     }
@@ -251,28 +268,22 @@ impl DiscoveryManager {
     pub fn entries(&self) -> Vec<ManagedEntry> {
         let inner = self.imp().inner.borrow();
         let song_info = inner.song_info;
-        let mut v: Vec<ManagedEntry> = inner.devices.values().map(|r| {
-            let mut entry = r.entry.clone();
-            entry.song_info_enabled = song_info;
-            entry.now_playing = (song_info && entry.presence == DevicePresence::Active)
-                .then(|| {
-                    let ps = r.ds.playback_state();
-                    let source_id = capabilities::mode_to_input_source(r.ds.current_mode());
-                    let icon_key = match r.ds.capabilities() {
-                        Some(caps) => capabilities::icon_canon_for_input(source_id, caps.device_id).to_string(),
-                        None       => source_id.to_string(),
-                    };
-                    NowPlaying {
-                        title:   ps.title.to_string(),
-                        artist:  ps.artist.to_string(),
-                        artwork: ps.artwork.clone(),
-                        icon_key,
-                    }
-                });
-            entry
-        }).collect();
+        let mut v: Vec<ManagedEntry> = inner.devices.values()
+            .map(|r| build_managed_entry(r, song_info))
+            .collect();
         v.sort_by(|a, b| a.name.cmp(&b.name));
         v
+    }
+
+    /// Single-entry counterpart to `entries()` — used by the
+    /// `song-info-changed` handler to refresh just one row's content
+    /// without recomputing (or rebuilding widgets for) every other tracked
+    /// device. `key` is `device_key()`'s result, same as `entries()`'s
+    /// rows are implicitly keyed by for row-widget lookup purposes.
+    pub fn entry_for(&self, key: &str) -> Option<ManagedEntry> {
+        let inner = self.imp().inner.borrow();
+        let song_info = inner.song_info;
+        inner.devices.get(key).map(|r| build_managed_entry(r, song_info))
     }
 
     /// The one place `list-changed` actually fires — dumps the full
@@ -284,6 +295,14 @@ impl DiscoveryManager {
             self.dump_devices();
         }
         self.emit_by_name::<()>("list-changed", &[]);
+    }
+
+    /// Fired from `create_and_track()`'s `playback-changed` handler
+    /// instead of `emit_list_changed()` — see `song-info-changed`'s own
+    /// doc comment (`signals()`) for why the two are kept separate.
+    fn emit_song_info_changed(&self, key: &str) {
+        dbg(&format!("song info changed: {key}"));
+        self.emit_by_name::<()>("song-info-changed", &[&key.to_string()]);
     }
 
     fn dump_devices(&self) {
@@ -375,6 +394,20 @@ impl DiscoveryManager {
     pub fn connect_list_changed<F: Fn(&Self) + 'static>(&self, f: F) -> glib::SignalHandlerId {
         self.connect_local("list-changed", false, move |args| {
             f(&args[0].get::<Self>().unwrap());
+            None
+        })
+    }
+
+    /// Fired whenever a single tracked device's now-playing content
+    /// changes — see `song-info-changed`'s doc comment (`signals()`) for
+    /// why this is separate from `list-changed`. The callback's `&str` is
+    /// the device's key (`device_key()`'s result); use `entry_for(key)` to
+    /// get its fresh content.
+    pub fn connect_song_info_changed<F: Fn(&Self, &str) + 'static>(&self, f: F) -> glib::SignalHandlerId {
+        self.connect_local("song-info-changed", false, move |args| {
+            let obj = args[0].get::<Self>().unwrap();
+            let key = args[1].get::<String>().unwrap();
+            f(&obj, &key);
             None
         })
     }
@@ -478,12 +511,16 @@ impl DiscoveryManager {
             let Some(mgr) = weak.upgrade() else { return };
             mgr.on_tracked_device_changed(&key_owned, ds);
         });
-        // Rebuilds the row list on an actual now-playing content change
+        // Updates just this row's content on an actual now-playing change
         // (not every poll tick — filtered to the TITLE/ARTIST/ARTWORK bits)
-        // so a picker row showing song info stays live. No-op, cheaply,
-        // when `song_info` is off — `entries()` doesn't populate now-playing
-        // fields in that case, so there'd be nothing to redraw.
+        // via the dedicated `song-info-changed` signal, *not*
+        // `emit_list_changed()` — this fires far more often than anything
+        // structural, and rebuilding every row's widgets on every track
+        // change is both wasteful and defeats FlipCover's flip transition
+        // (see `song-info-changed`'s doc comment in `signals()`). No-op,
+        // cheaply, when `song_info` is off.
         let weak2 = self.downgrade();
+        let key_for_song_info = key.to_string();
         ds.connect_playback_changed(move |_, mask| {
             if mask & (crate::device::state::playback_changed::TITLE
                 | crate::device::state::playback_changed::ARTIST
@@ -493,7 +530,7 @@ impl DiscoveryManager {
             }
             let Some(mgr) = weak2.upgrade() else { return };
             if mgr.imp().inner.borrow().song_info {
-                mgr.emit_list_changed();
+                mgr.emit_song_info_changed(&key_for_song_info);
             }
         });
         self.imp().inner.borrow_mut().devices.insert(key.to_string(), DeviceRecord {
@@ -664,7 +701,79 @@ fn device_key(uuid: &str, ip: &str) -> String {
     if !uuid.is_empty() { uuid.to_string() } else { format!("ip:{ip}") }
 }
 
+/// Shared by `entries()`/`entry_for()` — one record's cached identity
+/// fields plus a freshly-computed `now_playing` snapshot, gated on
+/// `song_info` and the record's own presence.
+fn build_managed_entry(r: &DeviceRecord, song_info: bool) -> ManagedEntry {
+    let mut entry = r.entry.clone();
+    entry.song_info_enabled = song_info;
+    entry.now_playing = (song_info && entry.presence == DevicePresence::Active)
+        .then(|| compute_now_playing(&r.ds));
+    entry
+}
+
+fn compute_now_playing(ds: &DeviceState) -> NowPlaying {
+    let ps = ds.playback_state();
+    let source_id = capabilities::mode_to_input_source(ds.current_mode());
+    let icon_key = match ds.capabilities() {
+        Some(caps) => capabilities::icon_canon_for_input(source_id, caps.device_id).to_string(),
+        None       => source_id.to_string(),
+    };
+    NowPlaying {
+        title:   ps.title.to_string(),
+        artist:  ps.artist.to_string(),
+        artwork: ps.artwork.clone(),
+        icon_key,
+    }
+}
+
+/// "Title · Artist" (round-dot separator, same as the mini window's
+/// artist/album line) when now-playing content is available; falls back
+/// to the model name otherwise. Shared by `build_row()` (initial render)
+/// and the `song-info-changed` handler (in-place update).
+fn subtitle_text_for(entry: &ManagedEntry) -> String {
+    match &entry.now_playing {
+        Some(np) if !np.title.is_empty() && !np.artist.is_empty() => format!("{} \u{00b7} {}", np.title, np.artist),
+        Some(np) if !np.title.is_empty()  => np.title.clone(),
+        Some(np) if !np.artist.is_empty() => np.artist.clone(),
+        _ => entry.model.clone(),
+    }
+}
+
+/// Applies `entry.now_playing` to an existing `FlipCover` — real art when
+/// available, the input/mode icon otherwise, cleared when there's no
+/// now-playing content at all. Shared by `build_row()` (initial render,
+/// where it never flips — a freshly constructed `FlipCover` has no
+/// "previous real art" to flip from) and the `song-info-changed` handler
+/// (in-place update on a persistent widget, where a real track-to-track
+/// change *does* flip — see `flip_cover.rs`'s own `set_content()`).
+fn apply_now_playing(flip: &FlipCover, icons: &IconSet, entry: &ManagedEntry) {
+    match &entry.now_playing {
+        Some(np) => {
+            let tex = np.artwork.as_ref().and_then(|bytes| {
+                let gbytes = glib::Bytes::from(bytes.as_ref().as_slice());
+                gtk::gdk::Texture::from_bytes(&gbytes).ok()
+            });
+            match &tex {
+                Some(t) => flip.set_art(Some(t), &entry.uuid),
+                None    => flip.set_icon(icons.source_paintable(&np.icon_key), 32.0, &entry.uuid),
+            }
+        }
+        None => flip.clear(),
+    }
+}
+
 // ── DiscoveryWindow ───────────────────────────────────────────────────────────
+
+/// The subset of a row's widgets `song-info-changed` needs to update in
+/// place — keyed by `device_key()`'s result in a map alongside
+/// `current_entries`, rebuilt (not incrementally patched) whenever
+/// `rebuild_list()` runs. Only present for rows built while
+/// `entry.song_info_enabled` was true (see `build_row()`).
+struct RowWidgets {
+    flip:     FlipCover,
+    subtitle: ScrollFadeLabel,
+}
 
 pub struct DiscoveryWindow {
     window: adw::ApplicationWindow,
@@ -770,17 +879,32 @@ impl DiscoveryWindow {
         // AdwActionRow) on click or keyboard activation, and reusing that
         // is simpler than reimplementing it per row.
         let current_entries: Rc<RefCell<Vec<ManagedEntry>>> = Rc::new(RefCell::new(Vec::new()));
+        // Live-updatable widgets for rows currently showing song info —
+        // see `song-info-changed`'s doc comment (`signals()`) for why
+        // this exists instead of just rebuilding the list.
+        let row_widgets: Rc<RefCell<HashMap<String, RowWidgets>>> = Rc::new(RefCell::new(HashMap::new()));
 
         // Populate list and subscribe to manager changes.
-        Self::rebuild_list(&list_box, &manager.entries(), &current_entries, manager, &icons);
+        Self::rebuild_list(&list_box, &manager.entries(), &current_entries, &row_widgets, manager, &icons);
 
-        // List rebuild: fires on every discovery event or tracked-device change.
+        // List rebuild: structural changes only (device added/removed/
+        // renamed/pinned/moved, presence flips) — see `signals()`.
         manager.connect_list_changed(clone!(
-            @strong list_box, @strong current_entries, @strong icons
+            @strong list_box, @strong current_entries, @strong row_widgets, @strong icons
                 => move |mgr| {
-                    Self::rebuild_list(&list_box, &mgr.entries(), &current_entries, mgr, &icons);
+                    Self::rebuild_list(&list_box, &mgr.entries(), &current_entries, &row_widgets, mgr, &icons);
                 }
         ));
+
+        // One device's now-playing content changed — update just its row
+        // in place instead of rebuilding the whole list.
+        manager.connect_song_info_changed(clone!(@strong row_widgets, @strong icons => move |mgr, key| {
+            let Some(entry) = mgr.entry_for(key) else { return };
+            let widgets = row_widgets.borrow();
+            let Some(rw) = widgets.get(key) else { return };
+            apply_now_playing(&rw.flip, &icons, &entry);
+            rw.subtitle.set_text(&subtitle_text_for(&entry));
+        }));
 
         list_box.connect_row_activated(clone!(@strong current_entries, @strong open_device => move |_, row| {
             let idx = row.index();
@@ -849,6 +973,7 @@ impl DiscoveryWindow {
         list_box:        &gtk::ListBox,
         entries:         &[ManagedEntry],
         current_entries: &Rc<RefCell<Vec<ManagedEntry>>>,
+        row_widgets:     &Rc<RefCell<HashMap<String, RowWidgets>>>,
         manager:         &DiscoveryManager,
         icons:           &Rc<IconSet>,
     ) {
@@ -858,6 +983,10 @@ impl DiscoveryWindow {
         // Must match row append order exactly — `list_box.connect_row_activated`
         // looks a clicked row up by index into this.
         *current_entries.borrow_mut() = entries.to_vec();
+        // Rebuilt from scratch alongside the rows themselves (structural
+        // change — every widget is new) — `song-info-changed`'s handler
+        // only ever updates a row that's still in here.
+        row_widgets.borrow_mut().clear();
         if entries.is_empty() {
             let placeholder = adw::ActionRow::builder()
                 .title("No devices found")
@@ -867,14 +996,15 @@ impl DiscoveryWindow {
             return;
         }
         for entry in entries {
-            list_box.append(&Self::build_row(entry, manager, icons));
+            list_box.append(&Self::build_row(entry, row_widgets, manager, icons));
         }
     }
 
     fn build_row(
-        entry:   &ManagedEntry,
-        manager: &DiscoveryManager,
-        icons:   &Rc<IconSet>,
+        entry:       &ManagedEntry,
+        row_widgets: &Rc<RefCell<HashMap<String, RowWidgets>>>,
+        manager:     &DiscoveryManager,
+        icons:       &Rc<IconSet>,
     ) -> gtk::ListBoxRow {
         let hbox = gtk::Box::builder()
             .orientation(Orientation::Horizontal)
@@ -890,28 +1020,20 @@ impl DiscoveryWindow {
         // pin button) never shifts as devices update. Same FlipCover
         // widget (flip/crossfade between real art and the fallback icon)
         // the main and mini windows use, not a separate plain-image path.
-        if entry.song_info_enabled {
+        // Registered into `row_widgets` (keyed the same as `entries()`'s
+        // rows) so `song-info-changed` can update it in place later
+        // without rebuilding the row — see that signal's doc comment.
+        let flip = entry.song_info_enabled.then(|| {
             let flip = FlipCover::new();
             flip.set_hexpand(false);
             flip.set_vexpand(false);
             flip.set_valign(gtk::Align::Center);
             flip.add_css_class("devlist-art");
             flip.set_overflow(gtk::Overflow::Hidden);
-            match &entry.now_playing {
-                Some(np) => {
-                    let tex = np.artwork.as_ref().and_then(|bytes| {
-                        let gbytes = glib::Bytes::from(bytes.as_ref().as_slice());
-                        gtk::gdk::Texture::from_bytes(&gbytes).ok()
-                    });
-                    match &tex {
-                        Some(t) => flip.set_art(Some(t), &entry.uuid),
-                        None    => flip.set_icon(icons.source_paintable(&np.icon_key), 32.0, &entry.uuid),
-                    }
-                }
-                None => flip.clear(),
-            }
+            apply_now_playing(&flip, icons, entry);
             hbox.append(&flip);
-        }
+            flip
+        });
 
         let text_box = gtk::Box::builder()
             .orientation(Orientation::Vertical)
@@ -935,18 +1057,17 @@ impl DiscoveryWindow {
         // markup (`subtitle` interprets markup, which broke on a literal
         // "&" in a device or track name — moot here since ScrollFadeLabel
         // never parses its text as markup at all).
-        let subtitle_text = match &entry.now_playing {
-            Some(np) if !np.title.is_empty() && !np.artist.is_empty() => format!("{} \u{00b7} {}", np.title, np.artist),
-            Some(np) if !np.title.is_empty()  => np.title.clone(),
-            Some(np) if !np.artist.is_empty() => np.artist.clone(),
-            _ => entry.model.clone(),
-        };
-        let subtitle = ScrollFadeLabel::new(&subtitle_text);
+        let subtitle = ScrollFadeLabel::new(&subtitle_text_for(entry));
         subtitle.set_halign(gtk::Align::Start);
         subtitle.set_hexpand(true);
         subtitle.add_label_css_class("dim-label");
         subtitle.add_label_css_class("caption");
         text_box.append(&subtitle);
+
+        if let Some(flip) = flip {
+            let key = device_key(&entry.uuid, &entry.ip);
+            row_widgets.borrow_mut().insert(key, RowWidgets { flip, subtitle: subtitle.clone() });
+        }
 
         hbox.append(&text_box);
 
