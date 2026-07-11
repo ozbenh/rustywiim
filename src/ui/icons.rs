@@ -1,45 +1,43 @@
 /// Centralised icon handling for RustyWiiM.
 ///
 /// `IconSet::load()` must be called once from `build_ui`, after the GDK
-/// display is available.  From that point every icon is a pre-loaded
-/// `gdk::Paintable`; custom SVG assets take priority, Adwaita symbolic icons
-/// fill the gaps.  No icon-name strings are scattered through the rest of the
-/// codebase.
+/// display is available.  From that point every icon is a `gdk::Paintable`
+/// resolved by name via `gtk::IconTheme::lookup_icon()` — both this app's own
+/// custom full-colour icons (RCA/optical/coax/output-fallback/remote,
+/// embedded in the `rustywiim.gresource` bundle `init_icon_resource()`
+/// registers, same mechanism as the app icon) and Adwaita's own symbolic
+/// icons resolve through the exact same call, for consistency. No icon-name
+/// strings are scattered through the rest of the codebase.
+///
+/// Unlike a `gdk::Texture` decoded once from raw bytes, an SVG-backed
+/// `GtkIconPaintable` renders crisply at whatever size it's *scaled down
+/// to* — but `lookup_icon()`'s `size`/`scale` arguments still bake a raster
+/// texture at that resolution once, up front (`gtk_icon_theme_lookup_icon()`
+/// itself: "desired icon size, in application pixels" / "the window scale
+/// this will be displayed on" — not "render at any size forever"). Confirmed
+/// live: with `size` hardcoded to 64, the main window's 128px no-art
+/// fallback (`icon_size` in `ui/playback.rs`) was visibly pixelated — a 2×
+/// upscale of that 64px raster, worst on the jack icon's fine line detail.
+/// `LOOKUP_SIZE` below is the largest logical size any caller actually
+/// displays one of these at — every smaller use (devlist row, mini window,
+/// remote icon) downscales from it instead, which stays sharp.
+/// `LOOKUP_SCALE` requests a 2×-native raster on top of that so a HiDPI
+/// (scale-2) display doesn't hit the exact same problem one step up.
 
 use gtk::gdk;
 use gtk::prelude::*;
 use std::collections::HashMap;
 
-// ── Embedded assets ───────────────────────────────────────────────────────────
-
-/// "Box with outward arrow" icon, used as the output-set fallback.
-static AUDIO_OUTPUT_SVG: &[u8] = include_bytes!("../icons/audio-output.svg");
-
-/// RCA connector icon
-static RCA_INOUT_SVG: &[u8] = include_bytes!("../icons/rca-inout.svg");
-
-/// Optical connector icon
-static OPTICAL_INOUT_SVG: &[u8] = include_bytes!("../icons/optical-inout.svg");
-
-/// Coax connector icon
-static COAX_INOUT_SVG: &[u8] = include_bytes!("../icons/coax-inout.svg");
-
-/// WiiM BLE remote icon, used in the main window's bottom status bar when a
-/// remote is connected.
-static WIIM_REMOTE_SVG: &[u8] = include_bytes!("../icons/wiim-remote.svg");
-
-
-// ── Internal loaders ──────────────────────────────────────────────────────────
-
-fn try_texture(bytes: &[u8]) -> Option<gdk::Paintable> {
-    let gbytes = glib::Bytes::from(bytes);
-    gdk::Texture::from_bytes(&gbytes).ok()
-        .map(|t| t.upcast::<gdk::Paintable>())
-}
+/// Must stay in sync with `ui/playback.rs`'s `icon_size` for the main
+/// window's no-art `FlipCover` fallback (currently 128.0) — see this
+/// module's doc comment for why that's the size that has to drive the
+/// shared lookup resolution.
+const LOOKUP_SIZE:  i32 = 128;
+const LOOKUP_SCALE: i32 = 2;
 
 fn theme_icon(theme: &gtk::IconTheme, name: &str) -> gdk::Paintable {
     theme.lookup_icon(
-        name, &[], 64, 1,
+        name, &[], LOOKUP_SIZE, LOOKUP_SCALE,
         gtk::TextDirection::None,
         gtk::IconLookupFlags::empty(),
     )
@@ -68,64 +66,51 @@ pub struct IconSet {
 
 impl IconSet {
     /// Pre-load every icon.  Call once from `build_ui`, after the GDK display
-    /// is initialised.  Custom SVG assets take priority; Adwaita symbolic icons
-    /// fill any gaps.
+    /// is initialised (and after `init_icon_resource()` has registered the
+    /// icon GResource — see this module's doc comment).
     pub fn load() -> Self {
         let display = gdk::Display::default().expect("GDK display not available");
         let theme   = gtk::IconTheme::for_display(&display);
 
-        let mut sources: HashMap<&'static str, gdk::Paintable> = HashMap::new();
-        let mut outputs: HashMap<&'static str, gdk::Paintable> = HashMap::new();
-
-        // Custom full-colour assets take priority; insert before Adwaita pass.
-        // Keys in `outputs` use canonical names from `canon_routine_output_name()`.
-        if let Some(p) = try_texture(RCA_INOUT_SVG) {
-            sources.insert("line-in",    p.clone());
-            sources.insert("line-in-2",  p.clone());
-            sources.insert("RCA",        p.clone());
-            outputs.insert("line-out",   p);
-        }
-        if let Some(p) = try_texture(OPTICAL_INOUT_SVG) {
-            sources.insert("optical",    p.clone());
-            outputs.insert("optical-out", p);
-        }
-        if let Some(p) = try_texture(COAX_INOUT_SVG) {
-            sources.insert("coaxial",   p.clone());
-            outputs.insert("coax-out",  p);
-        }
-       
-        // Adwaita symbolic fallbacks for every known source ID.
-        // `or_insert_with` means a custom asset already inserted above wins.
-        let adwaita_sources: &[(&'static str, &str)] = &[
-            ("wifi",      "network-wireless-symbolic"),
-            ("bluetooth", "bluetooth-symbolic"),
-            ("phono",     "media-record-symbolic"),
-            ("udisk",     "drive-harddisk-usb-symbolic"),
-            ("HDMI",      "tv-symbolic"),
+        // Every input-source ID this app knows an icon for, custom
+        // (`rustywiim-*`, from `rustywiim.gresource.xml`) or Adwaita
+        // symbolic — one lookup mechanism for both, see the module doc
+        // comment. Multiple IDs sharing one icon (e.g. the RCA graphic
+        // covering `"line-in"`/`"line-in-2"`/`"RCA"`) just repeat the name.
+        let source_names: &[(&'static str, &str)] = &[
+            ("line-in",       "rustywiim-rca-inout"),
+            ("line-in-2",     "rustywiim-rca-inout"),
+            ("RCA",           "rustywiim-rca-inout"),
+            ("optical",       "rustywiim-optical-inout"),
+            ("coaxial",       "rustywiim-coax-inout"),
+            ("wifi",          "network-wireless-symbolic"),
+            ("bluetooth",     "bluetooth-symbolic"),
+            ("phono",         "media-record-symbolic"),
+            ("udisk",         "drive-harddisk-usb-symbolic"),
+            ("HDMI",          "tv-symbolic"),
             // Find (or make) a better icon for a stereo jack
-            ("line-in-jack", "audio-headphones-symbolic"),
+            ("line-in-jack",  "audio-headphones-symbolic"),
         ];
-        let adwaita_outputs: &[(&'static str, &str)] = &[
+        let output_names: &[(&'static str, &str)] = &[
+            ("line-out",      "rustywiim-rca-inout"),
+            ("optical-out",   "rustywiim-optical-inout"),
+            ("coax-out",      "rustywiim-coax-inout"),
             ("bluetooth-out", "bluetooth-symbolic"),
             ("headphone-out", "audio-headphones-symbolic"),
             ("usb-out",       "drive-harddisk-usb-symbolic"),
             ("speaker-out",   "audio-speakers-symbolic"),
         ];
-        for &(id, name) in adwaita_sources {
-            sources.entry(id).or_insert_with(|| theme_icon(&theme, name));
-        }
-        for &(id, name) in adwaita_outputs {
-            outputs.entry(id).or_insert_with(|| theme_icon(&theme, name));
-        }
+
+        let sources: HashMap<&'static str, gdk::Paintable> = source_names.iter()
+            .map(|&(id, name)| (id, theme_icon(&theme, name)))
+            .collect();
+        let outputs: HashMap<&'static str, gdk::Paintable> = output_names.iter()
+            .map(|&(id, name)| (id, theme_icon(&theme, name)))
+            .collect();
 
         let source_fallback = theme_icon(&theme, "audio-card-symbolic");
-
-
-        let output_fallback = try_texture(AUDIO_OUTPUT_SVG)
-            .unwrap_or_else(|| theme_icon(&theme, "audio-speakers-symbolic"));
-
-        let remote = try_texture(WIIM_REMOTE_SVG)
-            .unwrap_or_else(|| theme_icon(&theme, "input-gaming-symbolic"));
+        let output_fallback = theme_icon(&theme, "rustywiim-audio-output");
+        let remote           = theme_icon(&theme, "rustywiim-remote");
 
         Self { sources, source_fallback, outputs, output_fallback, remote }
     }

@@ -44,15 +44,22 @@ fn main() {
     println!("cargo:rustc-env=CARGO_PKG_VERSION={version}");
     println!("cargo:rustc-env=GIT_HASH={hash}");
 
-    // Compile the app-icon GResource bundle. Embedded via include_bytes! in
-    // ui/mod.rs (not shipped as a separate file), so the icon is available
-    // in the About dialog even for a bare `cargo run`/unpackaged binary,
-    // with no system icon-theme install needed for that specific use.
-    // Requires glib-compile-resources at build time only (part of
+    // Compile the icon GResource bundle (app icon + every custom in-app
+    // vector icon — RCA/optical/coax/output-fallback/remote). Embedded via
+    // include_bytes! in ui/mod.rs (not shipped as a separate file), so
+    // every icon is available in-process, rendered as a real vector via
+    // IconTheme::lookup_icon(), even for a bare `cargo run`/unpackaged
+    // binary — no system icon-theme install needed for that. Requires
+    // glib-compile-resources at build time only (part of
     // libglib2.0-dev-bin on Debian/Ubuntu, glib2-devel on Fedora) — not a
     // runtime dependency.
     println!("cargo:rerun-if-changed=src/rustywiim.gresource.xml");
     println!("cargo:rerun-if-changed=src/icons/rustywiim-icon.svg");
+    println!("cargo:rerun-if-changed=src/icons/rca-inout.svg");
+    println!("cargo:rerun-if-changed=src/icons/optical-inout.svg");
+    println!("cargo:rerun-if-changed=src/icons/coax-inout.svg");
+    println!("cargo:rerun-if-changed=src/icons/audio-output.svg");
+    println!("cargo:rerun-if-changed=src/icons/wiim-remote.svg");
     let out_dir = std::env::var("OUT_DIR").unwrap();
     let status = Command::new("glib-compile-resources")
         .args([
