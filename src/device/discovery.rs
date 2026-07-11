@@ -6,8 +6,9 @@
 /// device identity is confirmed with `DeviceId::detect()` from capabilities.
 /// Two layers keep a non-WiiM device (e.g. a Samsung TV or Chromecast that
 /// also answers `MediaRenderer:1`/`ssdp:all` SSDP searches) from being
-/// probed forever: `is_likely_non_linkplay()` matches its `SERVER`/`ST`/`NT`
-/// SSDP headers against a conservative, certain-negatives-only denylist and
+/// probed forever: `is_likely_non_linkplay()` matches its `SERVER`/`ST`/`NT`/
+/// `X-User-Agent` SSDP headers against a conservative, certain-negatives-only
+/// denylist and
 /// skips it before any network call at all; anything that slips through
 /// (generic `SERVER: Linux` headers, common on Arylic/Audio Pro) still gets
 /// a real API probe, but after `NON_API_FAIL_THRESHOLD` consecutive
@@ -133,15 +134,33 @@ const NON_LINKPLAY_ST_PATTERNS: &[&str] = &[
     "samsung.com:service",
 ];
 
+/// SSDP `X-User-Agent` header substrings that certainly indicate a
+/// non-LinkPlay device. Needed as a third signal, separate from `SERVER`/
+/// `ST`, because a Samsung TV's Netflix "MDX" (Multi-Device Experience)
+/// second-screen discovery service — a *different* SSDP announcement from
+/// the TV's main DIAL/DLNA one, on its own port — reports a fully generic
+/// `SERVER: Linux/x.y.z, UPnP/1.0, Portable SDK for UPnP devices` (no
+/// vendor string at all) and a non-matching `ST`/`USN`
+/// (`uuid:SSTVRMF1==...`), confirmed live (Ben, 2026-07-11) via a direct
+/// unicast M-SEARCH to the TV — so it slipped through both existing
+/// checks and got a full (failing) API probe. `X-User-Agent: NRDP MDX`
+/// (Netflix's "Ready Device Platform") is what actually identifies it,
+/// and is implemented by non-Samsung smart TVs too, not just this one.
+const NON_LINKPLAY_USER_AGENT_PATTERNS: &[&str] = &[
+    "nrdp", // Netflix "Ready Device Platform" / MDX second-screen discovery
+];
+
 /// True if the SSDP headers *certainly* identify a non-LinkPlay device —
 /// never a false positive on a real WiiM/LinkPlay device, but also won't
 /// catch every non-LinkPlay one (generic `SERVER: Linux` headers pass
 /// through and rely on the API-probe failure counter instead).
-fn is_likely_non_linkplay(server: &str, st: &str) -> bool {
+fn is_likely_non_linkplay(server: &str, st: &str, x_user_agent: &str) -> bool {
     let server_lc = server.to_ascii_lowercase();
     let st_lc     = st.to_ascii_lowercase();
+    let ua_lc     = x_user_agent.to_ascii_lowercase();
     NON_LINKPLAY_SERVER_PATTERNS.iter().any(|p| server_lc.contains(p))
         || NON_LINKPLAY_ST_PATTERNS.iter().any(|p| st_lc.contains(p))
+        || NON_LINKPLAY_USER_AGENT_PATTERNS.iter().any(|p| ua_lc.contains(p))
 }
 
 const PROBE_MODES: &[TlsMode] = &[
@@ -153,7 +172,7 @@ const PROBE_MODES: &[TlsMode] = &[
 // ── SSDP event (tokio → GTK thread) ──────────────────────────────────────────
 
 enum SsdpEvent {
-    Alive  { ip: String, uuid: String, location: String, server: String, st: String },
+    Alive  { ip: String, uuid: String, location: String, server: String, st: String, x_user_agent: String },
     Byebye { uuid: String, ip: String },
 }
 
@@ -297,15 +316,15 @@ impl DiscoveryService {
                     self.emit_by_name::<()>("discovery-updated", &[]);
                 }
             }
-            SsdpEvent::Alive { ip, uuid, location, server, st } => {
+            SsdpEvent::Alive { ip, uuid, location, server, st, x_user_agent } => {
                 // Cheapest check first: SSDP headers we already have in hand,
                 // no network round-trip needed. Never a false positive on a
                 // real WiiM/LinkPlay device, so this is safe to apply on
                 // every re-announcement, not just the first.
-                if is_likely_non_linkplay(&server, &st) {
+                if is_likely_non_linkplay(&server, &st, &x_user_agent) {
                     dbg(&format!(
                         "alive: skipping {ip} (SSDP headers indicate non-LinkPlay device: \
-                         SERVER={server:?} ST/NT={st:?})"
+                         SERVER={server:?} ST/NT={st:?} X-User-Agent={x_user_agent:?})"
                     ));
                     return;
                 }
@@ -446,6 +465,7 @@ fn parse_ssdp_packet(pkt: &str, src_ip: &str) -> Option<SsdpEvent> {
     let location = extract_header(pkt, "LOCATION").unwrap_or_default();
     let usn      = extract_header(pkt, "USN").unwrap_or_default();
     let server   = extract_header(pkt, "SERVER").unwrap_or_default();
+    let x_user_agent = extract_header(pkt, "X-USER-AGENT").unwrap_or_default();
     // NOTIFY packets carry the service/device type in `NT`; M-SEARCH 200 OK
     // responses carry it in `ST` — never both on the same packet, so either
     // one (whichever is present) is the "service type" signal for filtering.
@@ -466,7 +486,7 @@ fn parse_ssdp_packet(pkt: &str, src_ip: &str) -> Option<SsdpEvent> {
     } else if is_ok_resp || nts == "ssdp:alive" || nts == "ssdp:update" {
         // Alive/response with no LOCATION is useless — skip.
         if location.is_empty() { return None; }
-        Some(SsdpEvent::Alive { ip, uuid, location, server, st })
+        Some(SsdpEvent::Alive { ip, uuid, location, server, st, x_user_agent })
     } else {
         None
     }
