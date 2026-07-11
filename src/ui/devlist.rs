@@ -31,9 +31,11 @@ use gtk::{glib, Orientation};
 
 use crate::config;
 use crate::device::api::TlsMode;
+use crate::device::capabilities;
 use crate::device::discovery::{DEBUG_DISCOVERY, DiscoveredDevice, DiscoveryService};
 use crate::device::manager::DeviceManager;
 use crate::device::state::{ConnectionState, DeviceState};
+use crate::ui::icons::IconSet;
 
 /// `[disc-mgr]` — `DiscoveryManager`, the picker-list backend (this file's
 /// `impl DiscoveryManager` block). Distinct from `device/discovery.rs`'s
@@ -94,9 +96,16 @@ pub struct ManagedEntry {
 
 #[derive(Debug, Clone)]
 pub struct NowPlaying {
-    pub title:   String,
-    pub artist:  String,
-    pub artwork: Option<Rc<Vec<u8>>>,
+    pub title:    String,
+    pub artist:   String,
+    pub artwork:  Option<Rc<Vec<u8>>>,
+    /// Icon key for the row's fallback icon when `artwork` is `None` —
+    /// same `IconSet::source_paintable()` lookup key the main window's
+    /// `update_artwork()` uses for its own no-art fallback, computed the
+    /// same way (`capabilities::mode_to_input_source()` +
+    /// `icon_canon_for_input()`) so a device's picker row shows the same
+    /// icon its own window would.
+    pub icon_key: String,
 }
 
 // ── Internal record ───────────────────────────────────────────────────────────
@@ -236,12 +245,19 @@ impl DiscoveryManager {
         let mut v: Vec<ManagedEntry> = inner.devices.values().map(|r| {
             let mut entry = r.entry.clone();
             entry.now_playing = (song_info && entry.presence == DevicePresence::Active)
-                .then(|| r.ds.playback_state())
-                .filter(|ps| !ps.title.is_empty() || !ps.artist.is_empty())
-                .map(|ps| NowPlaying {
-                    title:   ps.title.to_string(),
-                    artist:  ps.artist.to_string(),
-                    artwork: ps.artwork.clone(),
+                .then(|| {
+                    let ps = r.ds.playback_state();
+                    let source_id = capabilities::mode_to_input_source(r.ds.current_mode());
+                    let icon_key = match r.ds.capabilities() {
+                        Some(caps) => capabilities::icon_canon_for_input(source_id, caps.device_id).to_string(),
+                        None       => source_id.to_string(),
+                    };
+                    NowPlaying {
+                        title:   ps.title.to_string(),
+                        artist:  ps.artist.to_string(),
+                        artwork: ps.artwork.clone(),
+                        icon_key,
+                    }
                 });
             entry
         }).collect();
@@ -654,6 +670,11 @@ impl DiscoveryWindow {
             if cfg.discovery_window_width  > 0 { cfg.discovery_window_width  } else { 500 },
             if cfg.discovery_window_height > 0 { cfg.discovery_window_height } else { 440 },
         ));
+
+        // One IconSet for the whole window, shared by every row — same
+        // pattern as a device window's own `icons` field, not rebuilt per
+        // row/rebuild.
+        let icons = Rc::new(IconSet::load());
         let window = adw::ApplicationWindow::builder()
             .application(app)
             .title("RustyWiiM")
@@ -731,13 +752,13 @@ impl DiscoveryWindow {
         window.set_content(Some(&toolbar_view));
 
         // Populate list and subscribe to manager changes.
-        Self::rebuild_list(&list_box, &manager.entries(), &open_device, manager);
+        Self::rebuild_list(&list_box, &manager.entries(), &open_device, manager, &icons);
 
         // List rebuild: fires on every discovery event or tracked-device change.
         manager.connect_list_changed(clone!(
-            @strong list_box, @strong open_device
+            @strong list_box, @strong open_device, @strong icons
                 => move |mgr| {
-                    Self::rebuild_list(&list_box, &mgr.entries(), &open_device, mgr);
+                    Self::rebuild_list(&list_box, &mgr.entries(), &open_device, mgr, &icons);
                 }
         ));
 
@@ -801,6 +822,7 @@ impl DiscoveryWindow {
         entries:     &[ManagedEntry],
         open_device: &Rc<dyn Fn(&ManagedEntry)>,
         manager:     &DiscoveryManager,
+        icons:       &Rc<IconSet>,
     ) {
         while let Some(child) = list_box.first_child() {
             list_box.remove(&child);
@@ -814,7 +836,7 @@ impl DiscoveryWindow {
             return;
         }
         for entry in entries {
-            list_box.append(&Self::build_row(entry, open_device, manager));
+            list_box.append(&Self::build_row(entry, open_device, manager, icons));
         }
     }
 
@@ -822,6 +844,7 @@ impl DiscoveryWindow {
         entry:       &ManagedEntry,
         open_device: &Rc<dyn Fn(&ManagedEntry)>,
         manager:     &DiscoveryManager,
+        icons:       &Rc<IconSet>,
     ) -> adw::ActionRow {
         // Now-playing title/artist takes over the subtitle line when
         // available (`devlist_song_info` on, device `Active`, track
@@ -850,20 +873,27 @@ impl DiscoveryWindow {
             row.add_css_class("dim-label");
         }
 
-        // Small artwork thumbnail, only when now-playing content actually
-        // has art — same bytes-to-texture conversion `ui/playback.rs`'s
-        // `update_artwork()` uses for the main window, just a smaller size.
-        if let Some(bytes) = entry.now_playing.as_ref().and_then(|np| np.artwork.as_ref()) {
-            let gbytes = glib::Bytes::from(bytes.as_ref().as_slice());
-            if let Ok(tex) = gtk::gdk::Texture::from_bytes(&gbytes) {
-                let art = gtk::Image::builder()
-                    .paintable(&tex)
-                    .pixel_size(32)
-                    .valign(gtk::Align::Center)
-                    .css_classes(["devlist-art"])
-                    .build();
-                row.add_prefix(&art);
-            }
+        // Artwork thumbnail when now-playing content has real art; falls
+        // back to the input/mode icon (same lookup `ui/playback.rs`'s
+        // `update_artwork()` uses for the main window's own no-art
+        // fallback) when it doesn't — never just blank, matching how a
+        // device window always shows either art or an icon.
+        if let Some(np) = &entry.now_playing {
+            let tex = np.artwork.as_ref().and_then(|bytes| {
+                let gbytes = glib::Bytes::from(bytes.as_ref().as_slice());
+                gtk::gdk::Texture::from_bytes(&gbytes).ok()
+            });
+            let paintable: gtk::gdk::Paintable = match &tex {
+                Some(tex) => tex.clone().upcast(),
+                None      => icons.source_paintable(&np.icon_key).clone(),
+            };
+            let art = gtk::Image::builder()
+                .paintable(&paintable)
+                .pixel_size(32)
+                .valign(gtk::Align::Center)
+                .css_classes(["devlist-art"])
+                .build();
+            row.add_prefix(&art);
         }
 
         let ip_label = gtk::Label::builder()
