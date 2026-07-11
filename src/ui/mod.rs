@@ -759,7 +759,14 @@ impl DeviceWindow {
             cleaned_up: Cell::new(false),
             cached_name: RefCell::new(init_dev_cfg.name.clone().unwrap_or_default()),
             mini,
-            mini_mode:         RefCell::new(false),
+            // Seeded correctly from the start (not left `false` and fixed
+            // up later) so the upcoming `populate_all()` call — which only
+            // refreshes whichever of main/mini is actually active — targets
+            // the right one immediately for a device restoring straight
+            // into mini mode. See `init_dev_cfg.mini_mode` block below for
+            // the rest of that restore (things that need `inner`/already-
+            // built widgets to exist, so can't be folded into this literal).
+            mini_mode:         RefCell::new(init_dev_cfg.mini_mode),
             mini_toggling:     RefCell::new(false),
             pre_mini_size:     RefCell::new((0, 0)),
             mini_btn:          mini_btn.clone(),
@@ -1243,27 +1250,19 @@ impl DeviceWindow {
         });
 
         if init_dev_cfg.mini_mode {
-            // Set up mini-mode state without calling enter_mini_mode(), which would
-            // try to hide a window not yet shown and call mini_win.present() too early.
-            // DeviceWindow::present() (called by the caller) will show the mini window.
-            *inner.mini_mode.borrow_mut() = true;
+            // `mini_mode` itself is already correctly seeded above (before
+            // `populate_all()` ran), so this is just the rest of the
+            // restore that needs `inner`/already-built widgets to exist —
+            // not calling the full `enter_mini_mode()`, which would try to
+            // hide a window not yet shown and call `mini_win.present()`
+            // too early. `DeviceWindow::present()` (called by the caller)
+            // will show the mini window.
             *inner.mini_toggling.borrow_mut() = true;
             inner.mini_btn.set_active(true);
             *inner.mini_toggling.borrow_mut() = false;
             // Seed pre_mini_size from saved config so exit_mini_mode() can restore
             // the right size even before the main window has ever been realised.
             *inner.pre_mini_size.borrow_mut() = (win_w, win_h);
-            // Re-populate now that mini_mode is finally true: the earlier
-            // populate_all() call above ran while mini_mode was still
-            // false, so update_artwork() (mini_mode-gated — it targets
-            // exactly one of pw/mini per call, not both) applied the
-            // current art to the main window's (never-shown, in this case)
-            // art_bg instead of the mini window's — leaving the mini
-            // window's own ArtBackground with no art at all, showing its
-            // static-gradient fallback instead of a blurred photo even
-            // with Modern + mini_modern on. Safe to call again — populate_all()
-            // is explicitly idempotent (see its own doc comment).
-            inner.populate_all();
         }
 
         Self { window, inner }

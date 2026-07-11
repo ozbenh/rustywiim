@@ -281,9 +281,25 @@ impl DeviceWindowInner {
         self.ds.device_info().is_some()
     }
 
-    /// Populate the entire UI from whatever the DeviceState currently has cached.
-    /// Called on initial window creation and on every `device-changed` signal.
-    /// Safe to call redundantly — all underlying setters are idempotent.
+    /// Populate the UI from whatever the DeviceState currently has cached.
+    /// Called on initial window creation and on every `device-changed`
+    /// signal. Safe to call redundantly — all underlying setters are
+    /// idempotent. Only refreshes whichever of the main/mini widget sets
+    /// `mini_mode` currently says is active (same convention the
+    /// `playback-changed`/`input-changed` signal handlers and
+    /// `enter_mini_mode()`/`exit_mini_mode()` already follow) — the
+    /// inactive one is deliberately left as-is here, since
+    /// `enter_mini_mode()`/`exit_mini_mode()` already give it a full
+    /// synchronous refresh at the exact moment it becomes active, making
+    /// an upfront refresh of a widget set nobody can see yet pure wasted
+    /// work (previously *worse* than merely wasted for artwork
+    /// specifically — `update_artwork()` only ever targets one of the two
+    /// FlipCovers per call based on `mini_mode`, so calling both
+    /// `update_playback_ui()`/`update_mini_playback()` unconditionally
+    /// here actually invoked it twice on the *same* target, never the
+    /// other one, silently leaving a window opened straight into mini
+    /// mode with no artwork/blurred-background content at all until some
+    /// later event happened to refresh it).
     pub(super) fn populate_all(self: &Rc<Self>) {
         use crate::device::state::playback_changed;
         self.update_network_icon();
@@ -314,8 +330,11 @@ impl DeviceWindowInner {
         // at every caller (this one, `enter_mini_mode()`/`exit_mini_mode()`,
         // `ui/mod.rs`'s `playback-changed`/`input-changed` handlers) is what
         // actually fixed it for all of them at once.
-        self.update_playback_ui(playback_changed::ALL);
-        self.update_mini_playback(playback_changed::ALL);
+        if *self.mini_mode.borrow() {
+            self.update_mini_playback(playback_changed::ALL);
+        } else {
+            self.update_playback_ui(playback_changed::ALL);
+        }
         self.update_input_display();
         self.update_output_display();
     }
