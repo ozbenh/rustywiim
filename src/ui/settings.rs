@@ -20,7 +20,7 @@ use crate::device::api::DeviceInfo;
 use crate::device::capabilities::DeviceCapabilities;
 use crate::device::playback::AccessMethod;
 use crate::device::state::DeviceState;
-use crate::ui::devlist::DiscoveryManager;
+use crate::device::discovery_manager::DiscoveryManager;
 use crate::ui::DEBUG_UI;
 use std::sync::atomic::Ordering;
 
@@ -524,7 +524,12 @@ fn build_general_page(disc_mgr: &DiscoveryManager) -> adw::PreferencesPage {
         .active(song_info)
         .build();
     song_info_row.connect_active_notify(glib::clone!(@weak disc_mgr => move |row| {
-        disc_mgr.set_song_info(row.is_active());
+        let want = row.is_active();
+        // `device/`-resident DiscoveryManager can't touch config itself —
+        // this is the "report out" side, mirroring how it can't read
+        // config in either (see device::discovery_manager's module doc).
+        config::update(|cfg| cfg.devlist_song_info = want);
+        disc_mgr.set_song_info(want);
     }));
 
     let group = adw::PreferencesGroup::builder()

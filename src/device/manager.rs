@@ -2,9 +2,9 @@
 //
 // `DeviceManager` keeps a `WeakRef<DeviceState>` per UUID.  The DeviceState
 // lives as long as at least one consumer (device window, settings window,
-// `ui::devlist`'s picker-list tracking, …) holds a strong ref.  When the
-// last consumer drops its ref the GObject is finalised, polling stops, and
-// the weak entry here goes stale.
+// `device::discovery_manager`'s picker-list tracking, …) holds a strong ref.
+// When the last consumer drops its ref the GObject is finalised, polling
+// stops, and the weak entry here goes stale.
 //
 // On re-open, `get()` finds the stale entry, creates a fresh DeviceState, and
 // the new window's `populate_all()` call handles the initial blank state
@@ -19,9 +19,9 @@
 // whose callers already resolve config before calling in) — `ui/`'s only
 // listener resolves per-device config (TLS/access overrides; `device/` can't
 // read config itself) and pushes it onto the fresh instance. SSDP
-// consumption, presence computation, and config persistence for
-// picker-list rendering all live in `ui::devlist` — this module only owns
-// the `DeviceState` registry itself.
+// consumption, presence computation, and the picker-list tracking itself
+// live in `device::discovery_manager` — this module only owns the
+// `DeviceState` registry.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -199,20 +199,22 @@ impl DeviceManager {
     /// defaults to `TlsMode::HttpsWiiM` here since this convenience
     /// wrapper has no way to know a device's actual remembered mode
     /// (playback/mute access overrides come via `configure-device`
-    /// instead). `ui::devlist`, which *does* know the real per-device
-    /// `TlsMode` from config, calls `create_and_configure()` directly with
-    /// it rather than going through this wrapper. For pinned devices
-    /// seeded from config at `ui::AppState`'s startup.
+    /// instead). `device::discovery_manager`, which *does* know the real
+    /// per-device `TlsMode` (from its config-derived seed), calls
+    /// `create_and_configure()` directly with it rather than going through
+    /// this wrapper — currently unused as a result, kept in case a future
+    /// caller wants the identity-only convenience path.
     pub fn add_known_device(&self, uuid: &str, ip: &str) -> DeviceState {
         self.create_and_configure(uuid, ip, TlsMode::HttpsWiiM)
     }
 
-    /// Shared by `add_known_device()` and `ui::devlist`'s SSDP-driven/
-    /// manual-add creation (which know the real probed `TlsMode`, unlike
-    /// `add_known_device()`'s hardcoded default) — one creation+configure
-    /// path, not two, so overrides are resolved identically regardless of
-    /// what triggered creation. `pub` (not `add_known_device`-only) so
-    /// `ui::devlist` can pass its own resolved `tls`. Fires
+    /// Shared by `add_known_device()` and `device::discovery_manager`'s
+    /// SSDP-driven/manual-add creation (which know the real probed
+    /// `TlsMode`, unlike `add_known_device()`'s hardcoded default) — one
+    /// creation+configure path, not two, so overrides are resolved
+    /// identically regardless of what triggered creation. `pub` (not
+    /// `add_known_device`-only) so `device::discovery_manager` can pass
+    /// its own resolved `tls`. Fires
     /// `configure-device` synchronously, then reads back whatever the
     /// connected handler set via `set_playback_access_override()`/
     /// `set_mute_access_override()` before making first contact
@@ -304,8 +306,8 @@ impl DeviceManager {
     /// watcher, `DeviceState::report_failure()` falls through to mutating
     /// `connection_state` locally, and `maybe_self_reconnect()` (see its
     /// own doc comment) is the fallback that brings it back — the intended
-    /// behavior once `ui::devlist` stopped independently health-checking,
-    /// not a regression.
+    /// behavior once the picker-list backend stopped independently
+    /// health-checking, not a regression.
     fn wire_and_insert(&self, ds: &DeviceState, uuid: &str) {
         self.imp().states.borrow_mut().insert(uuid.to_string(), ds.downgrade());
     }

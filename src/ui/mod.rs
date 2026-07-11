@@ -26,6 +26,7 @@ use crate::device::api::TlsMode;
 use crate::config;
 use crate::config::ThemeMode;
 use crate::device::discovery::DiscoveryService;
+use crate::device::discovery_manager::{DevicePresence, DiscoveryManager, ManagedEntry, SeedEntry};
 use crate::device::manager::DeviceManager;
 use crate::device::playback::RepeatMode;
 use crate::device::state::{ConnectionState, DeviceState, FullModeGuard, DEBUG_STATE};
@@ -337,10 +338,10 @@ struct DeviceWindowInner {
     /// this window (main + mini share the same `ds`, so one guard covers
     /// both surfaces) — releases automatically when this struct drops
     /// (window close/last-ref-drop), reverting `ds` to `Simple` mode.
-    /// `ui::devlist`'s own tracked devices never acquire `Full` themselves
-    /// (they only need `Simple`'s liveness+identity polling), so a window
-    /// closing is the only thing that ever drops this back down. See
-    /// `DeviceState::acquire_full()`.
+    /// `device::discovery_manager`'s own tracked devices never acquire
+    /// `Full` themselves (they only need `Simple`'s liveness+identity
+    /// polling), so a window closing is the only thing that ever drops
+    /// this back down. See `DeviceState::acquire_full()`.
     _full_mode:       FullModeGuard,
     show_devices_fn:  Rc<dyn Fn()>,
     sw:             SourceWidgets,
@@ -1289,7 +1290,7 @@ fn dbg_state(msg: &str) {
 
 pub(crate) struct AppState {
     app:            adw::Application,
-    disc_mgr:       devlist::DiscoveryManager,
+    disc_mgr:       DiscoveryManager,
     device_manager: DeviceManager,
     registry:       RefCell<Vec<DeviceWindow>>,
     settings_reg:   RefCell<Vec<settings::SettingsWindow>>,
@@ -1337,10 +1338,10 @@ impl AppState {
 
         // `disc_mgr` now owns the *entire* known-device registry (SSDP
         // consumption, pinned/config-remembered devices, presence — see
-        // `ui/devlist.rs`'s module doc comment) — it holds `device_manager`
-        // directly rather than through a hook/callback pair, since there's
-        // no separate ownership layer left to keep them decoupled through.
-        let disc_mgr = devlist::DiscoveryManager::new(rt, disc_svc.clone(), device_manager.clone());
+        // `device::discovery_manager`'s module doc comment) — it holds
+        // `device_manager` directly rather than through a hook/callback
+        // pair, since both live in `device/` now.
+        let disc_mgr = DiscoveryManager::new(rt, disc_svc.clone(), device_manager.clone());
 
         Rc::new(Self {
             app:            app.clone(),
@@ -1401,8 +1402,8 @@ impl AppState {
             dbg_state("device list: creating window");
             let open_device_fn = {
                 let state = Rc::clone(self_rc);
-                Rc::new(move |entry: &devlist::ManagedEntry| Self::open_device(&state, entry))
-                    as Rc<dyn Fn(&devlist::ManagedEntry)>
+                Rc::new(move |entry: &ManagedEntry| Self::open_device(&state, entry))
+                    as Rc<dyn Fn(&ManagedEntry)>
             };
             let open_settings_fn = {
                 let state = Rc::clone(self_rc);
@@ -1421,7 +1422,7 @@ impl AppState {
     }
 
     /// Present the existing device window for `entry`, or open a new one.
-    fn open_device(self_rc: &Rc<Self>, entry: &devlist::ManagedEntry) {
+    fn open_device(self_rc: &Rc<Self>, entry: &ManagedEntry) {
         {
             let reg = self_rc.registry.borrow();
             for w in reg.iter() {
@@ -1440,7 +1441,7 @@ impl AppState {
             ip:          entry.ip.clone(),
             uuid:        entry.uuid.clone(),
             tls_mode:    entry.tls_mode,
-            try_connect: entry.presence == devlist::DevicePresence::Active,
+            try_connect: entry.presence == DevicePresence::Active,
         });
     }
 
@@ -1579,15 +1580,16 @@ impl AppState {
             return;
         }
 
-        // Reconnecting an already-open window to a corrected IP, and
-        // persisting the correction to config, both now happen directly
-        // inside `ui::devlist`'s own `track_device()` the moment it detects
-        // a move — no separate `list-changed`-driven pass needed here
-        // anymore (an earlier version of this reconstructed "did the IP
-        // change" from a `list-changed` snapshot diff, which is exactly
-        // the pattern that caused a real flapping `Disconnected`/
-        // `Connecting…` bug for presence; not resurrecting that shape for
-        // IP changes either).
+        // Reconnecting an already-open window to a corrected IP happens
+        // directly inside `device::discovery_manager`'s own
+        // `track_device()` the moment it detects a move (which then
+        // triggers `list-changed`, persisting the correction via this
+        // file's own listener above) — no separate `list-changed`-driven
+        // pass needed here anymore (an earlier version of this
+        // reconstructed "did the IP change" from a `list-changed` snapshot
+        // diff, which is exactly the pattern that caused a real flapping
+        // `Disconnected`/`Connecting…` bug for presence; not resurrecting
+        // that shape for IP changes either).
 
         // Show the device list (if it should appear at all) *before*
         // starting discovery/restoring per-device windows below, so it
@@ -1627,6 +1629,51 @@ impl AppState {
                 }
             });
         }
+
+        // Seed the manager from config — it can't read config itself (same
+        // rule `device::manager::DeviceManager` already follows). Must
+        // happen before `start()`, which eagerly tracks the pinned/
+        // window_open subset of this synchronously.
+        let seed: Vec<SeedEntry> = config::with(|cfg| {
+            cfg.devices.iter().map(|(uuid, d)| SeedEntry {
+                uuid:        uuid.clone(),
+                name:        d.name.clone(),
+                model:       d.model.clone(),
+                project:     d.project.clone(),
+                firmware:    d.firmware.clone(),
+                pinned:      d.pinned == Some(true),
+                last_ip:     d.last_ip.clone(),
+                tls_mode:    d.tls_mode.map(|n| TlsMode::from_usize(n as usize)).unwrap_or(TlsMode::HttpsWiiM),
+                window_open: d.window_open,
+            }).collect()
+        });
+        let devlist_song_info = config::with(|cfg| cfg.devlist_song_info);
+        self_rc.disc_mgr.load_seed(seed, devlist_song_info);
+
+        // `disc_mgr` can't persist to config itself either — this is the
+        // "report out" half of the same rule, replacing what used to be an
+        // internal `persist_pinned()` call scattered across several of its
+        // own methods. Fires unconditionally on every `list-changed`
+        // (pin toggle, identity update, presence flip, ...) rather than
+        // being selectively triggered — cheap and safe since
+        // `config::update()` already diffs the whole `Config` before
+        // deciding whether to actually write to disk.
+        self_rc.disc_mgr.connect_list_changed(|mgr| {
+            let entries = mgr.entries();
+            config::update(|cfg| {
+                for e in &entries {
+                    if e.uuid.is_empty() { continue; }
+                    let dev = cfg.device_mut(&e.uuid);
+                    dev.pinned = Some(e.pinned); // Explicit Some(true/false) ends legacy treatment.
+                    dev.last_ip = Some(e.ip.clone());
+                    dev.tls_mode = Some(e.tls_mode as u8);
+                    dev.name = Some(e.name.clone());
+                    if !e.model.is_empty()    { dev.model = Some(e.model.clone()); }
+                    if !e.project.is_empty()  { dev.project = Some(e.project.clone()); }
+                    if !e.firmware.is_empty() { dev.firmware = Some(e.firmware.clone()); }
+                }
+            });
+        });
 
         self_rc.disc_mgr.start();
     }
