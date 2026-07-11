@@ -39,7 +39,10 @@ use std::time::{Duration, Instant};
 
 /// Slow poll (device info, outputs, presets) runs at most this often.
 const SLOW_POLL_INTERVAL: Duration = Duration::from_secs(10);
-/// `Simple`-mode poll cadence.
+/// `Simple`-mode poll cadence — deliberately a separate constant from
+/// `SLOW_POLL_INTERVAL` even though it starts at the same value, so the two
+/// can be tuned independently later without hunting down every place that
+/// assumed they were the same.
 const SIMPLE_POLL_INTERVAL: Duration = Duration::from_secs(5);
 /// Volume commands are rate-limited: at most one per this interval.
 const VOLUME_DEBOUNCE: Duration = Duration::from_millis(500);
@@ -102,19 +105,16 @@ pub enum ConnectionState {
     Connecting,
     Connected,
     /// Believed offline (displayed "Disconnected") — fast/slow polling is
-    /// fully stopped (see `do_poll()`'s early return). Recovery is normally
-    /// always externally triggered, via `mark_reachable()` — called once
-    /// `ui::devlist`'s health check confirms a plain `getStatusEx` succeeds
-    /// again. Entered either by that same external path calling
-    /// `mark_offline()` directly (devlist's health check declared the
-    /// device down first), or by this `DeviceState`'s own fast/slow poll
-    /// noticing sustained failure first — which also fires the offline
-    /// callback (`set_offline_callback`) so devlist finds out immediately
-    /// instead of waiting for its next scheduled health check. The one
-    /// exception: `maybe_self_reconnect()` reinstates old-style self-driven
-    /// retrying for a `DeviceState` nobody registered that callback on at
-    /// all (no external health check could ever exist for it) — see its
-    /// doc comment.
+    /// fully stopped (see `do_poll()`'s early return). Recovery is
+    /// `maybe_self_reconnect()` (its own doc comment) retrying on
+    /// `SLOW_POLL_INTERVAL`, unless something has registered an offline
+    /// callback (`set_offline_callback` — nothing in the normal app path
+    /// does this anymore; `ui::devlist` reads `connection_state()` and
+    /// lets `DeviceState` manage its own recovery), in which case that
+    /// callback owns recovery instead (via `mark_reachable()`) and
+    /// `maybe_self_reconnect()` steps aside. `mark_offline()`/
+    /// `mark_reachable()` remain public for any external caller that wants
+    /// to drive a `DeviceState`'s connectivity directly.
     Failed,
 }
 
@@ -761,13 +761,14 @@ mod imp {
         pub(super) rt:            std::cell::OnceCell<Arc<tokio::runtime::Runtime>>,
         pub(super) slow_poll_tx:  RefCell<Option<async_channel::Sender<SlowPollResult>>>,
         pub(super) poll_tx:       RefCell<Option<async_channel::Sender<PollData>>>,
-        /// Fired by `mark_offline()` when *this* `DeviceState` is the one
-        /// that first noticed a Connected/Connecting → Failed transition
-        /// (fast/slow poll failure threshold, or a reconnect attempt
-        /// failing) — not when told externally that it's already offline.
+        /// Set via `set_offline_callback()` by any external caller that
+        /// wants to own connectivity recovery for this `DeviceState`
+        /// itself, rather than letting `maybe_self_reconnect()` handle it —
+        /// nothing in the normal app path registers one today (`ui::devlist`
+        /// just reads `connection_state()`), so this is normally `None`
+        /// and `report_failure()` falls through to mutating state locally.
         /// Kept outside `Inner` since a UUID-change reset (`*inner =
-        /// Inner::default()`) shouldn't drop it; set once, by
-        /// `DeviceManager::get()`, for the lifetime of the `DeviceState`.
+        /// Inner::default()`) shouldn't drop it.
         pub(super) offline_cb:    RefCell<Option<Rc<dyn Fn()>>>,
         /// This device's uuid — fixed at construction (`new()`) and never
         /// changed for the rest of this `DeviceState`'s life, full stop.
@@ -778,10 +779,11 @@ mod imp {
         /// other `DeviceState` may already own that uuid in
         /// `DeviceManager`'s registry). It just declares itself `Failed`
         /// (`fetch_device_info()`'s success handler) and stops, exactly
-        /// like any other disconnect — devlist's health check for *this*
-        /// uuid, and `DeviceManager::update_ip()` for whichever
-        /// `DeviceState` actually owns the uuid that showed up, handle
-        /// the rest with existing machinery. `OnceCell` (not `RefCell`)
+        /// like any other disconnect — `ui::devlist`'s own tracked
+        /// `DeviceState` for *this* uuid, and `DeviceManager::update_ip()`
+        /// for whichever `DeviceState` actually owns the uuid that showed
+        /// up, handle the rest with existing machinery. `OnceCell` (not
+        /// `RefCell`)
         /// specifically to make "never changes" a compile-time property,
         /// not just a convention — mirrors `rt`'s Default-construct-then-
         /// `new()`-sets-it-once pattern. Empty only for a `DeviceState`
@@ -925,8 +927,9 @@ impl DeviceState {
     /// failing) a connection immediately, every single time, for a device
     /// already known to be unreachable is exactly the noisy behavior this
     /// whole connection-handling redesign exists to avoid; instead this
-    /// `DeviceState` just sits configured-but-idle until `mark_reachable()`
-    /// (devlist's health check confirming otherwise) actually attempts one.
+    /// `DeviceState` just sits configured-but-idle until
+    /// `maybe_self_reconnect()` (or an external `mark_reachable()` call)
+    /// actually attempts one.
     pub fn set_device(
         &self,
         ip: &str,
@@ -1019,9 +1022,12 @@ impl DeviceState {
             // exactly like any other disconnect — this `DeviceState` must
             // not attach itself to it (something else may already own
             // that uuid). Recovering the actual device this `DeviceState`
-            // is for (if it reappears elsewhere) is devlist's job, not
-            // this one's — see `DiscoveryManager`'s health-check identity
-            // handling.
+            // is for, if it reappears elsewhere, is `DeviceManager::
+            // update_ip()`'s job (driven by `ui::devlist` noticing a moved
+            // IP via SSDP) — every tracked `DeviceState` already gets this
+            // same identity check on its own connection attempts, so
+            // there's no separate identity-mismatch handling devlist
+            // itself needs to duplicate anymore.
             let known_uuid = ds.uuid();
             if !known_uuid.is_empty() && info.uuid != known_uuid {
                 ds.report_failure(&format!(
@@ -1105,13 +1111,21 @@ impl DeviceState {
             let base = inner.capabilities.as_ref()
                 .map(|c| c.playback_access())
                 .unwrap_or(AccessMethod::Http);
+            let prev_access = inner.access;
             inner.access = inner.access_override.unwrap_or(base);
             inner.mute_access = inner.mute_access_override.unwrap_or(AccessMethod::UpnpPolled);
             // Debug-only visibility aid for diagnosing a device where UPnP
             // discovery/`GetInfoEx` never succeeds (playback state silently
             // stays on whatever it last held, since the poll loop only
             // overwrites it when a `GetInfoEx` response actually arrives).
-            if DEBUG_STATE.load(Ordering::Relaxed) && inner.access == AccessMethod::UpnpPolled {
+            // Only logged on an actual transition — this fn runs twice per
+            // connect (before and after capabilities are known), and would
+            // otherwise print the same line twice whenever both resolve to
+            // the same access method.
+            if DEBUG_STATE.load(Ordering::Relaxed)
+                && inner.access == AccessMethod::UpnpPolled
+                && prev_access != AccessMethod::UpnpPolled
+            {
                 dbg("access config: set to UpnpPolled");
             }
             inner.access == AccessMethod::UpnpPolled || inner.mute_access == AccessMethod::UpnpPolled
@@ -1244,7 +1258,12 @@ impl DeviceState {
     /// interrelated pieces of state that don't split cleanly without just
     /// moving the borrow-juggling into another function's parameter list —
     /// then, once the borrow is dropped, hands off to a focused helper per
-    /// action: the simple poll or the fast poll and one slow-poll phase 0.
+    /// action: the fast poll, one slow-poll phase.
+    ///
+    /// `Simple` mode (`full_clients == 0`) branches off before any of
+    /// `Full` mode's fast/slow-poll dispatch logic below runs — its own
+    /// `do_simple_poll()` is a separate, much smaller poll loop, not a
+    /// variation of this one.
     fn do_poll(
         &self,
         poll_tx: &async_channel::Sender<PollData>,
@@ -1433,61 +1452,66 @@ impl DeviceState {
 
     // ── External connectivity control ─────────────────────────────────────────
     //
-    // `DeviceState` no longer decides on its own when to retry a failed
-    // connection (see `ConnectionState::Failed`'s doc comment), and — as of
-    // this redesign — doesn't even decide on its own that it's *failed*,
-    // when anything else is watching: `apply_disconnected()` is the *only*
-    // place `connection_state` is ever locally set to `Failed`, and the
-    // only way there is either `mark_offline()` (devlist telling this
-    // `DeviceState` directly) or, for a poll failure this `DeviceState`
-    // notices itself, a round trip through `report_failure()` — call the
-    // offline callback, let devlist mark itself offline, and let *that*
-    // call straight back into `mark_offline()` here. Same call stack, same
-    // GTK thread, no lag from the round trip. The only case that never
-    // takes the round trip at all is a `DeviceState` nothing is watching in
-    // the first place (`report_failure()`'s fallback) — see its doc comment.
+    // `DeviceState` normally manages its own connectivity end to end:
+    // `apply_disconnected()` is the *only* place `connection_state` is ever
+    // locally set to `Failed` (reached via `report_failure()`, for a poll
+    // failure this `DeviceState` notices itself), and `maybe_self_reconnect()`
+    // is what brings it back. `mark_offline()`/`mark_reachable()` plus
+    // `set_offline_callback()` below exist for a caller that wants to *own*
+    // that lifecycle externally instead — nothing in the normal app path
+    // does this today (`ui::devlist` just reads `connection_state()`), but
+    // the mechanism stays available: a registered offline callback makes
+    // `report_failure()` call it (round-tripping back into `mark_offline()`,
+    // same call stack, no lag) instead of mutating state locally, and once
+    // one's registered `maybe_self_reconnect()` steps aside entirely in
+    // favor of that caller eventually calling `mark_reachable()`.
 
     /// Registers the callback `report_failure()` invokes when *this*
     /// `DeviceState` notices a poll failure itself (as opposed to being
     /// told about a failure externally via `mark_offline()`, which does not
-    /// invoke it — seeing this callback fire is *always* devlist finding
-    /// out about a failure it didn't already know about). Takes no
-    /// uuid/identity — the caller (`DeviceManager::get()`) already knows
-    /// which `DeviceState` this is and closes over whatever identity its
-    /// own callback needs. Overwrites any previously-registered callback;
-    /// only ever set once per `DeviceState` in practice.
+    /// invoke it — seeing this callback fire always means an external
+    /// owner finding out about a failure it didn't already know about).
+    /// Takes no uuid/identity — the caller already knows which
+    /// `DeviceState` this is and closes over whatever identity its own
+    /// callback needs. Overwrites any previously-registered callback; only
+    /// ever set once per `DeviceState` in practice, by a caller that wants
+    /// to own this device's connectivity lifecycle externally (see this
+    /// section's own doc comment — nothing in the normal app path does
+    /// this today).
     pub fn set_offline_callback(&self, cb: impl Fn() + 'static) {
         *self.imp().offline_cb.borrow_mut() = Some(Rc::new(cb));
     }
 
-    /// Told externally (devlist) that this device is offline — either its
-    /// own health check concluded that, or (the common case) this is the
-    /// round-trip tail end of this same `DeviceState`'s own
-    /// `report_failure()` call reaching devlist and bouncing straight back.
-    /// No-op unless currently `Connected` — deliberately *not* `Connecting`
-    /// too: a fresh reconnect attempt (e.g. a window just (re)opened for a
-    /// device devlist's presence hasn't caught up on yet) gets to run to
-    /// completion on its own merits rather than being preempted by stale
-    /// presence from before the attempt even started — if it really is
-    /// still down, `fetch_device_info()` will fail and reach `Failed` (via
-    /// `report_failure()`, telling devlist) within one round trip anyway.
+    /// Told externally that this device is offline — for a caller that's
+    /// registered an offline callback (`set_offline_callback()`) and wants
+    /// to own recovery itself; this is the round-trip tail end of this same
+    /// `DeviceState`'s own `report_failure()` call reaching that caller and
+    /// bouncing straight back. Nothing in the normal app path calls this
+    /// externally anymore (`ui::devlist` just reads `connection_state()`
+    /// and lets `maybe_self_reconnect()` handle recovery) — kept as public
+    /// API for a caller that wants this control. No-op unless currently
+    /// `Connected` — deliberately *not* `Connecting` too: a fresh reconnect
+    /// attempt (e.g. a window just (re)opened) gets to run to completion on
+    /// its own merits rather than being preempted by stale presence from
+    /// before the attempt even started — if it really is still down,
+    /// `fetch_device_info()` will fail and reach `Failed` on its own within
+    /// one round trip anyway.
     pub fn mark_offline(&self) {
         let connected = self.imp().inner.borrow().connection_state == ConnectionState::Connected;
         if !connected { return; }
-        self.apply_disconnected("told externally (devlist)");
+        self.apply_disconnected("told externally");
     }
 
-    /// Told externally (devlist's health check) that a plain `getStatusEx`
-    /// against this device just succeeded again. No-op unless currently
-    /// `Failed` or `Disconnected` — reconnecting from any other state
-    /// doesn't make sense (already connected, or a first connection
-    /// attempt already in flight). `Disconnected` is included alongside
-    /// `Failed` for `set_device(..., connect_now: false)`'s case: a
-    /// window opened on a device devlist already believed offline sits
-    /// configured-but-`Disconnected` (never having attempted a connect at
-    /// all) until this fires. Re-runs the full `fetch_device_info()` path
-    /// (capability detection, not just the bare liveness check devlist
-    /// already did) — same as any other (re)connect.
+    /// Told externally that a plain `getStatusEx` against this device just
+    /// succeeded again. No-op unless currently `Failed` or `Disconnected`
+    /// — reconnecting from any other state doesn't make sense (already
+    /// connected, or a first connection attempt already in flight).
+    /// `Disconnected` is included alongside `Failed` for
+    /// `set_device(..., connect_now: false)`'s case: a window opened on a
+    /// device already believed offline sits configured-but-`Disconnected`
+    /// (never having attempted a connect at all) until this fires. Re-runs
+    /// the full `fetch_device_info()` path (capability detection, not just
+    /// a bare liveness check) — same as any other (re)connect.
     pub fn mark_reachable(&self) {
         let can_reconnect = matches!(
             self.imp().inner.borrow().connection_state,
@@ -1500,22 +1524,19 @@ impl DeviceState {
         self.fetch_device_info();
     }
 
-    /// Fallback for a `DeviceState` nobody external is watching — i.e. no
-    /// `set_offline_callback()` was ever registered, so no health check
-    /// anywhere will ever call `mark_reachable()` for it and it would
-    /// otherwise sit `Failed` forever. `DeviceManager::get()` only wires
-    /// the callback for a uuid-keyed device (see its doc comment) — the
-    /// two real cases with no callback are `--connect`/testing-mode (skips
-    /// discovery/devlist entirely, by design) and a device/-layer consumer
-    /// that builds a `DeviceState` directly, bypassing `DeviceManager`
-    /// altogether (any future `src/bin/` tool, in principle — `device/` is
-    /// meant to be usable stand-alone). Reinstates the pre-devlist-handoff
-    /// self-driven periodic retry, at the same `SLOW_POLL_INTERVAL` cadence
-    /// and reusing `last_slow_poll` for it (untouched while `Failed`, so
-    /// safe to repurpose) — no-op, cheaply, on every other tick.
+    /// Self-driven periodic retry for a `Failed` `DeviceState` — the normal
+    /// path today, since nothing in the normal app flow registers an
+    /// offline callback anymore (`ui::devlist` reads `connection_state()`
+    /// directly rather than owning recovery externally). No-op when a
+    /// callback *is* registered (some external caller has opted into
+    /// owning recovery itself instead — see `set_offline_callback()`'s doc
+    /// comment) — that caller is expected to call `mark_reachable()` when
+    /// it decides to retry. Same `SLOW_POLL_INTERVAL` cadence as ordinary
+    /// slow polling, reusing `last_slow_poll` for it (untouched while
+    /// `Failed`, so safe to repurpose) — no-op, cheaply, on every other tick.
     fn maybe_self_reconnect(&self) {
         if self.imp().offline_cb.borrow().is_some() {
-            return; // Someone else (devlist) owns recovery for this one.
+            return; // An external caller owns recovery for this one.
         }
         let (due, client) = {
             let mut inner = self.imp().inner.borrow_mut();
@@ -1541,17 +1562,12 @@ impl DeviceState {
     /// for a genuine disconnect, without actually improving flakiness
     /// tolerance — that's `cmd()`'s job already).
     ///
-    /// Doesn't mutate local state itself: if devlist is watching
-    /// (`offline_cb` registered), it just calls that and lets the resulting
-    /// round trip (devlist marks itself offline, then calls straight back
-    /// into `mark_offline()`) perform the actual transition — see the
-    /// "External connectivity control" section doc comment above. Only
-    /// falls back to mutating locally when nothing is watching at all
-    /// (`--connect`/testing-mode, or a `device/`-layer consumer that
-    /// bypassed `DeviceManager`) — otherwise a poll failure there would
-    /// silently do nothing and the UI would sit showing stale "Connected"
-    /// forever, the original "device reboot isn't handled" bug all over
-    /// again for that one case.
+    /// Mutates local state directly (`apply_disconnected()`) unless an
+    /// external caller has registered an offline callback (`offline_cb`
+    /// — see "External connectivity control" above), in which case it
+    /// calls that instead and lets the resulting round trip (that caller
+    /// marking itself offline, then calling straight back into
+    /// `mark_offline()`) perform the actual transition.
     fn report_failure(&self, reason: &str) {
         if let Some(cb) = self.imp().offline_cb.borrow().clone() {
             cb();
@@ -3080,9 +3096,12 @@ impl DeviceState {
     }
 
     // ── Simple/Full polling mode ─────────────────────────────────────────────
-    // `Simple` is the default for any `DeviceState` the device registry creates,
-    // `Full` is an opt-in, refcounted upgrade an open device window acquires for
-    // as long as it stays open.
+    // `Simple` is the default for any `DeviceState`
+    // `device::manager::DeviceManager` creates — `Full` is an opt-in,
+    // refcounted upgrade an open device window acquires for as long as it
+    // stays open. `ui::devlist`'s own tracked devices deliberately never
+    // acquire `Full`, since `Simple`'s liveness+identity polling is all
+    // the picker-list rendering needs.
 
     /// Acquire a `Full`-mode handle. Bumps the refcount immediately; `Full`
     /// mode is in effect for as long as *any* `FullModeGuard` for this
@@ -3090,14 +3109,27 @@ impl DeviceState {
     /// drops. Cheap and safe to call redundantly — multiple independent
     /// acquirers (e.g. two windows) just each get their own guard.
     pub fn acquire_full(&self) -> FullModeGuard {
-        self.imp().inner.borrow_mut().full_clients += 1;
+        let n = {
+            let mut inner = self.imp().inner.borrow_mut();
+            inner.full_clients += 1;
+            inner.full_clients
+        };
+        if n == 1 {
+            dbg(&format!("{}: Simple → Full mode (full_clients={n})", self.ip()));
+        }
         FullModeGuard { ds: self.clone() }
     }
 
     fn release_full(&self) {
-        let mut inner = self.imp().inner.borrow_mut();
-        debug_assert!(inner.full_clients > 0, "release_full() with no outstanding FullModeGuard");
-        inner.full_clients = inner.full_clients.saturating_sub(1);
+        let n = {
+            let mut inner = self.imp().inner.borrow_mut();
+            debug_assert!(inner.full_clients > 0, "release_full() with no outstanding FullModeGuard");
+            inner.full_clients = inner.full_clients.saturating_sub(1);
+            inner.full_clients
+        };
+        if n == 0 {
+            dbg(&format!("{}: Full → Simple mode (full_clients={n})", self.ip()));
+        }
     }
 
     /// Whether this device is currently in `Full` mode (at least one

@@ -1,9 +1,10 @@
 // Device-state manager — single source of truth for live DeviceState objects.
 //
 // `DeviceManager` keeps a `WeakRef<DeviceState>` per UUID.  The DeviceState
-// lives as long as at least one consumer (device window, settings window, …)
-// holds a strong ref.  When the last consumer drops its ref the GObject is
-// finalised, polling stops, and the weak entry here goes stale.
+// lives as long as at least one consumer (device window, settings window,
+// `ui::devlist`'s picker-list tracking, …) holds a strong ref.  When the
+// last consumer drops its ref the GObject is finalised, polling stops, and
+// the weak entry here goes stale.
 //
 // On re-open, `get()` finds the stale entry, creates a fresh DeviceState, and
 // the new window's `populate_all()` call handles the initial blank state
@@ -12,17 +13,18 @@
 // An empty UUID cannot be deduplicated; `get()` returns a fresh uncached
 // DeviceState every time for those.
 //
-// Phase 2 of the devlist redesign (see `DEVLIST-REDESIGN.md`) is turning
-// this into the merged device-registry the design document describes — a
-// GObject now, with a `configure-device` signal and `add_known_device()`/
-// `get_state()` alongside the original `get()` — but SSDP consumption and
-// health-check retirement haven't moved in here yet; `ui/devlist.rs` still
-// owns those for now. Read `DEVLIST-REDESIGN.md` before extending this
-// further, it's the up to date plan/progress doc for what's left.
+// `configure-device` (param: the freshly-created `DeviceState`) fires
+// synchronously, before first contact, for every `DeviceState` this manager
+// creates via `create_and_configure()`/`add_known_device()` (not `get()`,
+// whose callers already resolve config before calling in) — `ui/`'s only
+// listener resolves per-device config (TLS/access overrides; `device/` can't
+// read config itself) and pushes it onto the fresh instance. SSDP
+// consumption, presence computation, and config persistence for
+// picker-list rendering all live in `ui::devlist` — this module only owns
+// the `DeviceState` registry itself.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::rc::Rc;
 use std::sync::Arc;
 
 use glib::prelude::*;
@@ -41,15 +43,6 @@ mod imp {
     pub struct DeviceManager {
         pub(super) rt:     std::cell::OnceCell<Arc<tokio::runtime::Runtime>>,
         pub(super) states: RefCell<HashMap<String, glib::WeakRef<DeviceState>>>,
-        /// Set once by the caller (`ui::AppState`, at startup) via
-        /// `set_offline_hook()`. Wired onto every newly-created `DeviceState` in
-        /// `get()`/`create_and_configure()` (see `DeviceState::set_offline_callback`'s
-        /// doc comment) so a `DeviceState` noticing its own connection failure
-        /// can tell the caller immediately, without this module needing to
-        /// know anything about what the caller actually does with it
-        /// (`ui::devlist`'s health check, in practice — kept out of this
-        /// module since `device/` mustn't depend on `ui/`).
-        pub(super) offline_hook: RefCell<Option<Rc<dyn Fn(String)>>>,
     }
 
     impl Default for DeviceManager {
@@ -57,7 +50,6 @@ mod imp {
             Self {
                 rt:     std::cell::OnceCell::new(),
                 states: RefCell::new(HashMap::new()),
-                offline_hook: RefCell::new(None),
             }
         }
     }
@@ -81,8 +73,9 @@ mod imp {
                     // caller-supplied params instead (`ui/`'s existing,
                     // older pattern of resolving config before ever calling
                     // in). A real GObject signal rather than a `Rc<dyn
-                    // Fn(..)>` hook deliberately with the idea that this
-                    // might become a standalone library.
+                    // Fn(..)>` hook deliberately, for the long-term "fork
+                    // `device/` into its own crate, possibly with a C API
+                    // on top" goal.
                     //
                     // The connected handler resolves config for this
                     // device's uuid (`DeviceState::uuid()`, already fixed
@@ -111,14 +104,6 @@ impl DeviceManager {
         let obj: Self = glib::Object::new();
         obj.imp().rt.set(rt).unwrap();
         obj
-    }
-
-    /// Registers the hook invoked (with the device's uuid) whenever a
-    /// `DeviceState` created by this manager notices its own connection
-    /// failure — see `imp::DeviceManager::offline_hook`'s doc comment. Only
-    /// ever set once, by `ui::AppState` at startup.
-    pub fn set_offline_hook(&self, hook: impl Fn(String) + 'static) {
-        *self.imp().offline_hook.borrow_mut() = Some(Rc::new(hook));
     }
 
     /// Connect to `configure-device` — see `imp::DeviceManager::signals()`'s
@@ -159,14 +144,17 @@ impl DeviceManager {
     ///
     /// `try_connect` — whether to actually attempt a connection now
     /// (`DeviceState::set_device`'s `connect_now`). The caller (`ui/mod.rs`)
-    /// passes this based on devlist's current belief about the device: if
-    /// devlist already thinks it's offline, there's no point immediately
-    /// repeating a connection attempt that's already known to fail — the
-    /// `DeviceState` sits configured-but-`Disconnected` until devlist's
-    /// health check confirms otherwise (`mark_reachable()`). Ignored (always
-    /// `true`) for an empty uuid — devlist has no presence to consult for a
-    /// device it doesn't know about (`--connect`/a brand new manual add),
-    /// so there's nothing to defer to.
+    /// passes this based on devlist's current belief about the device
+    /// (`ManagedEntry::presence`, computed from its own tracked
+    /// `DeviceState::connection_state()`): if devlist already believes it's
+    /// offline, there's no point immediately repeating a connection attempt
+    /// that's already known to fail — the fresh `DeviceState` sits
+    /// configured-but-`Disconnected` until its own `maybe_self_reconnect()`
+    /// (or an external `mark_reachable()` call, for a caller that wants to
+    /// drive this itself) brings it back. Ignored (always `true`) for an
+    /// empty uuid — devlist has no presence to consult for a device it
+    /// doesn't know about (`--connect`/a brand new manual add), so there's
+    /// nothing to defer to.
     ///
     /// `access_override`/`mute_access_override` take the same
     /// `Option<AccessMethod>` shape `DeviceState::set_playback_access_override()`/
@@ -207,26 +195,29 @@ impl DeviceManager {
     }
 
     /// Create (if not already tracked) a `DeviceState` purely from identity
-    /// — no config-derived parameters at all, deliberately: everything
-    /// config-derived (TLS mode defaults to `TlsMode::HttpsWiiM` here,
-    /// matching what `ui/devlist.rs`'s `load_known_devices_from_config()`
-    /// already assumed — no per-device TLS is remembered in config today
-    /// either way; playback/mute access overrides come via
-    /// `configure-device`) is resolved through the single
-    /// `create_and_configure()` path, not duplicated here. For pinned
-    /// devices seeded from config at startup.
+    /// — no config-derived parameters at all, deliberately: TLS mode
+    /// defaults to `TlsMode::HttpsWiiM` here since this convenience
+    /// wrapper has no way to know a device's actual remembered mode
+    /// (playback/mute access overrides come via `configure-device`
+    /// instead). `ui::devlist`, which *does* know the real per-device
+    /// `TlsMode` from config, calls `create_and_configure()` directly with
+    /// it rather than going through this wrapper. For pinned devices
+    /// seeded from config at `ui::AppState`'s startup.
     pub fn add_known_device(&self, uuid: &str, ip: &str) -> DeviceState {
         self.create_and_configure(uuid, ip, TlsMode::HttpsWiiM)
     }
 
-    /// Shared by `add_known_device()` and (once wired) SSDP-driven
-    /// creation — one creation+configure path, not two, so overrides are
-    /// resolved identically regardless of what triggered creation. Fires
+    /// Shared by `add_known_device()` and `ui::devlist`'s SSDP-driven/
+    /// manual-add creation (which know the real probed `TlsMode`, unlike
+    /// `add_known_device()`'s hardcoded default) — one creation+configure
+    /// path, not two, so overrides are resolved identically regardless of
+    /// what triggered creation. `pub` (not `add_known_device`-only) so
+    /// `ui::devlist` can pass its own resolved `tls`. Fires
     /// `configure-device` synchronously, then reads back whatever the
     /// connected handler set via `set_playback_access_override()`/
     /// `set_mute_access_override()` before making first contact
     /// (`set_device(..., connect_now: true)`).
-    fn create_and_configure(&self, uuid: &str, ip: &str, tls: TlsMode) -> DeviceState {
+    pub fn create_and_configure(&self, uuid: &str, ip: &str, tls: TlsMode) -> DeviceState {
         if let Some(ds) = self.lookup_and_prune(uuid) {
             return ds;
         }
@@ -255,20 +246,6 @@ impl DeviceManager {
     pub fn get_state(&self, uuid: &str) -> Option<DeviceState> {
         if uuid.is_empty() { return None; }
         self.imp().states.borrow().get(uuid).and_then(|w| w.upgrade())
-    }
-
-    /// Tell the live `DeviceState` for `uuid`, if any, that its
-    /// reachability (as devlist understands it — the canonical source,
-    /// per `ui::devlist`'s `DiscoveryManager`) just changed. No-op if
-    /// there's no live `DeviceState` for this uuid (not open in any window
-    /// right now). The single entry point for the devlist → `DeviceState`
-    /// direction — see `DeviceState::mark_offline()`/`mark_reachable()`.
-    pub fn sync_reachability(&self, uuid: &str, reachable: bool) {
-        if uuid.is_empty() { return; }
-        let ds = self.imp().states.borrow().get(uuid).and_then(|w| w.upgrade());
-        if let Some(ds) = ds {
-            if reachable { ds.mark_reachable(); } else { ds.mark_offline(); }
-        }
     }
 
     /// Push a possibly-new `ip`/`tls` to the live `DeviceState` for `uuid`,
@@ -318,14 +295,18 @@ impl DeviceManager {
         states.get(uuid).and_then(|w| w.upgrade())
     }
 
-    /// Shared offline-hook wiring + map insertion tail, used by `get()`
-    /// and `create_and_configure()` alike. Caller must already have
-    /// checked `!uuid.is_empty()`.
+    /// Shared map-insertion tail, used by `get()` and
+    /// `create_and_configure()` alike. Caller must already have checked
+    /// `!uuid.is_empty()`. No `offline_cb` wiring here (deliberately, as of
+    /// the devlist merge — `DeviceState::set_offline_callback()` still
+    /// exists for `--connect`/testing-mode standalone use, but nothing in
+    /// the normal app path registers one anymore): with no external
+    /// watcher, `DeviceState::report_failure()` falls through to mutating
+    /// `connection_state` locally, and `maybe_self_reconnect()` (see its
+    /// own doc comment) is the fallback that brings it back — the intended
+    /// behavior once `ui::devlist` stopped independently health-checking,
+    /// not a regression.
     fn wire_and_insert(&self, ds: &DeviceState, uuid: &str) {
-        if let Some(hook) = self.imp().offline_hook.borrow().clone() {
-            let hook_uuid = uuid.to_string();
-            ds.set_offline_callback(move || hook(hook_uuid.clone()));
-        }
         self.imp().states.borrow_mut().insert(uuid.to_string(), ds.downgrade());
     }
 }

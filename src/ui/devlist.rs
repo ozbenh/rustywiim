@@ -2,9 +2,19 @@
 
 /// Device-list window and its backing DiscoveryManager.
 ///
-/// `DiscoveryManager` (GObject) subscribes to `DiscoveryService`, maintains a
-/// persistent list of known devices with per-device health checks, and honours
-/// "pinned" status so devices survive SSDP disappearance.
+/// `DiscoveryManager` (GObject) subscribes to `DiscoveryService` and tracks
+/// every known device (SSDP-discovered, pinned-and-config-remembered, or
+/// manually added by IP) as a real, `device::manager::DeviceManager`-owned
+/// `DeviceState` — holding a strong reference to it for as long as the
+/// device is "known" (see `do_prune()`), which is what keeps it alive and
+/// polling (Simple mode, unless a device window also holds an
+/// `acquire_full()` guard) even with no window open. There is no separate
+/// health-check poll: Simple-mode polling's own `getStatusEx` *is* the
+/// liveness check now, and presence for rendering
+/// (`DevicePresence::compute()`) is read straight off each tracked
+/// `DeviceState::connection_state()`, not tracked independently. Recovery
+/// after a failure is `DeviceState`'s own job (`maybe_self_reconnect()`,
+/// `device/state.rs`) — nothing external pokes it anymore.
 ///
 /// `DiscoveryWindow` renders that list and lets the user pin/unpin entries,
 /// open device windows by double-clicking, and add devices manually by IP.
@@ -13,7 +23,6 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::Duration;
 
 use adw::prelude::*;
 use glib::clone;
@@ -21,41 +30,40 @@ use glib::subclass::prelude::*;
 use gtk::{glib, Orientation};
 
 use crate::config;
-use crate::device::api::{TlsMode, WiimClient};
-use crate::device::capabilities::DeviceCapabilities;
+use crate::device::api::TlsMode;
 use crate::device::discovery::{DEBUG_DISCOVERY, DiscoveredDevice, DiscoveryService};
-use crate::device::state::DeviceState;
+use crate::device::manager::DeviceManager;
+use crate::device::state::{ConnectionState, DeviceState};
 
+/// `[disc-mgr]` — `DiscoveryManager`, the picker-list backend (this file's
+/// `impl DiscoveryManager` block). Distinct from `device/discovery.rs`'s
+/// `[discovery]` (the SSDP service itself) and from `DiscoveryWindow` (the
+/// actual on-screen picker), which has no debug logging of its own.
 fn dbg(msg: &str) {
     if DEBUG_DISCOVERY.load(std::sync::atomic::Ordering::Relaxed) {
-        println!("[devlist] {msg}");
+        println!("[disc-mgr] {msg}");
     }
 }
-
-/// Consecutive failed health-check probes tolerated while a device is
-/// still believed `Active` before demoting it to `Ghost`/`Dead` — a single
-/// transient miss (a slow response, a momentary Wi-Fi hiccup) shouldn't
-/// flip presence, so this uses the normal retried `get_device_info()` and
-/// only gives up after this many probes in a row. Once a device is already
-/// `Ghost`/`Dead`, none of this applies — every probe there is a single
-/// unretried, silent `get_device_info_quiet()` instead (see
-/// `trigger_health_check_for()`), since at that point we already know it's
-/// down and just want cheap, fast recovery detection, not more tolerance.
-const HEALTH_FAIL_THRESHOLD: u32 = 2;
-/// How soon to re-probe a still-`Active` device after a failure, while
-/// still under `HEALTH_FAIL_THRESHOLD` — instead of waiting out the full
-/// `HEALTH_CHECK_INTERVAL` cycle before finding out either way.
-const HEALTH_FAIL_RETRY: Duration = Duration::from_secs(3);
-/// How often the regular health-check cycle probes every known device.
-const HEALTH_CHECK_INTERVAL: Duration = Duration::from_secs(20);
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DevicePresence {
-    Active, // responds to getStatusEx
-    Ghost,  // pinned, not responding
-    Dead,   // not pinned, not responding
+    Active, // ConnectionState::Connected
+    Ghost,  // pinned, not Connected
+    Dead,   // not pinned, not Connected
+}
+
+impl DevicePresence {
+    fn compute(state: ConnectionState, pinned: bool) -> Self {
+        if state == ConnectionState::Connected {
+            Self::Active
+        } else if pinned {
+            Self::Ghost
+        } else {
+            Self::Dead
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -67,7 +75,7 @@ pub struct ManagedEntry {
     /// different namespace from `model` (the marketing name), needed to
     /// resolve the device's profile default while offline (see
     /// `config::DeviceConfig::project`'s doc comment). Empty until the
-    /// first successful health check or SSDP probe.
+    /// tracked `DeviceState` has connected at least once.
     pub project:  String,
     pub firmware: String,
     pub ip:       String,
@@ -78,40 +86,35 @@ pub struct ManagedEntry {
 
 // ── Internal record ───────────────────────────────────────────────────────────
 
+/// One tracked device: cached rendering identity (refreshed from
+/// `ds.device_info()`/`ds.capabilities()` whenever `ds` connects — see
+/// `refresh_identity_from_device()`) plus the strong `DeviceState` handle
+/// that keeps it alive/polling for as long as this record exists. `ds` is
+/// what makes "forgetting a device" plain refcounting: dropping this
+/// record (`do_prune()`) drops the last reference `ui::devlist` holds, and
+/// once no device window holds one either, the `DeviceState` itself goes
+/// away.
 struct DeviceRecord {
-    entry:        ManagedEntry,
+    entry: ManagedEntry,
+    /// Whether this uuid/ip is currently visible in the live SSDP scan —
+    /// exempts an otherwise-prunable entry, same as `has_open_window`
+    /// below (see `do_prune()`).
     in_discovery: bool,
-    client:       WiimClient,
-    /// Consecutive failed health-check probes while `entry.presence` is
-    /// still `Active` — see `HEALTH_FAIL_THRESHOLD`. Meaningless (and
-    /// unused) once presence is `Ghost`/`Dead`; not persisted.
-    consecutive_failures: u32,
     /// Whether a device window is currently open for this uuid — set via
     /// `set_window_open()`, called by `ui::mod`'s `AppState` whenever a
-    /// device window opens/closes. Exempts the entry from `do_prune()`
-    /// (see that function's doc comment): a device the user has an open,
-    /// now-"Disconnected" window for shouldn't vanish from the picker list
-    /// out from under them just because it's unpinned and offline.
+    /// device window opens/closes. Exempts the entry from `do_prune()`: a
+    /// device the user has an open, now-"Disconnected" window for
+    /// shouldn't vanish from the picker list out from under them just
+    /// because it's unpinned and offline.
     has_open_window: bool,
-}
-
-struct HealthResult {
-    key:   String, // uuid, or "ip:<ip>" when uuid is unknown
-    alive: bool,
-    /// Device name and model from a successful `getStatusEx` call; None when offline.
-    name:  Option<String>,
-    model: Option<String>,
-    /// Internal `project`/`firmware` strings from the same call — cached
-    /// into config so Settings' Advanced panel can resolve the device's
-    /// profile default while offline (see `config::DeviceConfig::project`).
-    project:  Option<String>,
-    firmware: Option<String>,
-    /// The uuid the responding device actually reports — compared against
-    /// the *probed* entry's own `rec.entry.uuid` in `on_health_result()` to
-    /// catch a different device having taken over this IP (DHCP lease
-    /// reassignment). `None` when offline (nothing answered to report a
-    /// uuid from).
-    uuid: Option<String>,
+    /// The `device-changed` handler connected in `create_and_track()` is
+    /// never explicitly disconnected — no `SignalHandlerId` kept for it —
+    /// because `do_prune()` only ever drops a record while
+    /// `has_open_window` is false, and `device::manager::DeviceManager`
+    /// itself only ever keeps *weak* refs, so `ds` below is guaranteed to
+    /// have no other strong holder at that point: dropping this record
+    /// finalizes `ds` outright, connection included.
+    ds: DeviceState,
 }
 
 struct Inner {
@@ -130,25 +133,19 @@ mod mgr_imp {
     use std::sync::OnceLock;
 
     pub struct DiscoveryManager {
-        pub(super) rt:        std::cell::OnceCell<Arc<tokio::runtime::Runtime>>,
-        pub(super) discovery: std::cell::OnceCell<DiscoveryService>,
-        pub(super) inner:     RefCell<Inner>,
-        pub(super) health_tx: RefCell<Option<async_channel::Sender<HealthResult>>>,
-        /// Set once by `ui::AppState` at startup via `set_presence_hook()`.
-        /// Fired `(uuid, reachable)` at each of the handful of places this
-        /// module actually flips a device's presence, and only there — see
-        /// `set_presence_hook()`'s doc comment.
-        pub(super) presence_hook: RefCell<Option<Rc<dyn Fn(String, bool)>>>,
+        pub(super) rt:             std::cell::OnceCell<Arc<tokio::runtime::Runtime>>,
+        pub(super) discovery:      std::cell::OnceCell<DiscoveryService>,
+        pub(super) device_manager: std::cell::OnceCell<DeviceManager>,
+        pub(super) inner:          RefCell<Inner>,
     }
 
     impl Default for DiscoveryManager {
         fn default() -> Self {
             Self {
-                rt:        std::cell::OnceCell::new(),
-                discovery: std::cell::OnceCell::new(),
-                inner:     RefCell::new(Inner::default()),
-                health_tx: RefCell::new(None),
-                presence_hook: RefCell::new(None),
+                rt:             std::cell::OnceCell::new(),
+                discovery:      std::cell::OnceCell::new(),
+                device_manager: std::cell::OnceCell::new(),
+                inner:          RefCell::new(Inner::default()),
             }
         }
     }
@@ -165,7 +162,7 @@ mod mgr_imp {
             SIGNALS.get_or_init(|| vec![
                 Signal::builder("list-changed").build(),
                 // Fired once, synchronously in start(), after the initial config
-                // load — before any async discovery or health-check results arrive.
+                // load — before any async discovery results arrive.
                 Signal::builder("initial-load").build(),
             ])
         }
@@ -177,48 +174,39 @@ glib::wrapper! {
 }
 
 impl DiscoveryManager {
-    pub fn new(rt: Arc<tokio::runtime::Runtime>, discovery: DiscoveryService) -> Self {
+    /// `device_manager` is a direct reference (not a hook/callback) —
+    /// deliberate, now that this module owns the full picker-list
+    /// backend rather than bridging to a separate one: `device/`'s
+    /// `DeviceManager` is the registry every tracked `DeviceState` comes
+    /// from, and there's no ownership-layering reason left to hide that
+    /// behind indirection.
+    pub fn new(rt: Arc<tokio::runtime::Runtime>, discovery: DiscoveryService, device_manager: DeviceManager) -> Self {
         let obj: Self = glib::Object::new();
         obj.imp().rt.set(rt).unwrap();
         obj.imp().discovery.set(discovery).unwrap();
+        obj.imp().device_manager.set(device_manager).unwrap();
         obj
     }
 
+    fn device_manager(&self) -> &DeviceManager {
+        self.imp().device_manager.get().unwrap()
+    }
+
     pub fn start(&self) {
-        let (health_tx, health_rx) = async_channel::unbounded::<HealthResult>();
-        *self.imp().health_tx.borrow_mut() = Some(health_tx);
-
-        let weak = self.downgrade();
-        glib::spawn_future_local(async move {
-            while let Ok(result) = health_rx.recv().await {
-                let Some(mgr) = weak.upgrade() else { break };
-                mgr.on_health_result(result);
-            }
-        });
-
         self.load_known_devices_from_config();
         // initial-load fires once synchronously so AppState can open any windows
         // that config says should be restored — before async discovery arrives.
         self.emit_by_name::<()>("initial-load", &[]);
         // list-changed lets already-connected handlers (e.g. last_ip tracking)
         // see the initial device set.
-        self.emit_by_name::<()>("list-changed", &[]);
+        self.emit_list_changed();
 
-        let weak2 = self.downgrade();
+        let weak = self.downgrade();
         self.imp().discovery.get().unwrap()
             .connect_discovery_updated(move |svc| {
-                let Some(mgr) = weak2.upgrade() else { return };
+                let Some(mgr) = weak.upgrade() else { return };
                 mgr.on_discovery_updated(svc);
             });
-
-        // Health-check all known devices every HEALTH_CHECK_INTERVAL.
-        let weak3 = self.downgrade();
-        glib::timeout_add_local(HEALTH_CHECK_INTERVAL, move || {
-            let Some(mgr) = weak3.upgrade() else { return glib::ControlFlow::Break };
-            mgr.trigger_health_checks();
-            glib::ControlFlow::Continue
-        });
-        self.trigger_health_checks();
     }
 
     pub fn entries(&self) -> Vec<ManagedEntry> {
@@ -228,12 +216,44 @@ impl DiscoveryManager {
         v
     }
 
+    /// The one place `list-changed` actually fires — dumps the full
+    /// tracked-device table under `--debug=discovery` first, so testing
+    /// doesn't have to piece the current state back together from
+    /// scattered one-line event logs.
+    fn emit_list_changed(&self) {
+        if DEBUG_DISCOVERY.load(std::sync::atomic::Ordering::Relaxed) {
+            self.dump_devices();
+        }
+        self.emit_by_name::<()>("list-changed", &[]);
+    }
+
+    fn dump_devices(&self) {
+        let inner = self.imp().inner.borrow();
+        let mut recs: Vec<_> = inner.devices.iter().collect();
+        recs.sort_by(|a, b| a.1.entry.name.cmp(&b.1.entry.name));
+        dbg(&format!("── device list: {} tracked ──", recs.len()));
+        if recs.is_empty() { dbg("  (none)"); }
+        for (key, rec) in recs {
+            let mut flags = Vec::new();
+            if rec.entry.pinned    { flags.push("pinned"); }
+            if rec.in_discovery    { flags.push("in-discovery"); }
+            if rec.has_open_window { flags.push("window-open"); }
+            let flags_str = if flags.is_empty() { String::new() } else { format!(" [{}]", flags.join(",")) };
+            let presence = format!("{:?}", rec.entry.presence);
+            dbg(&format!(
+                "  {:<24} {:<17} {presence:<8}{flags_str} key={key:?}",
+                rec.entry.name, rec.entry.ip,
+            ));
+        }
+    }
+
     pub fn set_pinned(&self, uuid: &str, pinned: bool) {
         let changed = {
             let mut inner = self.imp().inner.borrow_mut();
             if let Some(rec) = inner.devices.get_mut(uuid) {
                 let was = rec.entry.pinned;
                 rec.entry.pinned = pinned;
+                rec.entry.presence = DevicePresence::compute(rec.ds.connection_state(), pinned);
                 was != pinned
             } else { false }
         };
@@ -241,7 +261,7 @@ impl DiscoveryManager {
             dbg(&format!("pin: {uuid} → {pinned}"));
             self.persist_pinned();
             self.do_prune();
-            self.emit_by_name::<()>("list-changed", &[]);
+            self.emit_list_changed();
         }
     }
 
@@ -258,95 +278,17 @@ impl DiscoveryManager {
         }
     }
 
-    /// Registers the hook fired `(uuid, reachable)` whenever this module
-    /// actually changes a device's presence between `Active` and
-    /// `Ghost`/`Dead` — the *only* moments `DeviceManager` (via
-    /// `ui::AppState`'s wiring) needs to know about, so it can call
-    /// `DeviceManager::sync_reachability()` directly instead of a `ui/`
-    /// layer diffing a `list-changed` snapshot against a shadow copy to
-    /// reconstruct "did this actually change" (the previous design —
-    /// removed because reconstructing that after the fact caused a real
-    /// flapping `Disconnected`/`Connecting…` bug). Only ever set once, by
-    /// `ui::AppState` at startup.
-    pub fn set_presence_hook(&self, hook: impl Fn(String, bool) + 'static) {
-        *self.imp().presence_hook.borrow_mut() = Some(Rc::new(hook));
-    }
-
-    fn fire_presence_hook(&self, uuid: &str, reachable: bool) {
-        if let Some(hook) = self.imp().presence_hook.borrow().clone() {
-            hook(uuid.to_string(), reachable);
-        }
-    }
-
-    /// Immediately marks `uuid` `Ghost`/`Dead`, bypassing
-    /// `HEALTH_FAIL_THRESHOLD`'s normal hysteresis entirely, and fires an
-    /// immediate quiet recovery probe rather than waiting for the next
-    /// scheduled health-check cycle. Called both when devlist's own health
-    /// check concludes a device is down (past `HEALTH_FAIL_THRESHOLD`) and
-    /// — via `DeviceManager`'s offline hook, wired by `ui::AppState` — when
-    /// a `DeviceState`'s own poller notices a failure first; its poll
-    /// already tolerated a transient blip the way `cmd()`/`soap_call()`'s
-    /// retry does, so there's nothing further to verify here — requiring
-    /// devlist to *independently* fail `HEALTH_FAIL_THRESHOLD` more probes
-    /// before agreeing would be redundant tolerance stacked on tolerance
-    /// (this is exactly what caused a real flapping `Disconnected`/
-    /// `Connecting…` loop, observed live, before this method existed).
-    /// No-op if already non-`Active` or `uuid` is unknown to devlist.
-    pub fn mark_offline(&self, uuid: &str) {
-        if uuid.is_empty() { return; }
-        let changed = {
-            let mut inner = self.imp().inner.borrow_mut();
-            if let Some(rec) = inner.devices.get_mut(uuid) {
-                if rec.entry.presence == DevicePresence::Active {
-                    let new_presence =
-                        if rec.entry.pinned { DevicePresence::Ghost } else { DevicePresence::Dead };
-                    dbg(&format!(
-                        "presence: {} ({}) → {:?}",
-                        rec.entry.name, rec.entry.ip, new_presence,
-                    ));
-                    rec.entry.presence = new_presence;
-                    rec.consecutive_failures = 0;
-                    true
-                } else {
-                    false
-                }
-            } else {
-                false
-            }
-        };
-        if changed {
-            self.do_prune();
-            self.fire_presence_hook(uuid, false);
-            self.emit_by_name::<()>("list-changed", &[]);
-            self.trigger_health_check_for(uuid);
-        }
-    }
-
     /// Add a manually-discovered device (already confirmed alive by the caller).
     pub fn add_manual(&self, name: String, ip: String, uuid: String, tls_mode: TlsMode) {
         let key = device_key(&uuid, &ip);
-        {
-            let mut inner = self.imp().inner.borrow_mut();
-            if inner.devices.contains_key(&key) {
-                dbg(&format!("add manual: already known {name} ({ip}) uuid={uuid:?}"));
-                return;
-            }
-            let entry = ManagedEntry {
-                uuid: uuid.clone(), name: name.clone(), model: String::new(),
-                project: String::new(), firmware: String::new(),
-                ip: ip.clone(), tls_mode, pinned: true, presence: DevicePresence::Active,
-            };
-            inner.devices.insert(key.clone(), DeviceRecord {
-                entry, in_discovery: false, client: WiimClient::new(&ip, tls_mode),
-                consecutive_failures: 0, has_open_window: false,
-            });
+        if self.imp().inner.borrow().devices.contains_key(&key) {
+            dbg(&format!("add manual: already known {name} ({ip}) uuid={uuid:?}"));
+            return;
         }
         dbg(&format!("add manual: {name} ({ip}) uuid={uuid:?}"));
+        self.track_device(&key, &uuid, &ip, tls_mode, true, name, String::new(), String::new(), String::new(), false);
         self.persist_pinned();
-        self.emit_by_name::<()>("list-changed", &[]);
-        // Fetch model (and confirm liveness) immediately rather than waiting for
-        // the next scheduled health-check cycle (HEALTH_CHECK_INTERVAL).
-        self.trigger_health_check_for(&key);
+        self.emit_list_changed();
     }
 
     pub fn connect_list_changed<F: Fn(&Self) + 'static>(&self, f: F) -> glib::SignalHandlerId {
@@ -357,7 +299,7 @@ impl DiscoveryManager {
     }
 
     /// Fired once, synchronously inside `start()`, after loading devices from
-    /// config — before any async discovery or health-check results arrive.
+    /// config — before any async discovery results arrive.
     /// Use this to restore windows from config; do NOT use `list-changed` for
     /// that, as it fires on every subsequent change (e.g. pin toggles).
     pub fn connect_initial_load<F: Fn(&Self) + 'static>(&self, f: F) -> glib::SignalHandlerId {
@@ -370,7 +312,7 @@ impl DiscoveryManager {
     /// Fires once when the underlying SSDP scan cycle completes (or the 4-second
     /// initial timeout expires with no devices found).  Use this — not
     /// `connect_list_changed` — to clear a "Scanning…" indicator, because
-    /// health-check results arrive much earlier and would clear it prematurely.
+    /// devices already tracked from config would clear it prematurely.
     pub fn connect_scan_complete<F: Fn() + 'static>(&self, f: F) {
         let weak = self.downgrade();
         self.imp().discovery.get().unwrap()
@@ -383,338 +325,169 @@ impl DiscoveryManager {
         self.imp().rt.get().unwrap().clone()
     }
 
+    /// Creates (if not already tracked) or updates (`ip`/`tls_mode`, if
+    /// moved) a `DeviceRecord` — the one path `on_discovery_updated()`/
+    /// `load_known_devices_from_config()`/`add_manual()` all funnel
+    /// through, so a record is always built/refreshed the same way
+    /// regardless of what triggered it. `name`/`model`/`project`/
+    /// `firmware` seed the entry's *rendering* fields for a record that
+    /// doesn't exist yet (config-cached values, or whatever the SSDP/
+    /// manual-add probe already had) — ignored if the record already
+    /// exists, since `refresh_identity_from_device()` (wired via
+    /// `device-changed`) is the one place identity fields get overwritten
+    /// once `ds` has actually answered for real.
+    #[allow(clippy::too_many_arguments)]
+    fn track_device(
+        &self,
+        key: &str, uuid: &str, ip: &str, tls: TlsMode, pinned: bool,
+        name: String, model: String, project: String, firmware: String,
+        in_discovery: bool,
+    ) {
+        let moved = {
+            let mut inner = self.imp().inner.borrow_mut();
+            let Some(rec) = inner.devices.get_mut(key) else {
+                drop(inner);
+                self.create_and_track(key, uuid, ip, tls, pinned, name, model, project, firmware, in_discovery);
+                return;
+            };
+            let moved = rec.entry.ip != ip || rec.entry.tls_mode != tls;
+            if moved {
+                dbg(&format!("track_device: {} moved {} → {ip}", rec.entry.name, rec.entry.ip));
+                rec.entry.ip = ip.to_string();
+                rec.entry.tls_mode = tls;
+                // Covers any live DeviceState for this uuid, not just this
+                // devlist entry — e.g. an already-open device window
+                // reconnects to the corrected IP too.
+                self.device_manager().update_ip(uuid, ip, tls);
+            }
+            rec.in_discovery = rec.in_discovery || in_discovery;
+            moved
+        };
+        if moved { self.persist_pinned(); }
+    }
+
+    /// The actual creation half of `track_device()`, split out only so its
+    /// `inner` borrow (above) can drop cleanly before this runs —
+    /// `create_and_configure()` can re-enter this same `DiscoveryManager`
+    /// synchronously via the `configure-device` signal's connected handler
+    /// (`ui::AppState`'s, which doesn't touch devlist — but `device-changed`
+    /// firing on the very first poll tick, before `create_and_configure()`
+    /// even returns, is close enough to a real risk to just not hold the
+    /// borrow across the call at all).
+    #[allow(clippy::too_many_arguments)]
+    fn create_and_track(
+        &self,
+        key: &str, uuid: &str, ip: &str, tls: TlsMode, pinned: bool,
+        name: String, model: String, project: String, firmware: String,
+        in_discovery: bool,
+    ) {
+        dbg(&format!("track_device: new {name} ({ip}) uuid={uuid:?} key={key:?}"));
+        let ds = self.device_manager().create_and_configure(uuid, ip, tls);
+        let entry = ManagedEntry {
+            uuid: uuid.to_string(), name, model, project, firmware,
+            ip: ip.to_string(), tls_mode: tls, pinned,
+            presence: DevicePresence::compute(ds.connection_state(), pinned),
+        };
+        let weak = self.downgrade();
+        let key_owned = key.to_string();
+        ds.connect_device_changed(move |ds| {
+            let Some(mgr) = weak.upgrade() else { return };
+            mgr.on_tracked_device_changed(&key_owned, ds);
+        });
+        self.imp().inner.borrow_mut().devices.insert(key.to_string(), DeviceRecord {
+            entry, in_discovery, has_open_window: false, ds,
+        });
+    }
+
+    /// Fired whenever a tracked device's `DeviceState` emits
+    /// `device-changed` — i.e. it just connected, just failed, or its
+    /// identity was otherwise confirmed/updated. Refreshes this record's
+    /// rendering fields from the live `DeviceState` (never a redundant
+    /// separate probe — `ds` already did the work), re-prunes (a
+    /// transition can make an entry newly prunable, e.g. it just went
+    /// offline and isn't pinned/open/in-discovery), persists if identity
+    /// actually changed, and always re-renders.
+    fn on_tracked_device_changed(&self, key: &str, ds: &DeviceState) {
+        let mut needs_persist = false;
+        {
+            let mut inner = self.imp().inner.borrow_mut();
+            let Some(rec) = inner.devices.get_mut(key) else {
+                dbg(&format!("device-changed: {key} no longer tracked, ignoring"));
+                return;
+            };
+            let new_presence = DevicePresence::compute(ds.connection_state(), rec.entry.pinned);
+            if rec.entry.presence != new_presence {
+                dbg(&format!("device-changed: {} {:?} → {new_presence:?}", rec.entry.name, rec.entry.presence));
+                rec.entry.presence = new_presence;
+            }
+            if let Some(info) = ds.device_info() {
+                if !info.device_name.is_empty() && rec.entry.name != info.device_name {
+                    rec.entry.name = info.device_name.clone();
+                    needs_persist = true;
+                }
+                if !info.project.is_empty() && rec.entry.project != info.project {
+                    rec.entry.project = info.project.clone();
+                    needs_persist = true;
+                }
+                if !info.firmware.is_empty() && rec.entry.firmware != info.firmware {
+                    rec.entry.firmware = info.firmware.clone();
+                    needs_persist = true;
+                }
+            }
+            if let Some(caps) = ds.capabilities() {
+                if !caps.model.is_empty() && rec.entry.model != caps.model {
+                    rec.entry.model = caps.model.clone();
+                    needs_persist = true;
+                }
+            }
+        }
+        self.do_prune();
+        if needs_persist { self.persist_pinned(); }
+        self.emit_list_changed();
+    }
+
     fn on_discovery_updated(&self, svc: &DiscoveryService) {
         let discovered = svc.devices();
         let disc_keys: std::collections::HashSet<String> = discovered.iter()
             .map(|d| device_key(&d.uuid, &d.ip))
             .collect();
 
-        let mut changed = false;
-        let mut new_keys: Vec<String> = Vec::new();
-        let mut presence_changes: Vec<(String, bool)> = Vec::new();
         {
             let mut inner = self.imp().inner.borrow_mut();
-            for rec in inner.devices.values_mut() {
-                let k = device_key(&rec.entry.uuid, &rec.entry.ip);
+            for (key, rec) in inner.devices.iter_mut() {
                 let was = rec.in_discovery;
-                rec.in_discovery = disc_keys.contains(&k);
+                rec.in_discovery = disc_keys.contains(key);
                 if was && !rec.in_discovery {
                     dbg(&format!("discovery: {} ({}) left SSDP scope", rec.entry.name, rec.entry.ip));
                 }
             }
-            let known_devices = config::with(|c| c.devices.clone());
-            for dev in &discovered {
-                let key = device_key(&dev.uuid, &dev.ip);
-                match inner.devices.get_mut(&key) {
-                    None => {
-                        // Use cached name/model from config so the list shows
-                        // correct values immediately, before the health check returns.
-                        let cached = known_devices.get(&dev.uuid);
-                        let name  = cached.and_then(|c| c.name.clone())
-                            .filter(|n| !n.is_empty())
-                            .unwrap_or_else(|| dev.name.clone());
-                        let model = cached.and_then(|c| c.model.clone())
-                            .unwrap_or_default();
-                        let project = cached.and_then(|c| c.project.clone())
-                            .unwrap_or_default();
-                        let firmware = cached.and_then(|c| c.firmware.clone())
-                            .unwrap_or_default();
-                        dbg(&format!("discovery: new device {} ({}) uuid={:?}", name, dev.ip, dev.uuid));
-                        let entry = ManagedEntry {
-                            uuid:     dev.uuid.clone(),
-                            name,
-                            model,
-                            project,
-                            firmware,
-                            ip:       dev.ip.clone(),
-                            tls_mode: dev.tls_mode,
-                            pinned:   false,
-                            presence: DevicePresence::Active,
-                        };
-                        inner.devices.insert(key.clone(), DeviceRecord {
-                            entry, in_discovery: true,
-                            client: WiimClient::new(&dev.ip, dev.tls_mode),
-                            consecutive_failures: 0, has_open_window: false,
-                        });
-                        new_keys.push(key);
-                        presence_changes.push((dev.uuid.clone(), true));
-                        changed = true;
-                    }
-                    // Known UUID reappeared at a different IP (e.g. DHCP lease
-                    // renewal) or TLS mode.  Refresh the entry and rebuild the
-                    // client so health checks target the live endpoint instead
-                    // of pinging the old, now-dead IP forever — this is what
-                    // lets a pinned "Ghost" device recover automatically.
-                    Some(rec) if rec.entry.ip != dev.ip || rec.entry.tls_mode != dev.tls_mode => {
-                        dbg(&format!(
-                            "discovery: {} moved {} → {} uuid={:?}",
-                            rec.entry.name, rec.entry.ip, dev.ip, dev.uuid,
-                        ));
-                        let was_active = rec.entry.presence == DevicePresence::Active;
-                        rec.entry.ip       = dev.ip.clone();
-                        rec.entry.tls_mode = dev.tls_mode;
-                        rec.client         = WiimClient::new(&dev.ip, dev.tls_mode);
-                        // SSDP's own probe (discovery.rs's "alive: probing"
-                        // → "probe ok" — an actual HTTP confirmation, not
-                        // just hearing an announcement) is itself a strong
-                        // liveness signal, same as a successful health
-                        // check — no need to wait for one separately.
-                        rec.entry.presence = DevicePresence::Active;
-                        rec.consecutive_failures = 0;
-                        if !was_active { presence_changes.push((dev.uuid.clone(), true)); }
-                        new_keys.push(key);
-                        changed = true;
-                    }
-                    // Already known, same IP/TLS, re-seen in this SSDP scan.
-                    // Same liveness reasoning as the "moved" arm above — SSDP
-                    // just (re)confirmed this device responds, so it's
-                    // "believed online" immediately rather than waiting for
-                    // devlist's own health check to separately catch up
-                    // (relevant right after startup: a pinned device loaded
-                    // from config starts `Ghost`/`Dead` until *something*
-                    // confirms it — see `load_known_devices_from_config()` —
-                    // and SSDP finding it is one of the two ways that happens,
-                    // the other being the health check itself).
-                    Some(rec) if rec.entry.presence != DevicePresence::Active => {
-                        dbg(&format!(
-                            "discovery: {} ({}) confirmed alive by SSDP, {:?} → Active",
-                            rec.entry.name, rec.entry.ip, rec.entry.presence,
-                        ));
-                        rec.entry.presence = DevicePresence::Active;
-                        rec.consecutive_failures = 0;
-                        presence_changes.push((dev.uuid.clone(), true));
-                        changed = true;
-                    }
-                    Some(_) => {}
-                }
-            }
         }
+
+        let known_devices = config::with(|c| c.devices.clone());
+        for dev in &discovered {
+            let key = device_key(&dev.uuid, &dev.ip);
+            let cached = known_devices.get(&dev.uuid);
+            let name  = cached.and_then(|c| c.name.clone())
+                .filter(|n| !n.is_empty())
+                .unwrap_or_else(|| dev.name.clone());
+            let model    = cached.and_then(|c| c.model.clone()).unwrap_or_default();
+            let project  = cached.and_then(|c| c.project.clone()).unwrap_or_default();
+            let firmware = cached.and_then(|c| c.firmware.clone()).unwrap_or_default();
+            let pinned = cached.map_or(false, |c| c.pinned == Some(true));
+            self.track_device(&key, &dev.uuid, &dev.ip, dev.tls_mode, pinned, name, model, project, firmware, true);
+        }
+
         let pruned = self.do_prune();
-        for (uuid, reachable) in &presence_changes {
-            self.fire_presence_hook(uuid, *reachable);
-        }
-        if changed || pruned {
-            self.emit_by_name::<()>("list-changed", &[]);
-        }
-        // Immediately health-check newly discovered or IP-changed devices
-        // rather than waiting for the next HEALTH_CHECK_INTERVAL cycle.
-        for key in new_keys {
-            self.trigger_health_check_for(&key);
-        }
+        self.emit_list_changed();
+        let _ = pruned; // list-changed already covers both cases; kept named for clarity at call site
     }
 
-    fn trigger_health_checks(&self) {
-        let keys: Vec<(String, WiimClient)> = self.imp().inner.borrow()
-            .devices.iter()
-            .map(|(k, r)| (k.clone(), r.client.clone()))
-            .collect();
-        dbg(&format!("health check: cycle starting for {} device(s)", keys.len()));
-        for (key, _) in keys {
-            self.trigger_health_check_for(&key);
-        }
-    }
-
-    /// Active devices get the normal retried `get_device_info()` (transient
-    /// misses are tolerated — see `HEALTH_FAIL_THRESHOLD`); a device
-    /// already believed `Ghost`/`Dead` gets the quiet, unretried,
-    /// non-logging `get_device_info_quiet()` instead — recovery detection
-    /// doesn't need to be gentle about a device we already know is down.
-    ///
-    /// `pub(crate)` (not private) so `ui::mod`'s `AppState` can force an
-    /// immediate probe when a `DeviceState`'s own poller notices a failure
-    /// first (`DeviceManager::set_offline_hook`), rather than waiting for
-    /// the next scheduled HEALTH_CHECK_INTERVAL cycle.
-    pub(crate) fn trigger_health_check_for(&self, key: &str) {
-        let Some(tx) = self.imp().health_tx.borrow().clone() else { return };
-        let Some((client, name, believed_active)) = self.imp().inner.borrow()
-            .devices.get(key)
-            .map(|r| (r.client.clone(), r.entry.name.clone(), r.entry.presence == DevicePresence::Active))
-            else { return };
-        dbg(&format!("health check: pinging {name} ({key}), believed_active={believed_active}"));
-        let key = key.to_string();
-        self.rt().spawn(async move {
-            let probe = if believed_active {
-                client.get_device_info().await
-            } else {
-                client.get_device_info_quiet().await
-            };
-            let (alive, name, model, project, firmware, uuid) = match probe {
-                Ok(info) => (true,
-                             Some(info.device_name.clone()),
-                             Some(DeviceCapabilities::from_device_info(&info).model),
-                             Some(info.project.clone()),
-                             Some(info.firmware.clone()),
-                             Some(info.uuid.clone())),
-                Err(_)   => (false, None, None, None, None, None),
-            };
-            let _ = tx.send(HealthResult { key, alive, name, model, project, firmware, uuid }).await;
-        });
-    }
-
-    fn on_health_result(&self, result: HealthResult) {
-        let mut needs_persist = false;
-        let mut retry_soon = false;
-        let mut presence_changes: Vec<(String, bool)> = Vec::new();
-
-        // Identity check: does the uuid the responding device actually
-        // reports match what `result.key` is supposed to be tracking? A
-        // mismatch means a different device now sits at this IP (e.g. a
-        // DHCP lease reassignment) — there is no such thing as "the uuid
-        // changed" for a tracked entry (same reasoning as
-        // `device/state.rs`'s own per-connection identity check), so this
-        // probe does *not* count as a real confirmation of the probed
-        // entry's liveness, and its name/model/project/firmware must not
-        // be overwritten with data that actually describes a different
-        // device. Skipped entirely for legacy `ip:`-keyed entries with no
-        // resolved uuid yet (`rec.entry.uuid` empty) — anything answering
-        // there is expected/normal.
-        let mut alive = result.alive;
-        let mut mismatch = false;
-        let mut poke: Option<(String, String, TlsMode)> = None; // (observed_uuid, ip, tls_mode)
-        {
-            let inner = self.imp().inner.borrow();
-            if let Some(rec) = inner.devices.get(&result.key) {
-                if alive && !rec.entry.uuid.is_empty() {
-                    if let Some(observed) = &result.uuid {
-                        if !observed.is_empty() && *observed != rec.entry.uuid {
-                            mismatch = true;
-                            poke = Some((observed.clone(), rec.entry.ip.clone(), rec.entry.tls_mode));
-                        }
-                    }
-                }
-            }
-        }
-        if mismatch {
-            dbg(&format!(
-                "health result: {} answered with a different uuid than expected — not a real confirmation",
-                result.key,
-            ));
-            alive = false;
-        }
-
-        {
-            let mut inner = self.imp().inner.borrow_mut();
-            if let Some(rec) = inner.devices.get_mut(&result.key) {
-                if alive {
-                    rec.consecutive_failures = 0;
-                    if rec.entry.presence != DevicePresence::Active {
-                        dbg(&format!("health result: {} ({}) {:?} → Active",
-                            rec.entry.name, rec.entry.ip, rec.entry.presence));
-                        rec.entry.presence = DevicePresence::Active;
-                        presence_changes.push((rec.entry.uuid.clone(), true));
-                    }
-                } else if rec.entry.presence == DevicePresence::Active {
-                    rec.consecutive_failures += 1;
-                    if rec.consecutive_failures >= HEALTH_FAIL_THRESHOLD {
-                        let new_presence =
-                            if rec.entry.pinned { DevicePresence::Ghost } else { DevicePresence::Dead };
-                        dbg(&format!(
-                            "health result: {} ({}) Active → {:?} ({} consecutive failures)",
-                            rec.entry.name, rec.entry.ip, new_presence, rec.consecutive_failures,
-                        ));
-                        rec.entry.presence = new_presence;
-                        presence_changes.push((rec.entry.uuid.clone(), false));
-                    } else {
-                        dbg(&format!(
-                            "health result: {} ({}) failed ({}/{HEALTH_FAIL_THRESHOLD}); retrying in {}s",
-                            rec.entry.name, rec.entry.ip, rec.consecutive_failures, HEALTH_FAIL_RETRY.as_secs(),
-                        ));
-                        retry_soon = true;
-                    }
-                }
-                // else: already Ghost/Dead and the quiet recovery probe
-                // just failed again (or a mismatch overrode `alive` to
-                // false) — nothing to do, presence stays as-is.
-
-                // A mismatch means this name/model/project/firmware
-                // describes a *different* device — never attribute it to
-                // this entry.
-                if !mismatch {
-                    if let Some(name) = result.name {
-                        if !name.is_empty() && rec.entry.name != name {
-                            dbg(&format!("health result: {} name → {:?}", rec.entry.ip, name));
-                            rec.entry.name = name;
-                            needs_persist = true;
-                        }
-                    }
-                    if let Some(model) = result.model {
-                        if !model.is_empty() && rec.entry.model != model {
-                            dbg(&format!("health result: {} model = {:?}", rec.entry.name, model));
-                            rec.entry.model = model;
-                            needs_persist = true;
-                        }
-                    }
-                    if let Some(project) = result.project {
-                        if !project.is_empty() && rec.entry.project != project {
-                            rec.entry.project = project;
-                            needs_persist = true;
-                        }
-                    }
-                    if let Some(firmware) = result.firmware {
-                        if !firmware.is_empty() && rec.entry.firmware != firmware {
-                            rec.entry.firmware = firmware;
-                            needs_persist = true;
-                        }
-                    }
-                }
-            } else {
-                dbg(&format!("health result: unknown key {}", result.key));
-            }
-
-            // "Poke" the *actual* device we just found, if we already know
-            // about it under its own uuid elsewhere — same treatment as
-            // `on_discovery_updated()`'s "moved IP" branch: it's a device
-            // we already track, just reachable somewhere new (Ben: "which
-            // we also need to test the GUI about," i.e. an open window for
-            // that uuid should reconnect cleanly once poked). A health
-            // check response must never *create* a new devlist entry — if
-            // we don't already know this uuid, it's ignored outright;
-            // the device will show up normally later via SSDP or a manual
-            // add.
-            if let Some((observed_uuid, ip, tls_mode)) = poke {
-                if let Some(target) = inner.devices.get_mut(&observed_uuid) {
-                    if target.entry.ip != ip || target.entry.tls_mode != tls_mode {
-                        dbg(&format!(
-                            "health result: {} found alive at {} (was tracking {}) — poking",
-                            target.entry.name, ip, target.entry.ip,
-                        ));
-                        target.entry.ip       = ip;
-                        target.entry.tls_mode = tls_mode;
-                        target.client         = WiimClient::new(&target.entry.ip, tls_mode);
-                    }
-                    let was_active = target.entry.presence == DevicePresence::Active;
-                    target.entry.presence = DevicePresence::Active;
-                    target.consecutive_failures = 0;
-                    if !was_active {
-                        presence_changes.push((observed_uuid.clone(), true));
-                    }
-                } else {
-                    dbg(&format!(
-                        "health result: unknown uuid={observed_uuid} answered at a tracked IP — ignoring (not creating a new entry)"
-                    ));
-                }
-            }
-        }
-        self.do_prune();
-        for (uuid, reachable) in &presence_changes {
-            self.fire_presence_hook(uuid, *reachable);
-        }
-        if needs_persist { self.persist_pinned(); }
-        // Always emit so the scanning indicator clears even when presence is unchanged.
-        self.emit_by_name::<()>("list-changed", &[]);
-        if retry_soon {
-            let weak = self.downgrade();
-            let key = result.key;
-            glib::timeout_add_local_once(HEALTH_FAIL_RETRY, move || {
-                if let Some(mgr) = weak.upgrade() {
-                    mgr.trigger_health_check_for(&key);
-                }
-            });
-        }
-    }
-
-    /// Remove entries that are Dead (not pinned, not responding) and no longer
-    /// visible in the SSDP discovery list.  Returns true if anything was removed.
+    /// Remove entries that are `Dead` (not pinned, not `Connected`) and no
+    /// longer visible in the SSDP discovery list, dropping devlist's
+    /// strong `DeviceState` reference — the actual "forgetting" (see this
+    /// module's own doc comment: a device goes away for good once no
+    /// window holds a reference either). Returns true if anything was
+    /// removed.
     fn do_prune(&self) -> bool {
         let mut inner = self.imp().inner.borrow_mut();
         let before = inner.devices.len();
@@ -723,8 +496,15 @@ impl DiscoveryManager {
                 || rec.entry.presence == DevicePresence::Active
                 || rec.in_discovery
                 || rec.has_open_window;
+            // No explicit `ds.disconnect(device_changed_id)` needed here:
+            // `has_open_window` being false (a precondition for `!keep`) means
+            // no device window holds its own strong ref to `rec.ds` either
+            // (`device::manager::DeviceManager` only ever keeps weak refs),
+            // so dropping `rec` below drops the last strong reference and
+            // finalizes the `DeviceState` — signal connection included —
+            // outright.
             if !keep {
-                dbg(&format!("prune: removing {} ({key})", rec.entry.name));
+                dbg(&format!("prune: forgetting {} ({key})", rec.entry.name));
             }
             keep
         });
@@ -732,64 +512,33 @@ impl DiscoveryManager {
     }
 
     fn load_known_devices_from_config(&self) {
-        config::with(|cfg| {
-            let mut inner = self.imp().inner.borrow_mut();
-            for (uuid, dev_cfg) in &cfg.devices {
-                let pinned = dev_cfg.pinned == Some(true);
-                // Load pinned devices always.  Also pre-load non-pinned devices whose
-                // window should reopen: the list-changed handler will open the window,
-                // and if SSDP later confirms the device it stays; if not, do_prune
-                // removes it (the window stays open independently).
-                if !pinned && !dev_cfg.window_open { continue; }
-                let Some(ref ip) = dev_cfg.last_ip else { continue };
-                if inner.devices.contains_key(uuid) { continue; }
-                // Confirmed bug (Ben, 2026-07-13): this used to always be
-                // `HttpsWiiM` regardless of what actually worked for this
-                // device — fine for most, but a device manually added
-                // specifically because it only answers on plain HTTP (no
-                // TLS listener at all — an old-firmware Audio Pro C5 unit,
-                // confirmed live, not a cert issue) worked for that one
-                // session (the manual-add flow probes and remembers the
-                // right mode in memory) and then silently reverted to
-                // HTTPS-only on the next launch, failing outright. See
-                // `config::DeviceConfig::tls_mode`'s doc comment.
-                let tls = dev_cfg.tls_mode
-                    .map(|n| TlsMode::from_usize(n as usize))
-                    .unwrap_or(TlsMode::HttpsWiiM);
-                let name     = dev_cfg.name.clone().unwrap_or_else(|| format!("Device @ {ip}"));
-                let model    = dev_cfg.model.clone().unwrap_or_default();
-                let project  = dev_cfg.project.clone().unwrap_or_default();
-                let firmware = dev_cfg.firmware.clone().unwrap_or_default();
-                dbg(&format!("load from config: {name} ({ip}) uuid={uuid} pinned={pinned}"));
-                let entry = ManagedEntry {
-                    uuid: uuid.clone(), name, model, project, firmware, ip: ip.clone(),
-                    // Start believed offline (Ghost if pinned, Dead
-                    // otherwise) rather than optimistically Active — this is
-                    // a config-remembered entry, not something SSDP or a
-                    // health check has actually confirmed responds *right
-                    // now*. `start()` triggers an immediate health check
-                    // right after loading these, so a genuinely-online
-                    // device only shows this for a moment; a genuinely-
-                    // offline one is never shown as "online" even briefly,
-                    // and its first probe (see `trigger_health_check_for()`)
-                    // is the quiet, unretried, non-logging one from the
-                    // start, rather than the normal retried probe an
-                    // optimistic `Active` default would get first.
-                    tls_mode: tls, pinned,
-                    presence: if pinned { DevicePresence::Ghost } else { DevicePresence::Dead },
-                };
-                inner.devices.insert(uuid.clone(), DeviceRecord {
-                    entry, in_discovery: false, client: WiimClient::new(ip, tls),
-                    consecutive_failures: 0, has_open_window: false,
-                });
-            }
-        });
+        let devices = config::with(|cfg| cfg.devices.clone());
+        for (uuid, dev_cfg) in &devices {
+            let pinned = dev_cfg.pinned == Some(true);
+            // Load pinned devices always.  Also pre-load non-pinned devices whose
+            // window should reopen: the list-changed handler will open the window,
+            // and if SSDP later confirms the device it stays; if not, do_prune
+            // removes it (the window stays open independently).
+            if !pinned && !dev_cfg.window_open { continue; }
+            let Some(ref ip) = dev_cfg.last_ip else { continue };
+            if self.imp().inner.borrow().devices.contains_key(uuid) { continue; }
+            let tls = dev_cfg.tls_mode
+                .map(|n| TlsMode::from_usize(n as usize))
+                .unwrap_or(TlsMode::HttpsWiiM);
+            let name     = dev_cfg.name.clone().unwrap_or_else(|| format!("Device @ {ip}"));
+            let model    = dev_cfg.model.clone().unwrap_or_default();
+            let project  = dev_cfg.project.clone().unwrap_or_default();
+            let firmware = dev_cfg.firmware.clone().unwrap_or_default();
+            dbg(&format!("load from config: {name} ({ip}) uuid={uuid} pinned={pinned}"));
+            self.track_device(uuid, uuid, ip, tls, pinned, name, model, project, firmware, false);
+        }
     }
 
     fn persist_pinned(&self) {
         let inner = self.imp().inner.borrow();
         config::update(|cfg| {
             for rec in inner.devices.values() {
+                if rec.entry.uuid.is_empty() { continue; }
                 let dev     = cfg.device_mut(&rec.entry.uuid);
                 dev.pinned  = Some(rec.entry.pinned); // Explicit Some(true/false) ends legacy treatment.
                 dev.last_ip = Some(rec.entry.ip.clone());
@@ -909,7 +658,7 @@ impl DiscoveryWindow {
         // Populate list and subscribe to manager changes.
         Self::rebuild_list(&list_box, &manager.entries(), &open_device, manager);
 
-        // List rebuild: fires on every health-check cycle or discovery event.
+        // List rebuild: fires on every discovery event or tracked-device change.
         manager.connect_list_changed(clone!(
             @strong list_box, @strong open_device
                 => move |mgr| {
@@ -918,8 +667,6 @@ impl DiscoveryWindow {
         ));
 
         // Scanning indicator: clear only when the SSDP scan cycle reports in.
-        // health-check results (list-changed) arrive much faster and would
-        // dismiss the indicator before the first frame is even rendered.
         let scanning = Rc::new(std::cell::Cell::new(true));
         manager.connect_scan_complete(clone!(
             @strong subtitle_row, @strong scanning, @strong spinner
@@ -1090,7 +837,7 @@ impl DiscoveryWindow {
                         if let Ok(Some(dev)) = rx.recv().await {
                             manager.add_manual(dev.name, dev.ip, dev.uuid, dev.tls_mode);
                         } else {
-                            eprintln!("[devlist] Could not reach device at {ip}");
+                            eprintln!("[devlist-ui] Could not reach device at {ip}");
                         }
                     }));
                 }

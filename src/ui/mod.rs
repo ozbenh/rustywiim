@@ -336,8 +336,11 @@ struct DeviceWindowInner {
     /// Acquired once, right after `ds` is obtained, for the lifetime of
     /// this window (main + mini share the same `ds`, so one guard covers
     /// both surfaces) — releases automatically when this struct drops
-    /// (window close/last-ref-drop), reverting `ds` to `Simple` mode
-    /// unless something else (e.g. devlist, once wired) also holds one.
+    /// (window close/last-ref-drop), reverting `ds` to `Simple` mode.
+    /// `ui::devlist`'s own tracked devices never acquire `Full` themselves
+    /// (they only need `Simple`'s liveness+identity polling), so a window
+    /// closing is the only thing that ever drops this back down. See
+    /// `DeviceState::acquire_full()`.
     _full_mode:       FullModeGuard,
     show_devices_fn:  Rc<dyn Fn()>,
     sw:             SourceWidgets,
@@ -1297,17 +1300,16 @@ impl AppState {
         if DIRECT_CONNECT.get().is_none() {
             disc_svc.start();
         }
-        let disc_mgr = devlist::DiscoveryManager::new(rt.clone(), disc_svc.clone());
-        let device_manager = DeviceManager::new(rt);
+        let device_manager = DeviceManager::new(rt.clone());
 
-        // `device_manager` construction is inert (no side effects, matches
-        // `disc_mgr`'s own contract) — connecting `configure-device` this
-        // early, before anything else touches `device_manager`, means
-        // there's no window where a `DeviceState` could be created before
-        // this handler exists to configure it. Resolves per-device config
-        // overrides (device/ can't read config itself) and pushes them onto
-        // the fresh `DeviceState` before `create_and_configure()` lets it
-        // make first contact.
+        // `device_manager` construction is inert (no side effects) —
+        // connecting `configure-device` this early, before anything else
+        // touches `device_manager`, means there's no window where a
+        // `DeviceState` could be created before this handler exists to
+        // configure it. Resolves per-device config overrides (device/
+        // can't read config itself) and pushes them onto the fresh
+        // `DeviceState` before `create_and_configure()` lets it make first
+        // contact.
         device_manager.connect_configure_device(|_, ds| {
             let uuid = ds.uuid();
             if uuid.is_empty() { return; }
@@ -1315,57 +1317,20 @@ impl AppState {
                 let d = cfg.device(&uuid);
                 (d.playback_access_override, d.mute_access_override)
             });
+            dbg_state(&format!(
+                "configure-device: {} ({uuid}) access_override={access_override:?} mute_access_override={mute_access_override:?}",
+                ds.ip(),
+            ));
             ds.set_playback_access_override(access_override);
             ds.set_mute_access_override(mute_access_override);
         });
-        // Seed every pinned device from config so it has a live (Simple-
-        // mode) DeviceState from startup, same as `ui/devlist.rs`'s own
-        // `load_known_devices_from_config()` does for its picker-list
-        // entries — this is a separate, additional seeding pass for now,
-        // not yet a replacement of that one (see DEVLIST-REDESIGN.md:
-        // Phase 3 is what retires devlist's own health-check polling in
-        // favor of this).
-        config::with(|cfg| {
-            for (uuid, dev_cfg) in &cfg.devices {
-                if dev_cfg.pinned != Some(true) { continue; }
-                let Some(ref ip) = dev_cfg.last_ip else { continue };
-                device_manager.add_known_device(uuid, ip);
-            }
-        });
 
-        // Two symmetric, decoupled hooks bridge `devlist` (canonical
-        // reachability, in `ui/`) and `DeviceManager` (in `device/`, which
-        // can't import `ui/devlist` types at all) — `ui::AppState` is the
-        // only thing that knows about both. Neither manager holds a direct
-        // reference to the other, since `devlist`'s backend may eventually
-        // move into `device/` itself, which would make a direct reference
-        // the wrong shape to have picked here.
-        //
-        // devlist → DeviceManager: fired only at an actual presence
-        // transition (devlist already knows exactly when that is — see
-        // `DiscoveryManager::set_presence_hook()`'s doc comment for why
-        // this replaced a `list-changed`-diffing approach that caused a
-        // real flapping bug).
-        {
-            let device_manager = device_manager.clone();
-            disc_mgr.set_presence_hook(move |uuid, reachable| {
-                device_manager.sync_reachability(&uuid, reachable);
-            });
-        }
-        // DeviceManager → devlist: a DeviceState's own poll can notice a
-        // failure before devlist's next scheduled health-check (HEALTH_CHECK_INTERVAL)
-        // cycle would. `disc_mgr` capture is weak — `disc_mgr` now also
-        // holds a strong reference to `device_manager` via the hook above,
-        // so a strong capture here would be a two-node reference cycle
-        // (harmless for these process-lifetime singletons, but not clean).
-        {
-            let weak_disc = disc_mgr.downgrade();
-            device_manager.set_offline_hook(move |uuid| {
-                if let Some(disc_mgr) = weak_disc.upgrade() {
-                    disc_mgr.mark_offline(&uuid);
-                }
-            });
-        }
+        // `disc_mgr` now owns the *entire* known-device registry (SSDP
+        // consumption, pinned/config-remembered devices, presence — see
+        // `ui/devlist.rs`'s module doc comment) — it holds `device_manager`
+        // directly rather than through a hook/callback pair, since there's
+        // no separate ownership layer left to keep them decoupled through.
+        let disc_mgr = devlist::DiscoveryManager::new(rt, disc_svc.clone(), device_manager.clone());
 
         Rc::new(Self {
             app:            app.clone(),
@@ -1604,44 +1569,15 @@ impl AppState {
             return;
         }
 
-        // Keep last_ip current, and reconnect any already-open device window
-        // to a corrected IP, whenever the device list changes.  Must be
-        // connected before start() so we catch the synchronous emission after
-        // the initial config load.
-        {
-            let s = Rc::downgrade(self_rc);
-            self_rc.disc_mgr.connect_list_changed(move |mgr| {
-                let Some(self_rc) = s.upgrade() else { return };
-                let entries = mgr.entries();
-                for entry in &entries {
-                    if entry.uuid.is_empty() { continue; }
-                    // No-op if a live DeviceState for this UUID is already
-                    // using this IP; otherwise reconnects it — devlist.rs
-                    // refreshes entry.ip on rediscovery, this pushes the
-                    // correction into any open window instead of it
-                    // retrying the old dead IP forever.
-                    self_rc.device_manager.update_ip(&entry.uuid, &entry.ip, entry.tls_mode);
-                }
-                // Reachability sync (devlist → DeviceManager) no longer
-                // happens here at all — devlist fires its presence_hook
-                // directly, at the exact moment it changes presence, wired
-                // in AppState::new(). Diffing a list-changed snapshot
-                // against a shadow copy to reconstruct "did this change"
-                // was itself the cause of a flapping Disconnected/
-                // Connecting… bug.
-                // update() only saves if something actually changed, so no
-                // need to track a separate "dirty" flag here.
-                config::update(|cfg| {
-                    for entry in &entries {
-                        if entry.uuid.is_empty() { continue; }
-                        let Some(dev) = cfg.devices.get_mut(&entry.uuid) else { continue };
-                        if dev.last_ip.as_deref() != Some(entry.ip.as_str()) {
-                            dev.last_ip = Some(entry.ip.clone());
-                        }
-                    }
-                });
-            });
-        }
+        // Reconnecting an already-open window to a corrected IP, and
+        // persisting the correction to config, both now happen directly
+        // inside `ui::devlist`'s own `track_device()` the moment it detects
+        // a move — no separate `list-changed`-driven pass needed here
+        // anymore (an earlier version of this reconstructed "did the IP
+        // change" from a `list-changed` snapshot diff, which is exactly
+        // the pattern that caused a real flapping `Disconnected`/
+        // `Connecting…` bug for presence; not resurrecting that shape for
+        // IP changes either).
 
         // Restore windows from config on startup.  initial-load fires once,
         // synchronously inside start(), so open_device() here is safe — no
