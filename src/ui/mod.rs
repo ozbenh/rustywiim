@@ -28,7 +28,7 @@ use crate::config::ThemeMode;
 use crate::device::discovery::DiscoveryService;
 use crate::device::manager::DeviceManager;
 use crate::device::playback::RepeatMode;
-use crate::device::state::{ConnectionState, DeviceState, DEBUG_STATE};
+use crate::device::state::{ConnectionState, DeviceState, FullModeGuard, DEBUG_STATE};
 
 /// GApplication ID / icon name / GResource base path / `.desktop` basename —
 /// all the same string by freedesktop convention, kept in one place so
@@ -333,6 +333,12 @@ pub(crate) fn apply_theme(theme: ThemeMode) {
 
 struct DeviceWindowInner {
     ds:               DeviceState,
+    /// Acquired once, right after `ds` is obtained, for the lifetime of
+    /// this window (main + mini share the same `ds`, so one guard covers
+    /// both surfaces) — releases automatically when this struct drops
+    /// (window close/last-ref-drop), reverting `ds` to `Simple` mode
+    /// unless something else (e.g. devlist, once wired) also holds one.
+    _full_mode:       FullModeGuard,
     show_devices_fn:  Rc<dyn Fn()>,
     sw:             SourceWidgets,
     ow:             OutputWidgets,
@@ -573,6 +579,11 @@ impl DeviceWindow {
                 ds
             }
         };
+        // A device window always wants Full mode — covers both branches
+        // above (main + mini share this one `ds`, so one guard is enough
+        // for both surfaces); released automatically when this window's
+        // `DeviceWindowInner` drops. See `_full_mode`'s doc comment.
+        let full_mode = ds.acquire_full();
 
         dbg_ui(&format!("DeviceWindow creating (uuid={})", cfg_uuid));
 
@@ -713,6 +724,7 @@ impl DeviceWindow {
 
         let inner = Rc::new(DeviceWindowInner {
             ds: ds.clone(),
+            _full_mode: full_mode,
             show_devices_fn,
             sw,
             ow,

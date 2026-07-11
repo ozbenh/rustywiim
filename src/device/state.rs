@@ -726,9 +726,7 @@ impl Default for Inner {
             rssi:             None,
             remote:           RemoteInfo::default(),
             connection_state: ConnectionState::Disconnected,
-            // XXX Temporary: We don't yet switch to full mode from
-            // so let's hard wire one full mode client for now.
-            full_clients:     1,
+            full_clients:     0,
             simple_mode_song_info: false,
             presets:          Vec::new(),
             preset_fp:        String::new(),
