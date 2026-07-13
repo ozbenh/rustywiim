@@ -2932,23 +2932,36 @@ impl DeviceState {
     }
 
     pub fn do_set_volume(&self, vol: u32) {
-        let mut inner = self.imp().inner.borrow_mut();
-        // Optimistic update of playback.volume to avoid slider glitches
-        inner.playback.volume = vol;
-        let now = Instant::now();
-        let since_last = inner.last_volume_cmd
-            .map_or(VOLUME_DEBOUNCE, |t| now.duration_since(t));
-        if since_last < VOLUME_DEBOUNCE {
-            // Within the debounce window — save as pending; the 1s timer will flush it.
-            inner.target_volume = vol as i32;
-            return;
+        let (send_now, client) = {
+            let mut inner = self.imp().inner.borrow_mut();
+            // Optimistic update of playback.volume to avoid slider glitches
+            inner.playback.volume = vol;
+            let now = Instant::now();
+            let since_last = inner.last_volume_cmd
+                .map_or(VOLUME_DEBOUNCE, |t| now.duration_since(t));
+            if since_last < VOLUME_DEBOUNCE {
+                // Within the debounce window — save as pending; the 1s timer will flush it.
+                inner.target_volume = vol as i32;
+                (false, None)
+            } else {
+                // Debounce window has elapsed — send immediately.
+                inner.target_volume   = -1;
+                inner.last_volume_cmd = Some(now);
+                (true, inner.client.clone())
+            }
+        };
+        // Same synchronous emit `do_set_mute()` already does, and for the
+        // same reason: the optimistic write above already lands in
+        // canonical `playback.volume`, so the next real poll's self-heal
+        // diff sees "no change" and never emits on its own — without this,
+        // any listener *other* than the widget that made this call (e.g.
+        // the devlist row's volume control while a device window's own
+        // slider is what moved) never finds out at all.
+        self.emit_by_name::<()>("playback-changed", &[&playback_changed::VOLUME]);
+        if send_now {
+            let Some(client) = client else { return };
+            self.rt().spawn(async move { let _ = client.set_volume(vol).await; });
         }
-        // Debounce window has elapsed — send immediately.
-        inner.target_volume   = -1;
-        inner.last_volume_cmd = Some(now);
-        let Some(client) = inner.client.clone() else { return };
-        drop(inner);
-        self.rt().spawn(async move { let _ = client.set_volume(vol).await; });
     }
 
     // ── Transport commands ────────────────────────────────────────────────────
