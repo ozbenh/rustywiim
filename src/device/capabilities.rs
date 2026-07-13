@@ -1683,7 +1683,7 @@ mod tests {
     /// see that static's doc comment for the known-inaccurate fields.
     #[test]
     fn audio_pro_addon_c5_old_firmware_real_capture() {
-        let cap = load_capture("AudioPro_C5I_20260710_073433.FW3.7.x.json");
+        let cap = load_capture("Audio_Pro_Addon_C5_20260710_073433.FW3.7.x.json");
         let body = cap.commands.iter()
             .find(|c| c.command == "getStatusEx" && c.outcome == crate::capture::format::Outcome::Ok)
             .expect("capture has no successful getStatusEx")
