@@ -9,7 +9,7 @@ use crate::{device::{api, capabilities}, config};
 use super::*;
 use super::views::common::{
     apply_repeat_ui, apply_shuffle_ui, flash_button, format_bt_status_line,
-    format_quality_line, format_status_line, is_unknown, vol_icon,
+    format_quality_line, format_status_line, is_unknown,
 };
 
 // ── impl DeviceWindowInner ────────────────────────────────────────────────────
@@ -459,57 +459,11 @@ impl DeviceWindowInner {
 
     // ── Volume helpers ────────────────────────────────────────────────────────
 
-    /// Sync one volume slider + its vol button + mute button from device state.
-    /// Skips the `set_value` call while the user is dragging either slider.
-    pub(super) fn sync_vol_display(
-        &self,
-        scale:        &gtk::Scale,
-        vol_icon_img: &gtk::Image,
-        vol_label:    &gtk::Label,
-        mute_btn:     &gtk::Button,
-        muted:        bool,
-    ) {
-        // Fetch the authoritative volume first; used for both the slider position
-        // and the icon so they stay consistent even when set_value is inhibited.
-        let device_vol = self.ds.get_vol() as f64;
-        if self.ui_state.drag_timer.borrow().is_none() {
-            scale.set_value(device_vol);
-        }
-        vol_icon_img.set_icon_name(Some(vol_icon(muted, device_vol)));
-        vol_label.set_label(&format!("{}", device_vol as u32));
-        mute_btn.set_icon_name(if muted { "audio-volume-muted-symbolic" } else { "audio-volume-high-symbolic" });
-    }
-
-    /// Called when either vol slider value changes due to user interaction.
-    /// Updates both vol button icons and sends the rate-limited volume command.
-    /// Resets a 500 ms drag-protection timer so poll updates don't jump the
-    /// slider while the user is still interacting with it.
-    pub(super) fn on_vol_changed(&self, vol: f64) {
-        let icon = vol_icon(self.ds.muted(), vol);
-        let vol_str = format!("{}", vol as u32);
-        self.pw.vol_icon_img.set_icon_name(Some(icon));
-        self.pw.vol_label.set_label(&vol_str);
-        self.mini.vol_icon_img.set_icon_name(Some(icon));
-        self.mini.vol_label.set_label(&vol_str);
-        self.ds.do_set_volume(vol as u32);
-
-        // Cancel any pending reset and schedule a fresh one.
-        if let Some(id) = self.ui_state.drag_timer.borrow_mut().take() { id.remove(); }
-        let timer_cell = Rc::clone(&self.ui_state.drag_timer);
-        let id = glib::timeout_add_local_once(std::time::Duration::from_millis(500), move || {
-            timer_cell.borrow_mut().take();
-        });
-        *self.ui_state.drag_timer.borrow_mut() = Some(id);
-    }
-
-    /// Nudge the volume by `delta` (clamped to 0..=100) — used by the Up/Down
-    /// keyboard shortcuts. Routes through `on_vol_changed` so it gets the
-    /// same UI sync + rate-limited device command + drag-protection timer as
-    /// a manual slider drag.
-    pub(super) fn step_volume(&self, delta: i32) {
-        let current = self.ds.get_vol() as i32;
-        let new_vol = (current + delta).clamp(0, 100);
-        self.on_vol_changed(new_vol as f64);
+    /// The volume cluster belonging to whichever panel is currently
+    /// showing — for the keyboard Up/Down shortcuts, so the flashy part
+    /// (the level readout changing) happens where the user is looking.
+    pub(super) fn active_volume(&self) -> &super::views::volume::VolumeControl {
+        if *self.mini_mode.borrow() { &self.mini.volume } else { &self.pw.volume }
     }
 
     // ── Playback ──────────────────────────────────────────────────────────────
@@ -523,10 +477,7 @@ impl DeviceWindowInner {
 
         let ps = self.ds.playback_state();
 
-        if mask & (PC::VOLUME | PC::TIME | PC::OTHER) != 0 {
-            if mask & PC::VOLUME != 0 {
-                self.sync_vol_display(&self.vol_scale.clone(), &self.pw.vol_icon_img, &self.pw.vol_label, &self.pw.mute_btn, ps.muted);
-            }
+        if mask & (PC::TIME | PC::OTHER) != 0 {
             if mask & PC::TIME != 0 {
                 let cur_s = ps.position.as_secs();
                 let tot_s = ps.duration.as_secs();
@@ -553,7 +504,6 @@ impl DeviceWindowInner {
             }
             if mask & PC::OTHER != 0 {
                 let playing = matches!(ps.status, PlaybackStatus::Playing);
-                *self.ui_state.is_playing.borrow_mut() = playing;
                 self.pw.btn_play.set_icon_name(if playing {
                     "media-playback-pause-symbolic"
                 } else {
@@ -932,27 +882,22 @@ impl DeviceWindowInner {
 
         let ps = self.ds.playback_state();
 
-        if mask & (PC::VOLUME | PC::OTHER) != 0 {
-            if mask & PC::VOLUME != 0 {
-                self.sync_vol_display(&self.mini.vol_scale.clone(), &self.mini.vol_icon_img, &self.mini.vol_label, &self.mini.mute_btn, ps.muted);
-            }
-            if mask & PC::OTHER != 0 {
-                self.mini.btn_play.set_icon_name(if matches!(ps.status, PlaybackStatus::Playing) {
-                    "media-playback-pause-symbolic"
-                } else {
-                    "media-playback-start-symbolic"
-                });
-                let mini_is_bluetooth = ps.source_name.as_deref() == Some("Bluetooth");
-                self.mini.status_label.set_label(&if mini_is_bluetooth {
-                    format_bt_status_line(ps.bt_connected, ps.bt_device_name.as_deref(), ps.bt_pairing)
-                } else {
-                    format_status_line(&ps.status, ps.source_name.as_deref())
-                });
-                self.mini.btn_bt_pair.set_visible(mini_is_bluetooth && !ps.bt_connected && !ps.bt_pairing);
-                self.mini.btn_play.set_sensitive(ps.caps.can_playpause);
-                self.mini.btn_prev.set_sensitive(ps.caps.can_previous);
-                self.mini.btn_next.set_sensitive(ps.caps.can_next);
-            }
+        if mask & PC::OTHER != 0 {
+            self.mini.btn_play.set_icon_name(if matches!(ps.status, PlaybackStatus::Playing) {
+                "media-playback-pause-symbolic"
+            } else {
+                "media-playback-start-symbolic"
+            });
+            let mini_is_bluetooth = ps.source_name.as_deref() == Some("Bluetooth");
+            self.mini.status_label.set_label(&if mini_is_bluetooth {
+                format_bt_status_line(ps.bt_connected, ps.bt_device_name.as_deref(), ps.bt_pairing)
+            } else {
+                format_status_line(&ps.status, ps.source_name.as_deref())
+            });
+            self.mini.btn_bt_pair.set_visible(mini_is_bluetooth && !ps.bt_connected && !ps.bt_pairing);
+            self.mini.btn_play.set_sensitive(ps.caps.can_playpause);
+            self.mini.btn_prev.set_sensitive(ps.caps.can_previous);
+            self.mini.btn_next.set_sensitive(ps.caps.can_next);
         }
 
         if mask & (PC::TITLE | PC::ARTIST | PC::ALBUM) != 0 {
@@ -1248,11 +1193,11 @@ pub(super) fn handle_transport_key(
             glib::Propagation::Stop
         }
         gtk::gdk::Key::Up => {
-            i.step_volume(5);
+            i.active_volume().step(5);
             glib::Propagation::Stop
         }
         gtk::gdk::Key::Down => {
-            i.step_volume(-5);
+            i.active_volume().step(-5);
             glib::Propagation::Stop
         }
         gtk::gdk::Key::m | gtk::gdk::Key::M => {

@@ -19,3 +19,4 @@
 //!   unparents any `set_parent()`-attached popovers.
 
 pub(crate) mod common;
+pub(crate) mod volume;

@@ -21,7 +21,7 @@ use std::sync::atomic::Ordering;
 use adw::prelude::*;
 use glib::clone;
 use gtk::gio;
-use gtk::{Align, Box as GtkBox, CssProvider, Label, Orientation, Scale};
+use gtk::{Align, Box as GtkBox, CssProvider, Label, Orientation};
 
 use crate::device::api::TlsMode;
 use crate::config;
@@ -355,8 +355,6 @@ struct DeviceWindowInner {
     remote_icon:    gtk::Image,
     remote_label:   Label,
     icons:          Rc<icons::IconSet>,
-    vol_scale:      Scale,
-    ui_state:       PlaybackUiState,
     /// Shown (spinning) only while `ConnectionState::Connecting` — see
     /// `reset_device_ui()`. Overlaid on the header bar, not packed into
     /// it — see `build_header()`'s doc comment for why.
@@ -576,25 +574,6 @@ impl DeviceWindowInner {
         } else if !uuid.is_empty() {
             dbg_ui(&format!("DeviceWindow cleanup uuid={uuid} preserving window_open (last_window or quitting)"));
         }
-
-        // GtkPopover is attached to its button via set_parent() (not a
-        // normal container child) — that relationship is only cleaned up
-        // automatically as part of a *window-rooted* dispose cascade
-        // (destroying `window` recursively disposes whichever content tree,
-        // full or mini, is currently packed as its content). The *other*
-        // tree — detached, sitting only in this struct's own fields — never
-        // goes through that cascade at all, so when the last `Rc<Self>`
-        // eventually drops, its widgets are finalized by plain refcounting
-        // instead, with no chance to unparent their popover children first.
-        // Confirmed live: closing a device window while in mini mode left
-        // the (then-detached) full tree's volume popover still attached,
-        // producing "Finalizing GtkButton ... but it still has children
-        // left: GtkPopover" warnings. Unparenting both explicitly here,
-        // unconditionally, sidesteps this regardless of which tree happens
-        // to be attached at close time — a harmless no-op for whichever one
-        // is about to be disposed properly anyway via `window`'s own cascade.
-        self.pw.vol_popover.unparent();
-        self.mini.vol_popover.unparent();
     }
 }
 
@@ -682,9 +661,9 @@ impl DeviceWindow {
         let sw = build_source_widgets(&icons);
         let ow = build_output_widgets(&icons);
         let left_pane = build_left_pane(&sw, &ow, &presets_scroll);
-        let (pw, vol_scale) = build_playback_widgets();
+        let pw = build_playback_widgets(&ds);
         let right_pane = build_right_pane(&pw);
-        let (mini, _mini_root) = build_mini_window();
+        let (mini, _mini_root) = build_mini_window(&ds);
 
         // ── Paned split + sidebar logic ───────────────────────────────────────────
         let paned = gtk::Paned::new(Orientation::Horizontal);
@@ -838,12 +817,6 @@ impl DeviceWindow {
         // directly from the live config.
         update_art_background_visibility();
 
-        // ── Shared UI state ───────────────────────────────────────────────────────
-        let ui_state = PlaybackUiState {
-            is_playing:   Rc::new(RefCell::new(false)),
-            drag_timer:   Rc::new(RefCell::new(None)),
-        };
-
         let inner = Rc::new(DeviceWindowInner {
             ds: ds.clone(),
             _full_mode: full_mode,
@@ -858,8 +831,6 @@ impl DeviceWindow {
             remote_icon,
             remote_label,
             icons,
-            vol_scale,
-            ui_state,
             connecting_spinner,
             spinner_shown_at: std::cell::Cell::new(None),
             spinner_hide_timer: RefCell::new(None),
@@ -990,6 +961,15 @@ impl DeviceWindow {
 
         // Populate immediately from whatever the DeviceState already has cached.
         inner.populate_all();
+
+        // Both volume clusters stay permanently active for now — they
+        // self-subscribe to `playback-changed` (VOLUME bit), and keeping the
+        // hidden tree's one live too is cheap (an icon + a 3-char label) and
+        // means mode switches never need a volume catch-up. Once the full/
+        // mini playback views own them, activation follows the panel switch
+        // instead.
+        inner.pw.volume.set_active(true);
+        inner.mini.volume.set_active(true);
 
         // Opportunistically keeps `full_mode_size` fresh from *any* genuine
         // maximize, not just the one `enter_mini_mode()` captures on its own
@@ -1250,28 +1230,6 @@ impl DeviceWindow {
             }
         });
 
-        inner.pw.vol_btn.connect_clicked({
-            let i = Rc::downgrade(&inner);
-            move |_| {
-                let Some(i) = i.upgrade() else { return };
-                if i.pw.vol_popover.is_visible() { i.pw.vol_popover.popdown(); }
-                else { i.pw.vol_popover.popup(); }
-            }
-        });
-
-        inner.pw.mute_btn.connect_clicked({
-            let i = Rc::downgrade(&inner);
-            move |_| { if let Some(i) = i.upgrade() { i.ds.do_set_mute(!i.ds.muted()); } }
-        });
-
-        inner.vol_scale.connect_change_value({
-            let i = Rc::downgrade(&inner);
-            move |_, _, vol| {
-                if let Some(i) = i.upgrade() { i.on_vol_changed(vol); }
-                glib::Propagation::Proceed
-            }
-        });
-
         inner.pw.seek.connect_change_value({
             let i = Rc::downgrade(&inner);
             move |_, _, value| {
@@ -1387,28 +1345,6 @@ impl DeviceWindow {
         inner.mini.btn_bt_pair.connect_clicked({
             let i = Rc::downgrade(&inner);
             move |_| { if let Some(i) = i.upgrade() { i.ds.bt_enter_pairing(); } }
-        });
-
-        inner.mini.vol_btn.connect_clicked({
-            let i = Rc::downgrade(&inner);
-            move |_| {
-                let Some(i) = i.upgrade() else { return };
-                if i.mini.vol_popover.is_visible() { i.mini.vol_popover.popdown(); }
-                else { i.mini.vol_popover.popup(); }
-            }
-        });
-
-        inner.mini.mute_btn.connect_clicked({
-            let i = Rc::downgrade(&inner);
-            move |_| { if let Some(i) = i.upgrade() { i.ds.do_set_mute(!i.ds.muted()); } }
-        });
-
-        inner.mini.vol_scale.connect_change_value({
-            let i = Rc::downgrade(&inner);
-            move |_, _, vol| {
-                if let Some(i) = i.upgrade() { i.on_vol_changed(vol); }
-                glib::Propagation::Proceed
-            }
         });
 
         // ── Window actions ────────────────────────────────────────────────────────
