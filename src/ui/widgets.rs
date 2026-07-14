@@ -4,12 +4,10 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use adw::prelude::*;
-use glib::clone;
 use gtk::{Align, Box as GtkBox, Button, Label, Orientation, Scale};
 
 use super::art_background;
 use super::flip_cover::FlipCover;
-use super::icons;
 use super::scroll_fade_label::ScrollFadeLabel;
 use super::views::volume::VolumeControl;
 use crate::device::state::DeviceState;
@@ -17,35 +15,6 @@ use crate::device::state::DeviceState;
 // ── Widget bundles ────────────────────────────────────────────────────────────
 // Grouping related widgets + associated state into structs keeps signal-handler
 // signatures short and the closures easy to read.
-
-#[derive(Clone)]
-pub(crate) struct SourceWidgets {
-    pub dropdown:  gtk::DropDown,
-    pub ids:       Rc<RefCell<Vec<String>>>,
-    /// Icon lookup key per entry — usually identical to the matching `ids`
-    /// entry, except where `capabilities::icon_canon_for_input()` swaps it
-    /// (e.g. a jack-style "line-in" on some devices) — resolved once in
-    /// `populate_source()` (which has the device context this factory's
-    /// `connect_bind` closure, built at window-construction time before any
-    /// device is even connected, doesn't) rather than here.
-    pub icon_keys: Rc<RefCell<Vec<String>>>,
-    pub enabled:   Rc<RefCell<Vec<bool>>>,
-    pub updating:  Rc<RefCell<bool>>,
-}
-
-#[derive(Clone)]
-pub(crate) struct OutputWidgets {
-    pub dropdown:    gtk::DropDown,
-    pub section:     GtkBox,
-    pub modes:       Rc<RefCell<Vec<u32>>>,
-    pub canon_names: Rc<RefCell<Vec<&'static str>>>,
-    /// Icon-lookup key per entry, parallel to `canon_names` — equal to it
-    /// except where `OutputEntry.icon_canon` overrides it (see
-    /// `capabilities::icon_canon_for_output`). `canon_names` itself must
-    /// stay untouched for mode-setting/hardware-match to keep working.
-    pub icon_names:  Rc<RefCell<Vec<&'static str>>>,
-    pub updating:    Rc<RefCell<bool>>,
-}
 
 /// Two `ScrollFadeLabel`s in a `gtk::Stack`, slid between on text change
 /// instead of a hard swap. `set_text()` matches `ScrollFadeLabel`'s own
@@ -201,126 +170,10 @@ pub(super) fn build_header(
     (header, sidebar_btn, mini_btn, connecting_spinner)
 }
 
-pub(super) fn build_source_widgets(icons: &Rc<icons::IconSet>) -> SourceWidgets {
-    let icons = Rc::clone(icons);
-    let sw = SourceWidgets {
-        dropdown:  gtk::DropDown::from_strings(&["—"]),
-        ids:       Rc::new(RefCell::new(Vec::new())),
-        icon_keys: Rc::new(RefCell::new(Vec::new())),
-        enabled:   Rc::new(RefCell::new(Vec::new())),
-        updating:  Rc::new(RefCell::new(false)),
-    };
-    sw.dropdown.add_css_class("panel-dropdown");
-    sw.dropdown.set_sensitive(false);
-
-    let factory = gtk::SignalListItemFactory::new();
-    factory.connect_setup(|_, obj| {
-        let Some(item) = obj.downcast_ref::<gtk::ListItem>() else { return };
-        let hbox = GtkBox::builder()
-            .orientation(Orientation::Horizontal).spacing(6).build();
-        hbox.append(&gtk::Image::builder().pixel_size(16).build());
-        hbox.append(&Label::builder().halign(Align::Start).build());
-        item.set_child(Some(&hbox));
-    });
-    factory.connect_bind(clone!(
-        @strong sw, @strong icons
-            => move |_, obj| {
-                let Some(item) = obj.downcast_ref::<gtk::ListItem>() else { return };
-                let pos  = item.position() as usize;
-                if let Some(hbox) = item.child().and_downcast::<GtkBox>() {
-                    let enabled   = sw.enabled.borrow().get(pos).copied().unwrap_or(true);
-                    let icon_keys = sw.icon_keys.borrow();
-                    let icon_key  = icon_keys.get(pos).map(String::as_str).unwrap_or("");
-                    if let Some(img) = hbox.first_child().and_downcast::<gtk::Image>() {
-                        img.set_paintable(Some(icons.source_paintable(icon_key)));
-                    }
-                    if let Some(lbl) = hbox.last_child().and_downcast::<Label>() {
-                        if let Some(so) = item.item().and_downcast::<gtk::StringObject>() {
-                            lbl.set_label(&so.string());
-                        }
-                        lbl.set_sensitive(enabled);
-                    }
-                    item.set_activatable(enabled);
-                }
-            }
-    ));
-    factory.connect_unbind(|_, obj| {
-        let Some(item) = obj.downcast_ref::<gtk::ListItem>() else { return };
-        item.set_activatable(true);
-        if let Some(hbox) = item.child().and_downcast::<GtkBox>() {
-            if let Some(lbl) = hbox.last_child().and_downcast::<Label>() {
-                lbl.set_sensitive(true);
-            }
-        }
-    });
-    sw.dropdown.set_factory(Some(&factory));
-    sw
-}
-
-pub(super) fn build_output_widgets(icons: &Rc<icons::IconSet>) -> OutputWidgets {
-    let icons = Rc::clone(icons);
-    let ow = OutputWidgets {
-        dropdown:    gtk::DropDown::from_strings(&["—"]),
-        section:     GtkBox::builder()
-            .orientation(Orientation::Vertical).spacing(4).visible(false).build(),
-        modes:       Rc::new(RefCell::new(Vec::new())),
-        canon_names: Rc::new(RefCell::new(Vec::new())),
-        icon_names:  Rc::new(RefCell::new(Vec::new())),
-        updating:    Rc::new(RefCell::new(false)),
-    };
-    ow.dropdown.add_css_class("panel-dropdown");
-    ow.dropdown.set_sensitive(false);
-
-    let factory = gtk::SignalListItemFactory::new();
-    factory.connect_setup(|_, obj| {
-        let Some(item) = obj.downcast_ref::<gtk::ListItem>() else { return };
-        let hbox = GtkBox::builder()
-            .orientation(Orientation::Horizontal).spacing(6).build();
-        hbox.append(&gtk::Image::builder().pixel_size(16).build());
-        hbox.append(&Label::builder().halign(Align::Start).build());
-        item.set_child(Some(&hbox));
-    });
-    factory.connect_bind(clone!(@strong ow, @strong icons => move |_, obj| {
-        let Some(item) = obj.downcast_ref::<gtk::ListItem>() else { return };
-        let pos  = item.position() as usize;
-        if let Some(hbox) = item.child().and_downcast::<GtkBox>() {
-            let names = ow.icon_names.borrow();
-            let canon = names.get(pos).copied().unwrap_or("");
-            if let Some(img) = hbox.first_child().and_downcast::<gtk::Image>() {
-                img.set_paintable(Some(icons.output_paintable(canon)));
-            }
-            if let Some(lbl) = hbox.last_child().and_downcast::<Label>() {
-                if let Some(so) = item.item().and_downcast::<gtk::StringObject>() {
-                    lbl.set_label(&so.string());
-                }
-            }
-        }
-    }));
-    ow.dropdown.set_factory(Some(&factory));
-
-    ow.section.append(
-        &Label::builder()
-            .label("OUTPUT").css_classes(["section-label"]).halign(Align::Start).build(),
-    );
-    ow.section.append(&ow.dropdown);
-
-    ow
-}
-
-pub(super) fn build_left_pane(sw: &SourceWidgets, ow: &OutputWidgets, presets: &super::views::presets::PresetsView) -> gtk::Box {
-    let io_box = GtkBox::builder()
-        .orientation(Orientation::Vertical).spacing(4)
-        .margin_top(4).margin_bottom(8).margin_start(8).margin_end(8)
-        .build();
-    io_box.append(&gtk::Separator::new(Orientation::Horizontal));
-    io_box.append(
-        &Label::builder()
-            .label("INPUT").css_classes(["section-label"])
-            .halign(Align::Start).margin_top(6).build(),
-    );
-    io_box.append(&sw.dropdown);
-    io_box.append(&ow.section);
-
+pub(super) fn build_left_pane(
+    presets: &super::views::presets::PresetsView,
+    io:      &super::views::io::InputOutputView,
+) -> gtk::Box {
     // "panel-card" is only ever styled under the RustyWiiM Modern theme
     // (see modern.css) — inert everywhere else, so no theme branching here.
     let left_pane = GtkBox::builder()
@@ -328,7 +181,7 @@ pub(super) fn build_left_pane(sw: &SourceWidgets, ow: &OutputWidgets, presets: &
         .css_classes(["panel-card"])
         .build();
     left_pane.append(presets);
-    left_pane.append(&io_box);
+    left_pane.append(io);
     left_pane
 }
 

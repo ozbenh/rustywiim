@@ -345,8 +345,7 @@ struct DeviceWindowInner {
     /// this back down. See `DeviceState::acquire_full()`.
     _full_mode:       FullModeGuard,
     show_devices_fn:  Rc<dyn Fn()>,
-    sw:             SourceWidgets,
-    ow:             OutputWidgets,
+    io:             views::io::InputOutputView,
     pw:             PlaybackWidgets,
     presets:        views::presets::PresetsView,
     dev_info_label: Label,
@@ -658,9 +657,8 @@ impl DeviceWindow {
 
         let (header, sidebar_btn, mini_btn, connecting_spinner) = build_header(init_dev_cfg.panel_visible);
         let presets = views::presets::PresetsView::new(&ds, &icons);
-        let sw = build_source_widgets(&icons);
-        let ow = build_output_widgets(&icons);
-        let left_pane = build_left_pane(&sw, &ow, &presets);
+        let io = views::io::InputOutputView::new(&ds, &icons);
+        let left_pane = build_left_pane(&presets, &io);
         let pw = build_playback_widgets(&ds);
         let right_pane = build_right_pane(&pw);
         let (mini, _mini_root) = build_mini_window(&ds);
@@ -821,8 +819,7 @@ impl DeviceWindow {
             ds: ds.clone(),
             _full_mode: full_mode,
             show_devices_fn,
-            sw,
-            ow,
+            io,
             pw,
             presets,
             dev_info_label,
@@ -922,35 +919,17 @@ impl DeviceWindow {
             }
         });
 
+        // The input/output dropdowns themselves are InputOutputView's
+        // business now — this handler only covers the input switch's side
+        // effects on the *playback* display (source-icon artwork fallback;
+        // in mini mode also the status line, hence the full refresh there,
+        // same as before).
         ds.connect_input_changed({
             let i = Rc::downgrade(&inner);
             move |_| {
                 let Some(i) = i.upgrade() else { return };
                 // See the `playback-changed` handler above — same reasoning.
-                if *i.mini_mode.borrow() { i.update_mini_playback(crate::device::state::playback_changed::ALL); } else { i.update_input_display(); }
-            }
-        });
-
-        ds.connect_inputs_changed({
-            let i = Rc::downgrade(&inner);
-            move |_| {
-                let Some(i) = i.upgrade() else { return };
-                i.populate_source();
-                i.update_input_display();
-            }
-        });
-
-        ds.connect_output_changed({
-            let i = Rc::downgrade(&inner);
-            move |_| { if let Some(i) = i.upgrade() { i.update_output_display(); } }
-        });
-
-        ds.connect_outputs_changed({
-            let i = Rc::downgrade(&inner);
-            move |_| {
-                let Some(i) = i.upgrade() else { return };
-                i.populate_output();
-                i.update_output_display();
+                if *i.mini_mode.borrow() { i.update_mini_playback(crate::device::state::playback_changed::ALL); } else { i.update_artwork(); }
             }
         });
 
@@ -966,6 +945,7 @@ impl DeviceWindow {
         inner.pw.volume.set_active(true);
         inner.mini.volume.set_active(true);
         inner.presets.set_active(true);
+        inner.io.set_active(true);
 
         // Opportunistically keeps `full_mode_size` fresh from *any* genuine
         // maximize, not just the one `enter_mini_mode()` captures on its own
@@ -1235,32 +1215,6 @@ impl DeviceWindow {
                     }
                 }
                 glib::Propagation::Proceed
-            }
-        });
-
-        inner.sw.dropdown.connect_selected_notify({
-            let i = Rc::downgrade(&inner);
-            move |dd| {
-                let Some(i) = i.upgrade() else { return };
-                if *i.sw.updating.borrow() { return; }
-                let idx = dd.selected() as usize;
-                let ids = i.sw.ids.borrow();
-                if let Some(src) = ids.get(idx).cloned() {
-                    i.ds.switch_input(src);
-                }
-            }
-        });
-
-        inner.ow.dropdown.connect_selected_notify({
-            let i = Rc::downgrade(&inner);
-            move |dd| {
-                let Some(i) = i.upgrade() else { return };
-                if *i.ow.updating.borrow() { return; }
-                let idx = dd.selected() as usize;
-                let modes = i.ow.modes.borrow();
-                if let Some(&mode) = modes.get(idx) {
-                    i.ds.set_audio_output(mode);
-                }
             }
         });
 

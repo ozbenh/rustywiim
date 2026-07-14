@@ -4,7 +4,7 @@ use std::rc::Rc;
 
 use adw::prelude::*;
 
-use crate::{device::{api, capabilities}, config};
+use crate::{device::capabilities, config};
 
 use super::*;
 use super::views::common::{
@@ -149,27 +149,12 @@ impl DeviceWindowInner {
         for btn in [&self.mini.btn_play, &self.mini.btn_prev, &self.mini.btn_next] {
             btn.set_sensitive(false);
         }
-
-        *self.sw.updating.borrow_mut() = true;
-        self.sw.dropdown.set_model(Some(&gtk::StringList::new(&["—"])));
-        self.sw.dropdown.set_sensitive(false);
-        *self.sw.updating.borrow_mut() = false;
-        *self.sw.ids.borrow_mut()      = Vec::new();
-        *self.sw.enabled.borrow_mut()  = Vec::new();
-
-        *self.ow.updating.borrow_mut() = true;
-        self.ow.dropdown.set_model(Some(&gtk::StringList::new(&["—"])));
-        self.ow.dropdown.set_sensitive(false);
-        self.ow.section.set_visible(false);
-        *self.ow.modes.borrow_mut()       = Vec::new();
-        *self.ow.canon_names.borrow_mut() = Vec::new();
-        *self.ow.updating.borrow_mut()    = false;
     }
 
     /// Whether there's a live `device_info` to render playback data from.
-    /// `update_artwork()`/`update_playback_ui()`/`update_mini_playback()`/
-    /// `update_input_display()`/`update_output_display()` all guard on this
-    /// themselves (rather than relying on every caller to check first) —
+    /// `update_artwork()`/`update_playback_ui()`/`update_mini_playback()`
+    /// all guard on this themselves (rather than relying on every caller
+    /// to check first) —
     /// `playback_state()`/`output_status()` are deliberately *not* cleared
     /// on disconnect (only `device_info` is, so a later reconnect can diff
     /// against last-known values — see `ConnectionState::Failed`'s doc
@@ -221,125 +206,21 @@ impl DeviceWindowInner {
             super::dbg_ui(&format!("populate_all: no device_info, connection_state={state:?}"));
             self.reset_device_ui(state);
         }
-        // All four no-op themselves while offline (see `live()`'s doc
-        // comment) rather than needing to be called only from the branch
-        // above — that used to be exactly the bug here: they ran
-        // unconditionally regardless of branch, and `update_input_display()`
-        // ends by calling `update_artwork()`, which repainted stale cached
-        // artwork immediately after `reset_device_ui()` (in the `else`
-        // branch) had just cleared it. Centralizing the guard in each
-        // function instead of duplicating an `if device_info().is_some()`
-        // at every caller (this one, `enter_mini_mode()`/`exit_mini_mode()`,
-        // `ui/mod.rs`'s `playback-changed`/`input-changed` handlers) is what
-        // actually fixed it for all of them at once.
+        // Both no-op themselves while offline (see `live()`'s doc comment)
+        // rather than needing to be called only from the branch above —
+        // an offline run here right after `reset_device_ui()` (the `else`
+        // branch) would otherwise repaint stale cached playback state
+        // straight over what was just cleared. The input/output dropdowns
+        // need nothing here — InputOutputView subscribes to
+        // `device-changed` itself.
         if *self.mini_mode.borrow() {
             self.update_mini_playback(playback_changed::ALL);
         } else {
             self.update_playback_ui(playback_changed::ALL);
         }
-        self.update_input_display();
-        self.update_output_display();
     }
 
-    // ── Source / Output / Network ─────────────────────────────────────────────
-
-    pub(super) fn populate_source(&self) {
-        let caps = match self.ds.capabilities() { Some(c) => c, None => return };
-        let renames = self.ds.mode_renames();
-
-        // `caps.inputs` is already the one reconciled list — static
-        // plm_support-based detection, amended by a live getAudioInputEnable
-        // probe if that succeeded, further self-corrected in state.rs
-        // against the actively-in-use input. No more either/or fallback
-        // between two competing sources.
-        let ids: Vec<String> = caps.inputs.iter().map(|e| e.id.clone()).collect();
-        let enabled_flags: Vec<bool> = caps.inputs.iter().map(|e| e.enabled).collect();
-
-        if ids.is_empty() {
-            *self.sw.updating.borrow_mut() = true;
-            self.sw.dropdown.set_model(Some(&gtk::StringList::new(&["—"])));
-            self.sw.dropdown.set_sensitive(false);
-            *self.sw.updating.borrow_mut() = false;
-            *self.sw.ids.borrow_mut()      = Vec::new();
-            *self.sw.icon_keys.borrow_mut() = Vec::new();
-            *self.sw.enabled.borrow_mut()  = Vec::new();
-            return;
-        }
-
-        let labels: Vec<String> = ids.iter().zip(enabled_flags.iter()).map(|(id, _)| {
-            let std_name = capabilities::input_display_name(Some(caps.device_id), id).to_string();
-            if let Some(user) = renames.get(id.as_str()) {
-                if !user.is_empty() && user != &std_name {
-                    return format!("{} ({})", user, std_name);
-                }
-            }
-            std_name
-        }).collect();
-        let icon_keys: Vec<String> = ids.iter()
-            .map(|id| capabilities::icon_canon_for_input(id, caps.device_id).to_string())
-            .collect();
-
-        let label_refs: Vec<&str> = labels.iter().map(String::as_str).collect();
-        *self.sw.ids.borrow_mut()       = ids;
-        *self.sw.icon_keys.borrow_mut() = icon_keys;
-        *self.sw.enabled.borrow_mut()   = enabled_flags;
-        *self.sw.updating.borrow_mut() = true;
-        self.sw.dropdown.set_model(Some(&gtk::StringList::new(&label_refs)));
-        self.sw.dropdown.set_selected(0);
-        self.sw.dropdown.set_sensitive(true);
-        *self.sw.updating.borrow_mut() = false;
-    }
-
-    pub(super) fn populate_output(&self) {
-        if self.ds.capabilities().is_none() { return; }
-        let output_names = self.ds.outputs();
-        if output_names.is_empty() {
-            *self.ow.updating.borrow_mut() = true;
-            self.ow.dropdown.set_model(Some(&gtk::StringList::new(&["—"])));
-            self.ow.dropdown.set_sensitive(false);
-            self.ow.section.set_visible(false);
-            *self.ow.modes.borrow_mut()       = Vec::new();
-            *self.ow.canon_names.borrow_mut() = Vec::new();
-            *self.ow.icon_names.borrow_mut()  = Vec::new();
-            *self.ow.updating.borrow_mut()    = false;
-            return;
-        }
-
-        let out_labels: Vec<&str> = output_names.iter()
-            .map(|e: &api::OutputEntry| e.name.as_str())
-            .collect();
-        let modes: Vec<u32> = output_names.iter()
-            .map(|e| capabilities::output_canon_to_mode(e.canon).unwrap_or(0))
-            .collect();
-
-        *self.ow.modes.borrow_mut()       = modes;
-        *self.ow.canon_names.borrow_mut() = output_names.iter().map(|e| e.canon).collect();
-        *self.ow.icon_names.borrow_mut()  = output_names.iter().map(|e| e.icon_canon).collect();
-        *self.ow.updating.borrow_mut()    = true;
-        self.ow.dropdown.set_model(Some(&gtk::StringList::new(&out_labels)));
-        self.ow.section.set_visible(true);
-
-        // `output_status` is None right after connecting (state.rs no
-        // longer fetches it eagerly at connect time — see fetch_device_info)
-        // until the first slow-poll OutputStatus tick fills it in, a few
-        // seconds later. Grey the dropdown out rather than showing an
-        // unselected/first-item guess in the meantime; update_output_display()
-        // re-enables it once the real value arrives.
-        match self.ds.output_status() {
-            Some(os) => {
-                self.ow.dropdown.set_sensitive(true);
-                if let Ok(hw) = os.hardware.parse::<u32>() {
-                    let hw_canon = capabilities::canon_mode_output_name(hw);
-                    let names = self.ow.canon_names.borrow();
-                    if let Some(pos) = names.iter().position(|&n| n == hw_canon) {
-                        self.ow.dropdown.set_selected(pos as u32);
-                    }
-                }
-            }
-            None => self.ow.dropdown.set_sensitive(false),
-        }
-        *self.ow.updating.borrow_mut() = false;
-    }
+    // ── Network ───────────────────────────────────────────────────────────────
 
     pub(super) fn update_network_icon(&self) {
         match self.ds.netstat() {
@@ -444,8 +325,6 @@ impl DeviceWindowInner {
             self.ip_label.set_visible(false);
         }
 
-        self.populate_source();
-        self.populate_output();
         self.apply_device_window_state(&info.uuid);
     }
 
@@ -556,7 +435,7 @@ impl DeviceWindowInner {
     /// Both are FlipCover, which renders art and the fallback icon itself
     /// (flipping or crossfading between them as appropriate) — no separate
     /// stack/icon widget needed.
-    fn update_artwork(&self) {
+    pub(super) fn update_artwork(&self) {
         super::dbg_ui(&format!("update_artwork: live={}", self.live()));
         if !self.live() { return; }
 
@@ -595,43 +474,6 @@ impl DeviceWindowInner {
             art_bg.set_art(None, "__no_art__");
             flip.set_icon(
                 self.icons.source_paintable(icon_key), icon_size, &format!("icon:{icon_key}"));
-        }
-    }
-
-    // ── Input / Output display ────────────────────────────────────────────────
-
-    pub(super) fn update_input_display(&self) {
-        if !self.live() { return; }
-        let mode = self.ds.current_mode();
-        let source_id = capabilities::mode_to_input_source(mode);
-        let sv = self.sw.ids.borrow();
-        if let Some(idx) = sv.iter().position(|s| s == source_id) {
-            *self.sw.updating.borrow_mut() = true;
-            self.sw.dropdown.set_selected(idx as u32);
-            *self.sw.updating.borrow_mut() = false;
-        }
-        drop(sv);
-        self.update_artwork();
-    }
-
-    pub(super) fn update_output_display(&self) {
-        // `output_status()`, like `playback_state()`, is deliberately not
-        // cleared on disconnect (see `live()`'s doc comment) — without this
-        // guard a stale cached output would repaint the dropdown as if
-        // still connected.
-        if !self.live() { return; }
-        let Some(os) = self.ds.output_status() else { return };
-        // Now that we actually know the current output, the dropdown no
-        // longer needs to stay greyed out from the connect-time "unknown"
-        // state populate_output() set — see that function's comment.
-        self.ow.dropdown.set_sensitive(true);
-        let Ok(hw) = os.hardware.parse::<u32>() else { return };
-        let hw_canon = capabilities::canon_mode_output_name(hw);
-        let names = self.ow.canon_names.borrow();
-        if let Some(idx) = names.iter().position(|&n| n == hw_canon) {
-            *self.ow.updating.borrow_mut() = true;
-            self.ow.dropdown.set_selected(idx as u32);
-            *self.ow.updating.borrow_mut() = false;
         }
     }
 
@@ -1080,9 +922,11 @@ impl DeviceWindowInner {
             super::dbg_ui(&format!("exit mini mode: after set_default_size({w}, {h}) + unmaximize(): {}", self.window_geom()));
         }
         self.window.present();
-        // Both no-op themselves while offline — see `live()`'s doc comment.
+        // No-ops itself while offline — see `live()`'s doc comment. The
+        // ALL mask includes ARTWORK, so the source-icon fallback is fresh
+        // too; the input/output dropdowns stayed current the whole time
+        // (InputOutputView is mode-independent).
         self.update_playback_ui(crate::device::state::playback_changed::ALL);
-        self.update_input_display();
     }
 } // impl DeviceWindowInner
 
