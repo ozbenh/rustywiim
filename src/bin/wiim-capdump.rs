@@ -35,6 +35,7 @@
 //! response body, nothing wrapped around it.
 
 use base64::Engine;
+use rustywiim::device::tcpuart;
 use std::io::{IsTerminal, Read};
 
 /// RC4 (ARC4) key-scheduling + keystream generation — hand-rolled, no
@@ -479,6 +480,22 @@ fn status_badge(mode: OutputMode, outcome: &str, unsupported: bool) -> String {
     }
 }
 
+/// tcpuart's own outcome badge — distinct from `status_badge()` because
+/// `NoResponse` isn't a failure here (see `TcpUartOutcome`'s doc comment:
+/// plenty of commands simply go unanswered on a given device/firmware,
+/// a confirmed, expected shape), so it gets its own neutral badge rather
+/// than reading as `[FAIL: no response]`.
+fn tcpuart_status_badge(mode: OutputMode, outcome: rustywiim::capture::format::TcpUartOutcome, error: Option<&str>) -> String {
+    use rustywiim::capture::format::TcpUartOutcome;
+    match outcome {
+        TcpUartOutcome::Ok => mode.ansi("[OK]", ANSI_GREEN),
+        TcpUartOutcome::NoResponse => mode.ansi("[NO RESPONSE]", ANSI_YELLOW),
+        TcpUartOutcome::ConnectionError => {
+            mode.ansi(&format!("[FAIL: {}]", error.unwrap_or("connection error")), ANSI_RED)
+        }
+    }
+}
+
 /// Renders one `{format, body}` pair (a command's response, or a UPnP
 /// description/SOAP response) as human-readable text, appended to `out`.
 fn render_body(mode: OutputMode, format: Option<&str>, body: &serde_json::Value, out: &mut String) {
@@ -623,6 +640,134 @@ fn render_upnp_action(mode: OutputMode, action: &serde_json::Value) -> String {
     out
 }
 
+/// True if every byte looks like printable ASCII (or common whitespace) —
+/// tcpuart payloads are always ASCII commands/replies like `MCU+VOL+GET`, so
+/// this is enough to decide whether showing them as text alongside the
+/// hexdump is worthwhile.
+fn is_probably_ascii_text(bytes: &[u8]) -> bool {
+    !bytes.is_empty() && bytes.iter().all(|&b| (0x20..=0x7e).contains(&b) || matches!(b, b'\r' | b'\n' | b'\t'))
+}
+
+/// If `s` contains a `{...}` span that parses as JSON, split it into the
+/// text before it, the parsed value, and the text after it — tcpuart
+/// payloads carrying JSON always wrap it in a short tag prefix and an
+/// optional trailing terminator (e.g. `AXX+INF+INF{ "uuid": ... }&`), the
+/// payload is never JSON on its own the way an HTTP command body is.
+fn extract_embedded_json(s: &str) -> Option<(&str, serde_json::Value, &str)> {
+    let start = s.find('{')?;
+    let end = s.rfind('}')?;
+    if end < start {
+        return None;
+    }
+    let value: serde_json::Value = serde_json::from_str(&s[start..=end]).ok()?;
+    Some((&s[..start], value, &s[end + 1..]))
+}
+
+/// Classic `xxd`/`hexdump -C`-style hexdump: 16 bytes per row, hex offset on
+/// the left, hex byte pairs in the middle (with a mid-row gap after the 8th
+/// byte), ASCII sidebar on the right (non-printable bytes as `.`).
+fn hexdump(bytes: &[u8]) -> String {
+    let mut out = String::new();
+    for (row, chunk) in bytes.chunks(16).enumerate() {
+        out.push_str(&format!("{:08x}  ", row * 16));
+        for i in 0..16 {
+            match chunk.get(i) {
+                Some(b) => out.push_str(&format!("{b:02x} ")),
+                None => out.push_str("   "),
+            }
+            if i == 7 {
+                out.push(' ');
+            }
+        }
+        out.push_str(" |");
+        for &b in chunk {
+            out.push(if (0x20..=0x7e).contains(&b) { b as char } else { '.' });
+        }
+        out.push('|');
+        out.push('\n');
+    }
+    out.trim_end().to_string()
+}
+
+/// Renders one tcpuart command's response: parses it with
+/// `device::tcpuart::parse_packet()` for a header summary (declared vs.
+/// computed checksum — a genuinely useful validation aid, not decoration,
+/// since it's how a mismatched/corrupted capture would actually surface)
+/// when it parses, an ASCII rendering of the payload when it looks
+/// printable, and always a raw hexdump of the whole decoded response — a
+/// short/unparseable buffer still gets shown this way rather than
+/// silently dropped.
+fn render_tcpuart_response(mode: OutputMode, raw: &[u8], out: &mut String) {
+    if let Some(parsed) = tcpuart::parse_packet(raw) {
+        let checksum_ok = parsed.declared_checksum == parsed.computed_checksum;
+        out.push_str(&format!(
+            "header_ok: {}  \u{b7}  declared_length: {}  \u{b7}  declared_checksum: 0x{:x}  \u{b7}  computed_checksum: 0x{:x}  \u{b7}  {}\n",
+            parsed.header_ok,
+            parsed.declared_length,
+            parsed.declared_checksum,
+            parsed.computed_checksum,
+            if checksum_ok {
+                mode.ansi("checksum OK", ANSI_GREEN)
+            } else {
+                mode.ansi("checksum MISMATCH", ANSI_RED)
+            },
+        ));
+        if is_probably_ascii_text(parsed.payload) {
+            let text = String::from_utf8_lossy(parsed.payload);
+            match extract_embedded_json(text.as_ref()) {
+                Some((prefix, value, suffix)) => {
+                    out.push_str(&format!("payload: {prefix}"));
+                    let mut pretty = String::new();
+                    write_json_colored(&value, mode, 0, &mut pretty);
+                    out.push_str(&mode.code_block("json", &pretty));
+                    out.push_str(suffix);
+                    out.push('\n');
+                }
+                None => out.push_str(&format!("payload: {text}\n")),
+            }
+        }
+    } else {
+        out.push_str(&mode.dim("(too short to parse as a full tcpuart packet header)\n"));
+    }
+    out.push_str(&mode.code_block("text", &hexdump(raw)));
+    out.push('\n');
+}
+
+/// Renders the `tcpuart` section (see `device::tcpuart`) — a complete
+/// no-op (returns an empty string) when there's nothing to show,
+/// so a capture file without it (the vast majority, since it's opt-in via
+/// `wiim-capture --tcpuart`) prints no section header at all.
+fn render_tcpuart(mode: OutputMode, uart: &rustywiim::capture::format::TcpUartCapture) -> String {
+    let mut out = String::new();
+    out.push_str(&mode.rule());
+    out.push('\n');
+    out.push_str(&mode.heading(2, "tcpuart"));
+    out.push('\n');
+
+    if let Some(err) = &uart.connect_error {
+        out.push_str(&format!("tcpuart: connection failed: {err}\n"));
+        return out;
+    }
+
+    for cmd in &uart.commands {
+        out.push_str(&mode.rule());
+        out.push('\n');
+        out.push_str(&mode.heading(3, &cmd.command));
+        out.push(' ');
+        out.push_str(&tcpuart_status_badge(mode, cmd.outcome, cmd.error.as_deref()));
+        out.push('\n');
+
+        if let Some(encoded) = &cmd.response_base64 {
+            if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(encoded.as_bytes()) {
+                out.push('\n');
+                render_tcpuart_response(mode, &bytes, &mut out);
+            }
+        }
+        out.push('\n');
+    }
+    out
+}
+
 /// Renders the whole capture file: a metadata header, the skip lists (if
 /// non-empty), one block per `commands` entry, then a UPnP section (metadata
 /// + description + one block per action) if present.
@@ -753,6 +898,16 @@ fn render_capture(mode: OutputMode, value: &serde_json::Value) -> String {
                 out.push_str(&render_upnp_action(mode, action));
                 out.push('\n');
             }
+        }
+    }
+
+    // Unlike the sections above (which stay schema-agnostic, reading fields
+    // straight off the generic `serde_json::Value`), `tcpuart` is small and
+    // fully typed already, so it's deserialized into its real struct rather
+    // than re-parsed field-by-field here.
+    if let Some(tcpuart_value) = value.get("tcpuart") {
+        if let Ok(uart) = serde_json::from_value::<rustywiim::capture::format::TcpUartCapture>(tcpuart_value.clone()) {
+            out.push_str(&render_tcpuart(mode, &uart));
         }
     }
 

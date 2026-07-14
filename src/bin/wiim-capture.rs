@@ -30,11 +30,14 @@
 use base64::Engine;
 use rustywiim::capture::commands::{self, ExpandedCommand};
 use rustywiim::capture::format::{
-    Blob, CaptureFile, CommandCapture, Method, Outcome, ResponseFormat, UpnpActionCapture, UpnpCapture,
+    Blob, CaptureFile, CommandCapture, Method, Outcome, ResponseFormat, TcpUartCapture, TcpUartCommandCapture,
+    TcpUartOutcome, UpnpActionCapture, UpnpCapture,
 };
 use rustywiim::device::api::{build_reqwest_client, DeviceInfo, TlsMode};
 use rustywiim::device::capabilities::DeviceCapabilities;
+use rustywiim::device::tcpuart;
 use std::time::Duration;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 const MAX_RETRIES: u32 = 3;
 const INTER_COMMAND_DELAY: Duration = Duration::from_millis(100);
@@ -1448,6 +1451,100 @@ async fn capture_upnp(ip: &str) -> UpnpCapture {
     upnp
 }
 
+// ── tcpuart capture ──────────────────────────────────────────────────────────
+
+/// Connect timeout for the tcpuart probe itself — separate from the read
+/// timeouts below, since plenty of devices simply won't have this port open
+/// at all and that shouldn't hang the whole capture run.
+const TCPUART_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
+/// How long to wait for the *first* byte of a reply before concluding the
+/// device didn't answer this particular command at all — a real, expected
+/// outcome for several commands (e.g. Arylic-specific passthrough probes
+/// against non-Arylic hardware), not a failure.
+const TCPUART_FIRST_BYTE_TIMEOUT: Duration = Duration::from_millis(1500);
+/// Once any data has arrived, how long to wait for more before deciding the
+/// device is done sending — short, since a reply is normally one packet.
+const TCPUART_QUIET_GAP_TIMEOUT: Duration = Duration::from_millis(400);
+/// Arylic's own doc recommends at least 200ms between commands on this
+/// protocol; used with a little headroom.
+const TCPUART_INTER_COMMAND_DELAY: Duration = Duration::from_millis(250);
+
+/// Reads from `stream` using a "read until quiet" pattern: wait up to
+/// `TCPUART_FIRST_BYTE_TIMEOUT` for the first byte (a full timeout with
+/// nothing read at all is reported as `Ok(Vec::new())`, an expected outcome,
+/// not an error), then keep reading with a `TCPUART_QUIET_GAP_TIMEOUT`
+/// quiet-gap timeout between chunks, stopping as soon as that gap elapses or
+/// the peer closes the connection. Returns `Err` only for a real socket
+/// error partway through, not for a plain timeout.
+async fn read_until_quiet(stream: &mut tokio::net::TcpStream) -> std::io::Result<Vec<u8>> {
+    let mut buf = Vec::new();
+    let mut chunk = [0u8; 4096];
+
+    match tokio::time::timeout(TCPUART_FIRST_BYTE_TIMEOUT, stream.read(&mut chunk)).await {
+        Ok(Ok(0)) => return Ok(buf), // peer closed before sending anything
+        Ok(Ok(n)) => buf.extend_from_slice(&chunk[..n]),
+        Ok(Err(e)) => return Err(e),
+        Err(_) => return Ok(buf), // no first byte within the window — NoResponse
+    }
+
+    loop {
+        match tokio::time::timeout(TCPUART_QUIET_GAP_TIMEOUT, stream.read(&mut chunk)).await {
+            Ok(Ok(0)) => break, // peer closed
+            Ok(Ok(n)) => buf.extend_from_slice(&chunk[..n]),
+            Ok(Err(e)) => return Err(e),
+            Err(_) => break, // quiet gap elapsed, treat as end of this reply
+        }
+    }
+    Ok(buf)
+}
+
+/// Best-effort tcpuart probe: connects once, then sends every command in
+/// `tcpuart::GET_COMMANDS` in turn, recording whatever comes back (or
+/// doesn't — `NoResponse` is a real, expected outcome for several commands,
+/// not a failure). Never sends anything but the curated GET-only list — see
+/// that constant's own doc comment for why there's no destructive-flag gate
+/// here at all. A connect failure (many devices simply don't expose this
+/// port) is recorded as `connect_error` and the whole probe is skipped, not
+/// treated as fatal to the rest of the capture.
+async fn capture_tcpuart(ip: &str) -> TcpUartCapture {
+    let addr = format!("{ip}:{}", tcpuart::TCPUART_PORT);
+    let mut stream = match tokio::time::timeout(TCPUART_CONNECT_TIMEOUT, tokio::net::TcpStream::connect(&addr)).await {
+        Ok(Ok(s)) => s,
+        Ok(Err(e)) => return TcpUartCapture { connect_error: Some(e.to_string()), commands: Vec::new() },
+        Err(_) => return TcpUartCapture { connect_error: Some("connect timed out".to_string()), commands: Vec::new() },
+    };
+
+    let mut commands = Vec::new();
+    for &cmd in tcpuart::GET_COMMANDS {
+        eprintln!("[wiim-capture] tcpuart: {cmd}");
+        let packet = tcpuart::build_packet(cmd);
+        if let Err(e) = stream.write_all(&packet).await {
+            commands.push(TcpUartCommandCapture {
+                command: cmd.to_string(),
+                outcome: TcpUartOutcome::ConnectionError,
+                error: Some(e.to_string()),
+                response_base64: None,
+            });
+            break; // connection's dead, no point trying further commands on it
+        }
+
+        let (outcome, error, response_base64) = match read_until_quiet(&mut stream).await {
+            Ok(bytes) if bytes.is_empty() => (TcpUartOutcome::NoResponse, None, None),
+            Ok(bytes) => (TcpUartOutcome::Ok, None, Some(base64::engine::general_purpose::STANDARD.encode(&bytes))),
+            Err(e) => (TcpUartOutcome::ConnectionError, Some(e.to_string()), None),
+        };
+        let is_connection_error = outcome == TcpUartOutcome::ConnectionError;
+        commands.push(TcpUartCommandCapture { command: cmd.to_string(), outcome, error, response_base64 });
+        if is_connection_error {
+            break;
+        }
+
+        tokio::time::sleep(TCPUART_INTER_COMMAND_DELAY).await;
+    }
+
+    TcpUartCapture { connect_error: None, commands }
+}
+
 // ── Output ───────────────────────────────────────────────────────────────────
 
 fn sanitize_filename_component(s: &str) -> String {
@@ -1589,10 +1686,19 @@ struct Args {
     /// `--one <command>` — see the module doc comment. `None` for the
     /// normal full-capture flow.
     one: Option<String>,
+    /// `--tcpuart` — skip the normal HTTP/UPnP capture entirely and only
+    /// probe the raw TCP UART pass-through protocol (port 8899, see
+    /// `device::tcpuart`) with its curated GET-only command list. A
+    /// *quick-iteration* mode, not an additive one: the normal (no-flag)
+    /// capture flow always attempts tcpuart too (see `main()`) — this
+    /// flag is for when only the tcpuart side is wanted, without waiting
+    /// through the full HTTP scheme/port probe and UPnP discovery first.
+    tcpuart: bool,
 }
 
 fn usage() -> ! {
     eprintln!("usage: wiim-capture [--destructive] <ip>");
+    eprintln!("       wiim-capture --tcpuart <ip>");
     eprintln!("       wiim-capture --one <command> <ip>");
     eprintln!("       wiim-capture --one upnp:<Action> <ip>");
     eprintln!("       wiim-capture --one upnp:<Service>:<Action> <ip>");
@@ -1605,6 +1711,9 @@ fn usage() -> ! {
     eprintln!("           <Service>  AVTransport or RenderingControl");
     eprintln!("           <file>     reprocesses an already-written capture file in place");
     eprintln!("                      with the current anonymization logic — no device contacted");
+    eprintln!("       --tcpuart alone skips the HTTP/UPnP capture entirely and only probes the");
+    eprintln!("       raw TCP UART pass-through protocol (port 8899) — for quick iteration.");
+    eprintln!("       A normal (no-flag) run always attempts tcpuart too, alongside HTTP/UPnP.");
     std::process::exit(2);
 }
 
@@ -1632,10 +1741,12 @@ fn parse_args() -> Args {
     let mut ip = None;
     let mut destructive = false;
     let mut one = None;
+    let mut tcpuart = false;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--destructive" => destructive = true,
+            "--tcpuart" => tcpuart = true,
             "--one" => {
                 let Some(cmd) = args.next() else {
                     eprintln!("wiim-capture: --one requires a command argument");
@@ -1652,7 +1763,7 @@ fn parse_args() -> Args {
         }
     }
     let Some(ip) = ip else { usage() };
-    Args { ip, destructive, one }
+    Args { ip, destructive, one, tcpuart }
 }
 
 // ── Main ─────────────────────────────────────────────────────────────────────
@@ -1675,6 +1786,34 @@ async fn main() {
     let args = parse_args();
     let ip = args.ip;
     let one = args.one.as_deref().map(parse_one_target);
+
+    // `--tcpuart` alone is a quick-iteration mode: skip HTTP scheme/port
+    // detection and UPnP discovery entirely (tcpuart doesn't depend on
+    // either) and only probe the tcpuart transport, still writing a
+    // normal (mostly-empty) capture file so `wiim-capdump` renders it
+    // the same way as the tcpuart section of a full capture.
+    if args.tcpuart {
+        eprintln!("[wiim-capture] tcpuart-only: {ip}");
+        let tcpuart = capture_tcpuart(&ip).await;
+        let capture = CaptureFile {
+            captured_at: chrono::Utc::now().to_rfc3339(),
+            gave_up: false,
+            model: "unknown".to_string(),
+            model_source: None,
+            firmware: None,
+            hardware: None,
+            project: None,
+            tls_scheme: None,
+            tls_port: None,
+            commands: Vec::new(),
+            skipped_unsafe: Vec::new(),
+            skipped_not_destructive: Vec::new(),
+            upnp: None,
+            tcpuart: Some(tcpuart),
+        };
+        write_output(&capture);
+        return;
+    }
 
     // UPnP one-shot doesn't touch httpapi.asp at all (SSDP + description.xml
     // discovery instead), so it's handled before — not after —
@@ -1725,6 +1864,11 @@ async fn main() {
 
     let Some(winner) = winner else {
         eprintln!("[wiim-capture] gave up: neither getStatusEx nor getStatus responded on any probed port");
+        // HTTP detection failing entirely doesn't mean tcpuart won't
+        // answer — it's an independent transport — so still worth a try
+        // rather than automatically recording `tcpuart: None`.
+        eprintln!("[wiim-capture] capturing tcpuart (raw TCP pass-through protocol, port {})", tcpuart::TCPUART_PORT);
+        let tcpuart = capture_tcpuart(&ip).await;
         let capture = CaptureFile {
             captured_at,
             gave_up: true,
@@ -1739,6 +1883,7 @@ async fn main() {
             skipped_unsafe: Vec::new(),
             skipped_not_destructive: Vec::new(),
             upnp: None,
+            tcpuart: Some(tcpuart),
         };
         write_output(&capture);
         return;
@@ -1787,6 +1932,12 @@ async fn main() {
     eprintln!("[wiim-capture] capturing UPnP (SSDP + description.xml + basic SOAP actions)");
     let upnp = capture_upnp(&ip).await;
 
+    // Always attempted, not gated behind a flag — `--tcpuart` on its own
+    // means "tcpuart *only*" (see the early-return branch above), not
+    // "additionally capture tcpuart"; a normal run already always tries.
+    eprintln!("[wiim-capture] capturing tcpuart (raw TCP pass-through protocol, port {})", tcpuart::TCPUART_PORT);
+    let tcpuart = Some(capture_tcpuart(&ip).await);
+
     let capture = CaptureFile {
         captured_at,
         gave_up: false,
@@ -1801,6 +1952,7 @@ async fn main() {
         skipped_unsafe,
         skipped_not_destructive,
         upnp: Some(upnp),
+        tcpuart,
     };
     write_output(&capture);
 }

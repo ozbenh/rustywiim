@@ -201,6 +201,46 @@ pub struct UpnpCapture {
     pub actions: Vec<UpnpActionCapture>,
 }
 
+/// Outcome of one tcpuart command send/receive attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TcpUartOutcome {
+    Ok,
+    NoResponse,
+    ConnectionError,
+}
+
+/// One GET-only command sent over the raw TCP UART pass-through protocol
+/// (port 8899, see `device::tcpuart`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TcpUartCommandCapture {
+    /// The ASCII payload sent, e.g. "MCU+VOL+GET" (not the wrapped packet).
+    pub command: String,
+    pub outcome: TcpUartOutcome,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// Raw bytes received in the read window after sending this command,
+    /// base64-encoded, exactly as received off the socket — the *whole*
+    /// packet (header included), not just the decoded payload, so
+    /// wiim-capdump can hexdump/validate the framing itself. May be
+    /// absent (outcome NoResponse), and may contain more than one packet
+    /// if an unsolicited push arrived alongside the reply, or a partial
+    /// packet if the read window elapsed mid-message — no framing is
+    /// assumed or stripped here, this is exactly what came off the wire.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_base64: Option<String>,
+}
+
+/// Raw TCP UART pass-through capture (port 8899) — see `device::tcpuart`.
+/// Read-only (GET-only commands) by construction.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TcpUartCapture {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connect_error: Option<String>,
+    #[serde(default)]
+    pub commands: Vec<TcpUartCommandCapture>,
+}
+
 /// Top-level capture file written by `wiim-capture`.
 ///
 /// Deliberately has no `target_ip` field — the real IP is scrubbed from
@@ -243,4 +283,6 @@ pub struct CaptureFile {
     pub skipped_not_destructive: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub upnp: Option<UpnpCapture>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tcpuart: Option<TcpUartCapture>,
 }
