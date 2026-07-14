@@ -20,6 +20,7 @@
 
 pub(crate) mod common;
 pub(crate) mod io;
+pub(crate) mod playback_full;
 pub(crate) mod playback_mini;
 pub(crate) mod presets;
 pub(crate) mod volume;

@@ -4,13 +4,10 @@ use std::rc::Rc;
 
 use adw::prelude::*;
 
-use crate::{device::capabilities, config};
+use crate::config;
 
 use super::*;
-use super::views::common::{
-    apply_repeat_ui, apply_shuffle_ui, flash_button, format_bt_status_line,
-    format_quality_line, format_status_line, is_unknown,
-};
+use super::views::common::flash_button;
 
 // ── impl DeviceWindowInner ────────────────────────────────────────────────────
 
@@ -69,30 +66,19 @@ impl DeviceWindowInner {
 
     // ── Reset ─────────────────────────────────────────────────────────────────
 
-    /// Shows the "no live `device_info`" state in the full-panel widgets
-    /// and disables their playback controls. (The mini display renders its
-    /// own offline state — `MiniPlaybackView::render_offline()` — on its
-    /// own `device-changed` subscription or on activation, whichever comes
-    /// first.) **Must not be followed by `update_playback_ui()` in the
-    /// same refresh** (`populate_all()` only calls it in its *other*
-    /// branch, when there's a live `device_info`) — it renders straight
-    /// from `playback_state()`, which this does *not* clear (see
-    /// `ConnectionState::Failed`'s doc comment: only `device_info` is
-    /// cleared on disconnect, so a later reconnect can diff against
-    /// still-relevant last-known playback fields) — calling it here
-    /// would immediately clobber this text and re-enable controls from
-    /// that stale-but-not-cleared state.
+    /// Shows the "no live `device_info`" state in the window chrome:
+    /// title (cached-name fallback), connecting spinner, and bottom-bar
+    /// labels. The playback panels render their own offline state
+    /// (`render_offline()` in each playback view, keyed off
+    /// `connection_state()` the same way) on their own `device-changed`
+    /// subscriptions or on activation, whichever comes first.
     ///
-    /// Only `Failed`/`Disconnected` get big text ("Disconnected") — that's
-    /// a real, potentially long-lived steady state worth reading.
-    /// `Connecting` is normally brief (a few hundred ms on a real LAN) and
-    /// showing text for something that fast just reads as an unreadable
-    /// flash/glitch — instead, the corner spinner
-    /// (`build_header()`/`connecting_spinner`) is shown+spinning, and the
-    /// title area stays blank. `apply_device_info()` is the other place
-    /// that needs to hide the spinner again — it's the code path taken on
-    /// the opposite transition (`Connecting` → `Connected`), which never
-    /// runs through here.
+    /// `Connecting` shows the corner spinner rather than any text — it's
+    /// normally brief (a few hundred ms on a real LAN), and text that
+    /// fast just reads as an unreadable flash/glitch. `apply_device_info()`
+    /// is the other place that needs to hide the spinner again — it's the
+    /// code path taken on the opposite transition (`Connecting` →
+    /// `Connected`), which never runs through here.
     pub(super) fn reset_device_ui(self: &Rc<Self>, state: ConnectionState) {
         // Fall back to the cached name (see `cached_name`'s doc comment)
         // rather than the bare generic title, while there's no live
@@ -111,88 +97,31 @@ impl DeviceWindowInner {
         } else {
             self.hide_connecting_spinner();
         }
-        let title = if matches!(state, ConnectionState::Failed | ConnectionState::Disconnected) {
-            "Disconnected"
-        } else {
-            ""
-        };
 
-        super::dbg_ui(&format!("reset_device_ui: state={state:?} clearing pw artwork"));
-        self.pw.title.set_text(title);
-        self.pw.artist.set_text("");
-        self.pw.album.set_text("");
-        self.pw.status.set_label("");
-        self.pw.quality.set_label("");
-        self.pw.artwork.clear();
-        self.art_bg.clear();
+        super::dbg_ui(&format!("reset_device_ui: state={state:?}"));
         self.dev_info_label.set_label("");
         self.ip_label.set_visible(false);
-        self.pw.btn_bt_pair.set_visible(false);
-        for btn in [
-            &self.pw.btn_play, &self.pw.btn_prev, &self.pw.btn_next,
-            &self.pw.shuffle, &self.pw.repeat,
-        ] {
-            btn.set_sensitive(false);
-        }
-        self.pw.seek.set_sensitive(false);
-        self.pw.seek.set_value(0.0);
-        self.pw.pos.set_visible(false);
-        self.pw.dur.set_visible(false);
-        // Volume/mute deliberately not disabled: not tied to playable
-        // content/connection state (VolumeControl keeps the same policy).
     }
 
-    /// Whether there's a live `device_info` to render playback data from.
-    /// `update_artwork()`/`update_playback_ui()` both guard on this
-    /// themselves (rather than relying on every caller to check first) —
-    /// `playback_state()`/`output_status()` are deliberately *not* cleared
-    /// on disconnect (only `device_info` is, so a later reconnect can diff
-    /// against last-known values — see `ConnectionState::Failed`'s doc
-    /// comment), so any of these functions running while offline would
-    /// repaint stale data straight over whatever `reset_device_ui()` just
-    /// cleared. Confirmed live via `--debug=ui`: this bit three separate
-    /// callers before all being centralized here — the poll/signal path
-    /// (`ui/mod.rs`'s `playback-changed`/`input-changed` handlers), the old
-    /// unconditional tail of `populate_all()`, and `enter_mini_mode()`/
-    /// `exit_mini_mode()`.
-    fn live(&self) -> bool {
-        self.ds.device_info().is_some()
-    }
-
-    /// Populate the window-driven UI (the full playback panel + window
-    /// chrome) from whatever the DeviceState currently has cached. Called
-    /// on initial window creation and on every `device-changed` signal.
-    /// Safe to call redundantly — all underlying setters are idempotent.
-    /// The mini display, input/output dropdowns, presets, and volume
-    /// clusters need nothing here — each view subscribes to
-    /// `device-changed` itself.
+    /// Populate the window-level UI (title, chrome, bottom bar) from
+    /// whatever the DeviceState currently has cached. Called on initial
+    /// window creation and on every `device-changed` signal. Safe to call
+    /// redundantly — all underlying setters are idempotent. The playback
+    /// displays, input/output dropdowns, presets, and volume clusters
+    /// need nothing here — each view subscribes to `device-changed`
+    /// itself.
     pub(super) fn populate_all(self: &Rc<Self>) {
-        use crate::device::state::playback_changed;
         self.update_network_icon();
         self.update_remote_display();
         if self.ds.device_info().is_some() {
             self.apply_device_info();
         } else {
-            // `Failed`/`Disconnected` show "Disconnected" text — a real,
-            // potentially long-lived steady state (`set_device(...,
-            // connect_now: false)` means a window can sit genuinely
-            // `Disconnected` for a good while, never having attempted a
-            // connect at all, because devlist already believed the device
-            // offline). `Connecting` shows the corner spinner instead — see
-            // `reset_device_ui()`'s doc comment for why.
+            // A window can sit genuinely `Disconnected` for a good while
+            // (`set_device(..., connect_now: false)` means devlist already
+            // believed the device offline and no connect was attempted).
             let state = self.ds.connection_state();
             super::dbg_ui(&format!("populate_all: no device_info, connection_state={state:?}"));
             self.reset_device_ui(state);
-        }
-        // No-ops itself while offline (see `live()`'s doc comment) rather
-        // than needing to be called only from the branch above — an
-        // offline run here right after `reset_device_ui()` (the `else`
-        // branch) would otherwise repaint stale cached playback state
-        // straight over what was just cleared. Skipped while the mini
-        // panel is showing — the full panel catches up via
-        // `exit_mini_mode()`'s own refresh when it next becomes visible.
-        if !*self.mini_mode.borrow() {
-            self.update_playback_ui(playback_changed::ALL);
         }
     }
 
@@ -316,145 +245,7 @@ impl DeviceWindowInner {
     /// Returns a clone (a GObject refcount bump) since the mini one lives
     /// inside `MiniPlaybackView` rather than as a field here.
     pub(super) fn active_volume(&self) -> super::views::volume::VolumeControl {
-        if *self.mini_mode.borrow() { self.mini.view.volume() } else { self.pw.volume.clone() }
-    }
-
-    // ── Playback ──────────────────────────────────────────────────────────────
-
-    pub(super) fn update_playback_ui(&self, mask: u32) {
-        use crate::device::state::playback_changed as PC;
-        use crate::device::playback::PlaybackStatus;
-
-        super::dbg_ui(&format!("update_playback_ui: mask={mask:#x} live={}", self.live()));
-        if !self.live() { return; }
-
-        let ps = self.ds.playback_state();
-
-        if mask & (PC::TIME | PC::OTHER) != 0 {
-            if mask & PC::TIME != 0 {
-                let cur_s = ps.position.as_secs();
-                let tot_s = ps.duration.as_secs();
-                if tot_s > 0 {
-                    self.pw.seek.set_range(0.0, tot_s as f64);
-                }
-                // Keep the fill empty while seeking isn't possible, rather
-                // than showing a real (but non-interactive/misleading)
-                // position — the position ticking away on a source with no
-                // real seek concept (radio, a physical input) reads as
-                // "there's a track here to scrub through," which isn't true.
-                self.pw.seek.set_value(if ps.caps.can_seek { cur_s as f64 } else { 0.0 });
-                self.pw.pos.set_label(&format!("{}:{:02}", cur_s / 60, cur_s % 60));
-                self.pw.dur.set_label(&format!("{}:{:02}", tot_s / 60, tot_s % 60));
-                // Duration is meaningless when unknown (0), regardless of
-                // whether seeking itself is possible — hide it rather than
-                // show a "0:00" that looks like a real (if zero-length) total.
-                self.pw.dur.set_visible(tot_s > 0);
-                // Position stays visible whenever it's actually nonzero
-                // (still useful to know "how far in" even on a source with
-                // no seek concept, e.g. a live stream) — only hidden when
-                // seek is unavailable *and* there's nothing to show anyway.
-                self.pw.pos.set_visible(ps.caps.can_seek || cur_s > 0);
-            }
-            if mask & PC::OTHER != 0 {
-                let playing = matches!(ps.status, PlaybackStatus::Playing);
-                self.pw.btn_play.set_icon_name(if playing {
-                    "media-playback-pause-symbolic"
-                } else {
-                    "media-playback-start-symbolic"
-                });
-                let is_bluetooth = ps.source_name.as_deref() == Some("Bluetooth");
-                self.pw.status.set_label(&if is_bluetooth {
-                    format_bt_status_line(ps.bt_connected, ps.bt_device_name.as_deref(), ps.bt_pairing)
-                } else {
-                    format_status_line(&ps.status, ps.source_name.as_deref())
-                });
-                // Hidden while already pairing (nothing to "restart") as
-                // well as while connected.
-                self.pw.btn_bt_pair.set_visible(is_bluetooth && !ps.bt_connected && !ps.bt_pairing);
-                apply_shuffle_ui(&self.pw.shuffle, ps.shuffle);
-                apply_repeat_ui(&self.pw.repeat, ps.repeat);
-                self.pw.btn_play.set_sensitive(ps.caps.can_playpause);
-                self.pw.btn_prev.set_sensitive(ps.caps.can_previous);
-                self.pw.btn_next.set_sensitive(ps.caps.can_next);
-                self.pw.shuffle.set_sensitive(ps.caps.can_shuffle);
-                self.pw.repeat.set_sensitive(ps.caps.can_repeat);
-                self.pw.seek.set_sensitive(ps.caps.can_seek);
-                if !ps.caps.can_seek {
-                    self.pw.seek.set_value(0.0);
-                }
-                self.pw.dur.set_visible(ps.duration.as_secs() > 0);
-                self.pw.pos.set_visible(ps.caps.can_seek || ps.position.as_secs() > 0);
-            }
-        }
-
-        if mask & (PC::TITLE | PC::ARTIST | PC::ALBUM | PC::OTHER) != 0 {
-            if mask & PC::TITLE != 0 {
-                self.pw.title.set_text(if is_unknown(&ps.title) { "" } else { &ps.title });
-            }
-            if mask & PC::ARTIST != 0 {
-                self.pw.artist.set_text(if is_unknown(&ps.artist) { "" } else { &ps.artist });
-            }
-            if mask & PC::ALBUM != 0 {
-                self.pw.album.set_text(if is_unknown(&ps.album) { "" } else { &ps.album });
-            }
-            if mask & PC::OTHER != 0 {
-                // Never hidden — see the comment on PlaybackWidgets::quality's
-                // construction. An empty label keeps the same reserved height.
-                let q = ps.quality.map(|q| format_quality_line(&q, ps.codec_label.as_deref())).unwrap_or_default();
-                self.pw.quality.set_label(&q);
-            }
-        }
-
-        if mask & PC::ARTWORK != 0 {
-            self.update_artwork();
-        }
-    }
-
-    // ── Artwork ───────────────────────────────────────────────────────────────
-
-    /// Decode and display artwork on the full panel, or fall back to the
-    /// source icon. (The mini display's FlipCover is
-    /// `MiniPlaybackView::update_artwork()`'s.) FlipCover renders art and
-    /// the fallback icon itself (flipping or crossfading between them as
-    /// appropriate) — no separate stack/icon widget needed.
-    pub(super) fn update_artwork(&self) {
-        super::dbg_ui(&format!("update_artwork: live={}", self.live()));
-        if !self.live() { return; }
-
-        let flip = &self.pw.artwork;
-        // Fed unconditionally regardless of whether Modern is actually
-        // active — cheap (a texture clone + queue_draw(), the latter a
-        // no-op while invisible), and keeps it in sync so switching the
-        // setting on shows current art immediately instead of waiting for
-        // the next poll.
-        let art_bg = &self.art_bg;
-
-        let ps = self.ds.playback_state();
-        let tex = ps.artwork.as_ref().and_then(|bytes| {
-            let gbytes = glib::Bytes::from(bytes.as_ref());
-            gtk::gdk::Texture::from_bytes(&gbytes).ok()
-        });
-
-        super::dbg_ui(&format!("update_artwork: has_tex={}", tex.is_some()));
-
-        if let Some(tex) = &tex {
-            let art_key = ps.art_url.as_deref().unwrap_or("");
-            art_bg.set_art(Some(tex), art_key);
-            flip.set_art(Some(tex), art_key);
-        } else {
-            let mode = self.ds.current_mode();
-            let source_id = capabilities::mode_to_input_source(mode);
-            let icon_key = match self.ds.capabilities() {
-                Some(caps) => capabilities::icon_canon_for_input(source_id, caps.device_id),
-                None       => source_id,
-            };
-            // Fixed key (not per-source) so switching between different
-            // no-art sources doesn't re-trigger the background fade for a
-            // gradient that looks the same either way.
-            art_bg.set_art(None, "__no_art__");
-            flip.set_icon(
-                self.icons.source_paintable(icon_key), 128.0, &format!("icon:{icon_key}"));
-        }
+        if *self.mini_mode.borrow() { self.mini.view.volume() } else { self.playback.volume() }
     }
 
     /// Apply per-device window/panel state (size, maximized, panel
@@ -759,9 +550,10 @@ impl DeviceWindowInner {
         }
         self.full_mode_maximized.set(was_maximized);
         *self.mini_mode.borrow_mut() = true;
-        // Activation runs the view's own full catch-up refresh (live or
-        // offline) — this replaces the old manual update_mini_playback(ALL)
-        // call.
+        // Activation runs the incoming view's own full catch-up refresh
+        // (live or offline); the outgoing one stops reacting to signals
+        // while hidden.
+        self.playback.set_active(false);
         self.mini.view.set_active(true);
 
         // Mini mode is never maximized (resizable(false) below relies on
@@ -846,11 +638,9 @@ impl DeviceWindowInner {
             super::dbg_ui(&format!("exit mini mode: after set_default_size({w}, {h}) + unmaximize(): {}", self.window_geom()));
         }
         self.window.present();
-        // No-ops itself while offline — see `live()`'s doc comment. The
-        // ALL mask includes ARTWORK, so the source-icon fallback is fresh
-        // too; the input/output dropdowns stayed current the whole time
-        // (InputOutputView is mode-independent).
-        self.update_playback_ui(crate::device::state::playback_changed::ALL);
+        // Activation runs the incoming view's own full catch-up refresh
+        // (live or offline).
+        self.playback.set_active(true);
     }
 } // impl DeviceWindowInner
 

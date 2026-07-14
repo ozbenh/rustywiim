@@ -4,40 +4,14 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use adw::prelude::*;
-use gtk::{Align, Box as GtkBox, Button, Label, Orientation, Scale};
+use gtk::{Align, Box as GtkBox, Button, Label, Orientation};
 
 use super::art_background;
-use super::flip_cover::FlipCover;
-use super::views::common::{build_bt_pair_button, SwipeText};
-use super::views::volume::VolumeControl;
 use crate::device::state::DeviceState;
 
 // ── Widget bundles ────────────────────────────────────────────────────────────
 // Grouping related widgets + associated state into structs keeps signal-handler
 // signatures short and the closures easy to read.
-
-#[derive(Clone)]
-pub(crate) struct PlaybackWidgets {
-    pub title:      SwipeText,
-    pub artist:     SwipeText,
-    pub album:      SwipeText,
-    pub status:     Label,
-    pub quality:    Label,
-    pub pos:        Label,
-    pub dur:        Label,
-    pub seek:       Scale,
-    pub btn_prev:    Button,
-    pub btn_play:    Button,
-    pub btn_next:    Button,
-    pub shuffle:     Button,
-    pub repeat:      Button,
-    /// "Restart Pairing" — hidden by default (`update_playback_ui()` only
-    /// shows it while Bluetooth is the active input, disconnected, and not
-    /// already pairing), on its own row below the status label.
-    pub btn_bt_pair: Button,
-    pub volume:      VolumeControl,
-    pub artwork:     FlipCover,
-}
 
 /// The mini window's *chrome*: everything around the actual playback
 /// display (which is `view`, a self-contained `MiniPlaybackView`). The
@@ -125,127 +99,6 @@ pub(super) fn build_left_pane(
     left_pane.append(presets);
     left_pane.append(io);
     left_pane
-}
-
-pub(super) fn build_playback_widgets(ds: &DeviceState) -> PlaybackWidgets {
-    let pw = PlaybackWidgets {
-        // hexpand+vexpand (default Fill alignment) so the widget always gets
-        // the full art area to work with — it does its own aspect-preserving
-        // "contain"/fixed-size centering internally (draw_content() in
-        // flip_cover.rs), so unlike gtk::Picture it doesn't need a
-        // content-derived natural size for halign(Center) to center against.
-        // It also renders both real art AND the fallback icon itself now
-        // (crossfading between them), so no separate art_stack/input_icon.
-        artwork:    { let f = FlipCover::new();
-                      f.set_hexpand(true); f.set_vexpand(true); f },
-        // drop_shadow starts false regardless of theme — it's only wanted
-        // for legibility against Modern's blurred background, and gets
-        // toggled live by update_art_background_visibility() in ui/mod.rs
-        // (called once more right after window construction, so this
-        // initial value only matters for the instant before that runs).
-        title:  SwipeText::new("Not connected", "track-title",  true, false),
-        artist: SwipeText::new("",              "track-artist", true, false),
-        album:  SwipeText::new("",              "track-album",  true, false),
-        status:   Label::builder().css_classes(["status-badge"]).halign(Align::Center).build(),
-        // Always visible (never `.set_visible(false)`) so its line-height is
-        // permanently reserved in the layout — otherwise the artwork above it
-        // resizes whenever quality info appears/disappears (e.g. no bitrate
-        // data for the current source). Empty text still keeps its line
-        // height in Pango's logical extents, same as the other labels here.
-        quality:  Label::builder().css_classes(["quality-label"]).halign(Align::Center).build(),
-        pos:      Label::builder().label("0:00").css_classes(["dim-label"]).build(),
-        dur:      Label::builder().label("0:00").css_classes(["dim-label"]).build(),
-        seek:     Scale::with_range(Orientation::Horizontal, 0.0, 100.0, 1.0),
-        btn_prev: Button::builder()
-            .icon_name("media-skip-backward-symbolic")
-            .css_classes(["transport-btn", "circular", "flat"]).build(),
-        btn_play: Button::builder()
-            .icon_name("media-playback-start-symbolic")
-            .css_classes(["play-btn", "circular", "suggested-action"]).build(),
-        btn_next: Button::builder()
-            .icon_name("media-skip-forward-symbolic")
-            .css_classes(["transport-btn", "circular", "flat"]).build(),
-        shuffle:  Button::builder()
-            .icon_name("media-playlist-shuffle-symbolic")
-            .css_classes(["loop-btn", "circular", "flat"]).tooltip_text("Shuffle: Off").build(),
-        repeat:   Button::builder()
-            .icon_name("media-playlist-repeat-symbolic")
-            .css_classes(["loop-btn", "circular", "flat"]).tooltip_text("Repeat: Off").build(),
-        // Icon + text label, its own row below the status label (see
-        // `build_right_pane()`), not inside the `transport` row — a text
-        // button there previously widened the row enough to shift
-        // btn_prev/btn_play/btn_next off-center whenever it appeared; its
-        // own row can't affect that row's centering at all, regardless of
-        // size.
-        btn_bt_pair: build_bt_pair_button("bt-pair-btn", 14),
-        volume: VolumeControl::new(ds, false),
-    };
-
-    pw.seek.set_hexpand(true);
-    pw.seek.set_draw_value(false);
-    pw.seek.add_css_class("seek-scale");
-    pw.seek.set_round_digits(0);
-
-    pw
-}
-
-pub(super) fn build_right_pane(pw: &PlaybackWidgets) -> gtk::Box {
-    // Transport buttons are centred.
-    let transport = GtkBox::builder()
-        .orientation(Orientation::Horizontal).spacing(12).halign(Align::Center).build();
-    transport.prepend(&pw.shuffle);
-    transport.append(&pw.btn_prev);
-    transport.append(&pw.btn_play);
-    transport.append(&pw.btn_next);
-    transport.append(&pw.repeat);
-
-    // Vol button sits at the right edge of the seek row, aligned with the bar's right end.
-    let seek_row = GtkBox::builder().orientation(Orientation::Horizontal).spacing(8).build();
-    seek_row.append(&pw.pos);
-    seek_row.append(&pw.seek);
-    seek_row.append(&pw.dur);
-    pw.volume.set_margin_start(4);
-    seek_row.append(&pw.volume);
-
-    // Overlay adds a radial vignette frame over the artwork that fades into the panel background.
-    let art_overlay = gtk::Overlay::new();
-    art_overlay.set_vexpand(true);
-    art_overlay.set_child(Some(&pw.artwork));
-    let art_frame = GtkBox::builder()
-        .hexpand(true).vexpand(true)
-        .css_classes(["art-frame"])
-        .can_target(false)
-        .build();
-    art_overlay.add_overlay(&art_frame);
-
-    // Seek row + transport grouped into one card under RustyWiiM Modern
-    // (see modern.css); inert everywhere else, same as "panel-card" above.
-    // Artwork/title/artist/album/status/quality stay uncarded, floating
-    // directly on the blurred background when that theme is active.
-    let controls_card = GtkBox::builder()
-        .orientation(Orientation::Vertical).spacing(8)
-        .css_classes(["controls-card"])
-        .build();
-    controls_card.append(&seek_row);
-    controls_card.append(&transport);
-
-    let right_pane = GtkBox::builder()
-        .orientation(Orientation::Vertical).spacing(8).hexpand(true)
-        .margin_top(8).margin_bottom(8).margin_start(12).margin_end(16)
-        .build();
-    right_pane.append(&art_overlay);
-    right_pane.append(&pw.title.stack);
-    right_pane.append(&pw.artist.stack);
-    right_pane.append(&pw.album.stack);
-    right_pane.append(&pw.status);
-    // Sits below the status label rather than in the transport row (see
-    // `btn_bt_pair`'s own doc comment) — invisible by default, `GtkBox`
-    // doesn't reserve space for a hidden child either way.
-    right_pane.append(&pw.btn_bt_pair);
-    right_pane.append(&pw.quality);
-    right_pane.append(&controls_card);
-
-    right_pane
 }
 
 fn build_mini_top_bar() -> (Label, gtk::MenuButton, Button, Button, GtkBox) {

@@ -29,7 +29,6 @@ use crate::config::ThemeMode;
 use crate::device::discovery::DiscoveryService;
 use crate::device::discovery_manager::{DevicePresence, DiscoveryManager, ManagedEntry, SeedEntry};
 use crate::device::manager::DeviceManager;
-use crate::device::playback::RepeatMode;
 use crate::device::state::{ConnectionState, DeviceState, FullModeGuard, DEBUG_STATE};
 
 /// GApplication ID / icon name / GResource base path / `.desktop` basename —
@@ -346,14 +345,13 @@ struct DeviceWindowInner {
     _full_mode:       FullModeGuard,
     show_devices_fn:  Rc<dyn Fn()>,
     io:             views::io::InputOutputView,
-    pw:             PlaybackWidgets,
+    playback:       views::playback_full::PlaybackView,
     presets:        views::presets::PresetsView,
     dev_info_label: Label,
     ip_label:       Label,
     net_icon:       gtk::Image,
     remote_icon:    gtk::Image,
     remote_label:   Label,
-    icons:          Rc<icons::IconSet>,
     /// Shown (spinning) only while `ConnectionState::Connecting` — see
     /// `reset_device_ui()`. Overlaid on the header bar, not packed into
     /// it — see `build_header()`'s doc comment for why.
@@ -378,11 +376,6 @@ struct DeviceWindowInner {
     /// exactly one of this or `mini.root` at any given time; there is only
     /// ever one top-level GTK window per device now, not two.
     full_content:        gtk::Overlay,
-    /// Blurred-artwork background layer, behind everything else in the main
-    /// window. Only actually visible under the RustyWiiM Modern theme — for
-    /// other themes the foreground content above it is opaque, so this is
-    /// always fed the current art but effectively inert otherwise.
-    art_bg:              art_background::ArtBackground,
     paned:               gtk::Paned,
     left_pane:           gtk::Box,
     sidebar_btn:         gtk::ToggleButton,
@@ -659,14 +652,20 @@ impl DeviceWindow {
         let presets = views::presets::PresetsView::new(&ds, &icons);
         let io = views::io::InputOutputView::new(&ds, &icons);
         let left_pane = build_left_pane(&presets, &io);
-        let pw = build_playback_widgets(&ds);
-        let right_pane = build_right_pane(&pw);
+        // Blurred-artwork background layer for the full window — built
+        // before the playback view so the view can be handed a reference
+        // (it feeds it artwork alongside its own FlipCover); attached to
+        // the window overlay further down.
+        let art_bg = art_background::ArtBackground::new();
+        art_bg.set_hexpand(true);
+        art_bg.set_vexpand(true);
+        let playback = views::playback_full::PlaybackView::new(&ds, &icons, Some(&art_bg));
         let (mini, _mini_root) = build_mini_window(&ds, &icons);
 
         // ── Paned split + sidebar logic ───────────────────────────────────────────
         let paned = gtk::Paned::new(Orientation::Horizontal);
         paned.set_start_child(Some(&left_pane));
-        paned.set_end_child(Some(&right_pane));
+        paned.set_end_child(Some(&playback));
         paned.set_shrink_start_child(true);
         paned.set_shrink_end_child(false);
         paned.set_resize_start_child(false);
@@ -752,19 +751,16 @@ impl DeviceWindow {
         full_toolbar.add_top_bar(&header);
         full_toolbar.set_content(Some(&outer));
 
-        // Blurred-artwork background layer, behind the toolbar. Always
-        // present; only visible when the active theme makes the toolbar/
-        // window backgrounds transparent (RustyWiiM Modern — see modern.css).
-        // Initial visibility is set once the window exists, below —
-        // `update_art_background_visibility()`'s walk only reaches whichever
-        // of this tree / `mini.root` is actually attached as the window's
-        // content at the time it runs, so the mini tree's own art_bg gets
-        // its first real pass from `apply_window_chrome()` instead (called
-        // either by the mini-mode startup restore below, or the first time
-        // `enter_mini_mode()` ever runs).
-        let art_bg = art_background::ArtBackground::new();
-        art_bg.set_hexpand(true);
-        art_bg.set_vexpand(true);
+        // `art_bg` (built above, before the playback view) sits behind the
+        // toolbar. Always present; only visible when the active theme makes
+        // the toolbar/window backgrounds transparent (RustyWiiM Modern —
+        // see modern.css). Initial visibility is set once the window
+        // exists, below — `update_art_background_visibility()`'s walk only
+        // reaches whichever of this tree / `mini.root` is actually attached
+        // as the window's content at the time it runs, so the mini tree's
+        // own art_bg gets its first real pass from `apply_window_chrome()`
+        // instead (called either by the mini-mode startup restore below, or
+        // the first time `enter_mini_mode()` ever runs).
         let window_overlay = gtk::Overlay::new();
         window_overlay.set_child(Some(&art_bg));
         window_overlay.add_overlay(&full_toolbar);
@@ -820,20 +816,18 @@ impl DeviceWindow {
             _full_mode: full_mode,
             show_devices_fn,
             io,
-            pw,
+            playback,
             presets,
             dev_info_label,
             ip_label,
             net_icon,
             remote_icon,
             remote_label,
-            icons,
             connecting_spinner,
             spinner_shown_at: std::cell::Cell::new(None),
             spinner_hide_timer: RefCell::new(None),
             window: window.clone(),
             full_content: window_overlay.clone(),
-            art_bg: art_bg.clone(),
             paned:  paned.clone(),
             left_pane: left_pane.clone(),
             sidebar_btn: sidebar_btn.clone(),
@@ -904,49 +898,26 @@ impl DeviceWindow {
             move |_| { if let Some(i) = i.upgrade() { i.update_remote_display(); } }
         });
 
-        ds.connect_playback_changed({
-            let i = Rc::downgrade(&inner);
-            move |_, mask| {
-                let Some(i) = i.upgrade() else { return };
-                dbg_ui(&format!("playback-changed signal: mask={mask:#x}"));
-                // `update_playback_ui()` no-ops itself while offline
-                // (`DeviceWindowInner::live()`) — needed since a signal can
-                // race with (or briefly precede) a disconnect, and acting on
-                // it anyway would repaint from `playback_state()`'s
-                // still-cached fields, undoing whatever `reset_device_ui()`
-                // just cleared. The mini display is MiniPlaybackView's own
-                // business now (active exactly while mini mode shows).
-                if !*i.mini_mode.borrow() { i.update_playback_ui(mask); }
-            }
-        });
+        // No playback-changed/input-changed dispatch here anymore — the
+        // playback views subscribe themselves. This closes out the old
+        // central-dispatcher shape ("one handler decides which panel
+        // updates"), whose hidden-panel staleness and manual catch-up
+        // calls were a recurring bug source.
 
-        // The input/output dropdowns are InputOutputView's business, the
-        // mini display MiniPlaybackView's — this handler only covers the
-        // input switch's side effect on the *full* playback display (the
-        // source-icon artwork fallback).
-        ds.connect_input_changed({
-            let i = Rc::downgrade(&inner);
-            move |_| {
-                let Some(i) = i.upgrade() else { return };
-                // See the `playback-changed` handler above — same reasoning.
-                if !*i.mini_mode.borrow() { i.update_artwork(); }
-            }
-        });
-
-        // Populate immediately from whatever the DeviceState already has cached.
+        // Populate the window-level UI (title, bottom bar, chrome) from
+        // whatever the DeviceState already has cached.
         inner.populate_all();
 
-        // The left-pane views (and, until the full playback display becomes
-        // a view too, the full tree's volume cluster) stay permanently
-        // active — each self-subscribes to the DeviceState signals it
-        // needs, and today's window-driven update paths refreshed them
-        // regardless of which panel was showing anyway. MiniPlaybackView is
-        // the first mode-following one: active exactly while the mini panel
-        // shows (enter/exit_mini_mode flip it; activation runs its own full
-        // catch-up refresh).
-        inner.pw.volume.set_active(true);
+        // The left-pane views stay permanently active — each
+        // self-subscribes to the DeviceState signals it needs, and the old
+        // window-driven update paths refreshed them regardless of which
+        // panel was showing anyway. The two playback views are
+        // mode-following: exactly one is active at a time
+        // (enter/exit_mini_mode flip them; activation runs the incoming
+        // view's own full catch-up refresh).
         inner.presets.set_active(true);
         inner.io.set_active(true);
+        inner.playback.set_active(!*inner.mini_mode.borrow());
         inner.mini.view.set_active(*inner.mini_mode.borrow());
 
         // Opportunistically keeps `full_mode_size` fresh from *any* genuine
@@ -1144,27 +1115,6 @@ impl DeviceWindow {
         });
 
 
-        // ── Transport / control signal handlers ───────────────────────────────────
-        inner.pw.btn_play.connect_clicked({
-            let i = Rc::downgrade(&inner);
-            move |_| { if let Some(i) = i.upgrade() { i.ds.do_play_pause(); } }
-        });
-
-        inner.pw.btn_prev.connect_clicked({
-            let i = Rc::downgrade(&inner);
-            move |_| { if let Some(i) = i.upgrade() { i.ds.do_prev(); } }
-        });
-
-        inner.pw.btn_next.connect_clicked({
-            let i = Rc::downgrade(&inner);
-            move |_| { if let Some(i) = i.upgrade() { i.ds.do_next(); } }
-        });
-
-        inner.pw.btn_bt_pair.connect_clicked({
-            let i = Rc::downgrade(&inner);
-            move |_| { if let Some(i) = i.upgrade() { i.ds.bt_enter_pairing(); } }
-        });
-
         // ── Keyboard shortcuts ───────────────────────────────────────────────────
         // Capture phase: must win over a focused seek/volume Scale's own
         // Left/Right/Up/Down handling, since the whole point is a global
@@ -1179,47 +1129,16 @@ impl DeviceWindow {
                 let i = Rc::downgrade(&inner);
                 move |_, keyval, _keycode, state| {
                     let Some(i) = i.upgrade() else { return glib::Propagation::Proceed };
-                    let (prev, next, play) = if *i.mini_mode.borrow() {
-                        let (prev, play, next) = i.mini.view.transport_buttons();
-                        (prev, next, play)
+                    let (prev, play, next) = if *i.mini_mode.borrow() {
+                        i.mini.view.transport_buttons()
                     } else {
-                        (i.pw.btn_prev.clone(), i.pw.btn_next.clone(), i.pw.btn_play.clone())
+                        i.playback.transport_buttons()
                     };
                     playback::handle_transport_key(&i, keyval, state, &prev, &next, &play)
                 }
             });
             window.add_controller(key_ctrl);
         }
-
-        inner.pw.shuffle.connect_clicked({
-            let i = Rc::downgrade(&inner);
-            move |_| {
-                let Some(i) = i.upgrade() else { return };
-                let ps = i.ds.playback_state();
-                i.ds.do_set_loop_mode(loop_api_mode(!ps.shuffle, ps.repeat));
-            }
-        });
-
-        inner.pw.repeat.connect_clicked({
-            let i = Rc::downgrade(&inner);
-            move |_| {
-                let Some(i) = i.upgrade() else { return };
-                let ps = i.ds.playback_state();
-                i.ds.do_set_loop_mode(loop_api_mode(ps.shuffle, ps.repeat.next()));
-            }
-        });
-
-        inner.pw.seek.connect_change_value({
-            let i = Rc::downgrade(&inner);
-            move |_, _, value| {
-                if let Some(i) = i.upgrade() {
-                    if let Some(c) = i.ds.client() {
-                        i.ds.rt().spawn(async move { let _ = c.seek(value as u32).await; });
-                    }
-                }
-                glib::Propagation::Proceed
-            }
-        });
 
         // ── Mini player signals ───────────────────────────────────────────────────
         // A plain click, not a toggle — this button only ever lives in the
@@ -1767,14 +1686,3 @@ impl AppState {
     }
 }
 
-// Private helper used within mod.rs new() — also accessible from child modules.
-fn loop_api_mode(shuffle: bool, repeat: RepeatMode) -> i32 {
-    match (shuffle, repeat) {
-        (false, RepeatMode::Off) => 4,
-        (false, RepeatMode::All) => 0,
-        (false, RepeatMode::One) => 1,
-        (true,  RepeatMode::Off) => 3,
-        (true,  RepeatMode::All) => 2,
-        (true,  RepeatMode::One) => 5,
-    }
-}
