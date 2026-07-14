@@ -373,6 +373,13 @@ struct DeviceWindowInner {
     // Window / panel state — kept here so device-change and close handlers
     // only need one Rc<Inner> capture.
     window:              adw::ApplicationWindow,
+    /// The full window's content widget (art background + toolbar/header +
+    /// paned + bottom bar) — kept as its own handle so
+    /// `DeviceWindowInner::apply_window_chrome()` can swap `window`'s
+    /// content back to this when leaving mini mode. `window`'s content is
+    /// exactly one of this or `mini.root` at any given time; there is only
+    /// ever one top-level GTK window per device now, not two.
+    full_content:        gtk::Overlay,
     /// Blurred-artwork background layer, behind everything else in the main
     /// window. Only actually visible under the RustyWiiM Modern theme — for
     /// other themes the foreground content above it is opaque, so this is
@@ -433,11 +440,74 @@ struct DeviceWindowInner {
     cached_name: RefCell<String>,
     // ── Mini player ───────────────────────────────────────────────────────────
     mini:              MiniWidgets,
+    /// Which of the two panels ("full" or "mini") the one shared `window` is
+    /// currently showing. Not to be confused with GNOME/the desktop's own
+    /// notion of a "maximized" window — that's an orthogonal, OS-level state
+    /// a window can be in *while* showing our full panel; see the
+    /// `full_mode_size`/`full_mode_maximized`/`mini_mode_width` group below
+    /// for how the two interact.
     mini_mode:         RefCell<bool>,
-    mini_toggling:     RefCell<bool>,
-    pre_mini_size:     RefCell<(i32, i32)>,
-    mini_btn:          gtk::ToggleButton,
-    mini_win:          gtk::ApplicationWindow,
+
+    // Remembered geometry for whichever panel *isn't* currently showing, so
+    // switching back to it restores the right size instead of leaving the
+    // window at whatever size the other panel happened to need. Both
+    // directions are needed because, unlike the old design (a genuinely
+    // separate GTK window per panel, where the hidden one just kept
+    // whatever size/maximized-state it already had — free, no bookkeeping
+    // needed), the two panels now share one real window: switching panels
+    // actually resizes it, so the size the panel you're leaving had is
+    // about to be overwritten and has to be saved *first*.
+    //
+    // "Full mode" here means our own full-panel/mini-panel distinction
+    // (`mini_mode` above) — a completely separate thing from the desktop's
+    // own "maximized" window state, which is *also* only meaningful while
+    // showing the full panel (mini mode is never maximized — see
+    // `apply_window_chrome()`'s `resizable(false)` comment for why a
+    // maximized mini panel isn't something we want the desktop offering in
+    // the first place). A window can be "in full mode, maximized",
+    // "in full mode, not maximized", or "in mini mode" — maximized mini
+    // mode is simply not a state that exists.
+    /// The full panel's windowed (non-maximized) size to restore on
+    /// `exit_mini_mode()` — captured by `enter_mini_mode()` right before it
+    /// shrinks the window down for mini content, but only while the window
+    /// isn't currently maximized (while maximized, `width()`/`height()`
+    /// report the full-screen size, not a real windowed size worth
+    /// remembering — see `enter_mini_mode()`'s own comment). `exit_mini_mode()`
+    /// applies this via `set_default_size()` unconditionally, even when also
+    /// about to re-maximize — see that function's comment for why: it's not
+    /// just the *visible* restored size, it's also what GTK/the compositor
+    /// falls back to if the user later un-maximizes by hand, which needs
+    /// resetting away from whatever mini panel width `enter_mini_mode()`
+    /// last requested.
+    full_mode_size:      RefCell<(i32, i32)>,
+    /// Whether the window was OS-maximized right before `enter_mini_mode()`
+    /// last shrank it for mini content — restored by `exit_mini_mode()`
+    /// (which calls `maximize()` instead of relying on `full_mode_size`
+    /// alone). Needed because entering mini mode has to un-maximize the
+    /// window first (a maximized window can't also be the small floating
+    /// mini panel), which would otherwise lose that fact for good.
+    full_mode_maximized: Cell<bool>,
+    /// Set immediately before `exit_mini_mode()` calls `window.maximize()`
+    /// to restore a remembered maximized state, and consumed (read-and-clear)
+    /// by the window's own `notify::maximized` handler — see that handler's
+    /// comment (`new_inner()`) for why: it also opportunistically captures
+    /// `full_mode_size` on every *genuine* transition into maximized (not
+    /// just at `enter_mini_mode()` time), and this flag is what tells it
+    /// "this particular transition is our own restore, not a fresh
+    /// external one — don't recapture, the window is only this size because
+    /// it was mini a moment ago."
+    maximize_call_pending: Cell<bool>,
+    /// The mini panel's width to restore on `enter_mini_mode()`, kept
+    /// up to date while the full panel is showing (there's no live mini
+    /// content to read a current width off in that state). Updated from
+    /// config on device-info-apply and captured fresh by `exit_mini_mode()`
+    /// (reading `window.width()` while it's still showing mini content,
+    /// which reflects any live drag-resize too). Falls back to
+    /// `widgets::MINI_WIDTH_DEFAULT` wherever it's read and still `0`
+    /// (never set this session, nothing saved in config either).
+    mini_mode_width:     Cell<i32>,
+
+    mini_btn:          gtk::Button,
 }
 
 impl Drop for DeviceWindowInner {
@@ -483,18 +553,15 @@ impl DeviceWindowInner {
         // visible window.
         //
         // Settings windows never register with the GtkApplication, so they
-        // don't count as "another visible window" here — closing
-        // your last device window while a Settings window happens to be
-        // open still preserves it. self.mini_win is excluded too: it's the
-        // *other surface of this same device window*, not a separate one —
-        // closing via mini.close_btn calls window.close() while mini_win is
-        // still visible (nothing hides it until this function's last line),
-        // so without this exclusion that path always saw "another visible
-        // window" and never recognized itself as the last one.
+        // don't count as "another visible window" here — closing your last
+        // device window while a Settings window happens to be open still
+        // preserves it. There's only ever one top-level GTK window per
+        // device now (full and mini are two contents of the same window,
+        // not two windows), so unlike an older version of this check, no
+        // second window needs excluding here.
         let last_window = self.window.application().is_some_and(|app| {
             !app.windows().iter().any(|w| {
                 w.upcast_ref::<gtk::Widget>() != self.window.upcast_ref::<gtk::Widget>()
-                    && w.upcast_ref::<gtk::Widget>() != self.mini_win.upcast_ref::<gtk::Widget>()
                     && w.is_visible()
             })
         });
@@ -508,7 +575,25 @@ impl DeviceWindowInner {
         } else if !uuid.is_empty() {
             dbg_ui(&format!("DeviceWindow cleanup uuid={uuid} preserving window_open (last_window or quitting)"));
         }
-        self.mini_win.destroy();
+
+        // GtkPopover is attached to its button via set_parent() (not a
+        // normal container child) — that relationship is only cleaned up
+        // automatically as part of a *window-rooted* dispose cascade
+        // (destroying `window` recursively disposes whichever content tree,
+        // full or mini, is currently packed as its content). The *other*
+        // tree — detached, sitting only in this struct's own fields — never
+        // goes through that cascade at all, so when the last `Rc<Self>`
+        // eventually drops, its widgets are finalized by plain refcounting
+        // instead, with no chance to unparent their popover children first.
+        // Confirmed live: closing a device window while in mini mode left
+        // the (then-detached) full tree's volume popover still attached,
+        // producing "Finalizing GtkButton ... but it still has children
+        // left: GtkPopover" warnings. Unparenting both explicitly here,
+        // unconditionally, sidesteps this regardless of which tree happens
+        // to be attached at close time — a harmless no-op for whichever one
+        // is about to be disposed properly anyway via `window`'s own cascade.
+        self.pw.vol_popover.unparent();
+        self.mini.vol_popover.unparent();
     }
 }
 
@@ -598,7 +683,7 @@ impl DeviceWindow {
         let left_pane = build_left_pane(&sw, &ow, &presets_scroll);
         let (pw, vol_scale) = build_playback_widgets();
         let right_pane = build_right_pane(&pw);
-        let (mini, mini_win) = build_mini_window(app);
+        let (mini, _mini_root) = build_mini_window();
 
         // ── Paned split + sidebar logic ───────────────────────────────────────────
         let paned = gtk::Paned::new(Orientation::Horizontal);
@@ -692,8 +777,13 @@ impl DeviceWindow {
         // Blurred-artwork background layer, behind the toolbar. Always
         // present; only visible when the active theme makes the toolbar/
         // window backgrounds transparent (RustyWiiM Modern — see modern.css).
-        // Initial visibility (for both this and the mini window's own
-        // art_bg) is set once both windows exist, below.
+        // Initial visibility is set once the window exists, below —
+        // `update_art_background_visibility()`'s walk only reaches whichever
+        // of this tree / `mini.root` is actually attached as the window's
+        // content at the time it runs, so the mini tree's own art_bg gets
+        // its first real pass from `apply_window_chrome()` instead (called
+        // either by the mini-mode startup restore below, or the first time
+        // `enter_mini_mode()` ever runs).
         let art_bg = art_background::ArtBackground::new();
         art_bg.set_hexpand(true);
         art_bg.set_vexpand(true);
@@ -713,6 +803,33 @@ impl DeviceWindow {
             .build();
         window.add_css_class("player-window");
         if init_dev_cfg.window_maximized { window.maximize(); }
+
+        // Diagnostic only (--debug=ui): logs every time GTK itself observes
+        // a maximized/default-size change take effect, which can lag behind
+        // (or simply not match) the synchronous call that requested it —
+        // e.g. `set_default_size()` is a request, not a synchronous resize,
+        // so there can be a gap between "we called it" and "GTK/the
+        // compositor actually applied it." Added chasing a real bug: a
+        // maximize → mini → back-to-full → un-maximize round trip restoring
+        // to the mini panel's width instead of the full panel's saved size.
+        window.connect_notify_local(Some("maximized"), |win, _| {
+            dbg_ui(&format!(
+                "window notify::maximized -> is_maximized={} width={} height={} default_size={:?}",
+                win.is_maximized(), win.width(), win.height(), win.default_size(),
+            ));
+        });
+        window.connect_notify_local(Some("default-width"), |win, _| {
+            dbg_ui(&format!(
+                "window notify::default-width -> default_size={:?} is_maximized={} width={} height={}",
+                win.default_size(), win.is_maximized(), win.width(), win.height(),
+            ));
+        });
+        window.connect_notify_local(Some("default-height"), |win, _| {
+            dbg_ui(&format!(
+                "window notify::default-height -> default_size={:?} is_maximized={} width={} height={}",
+                win.default_size(), win.is_maximized(), win.width(), win.height(),
+            ));
+        });
 
         // apply_theme() only fires on explicit runtime switches, so a window
         // (main or mini, both now built) opened after the app already
@@ -746,6 +863,7 @@ impl DeviceWindow {
             spinner_shown_at: std::cell::Cell::new(None),
             spinner_hide_timer: RefCell::new(None),
             window: window.clone(),
+            full_content: window_overlay.clone(),
             art_bg: art_bg.clone(),
             paned:  paned.clone(),
             left_pane: left_pane.clone(),
@@ -768,10 +886,28 @@ impl DeviceWindow {
             // the rest of that restore (things that need `inner`/already-
             // built widgets to exist, so can't be folded into this literal).
             mini_mode:         RefCell::new(init_dev_cfg.mini_mode),
-            mini_toggling:     RefCell::new(false),
-            pre_mini_size:     RefCell::new((0, 0)),
+            // Seeded from the same config-restored (or default) width/height
+            // the window itself was just constructed with (win_w/win_h,
+            // above) — not (0, 0). Left at (0, 0), a device that gets
+            // maximized before ever entering mini mode even once this
+            // session would have no real size to fall back on:
+            // enter_mini_mode() only captures a fresh value while *not*
+            // currently maximized (maximized width()/height() would be the
+            // screen resolution, not a real windowed size — see that
+            // function's comment), so if it's *always* been maximized so
+            // far, this field is the only source of truth there is.
+            // Confirmed live via --debug=ui: exactly this scenario left
+            // exit_mini_mode() holding (0, 0), which its own w>0&&h>0 guard
+            // correctly refused to apply — but with nothing to fall back to
+            // either, `default_size` was simply never corrected back from
+            // whatever enter_mini_mode() had last set it to (the mini
+            // panel's width), so a later manual un-maximize snapped to that
+            // instead of the real windowed size.
+            full_mode_size:      RefCell::new((win_w, win_h)),
+            full_mode_maximized: Cell::new(init_dev_cfg.window_maximized),
+            maximize_call_pending: Cell::new(false),
+            mini_mode_width:     Cell::new(init_dev_cfg.mini_window_width),
             mini_btn:          mini_btn.clone(),
-            mini_win:          mini_win.clone(),
         });
 
         // ── DeviceState signal connections ────────────────────────────────────────
@@ -844,6 +980,103 @@ impl DeviceWindow {
 
         // Populate immediately from whatever the DeviceState already has cached.
         inner.populate_all();
+
+        // Opportunistically keeps `full_mode_size` fresh from *any* genuine
+        // maximize, not just the one `enter_mini_mode()` captures on its own
+        // way in — covers a device that gets manually resized and then
+        // maximized directly, with no intervening un-maximize, which
+        // `enter_mini_mode()` alone can never see (by the time it runs,
+        // width()/height() would already report the maximized size, not the
+        // windowed one — see its own comment).
+        //
+        // The moment `is_maximized` flips to `true` is exactly the window
+        // to catch this in: confirmed live (--debug=ui) that width()/
+        // height() still report the *old*, pre-maximize windowed size at
+        // that exact instant, for a brief window before GTK/the compositor
+        // catches the surface up to the new maximized geometry — after
+        // that, they're useless (screen resolution, not a real size to
+        // remember). `maximize_call_pending` (see its own doc comment)
+        // is what keeps this from misfiring on `exit_mini_mode()`'s own
+        // restore-a-remembered-maximize call, which would otherwise
+        // recapture the mini panel's own small size as if it were a real
+        // windowed size the instant before maximizing.
+        window.connect_notify_local(Some("maximized"), {
+            let i = Rc::downgrade(&inner);
+            move |win, _| {
+                let Some(i) = i.upgrade() else { return };
+                if !win.is_maximized() {
+                    // Not a "genuine maximize" transition — nothing to
+                    // capture. Still worth clearing defensively: a pending
+                    // flag that somehow never got consumed by a "true"
+                    // notify (e.g. the WM coalesced/dropped one) shouldn't
+                    // silently swallow a later, unrelated one.
+                    i.maximize_call_pending.set(false);
+
+                    // The actual guarantee behind the maximize/mini/
+                    // un-maximize fix (see exit_mini_mode()'s comment for
+                    // the full reasoning): whenever the window becomes
+                    // un-maximized while the full panel is the one showing
+                    // (never while entering mini mode itself — that's about
+                    // to shrink to mini dimensions right after this, forcing
+                    // full_mode_size here would just fight that), force it
+                    // back to full_mode_size if it isn't already there.
+                    //
+                    // Deferred via idle_add_local_once rather than applied
+                    // synchronously right here: an earlier version called
+                    // set_default_size() directly inside this same handler
+                    // and it didn't stick — confirmed live, a compositor
+                    // configure event for this *same* un-maximize transition
+                    // arrived a moment later and silently overwrote it back
+                    // to the wrong size. That call was racing (and losing
+                    // to) the compositor's own in-flight negotiation for
+                    // this transition, unlike enter_mini_mode()'s own
+                    // set_default_size() call after unmaximize() — that one
+                    // works because it runs on an already-*settled* window
+                    // (this same transition has fully finished by the time
+                    // any code the user's own actions trigger next runs),
+                    // making it a plain resize, not a race. `Priority::DEFAULT_IDLE`
+                    // (what idle_add_local_once uses) runs after any
+                    // already-queued/in-flight Wayland protocol messages —
+                    // i.e. after this transition's own remaining configure
+                    // events, if any — hopefully letting our correction go
+                    // last instead of first.
+                    if !*i.mini_mode.borrow() {
+                        let (fw, fh) = *i.full_mode_size.borrow();
+                        if fw > 0 && fh > 0 {
+                            let win = win.clone();
+                            glib::idle_add_local_once(move || {
+                                if win.width() != fw || win.height() != fh {
+                                    dbg_ui(&format!(
+                                        "un-maximize fixup (deferred): size is {}x{}, correcting to full_mode_size full:{fw},{fh}",
+                                        win.width(), win.height(),
+                                    ));
+                                    win.set_default_size(fw, fh);
+                                } else {
+                                    dbg_ui(&format!(
+                                        "un-maximize fixup (deferred): size already correct (full:{fw},{fh}), nothing to do",
+                                    ));
+                                }
+                            });
+                        }
+                    }
+                    return;
+                }
+                if i.maximize_call_pending.replace(false) {
+                    dbg_ui(&format!(
+                        "maximize notify: our own exit_mini_mode() restore skipping state saving"
+                    ));
+                    return; // our own restore, not a fresh external maximize
+                }
+                let (w, h) = (win.width(), win.height());
+                if w > 0 && h > 0 {
+                    let (old_fw, old_fh) = *i.full_mode_size.borrow();
+                    *i.full_mode_size.borrow_mut() = (w, h);
+                    dbg_ui(&format!(
+                        "maximize notify: external maximize, storing size into full_mode_size: full:{w},{h} (was full:{old_fw},{old_fh})",
+                    ));
+                }
+            }
+        });
 
         // ── Sidebar toggle ────────────────────────────────────────────────────────
         let paned_btn_held = Rc::new(RefCell::new(false));
@@ -964,10 +1197,13 @@ impl DeviceWindow {
             move |_| { if let Some(i) = i.upgrade() { i.ds.bt_enter_pairing(); } }
         });
 
-        // ── Keyboard shortcuts (main window) ────────────────────────────────────
+        // ── Keyboard shortcuts ───────────────────────────────────────────────────
         // Capture phase: must win over a focused seek/volume Scale's own
         // Left/Right/Up/Down handling, since the whole point is a global
-        // shortcut that works regardless of what has focus.
+        // shortcut that works regardless of what has focus. One controller on
+        // the one shared window now (previously one per window) — which
+        // panel's transport buttons get the key-flash is picked live from
+        // `mini_mode` on every keypress, rather than being fixed per controller.
         {
             let key_ctrl = gtk::EventControllerKey::new();
             key_ctrl.set_propagation_phase(gtk::PropagationPhase::Capture);
@@ -975,7 +1211,11 @@ impl DeviceWindow {
                 let i = Rc::downgrade(&inner);
                 move |_, keyval, _keycode, state| {
                     let Some(i) = i.upgrade() else { return glib::Propagation::Proceed };
-                    let (prev, next, play) = (i.pw.btn_prev.clone(), i.pw.btn_next.clone(), i.pw.btn_play.clone());
+                    let (prev, next, play) = if *i.mini_mode.borrow() {
+                        (i.mini.btn_prev.clone(), i.mini.btn_next.clone(), i.mini.btn_play.clone())
+                    } else {
+                        (i.pw.btn_prev.clone(), i.pw.btn_next.clone(), i.pw.btn_play.clone())
+                    };
                     playback::handle_transport_key(&i, keyval, state, &prev, &next, &play)
                 }
             });
@@ -1072,12 +1312,15 @@ impl DeviceWindow {
         }
 
         // ── Mini player signals ───────────────────────────────────────────────────
-        inner.mini_btn.connect_toggled({
+        // A plain click, not a toggle — this button only ever lives in the
+        // full panel's header, so clicking it can only ever mean "switch to
+        // mini mode" (going the other way is restore_btn/double-click/M
+        // below, none of which are this button).
+        inner.mini_btn.connect_clicked({
             let i = Rc::downgrade(&inner);
-            move |btn| {
+            move |_btn| {
                 let Some(i) = i.upgrade() else { return };
-                if *i.mini_toggling.borrow() { return; }
-                if btn.is_active() { i.enter_mini_mode(); } else { i.exit_mini_mode(); }
+                i.enter_mini_mode();
                 playback::schedule_config_save(&i);
             }
         });
@@ -1091,10 +1334,15 @@ impl DeviceWindow {
             }
         });
 
-        inner.mini.close_btn.connect_clicked(clone!(@strong window => move |_| {
-            gtk::prelude::WidgetExt::realize(&window); // close() is a no-op on an unrealized window
-            window.close();
-        }));
+        // The mini panel's own close (X) button — same "close this device"
+        // meaning as win.close below, just with no native titlebar button to
+        // trigger it from (mini mode is undecorated).
+        inner.mini.close_btn.connect_clicked({
+            clone!(@strong window => move |_| {
+                gtk::prelude::WidgetExt::realize(&window); // close() is a no-op on an unrealized window
+                window.close();
+            })
+        });
 
         {
             let gesture = gtk::GestureClick::builder().button(1).build();
@@ -1153,39 +1401,18 @@ impl DeviceWindow {
             }
         });
 
-        // ── Keyboard shortcuts (mini window) ────────────────────────────────────
-        {
-            let key_ctrl = gtk::EventControllerKey::new();
-            key_ctrl.set_propagation_phase(gtk::PropagationPhase::Capture);
-            key_ctrl.connect_key_pressed({
-                let i = Rc::downgrade(&inner);
-                move |_, keyval, _keycode, state| {
-                    let Some(i) = i.upgrade() else { return glib::Propagation::Proceed };
-                    let (prev, next, play) = (i.mini.btn_prev.clone(), i.mini.btn_next.clone(), i.mini.btn_play.clone());
-                    playback::handle_transport_key(&i, keyval, state, &prev, &next, &play)
-                }
-            });
-            inner.mini_win.add_controller(key_ctrl);
-        }
-
-        // ── Mini window signals ───────────────────────────────────────────────────
-        // X / Alt+F4 on the mini window → exit mini mode (don't destroy the window).
-        inner.mini_win.connect_close_request({
-            let i = Rc::downgrade(&inner);
-            move |_win| {
-                if let Some(i) = i.upgrade() {
-                    i.exit_mini_mode();
-                    playback::schedule_config_save(&i);
-                }
-                glib::Propagation::Stop
-            }
-        });
-
         // ── Window actions ────────────────────────────────────────────────────────
-        // Main window: win.close (Ctrl-W), win.devices, win.about, win.settings.
+        // win.close (Ctrl-W), win.devices, win.about, win.settings — one
+        // registration each now, on the one shared window (previously
+        // duplicated onto a separate mini_win too).
         let close_action = gio::SimpleAction::new("close", None);
-        let win_for_close = window.clone();
-        close_action.connect_activate(move |_, _| { win_for_close.close(); });
+        {
+            let win_for_close = window.clone();
+            close_action.connect_activate(move |_, _| {
+                gtk::prelude::WidgetExt::realize(&win_for_close); // close() is a no-op on an unrealized window
+                win_for_close.close();
+            });
+        }
         window.add_action(&close_action);
 
         let devices_action = gio::SimpleAction::new("devices", None);
@@ -1197,37 +1424,22 @@ impl DeviceWindow {
         }
         window.add_action(&devices_action);
 
-        wire_window_actions(&window, Some(ds.clone()), Rc::clone(&open_settings));
+        wire_window_actions(&window, Some(ds.clone()), open_settings);
 
-        // Mini window is a gtk::ApplicationWindow, so app.* actions (Ctrl-Q) work
-        // automatically.  Wire win.close and win.devices directly; win.about and
-        // win.settings come from wire_window_actions.
-        {
-            let mini_close = gio::SimpleAction::new("close", None);
-            let win = window.clone();
-            mini_close.connect_activate(move |_, _| {
-                gtk::prelude::WidgetExt::realize(&win);
-                win.close();
-            });
-            mini_win.add_action(&mini_close);
-
-            let mini_devices = gio::SimpleAction::new("devices", None);
-            {
-                let i = Rc::downgrade(&inner);
-                mini_devices.connect_activate(move |_, _| {
-                    if let Some(i) = i.upgrade() { (i.show_devices_fn)(); }
-                });
-            }
-            mini_win.add_action(&mini_devices);
-        }
-        wire_window_actions(&mini_win, Some(ds.clone()), open_settings);
-
-        // close-request: fires on user close (X button, win.close()).
-        // cleanup() is idempotent so calling it here AND in connect_destroy is safe.
+        // close-request fires on any close attempt: the native titlebar X
+        // button (full mode only — mini mode is undecorated), win.close()
+        // (Ctrl-W / the mini panel's close_btn), Alt+F4, a compositor-level
+        // close, or the quit action closing every window on the way out.
+        // Always means "close this device", regardless of which panel is
+        // currently showing — mini mode has its own dedicated "go back to
+        // full mode without closing" affordances (the restore button,
+        // double-click, the header mini-toggle, the M shortcut); close-request
+        // itself isn't one of them, in any mode. cleanup() is idempotent so
+        // calling it here AND in connect_destroy is safe.
         window.connect_close_request({
             let i = Rc::downgrade(&inner);
             move |_win| {
-                dbg_ui("main window close-request");
+                dbg_ui("window close-request");
                 if let Some(i) = i.upgrade() { i.cleanup(); }
                 glib::Propagation::Proceed
             }
@@ -1254,27 +1466,38 @@ impl DeviceWindow {
             // `mini_mode` itself is already correctly seeded above (before
             // `populate_all()` ran), so this is just the rest of the
             // restore that needs `inner`/already-built widgets to exist —
-            // not calling the full `enter_mini_mode()`, which would try to
-            // hide a window not yet shown and call `mini_win.present()`
-            // too early. `DeviceWindow::present()` (called by the caller)
-            // will show the mini window.
-            *inner.mini_toggling.borrow_mut() = true;
-            inner.mini_btn.set_active(true);
-            *inner.mini_toggling.borrow_mut() = false;
-            // Seed pre_mini_size from saved config so exit_mini_mode() can restore
-            // the right size even before the main window has ever been realised.
-            *inner.pre_mini_size.borrow_mut() = (win_w, win_h);
+            // not calling the full `enter_mini_mode()` (which would treat
+            // this as a live transition, e.g. trying to read `window`'s
+            // current size as the full-mode size to restore later). Swaps
+            // the window straight to its mini chrome/content before it's
+            // ever presented, so `DeviceWindow::present()` shows it already
+            // looking right. mini_btn itself needs no update — it's a plain,
+            // stateless button (see its own doc comment in widgets.rs).
+            // Seed full_mode_size from saved config so exit_mini_mode() can
+            // restore the right full-panel size even before the mini panel
+            // has ever been shown (full_mode_maximized is already seeded
+            // the same way, straight in the struct literal above).
+            *inner.full_mode_size.borrow_mut() = (win_w, win_h);
+            // Mini mode is never maximized — see the matching unmaximize() in
+            // enter_mini_mode(). `window.maximize()` above already ran
+            // unconditionally off `init_dev_cfg.window_maximized` before
+            // this block knew whether mini_mode was also set; undo it here
+            // for the same reason enter_mini_mode() insists on it live.
+            inner.window.unmaximize();
+            inner.apply_window_chrome(true);
+            let mini_w = if inner.mini_mode_width.get() > 0 {
+                inner.mini_mode_width.get()
+            } else {
+                MINI_WIDTH_DEFAULT
+            };
+            inner.window.set_default_size(mini_w, -1);
         }
 
         Self { window, inner }
     }
 
     pub fn present(&self) {
-        if *self.inner.mini_mode.borrow() {
-            self.inner.mini_win.present();
-        } else {
-            self.window.present();
-        }
+        self.window.present();
     }
 }
 
@@ -1532,9 +1755,9 @@ impl AppState {
         }
 
         // Replace the app.quit action (set up in main.rs) with one that explicitly
-        // destroys every device window first so connect_destroy fires (saving config,
-        // cancelling timers, destroying mini_win).  win.close() is a no-op on unrealized
-        // windows (e.g. main window never shown when starting in mini mode), and app.quit()
+        // destroys every device window first so connect_destroy fires (saving
+        // config, cancelling timers). win.close() is a no-op on unrealized
+        // windows (e.g. a window never shown when starting in mini mode), and app.quit()
         // on its own destroys windows after the main loop exits where cleanup is unreliable.
         {
             let s = Rc::downgrade(self_rc);

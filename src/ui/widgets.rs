@@ -184,7 +184,7 @@ pub(crate) struct MiniWidgets {
 /// already in that corner of the content instead.
 pub(super) fn build_header(
     init_panel_visible: bool,
-) -> (adw::HeaderBar, gtk::ToggleButton, gtk::ToggleButton, gtk::Spinner) {
+) -> (adw::HeaderBar, gtk::ToggleButton, gtk::Button, gtk::Spinner) {
     let header = adw::HeaderBar::new();
 
     let sidebar_btn = gtk::ToggleButton::builder()
@@ -197,7 +197,12 @@ pub(super) fn build_header(
 
     header.pack_end(&super::menu::build_menu_button(true));
 
-    let mini_btn = gtk::ToggleButton::builder()
+    // Plain Button, not ToggleButton: clicking it only ever means "switch to
+    // mini mode" — a one-shot action, not a persistent on/off state. It also
+    // only ever lives in the full panel's header (invisible whenever mini
+    // mode is actually active), so there's no "pressed" state for it to
+    // meaningfully show even if it had one.
+    let mini_btn = gtk::Button::builder()
         .icon_name("view-restore-symbolic")
         .tooltip_text("Mini player")
         .build();
@@ -775,6 +780,13 @@ fn build_mini_transport() -> (Label, Button, Button, Button, Button, gtk::Image,
 const MINI_WIDTH_MIN: i32 = 260;
 const MINI_WIDTH_MAX: i32 = 900;
 
+/// Default mini-panel width the first time a device ever shows it (no
+/// drag-resize yet this session, no saved `mini_window_width` in config) —
+/// used by `ui/mod.rs`'s `DeviceWindowInner::apply_window_chrome()` and the
+/// mini-mode startup restore in `new_inner()`. Was previously just the
+/// dedicated mini window's own `default_width(380)` builder call.
+pub(super) const MINI_WIDTH_DEFAULT: i32 = 380;
+
 /// Hit-test width (px) for the right-edge resize drag, measured inward from
 /// `stable`'s own right edge in `wire_mini_resize()` — a bit wider than the
 /// visible cursor strip below, for an easier grab target.
@@ -884,7 +896,7 @@ fn wire_mini_resize(stable: &gtk::Overlay) {
     stable.add_controller(gesture);
 }
 
-pub(super) fn build_mini_window(app: &adw::Application) -> (MiniWidgets, gtk::ApplicationWindow) {
+pub(super) fn build_mini_window() -> (MiniWidgets, gtk::WindowHandle) {
     let mini_artwork = build_mini_flip_cover();
     let (mini_device_label, mini_menu_btn, mini_restore_btn, mini_close_btn, mini_top_bar) = build_mini_top_bar();
     let (mini_status_label, mini_btn_prev, mini_btn_play, mini_btn_next,
@@ -981,31 +993,25 @@ pub(super) fn build_mini_window(app: &adw::Application) -> (MiniWidgets, gtk::Ap
     let mini_root = gtk::WindowHandle::new();
     mini_root.set_child(Some(&mini_outer));
 
-    let mini_win = gtk::ApplicationWindow::builder()
-        .application(app)
-        .decorated(false)
-        // Permanently non-resizable. GNOME/Mutter only offers its
-        // edge-tiling/snap-to-maximize gesture (dragging a window to a
-        // screen edge or corner, or inheriting a maximized sibling window's
-        // state on first present) to windows advertised as resizable, so an
-        // always-resizable undecorated window was getting silently
-        // full-screened by that gesture. wire_mini_resize()'s
-        // set_default_width() calls still work with this permanently
-        // false: unlike gdk::Toplevel::begin_resize() (a compositor-side
-        // interactive resize, abandoned for this window — it hands the
-        // pointer grab to the compositor with no completion event, and was
-        // once observed to silently do nothing at all), it's a pure
-        // client-side size *request*, not something that needs the
-        // compositor to agree the window is resizable first.
-        .resizable(false)
-        .default_width(380)
-        .title("RustyWiiM")
-        .child(&mini_root)
-        .build();
-    mini_win.add_css_class("mini-window");
+    // Unlike an older version of this function, there is no dedicated
+    // `gtk::ApplicationWindow` built here anymore — `mini_root` is packed
+    // as the *shared* device window's content whenever mini mode is active
+    // (see `ui/mod.rs`'s `DeviceWindowInner::apply_window_chrome()`), which
+    // is also where `decorated(false)`/`resizable(false)`/the "mini-window"
+    // CSS class are applied, live, only while mini content is showing.
+    // `resizable(false)` specifically still matters there for the same
+    // reason it did when this was its own window: GNOME/Mutter only offers
+    // its edge-tiling/snap-to-maximize gesture to windows advertised as
+    // resizable, so an always-resizable undecorated mini panel would be
+    // eligible for it to silently full-screen. `wire_mini_resize()`'s
+    // `set_default_width()` calls still work regardless of `resizable`:
+    // unlike `gdk::Toplevel::begin_resize()` (a compositor-side interactive
+    // resize — abandoned for this drag entirely, see that function's doc
+    // comment), it's a pure client-side size *request*, not something that
+    // needs the compositor to agree the window is resizable first.
 
     let mini = MiniWidgets {
-        root:          mini_root,
+        root:          mini_root.clone(),
         art_bg:        mini_art_bg,
         artwork:       mini_artwork,
         device_label:  mini_device_label,
@@ -1027,5 +1033,5 @@ pub(super) fn build_mini_window(app: &adw::Application) -> (MiniWidgets, gtk::Ap
         vol_scale:     mini_vol_scale,
     };
 
-    (mini, mini_win)
+    (mini, mini_root)
 }

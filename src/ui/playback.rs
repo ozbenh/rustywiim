@@ -888,21 +888,32 @@ impl DeviceWindowInner {
         // (not just pre-seeded at construction) — otherwise there's nothing real
         // to save yet.
         if already_loaded && !prev_uuid.is_empty() {
-            let maximized = self.window.is_maximized();
+            // Same in_mini-aware read `save_config_now()` uses just below —
+            // needed here too now that `self.window` is the *one* shared
+            // window (showing whichever content is currently active)
+            // rather than a dedicated always-full-size window that simply
+            // sat hidden while mini content showed elsewhere.
+            let in_mini = *self.mini_mode.borrow();
+            let maximized = if in_mini { self.full_mode_maximized.get() } else { self.window.is_maximized() };
+            let (w, h) = if in_mini {
+                *self.full_mode_size.borrow()
+            } else {
+                (self.window.width(), self.window.height())
+            };
             config::update(|cfg| {
                 let dev = cfg.device_mut(&prev_uuid);
                 dev.window_maximized = maximized;
-                dev.window_width     = if maximized { 0 } else { self.window.width() };
-                dev.window_height    = if maximized { 0 } else { self.window.height() };
+                dev.window_width     = if maximized { 0 } else { w };
+                dev.window_height    = if maximized { 0 } else { h };
                 dev.panel_visible    = self.sidebar_btn.is_active();
                 dev.paned_position   = *self.saved_panel_width.borrow();
-                dev.mini_mode        = *self.mini_mode.borrow();
-                // Only overwrite if the mini window has actually been shown
-                // this session (width() reports 0 for a never-realized
-                // window) — otherwise this would clobber a previously saved
-                // good value with 0 every time a session never happens to
-                // enter mini mode.
-                let mw = self.mini_win.width();
+                dev.mini_mode        = in_mini;
+                // Only overwrite if the mini panel has actually been shown
+                // this session (`mini_mode_width` starts at 0 same as a
+                // never-realized window's width() used to) — otherwise this
+                // would clobber a previously saved good value with 0 every
+                // time a session never happens to enter mini mode.
+                let mw = if in_mini { self.window.width() } else { self.mini_mode_width.get() };
                 if mw > 0 { dev.mini_window_width = mw; }
             });
         }
@@ -932,7 +943,13 @@ impl DeviceWindowInner {
         }
         *self.panel_collapsing.borrow_mut() = false;
 
-        if dev_cfg.window_maximized {
+        if *self.mini_mode.borrow() {
+            // Mini content is showing right now — `self.window` isn't the
+            // full-panel window at this moment, so record what to restore on
+            // exit_mini_mode() instead of touching it directly.
+            *self.full_mode_size.borrow_mut() = (dev_cfg.window_width, dev_cfg.window_height);
+            self.full_mode_maximized.set(dev_cfg.window_maximized);
+        } else if dev_cfg.window_maximized {
             self.window.maximize();
         } else {
             // set_default_size must come before unmaximize so the compositor
@@ -944,7 +961,10 @@ impl DeviceWindowInner {
         }
 
         if dev_cfg.mini_window_width > 0 {
-            self.mini_win.set_default_width(dev_cfg.mini_window_width);
+            self.mini_mode_width.set(dev_cfg.mini_window_width);
+            if *self.mini_mode.borrow() {
+                self.window.set_default_width(dev_cfg.mini_window_width);
+            }
         }
     }
 
@@ -956,11 +976,13 @@ impl DeviceWindowInner {
             Some(di) if !di.uuid.is_empty() => di.uuid,
             _ => return,
         };
-        // In mini mode, use the saved pre-mini size rather than the mini window size.
+        // In mini mode, use the remembered full-panel size/maximized state
+        // rather than reading them off the window, which is showing mini
+        // content right now, not the full panel.
         let in_mini = *self.mini_mode.borrow();
-        let maximized = !in_mini && self.window.is_maximized();
+        let maximized = if in_mini { self.full_mode_maximized.get() } else { self.window.is_maximized() };
         let (w, h) = if in_mini {
-            *self.pre_mini_size.borrow()
+            *self.full_mode_size.borrow()
         } else {
             (self.window.width(), self.window.height())
         };
@@ -973,10 +995,12 @@ impl DeviceWindowInner {
             dev.window_height    = if maximized { 0 } else { h };
             dev.panel_visible    = self.sidebar_btn.is_active();
             dev.paned_position   = *self.saved_panel_width.borrow();
-            dev.mini_mode        = *self.mini_mode.borrow();
+            dev.mini_mode        = in_mini;
             // See the matching guard in apply_device_window_state(): only
-            // overwrite once the mini window has actually been realized.
-            let mw = self.mini_win.width();
+            // overwrite once the mini panel has actually been shown this
+            // session (in which case reading it live off the window, which
+            // is currently showing it, is accurate — mid-drag too).
+            let mw = if in_mini { self.window.width() } else { self.mini_mode_width.get() };
             if mw > 0 { dev.mini_window_width = mw; }
         });
     }
@@ -1044,29 +1068,196 @@ impl DeviceWindowInner {
         }
     }
 
+    /// Swap `window`'s content/chrome between the full and mini looks —
+    /// shared by `enter_mini_mode()`/`exit_mini_mode()` and the mini-mode
+    /// startup restore in `new_inner()` (which needs the same swap applied
+    /// before the window is ever presented, without going through a live
+    /// "transition" that would misread the window's not-yet-realized size).
+    ///
+    /// Toggling `decorated`/swapping which content is packed at runtime is a
+    /// technique with no prior art elsewhere in this codebase, unlike the
+    /// resize-on-switch technique used just below (`set_default_size()`,
+    /// already proven live by `widgets::wire_mini_resize()`'s drag-resize).
+    ///
+    /// Sizing is the caller's job, not this function's — `enter_mini_mode()`/
+    /// `exit_mini_mode()`/the startup restore each call `set_default_size()`
+    /// themselves right after, since they disagree on what size to apply
+    /// (mini's remembered width vs. the full window's saved/pre-mini size).
+    pub(super) fn apply_window_chrome(&self, mini: bool) {
+        if mini {
+            self.window.remove_css_class("player-window");
+            self.window.add_css_class("mini-window");
+            self.window.set_content(Some(&self.mini.root));
+            self.window.set_decorated(false);
+            self.window.set_resizable(false);
+        } else {
+            self.window.remove_css_class("mini-window");
+            self.window.remove_css_class("mini-window-modern");
+            self.window.add_css_class("player-window");
+            self.window.set_content(Some(&self.full_content));
+            self.window.set_decorated(true);
+            self.window.set_resizable(true);
+        }
+        // Re-derives ArtBackground visibility (+ mini-window-modern +
+        // ScrollFadeLabel drop-shadow) for whichever content subtree is now
+        // actually attached to the window — the walk in
+        // `update_art_background_visibility()` only reaches attached
+        // widgets, so the *other* subtree (now detached) simply keeps
+        // whatever it last had; harmless while it's not shown, and this
+        // same call self-heals it the next time it's reattached.
+        super::update_art_background_visibility();
+    }
+
+    /// One-line window-geometry snapshot for the `--debug=ui` diagnostics
+    /// sprinkled through `enter_mini_mode()`/`exit_mini_mode()` — kept as a
+    /// helper so every call site logs the same fields in the same format.
+    /// Always includes what `full_mode_size`/`mini_mode_width` currently
+    /// hold (`saved[full:W,H mini:W]`) right alongside the window's actual
+    /// live geometry, specifically so the two are easy to eyeball against
+    /// each other in a `--debug=ui` log — that comparison (does "actual"
+    /// match "saved" yet?) is exactly what tracking down the maximize/mini
+    /// resize bugs needed.
+    fn window_geom(&self) -> String {
+        let (fw, fh) = *self.full_mode_size.borrow();
+        let mw = self.mini_mode_width.get();
+        format!(
+            "is_maximized={} width={} height={} default_size={:?} saved[full:{fw},{fh} mini:{mw}]",
+            self.window.is_maximized(), self.window.width(), self.window.height(),
+            self.window.default_size(),
+        )
+    }
+
     pub(super) fn enter_mini_mode(&self) {
         if *self.mini_mode.borrow() { return; }
-        super::dbg_ui(&format!("enter mini mode (uuid={})", self.applied_window_key.borrow()));
-        *self.pre_mini_size.borrow_mut() = (self.window.width(), self.window.height());
+        super::dbg_ui(&format!(
+            "enter mini mode (uuid={}) before: {}",
+            self.applied_window_key.borrow(), self.window_geom(),
+        ));
+        let was_maximized = self.window.is_maximized();
+        // Remember the full panel's current size/maximized state — about to
+        // be overwritten below — so exit_mini_mode() can put it back later.
+        // See the doc comment on this field group in mod.rs for the full
+        // picture of why this bookkeeping exists at all now.
+        //
+        // Only capture width()/height() while *not* currently maximized —
+        // while maximized they report the full-screen size, not the
+        // windowed size to actually restore to, and full_mode_size already
+        // holds that correctly from whenever the window last *was*
+        // windowed (construction, a config restore, or an earlier
+        // non-maximized enter_mini_mode() call) — no reason to clobber a
+        // good value with a useless one.
+        if !was_maximized {
+            let captured = (self.window.width(), self.window.height());
+            *self.full_mode_size.borrow_mut() = captured;
+            super::dbg_ui(&format!(
+                "enter mini mode: window not maximized -> storing current size into full_mode_size: full:{},{}",
+                captured.0, captured.1,
+            ));
+        } else {
+            let (fw, fh) = *self.full_mode_size.borrow();
+            super::dbg_ui(&format!(
+                "enter mini mode: window already maximized -> NOT touching full_mode_size (keeping full:{fw},{fh})",
+            ));
+        }
+        self.full_mode_maximized.set(was_maximized);
         *self.mini_mode.borrow_mut() = true;
         // `update_mini_playback()` no-ops itself while offline — see
         // `live()`'s doc comment.
         self.update_mini_playback(crate::device::state::playback_changed::ALL);
-        *self.mini_toggling.borrow_mut() = true;
-        self.mini_btn.set_active(true);
-        *self.mini_toggling.borrow_mut() = false;
-        self.window.set_visible(false);
-        self.mini_win.present();
+
+        // Mini mode is never maximized (resizable(false) below relies on
+        // it, same reasoning `widgets::build_mini_window()`'s doc comment
+        // gives for why an always-resizable undecorated window risks
+        // GNOME's edge-tiling/snap-to-maximize gesture) — un-maximize
+        // first, now that whether it *was* maximized is safely remembered
+        // above for exit_mini_mode() to restore.
+        self.window.unmaximize();
+        super::dbg_ui(&format!("enter mini mode: after unmaximize(): {}", self.window_geom()));
+        self.apply_window_chrome(true);
+        let mini_w = if self.mini_mode_width.get() > 0 {
+            self.mini_mode_width.get()
+        } else {
+            super::widgets::MINI_WIDTH_DEFAULT
+        };
+        // Height -1: let the content negotiate its own natural height,
+        // rather than keep whatever the full window's height happened to
+        // be — same `set_default_size()` mechanism `wire_mini_resize()`
+        // already uses live for the drag-resize, just both dimensions at
+        // once here instead of only width.
+        //
+        // This call also overwrites GTK/the compositor's own notion of
+        // "the size to restore to when this window is un-maximized" — see
+        // exit_mini_mode()'s matching set_default_size() call, which resets
+        // it back before maximize()/unmaximize() runs there, specifically
+        // to undo that side effect.
+        super::dbg_ui(&format!("enter mini mode: requesting set_default_size({mini_w}, -1)"));
+        self.window.set_default_size(mini_w, -1);
+        super::dbg_ui(&format!("enter mini mode: after set_default_size(): {}", self.window_geom()));
+        self.window.present();
     }
 
     pub(super) fn exit_mini_mode(&self) {
         if !*self.mini_mode.borrow() { return; }
-        super::dbg_ui(&format!("exit mini mode (uuid={})", self.applied_window_key.borrow()));
+        super::dbg_ui(&format!(
+            "exit mini mode (uuid={}) before: {}",
+            self.applied_window_key.borrow(), self.window_geom(),
+        ));
+        // Capture the mini panel's final width (post any drag-resize) before
+        // swapping away from it — see `mini_mode_width`'s doc comment.
+        let captured_mini_w = self.window.width();
+        self.mini_mode_width.set(captured_mini_w);
+        super::dbg_ui(&format!(
+            "exit mini mode: storing current width into mini_mode_width: mini:{captured_mini_w}",
+        ));
         *self.mini_mode.borrow_mut() = false;
-        *self.mini_toggling.borrow_mut() = true;
-        self.mini_btn.set_active(false);
-        *self.mini_toggling.borrow_mut() = false;
-        self.mini_win.set_visible(false);
+
+        self.apply_window_chrome(false);
+        super::dbg_ui(&format!("exit mini mode: after apply_window_chrome(false): {}", self.window_geom()));
+        // Request the full panel's remembered size in both branches below —
+        // for the non-maximized branch this is the actual restored size;
+        // for the maximized branch it's only a best-effort (see the big
+        // comment right below for why the real guarantee lives elsewhere).
+        let (w, h) = *self.full_mode_size.borrow();
+        // Ensure we have a sane size
+        let (w, h) = if w > 0 && h > 0 { (w, h) } else { (680, 640) };
+        super::dbg_ui(&format!(
+            "exit mini mode: restoring full_mode_size (full:{w},{h}), full_mode_maximized={}",
+            self.full_mode_maximized.get(),
+        ));
+        if self.full_mode_maximized.get() {
+            // Tells the window's own notify::maximized handler (mod.rs) not
+            // to treat the resulting transition as a fresh, genuine maximize
+            // worth (re-)capturing into full_mode_size — see that handler's
+            // comment and this flag's own doc comment.
+            self.maximize_call_pending.set(true);
+            // maximize() immediately, no waiting — a maximized window fills
+            // the screen regardless of whatever Mutter's own internal
+            // "restore to" snapshot ends up being, so this is always
+            // visually correct right away: one clean mini-to-maximized
+            // zoom, no intermediate windowed-size frame to glitch on.
+            //
+            // set_default_size() here is a harmless best-effort, not the
+            // actual guarantee of correctness — confirmed live, twice now,
+            // that Mutter doesn't reliably treat it as authoritative for
+            // "what to restore to on a later un-maximize" (it snapshots the
+            // window's *actual* surface size at the moment maximize() is
+            // processed instead, which is still the mini panel's size here
+            // no matter what we've just requested). The real guarantee is
+            // deferred to the moment it's actually needed: the window's own
+            // notify::maximized handler (mod.rs) corrects the size, off the
+            // main loop's idle queue rather than synchronously, the next
+            // time this window genuinely becomes un-maximized (a real user
+            // action, not this call) — see that handler's own comment for
+            // why synchronous-in-the-handler wasn't enough on its own, and
+            // why it's still unverified whether deferring is.
+            self.window.maximize();
+            self.window.set_default_size(w, h);
+            super::dbg_ui(&format!("exit mini mode: after maximize() + set_default_size({w}, {h}): {}", self.window_geom()));
+        } else {
+            self.window.set_default_size(w, h);
+            self.window.unmaximize();
+            super::dbg_ui(&format!("exit mini mode: after set_default_size({w}, {h}) + unmaximize(): {}", self.window_geom()));
+        }
         self.window.present();
         // Both no-op themselves while offline — see `live()`'s doc comment.
         self.update_playback_ui(crate::device::state::playback_changed::ALL);
