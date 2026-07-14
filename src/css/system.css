@@ -23,7 +23,7 @@
     padding: 0; -gtk-icon-size: 20px;
     border: none; border-radius: 50%; box-shadow: none;
 }
-/* Brief keyboard-shortcut acknowledgement — playback::flash_button() adds
+/* Brief keyboard-shortcut acknowledgement — views::common::flash_button() adds
    "key-flash" for ~200ms. Compound (two-class) selectors so these
    deterministically outrank .mini-transport-btn's explicit transparent
    background above regardless of file order (.transport-btn/.play-btn

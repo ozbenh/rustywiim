@@ -32,7 +32,7 @@ window { background-color: #0a0a0a; }
     border: none; border-radius: 50%; box-shadow: none;
 }
 .play-btn:hover { background-color: lighter(@rustywiim_accent); }
-/* Brief keyboard-shortcut acknowledgement — playback::flash_button() adds
+/* Brief keyboard-shortcut acknowledgement — views::common::flash_button() adds
    "key-flash" for ~200ms. Compound (two-class) selectors so these
    deterministically outrank the plain .transport-btn/.play-btn background
    above regardless of file order; libadwaita's own .suggested-action

@@ -8,6 +8,7 @@ pub(crate) mod menu;
 mod scroll_fade_label;
 mod playback;
 pub(crate) mod settings;
+mod views;
 mod widgets;
 
 use widgets::*;

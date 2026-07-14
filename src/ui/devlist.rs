@@ -20,7 +20,7 @@ use crate::device::discovery_manager::{DevicePresence, DiscoveryManager, Managed
 use crate::device::state::DeviceState;
 use crate::ui::icons::IconSet;
 use super::flip_cover::FlipCover;
-use super::playback::vol_icon;
+use super::views::common::vol_icon;
 use super::scroll_fade_label::ScrollFadeLabel;
 
 /// "Title · Artist" (round-dot separator, same as the mini window's
