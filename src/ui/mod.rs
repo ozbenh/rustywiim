@@ -959,6 +959,15 @@ impl DeviceWindow {
             }
         });
 
+        ds.connect_inputs_changed({
+            let i = Rc::downgrade(&inner);
+            move |_| {
+                let Some(i) = i.upgrade() else { return };
+                i.populate_source();
+                i.update_input_display();
+            }
+        });
+
         ds.connect_output_changed({
             let i = Rc::downgrade(&inner);
             move |_| { if let Some(i) = i.upgrade() { i.update_output_display(); } }

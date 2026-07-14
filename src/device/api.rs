@@ -482,6 +482,33 @@ impl AudioInputEntry {
     pub fn is_enabled(&self) -> bool { self.enable != 0 }
 }
 
+/// Parse a `getAudioInputCapbility` response body into the list of canonical
+/// input IDs it reports. `None` if the body isn't the expected wrapped-array
+/// object (e.g. the literal `"unknown command"` string most non-WiiM devices
+/// return) — distinct from `Some(vec![])`. Split out from
+/// `WiimClient::get_audio_input_capability()` so it's unit-testable against a
+/// real capture fixture without a live client.
+fn parse_audio_input_capability(text: &str) -> Option<Vec<String>> {
+    #[derive(Deserialize)]
+    struct Item {
+        #[serde(default)]
+        mode: String,
+    }
+    #[derive(Deserialize)]
+    struct Response {
+        #[serde(default, rename = "audioInput")]
+        audio_input: Vec<Item>,
+    }
+    let resp = serde_json::from_str::<Response>(text).ok()?;
+    Some(
+        resp.audio_input
+            .into_iter()
+            .map(|i| i.mode)
+            .filter(|m| !m.is_empty())
+            .collect(),
+    )
+}
+
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct AudioOutputStatus {
     #[serde(default)]
@@ -961,6 +988,25 @@ impl WiimClient {
         serde_json::from_str::<Response>(&text).ok().map(|r| r.audio_input)
     }
 
+    /// Authoritative list of audio input source IDs the device exposes, from
+    /// the WiiM app's `getAudioInputCapbility` command (the name really is
+    /// misspelled "Capbility" in the firmware). The returned `mode` strings
+    /// are already in our canonical wire form (`"wifi"`, `"line-in"`,
+    /// `"bluetooth"`, `"optical"`, `"phono"`, `"HDMI"`, `"udisk"`, …) — the
+    /// same values `switchmode`/`PlayMedium` use — so callers can treat them
+    /// as `InputEntry.id`s directly with no translation. Same wrapped shape
+    /// as `getAudioInputEnable` (`{"audioInput": [...], "ver": "1.0"}`).
+    ///
+    /// `None` if the call failed or didn't parse — distinct from
+    /// `Some(vec![])`, a real empty list. Most non-WiiM devices answer a
+    /// literal `"unknown command"` string here (confirmed via captures:
+    /// Audio Pro, iEAST AudioCast, WiiM Mini), which doesn't deserialize as
+    /// the wrapped object and so correctly yields `None`.
+    pub async fn get_audio_input_capability(&self) -> Option<Vec<String>> {
+        let text = self.cmd("getAudioInputCapbility").await.ok()?;
+        parse_audio_input_capability(&text)
+    }
+
     /// Returns user-assigned names keyed by input mode string.
     /// Returns an empty map if the device doesn't support the API or returns "Failed".
     pub async fn get_mode_rename(&self) -> std::collections::HashMap<String, String> {
@@ -1222,5 +1268,53 @@ mod tests {
             .expect("getStatusEx has no body");
         let info: DeviceInfo = serde_json::from_value(body).expect("parsing DeviceInfo");
         assert_eq!(info.preset_key, "6");
+    }
+
+    /// Helper: pull one command's captured body back out as the raw response
+    /// text the device would have sent, for feeding to a parser under test.
+    fn capture_body_text(cap: &CaptureFile, command: &str) -> String {
+        let body = cap.commands.iter()
+            .find(|c| c.command == command)
+            .unwrap_or_else(|| panic!("capture has no {command}"))
+            .body.clone()
+            .unwrap_or_else(|| panic!("{command} has no body"));
+        match body {
+            // "unknown command"/"Failed" etc. — captured as a bare JSON string;
+            // the device sends it unquoted, so hand the parser the inner text.
+            serde_json::Value::String(s) => s,
+            other => serde_json::to_string(&other).expect("serializing body"),
+        }
+    }
+
+    fn load_capture(filename: &str) -> CaptureFile {
+        let path = format!("{}/captures/test-devices/{filename}", env!("CARGO_MANIFEST_DIR"));
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("reading fixture {path}: {e}"));
+        serde_json::from_str(&text)
+            .unwrap_or_else(|e| panic!("parsing fixture {path}: {e}"))
+    }
+
+    /// Real WiiM Ultra capture: `getAudioInputCapbility` returns the
+    /// authoritative input list as canonical wire IDs (`wifi`, `line-in`,
+    /// `HDMI`, `udisk`, …) that flow straight into `InputEntry.id`.
+    #[test]
+    fn audio_input_capability_parses_wiim_ultra() {
+        let cap = load_capture("WiiM_Ultra_20260708_100034.json");
+        let text = capture_body_text(&cap, "getAudioInputCapbility");
+        let ids = parse_audio_input_capability(&text).expect("should parse");
+        assert_eq!(
+            ids,
+            vec!["wifi", "line-in", "bluetooth", "optical", "phono", "HDMI", "udisk"],
+        );
+    }
+
+    /// A device that doesn't support the call answers a literal
+    /// "unknown command" string, which must parse to `None` (not an empty
+    /// list) so the caller keeps its plm_support-derived input list.
+    #[test]
+    fn audio_input_capability_unknown_command_is_none() {
+        let cap = load_capture("WiiM_Mini_20260708_045125.json");
+        let text = capture_body_text(&cap, "getAudioInputCapbility");
+        assert!(parse_audio_input_capability(&text).is_none());
     }
 }

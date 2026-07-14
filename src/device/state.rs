@@ -9,6 +9,8 @@
 /// * `playback-changed(u32)` — player status / metadata / artwork updated;
 ///                             the `u32` is a `PlaybackChanged` bitmask
 /// * `input-changed`    — current input mode changed
+/// * `inputs-changed`   — available input list / per-input enabled flags
+///                        changed (rebuild source menu)
 /// * `output-changed`   — audio output selection changed
 /// * `outputs-changed`  — supported output list updated (rebuild menu)
 /// * `network-changed`  — netstat or RSSI changed
@@ -855,6 +857,7 @@ mod imp {
                         .param_types([u32::static_type()])
                         .build(),
                     Signal::builder("input-changed").build(),
+                    Signal::builder("inputs-changed").build(),
                     Signal::builder("output-changed").build(),
                     Signal::builder("outputs-changed").build(),
                     Signal::builder("network-changed").build(),
@@ -1915,7 +1918,12 @@ impl DeviceState {
     /// This runs before any of this tick's own per-field decode logic
     /// (same borrow, right after), which is what actually repopulates real
     /// values for the new source, same tick — no staleness window.
-    fn apply_mode_change(inner: &mut Inner, new_mode: i32) {
+    ///
+    /// Returns `true` if it flipped a wrongly-`disabled` input back to
+    /// `enabled` (an input demonstrably in active use can't really be
+    /// disabled) — the caller emits `inputs-changed` so the source menu drops
+    /// the stale greyed-out styling on that entry.
+    fn apply_mode_change(inner: &mut Inner, new_mode: i32) -> bool {
         inner.current_mode = new_mode;
         Self::blank_playback_baseline(inner);
         // Not (still) Bluetooth: nothing left to track for it either.
@@ -1933,27 +1941,31 @@ impl DeviceState {
                          actively in use; marking enabled",
                     );
                     entry.enabled = true;
+                    return true;
                 }
             }
         }
+        false
     }
 
     /// Shared by `process_poll_http()`/`process_poll_upnp()`'s mode-change
-    /// handling. Returns whether the caller should emit `input-changed` —
-    /// true either for a real, confirmed mode change, or for a timed-out
-    /// switch that needs reverting.
-    fn handle_input_mode_poll(inner: &mut Inner, mode_changed: bool, new_mode: i32) -> bool {
+    /// handling. Returns `(emit_input_changed, emit_inputs_changed)`:
+    /// `input-changed` for a real/confirmed mode change or a timed-out switch
+    /// that needs reverting; `inputs-changed` only when `apply_mode_change()`
+    /// had to force a wrongly-disabled active input back to enabled.
+    fn handle_input_mode_poll(inner: &mut Inner, mode_changed: bool, new_mode: i32) -> (bool, bool) {
+        let mut inputs_changed = false;
         if mode_changed {
-            Self::apply_mode_change(inner, new_mode);
+            inputs_changed = Self::apply_mode_change(inner, new_mode);
         } else {
-            let Some(sent) = inner.input_change_time else { return false };
+            let Some(sent) = inner.input_change_time else { return (false, false) };
             if !inner.input_changing || sent.elapsed() < INPUT_CHANGE_TIMEOUT {
-                return false;
+                return (false, false);
             }
             eprintln!("[state] timeout changing input");
         }
         inner.input_changing = false;
-        true
+        (true, inputs_changed)
     }
 
     fn start_slow_poll_processor(&self, rx: async_channel::Receiver<SlowPollResult>) {
@@ -2469,9 +2481,11 @@ impl DeviceState {
 
             // 2. Borrow_mut: decode only what changed, straight into `playback`.
             let emit_input_changed;
+            let emit_inputs_changed;
             {
                 let mut inner = self.imp().inner.borrow_mut();
-                emit_input_changed = Self::handle_input_mode_poll(&mut inner, mode_changed, st.mode);
+                (emit_input_changed, emit_inputs_changed) =
+                    Self::handle_input_mode_poll(&mut inner, mode_changed, st.mode);
                 if mode_changed { playback_mask |= playback_changed::ALL; }
 
                 if let Some(bts) = &bt_status {
@@ -2519,6 +2533,10 @@ impl DeviceState {
             if emit_input_changed {
                 dbg("signal: input-changed");
                 self.emit_by_name::<()>("input-changed", &[]);
+            }
+            if emit_inputs_changed {
+                dbg("signal: inputs-changed");
+                self.emit_by_name::<()>("inputs-changed", &[]);
             }
         }
 
@@ -2724,9 +2742,11 @@ impl DeviceState {
 
         // 2. Borrow_mut: decode only what changed, straight into `playback`.
         let emit_input_changed;
+        let emit_inputs_changed;
         {
             let mut inner = self.imp().inner.borrow_mut();
-            emit_input_changed = Self::handle_input_mode_poll(&mut inner, mode_changed, info.play_type);
+            (emit_input_changed, emit_inputs_changed) =
+                Self::handle_input_mode_poll(&mut inner, mode_changed, info.play_type);
 
             if let Some(bts) = &bt_status {
                 if Self::apply_bt_status(&mut inner, bts) { playback_mask |= playback_changed::ALL; }
@@ -2808,6 +2828,10 @@ impl DeviceState {
         if emit_input_changed {
             dbg("signal: input-changed");
             self.emit_by_name::<()>("input-changed", &[]);
+        }
+        if emit_inputs_changed {
+            dbg("signal: inputs-changed");
+            self.emit_by_name::<()>("inputs-changed", &[]);
         }
         if art_cleared { playback_mask |= playback_changed::ARTWORK; }
         if let Some(url) = art_url_for_fetch {
@@ -3101,6 +3125,13 @@ impl DeviceState {
 
     pub fn connect_input_changed<F: Fn(&Self) + 'static>(&self, f: F) -> glib::SignalHandlerId {
         self.connect_local("input-changed", false, move |args| {
+            f(&args[0].get::<Self>().unwrap());
+            None
+        })
+    }
+
+    pub fn connect_inputs_changed<F: Fn(&Self) + 'static>(&self, f: F) -> glib::SignalHandlerId {
+        self.connect_local("inputs-changed", false, move |args| {
             f(&args[0].get::<Self>().unwrap());
             None
         })
