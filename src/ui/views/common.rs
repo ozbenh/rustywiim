@@ -6,6 +6,59 @@
 use adw::prelude::*;
 
 use crate::device::playback::{AudioQuality, PlaybackStatus, RepeatMode};
+use crate::ui::scroll_fade_label::ScrollFadeLabel;
+
+/// Two `ScrollFadeLabel`s in a `gtk::Stack`, slid between on text change
+/// instead of a hard swap. `set_text()` matches `ScrollFadeLabel`'s own
+/// signature, so call sites don't change.
+#[derive(Clone)]
+pub(crate) struct SwipeText {
+    pub stack: gtk::Stack,
+    a: ScrollFadeLabel,
+    b: ScrollFadeLabel,
+}
+
+impl SwipeText {
+    pub(crate) fn new(initial: &str, css_class: &str, center_when_fits: bool, drop_shadow: bool) -> Self {
+        let a = ScrollFadeLabel::new(initial);
+        let b = ScrollFadeLabel::new("");
+        for l in [&a, &b] {
+            l.add_label_css_class(css_class);
+            l.set_hexpand(true);
+            l.set_center_when_fits(center_when_fits);
+            l.set_drop_shadow(drop_shadow);
+        }
+        let stack = gtk::Stack::new();
+        stack.set_hexpand(true);
+        stack.set_transition_duration(250);
+        stack.add_named(&a, Some("a"));
+        stack.add_named(&b, Some("b"));
+        stack.set_visible_child_name("a");
+        Self { stack, a, b }
+    }
+
+    /// Swap to `text`, sliding the new label in over the old one.
+    /// No-op if `text` already matches what's currently shown.
+    pub fn set_text(&self, text: &str) {
+        let showing_a = self.stack.visible_child_name().as_deref() == Some("a");
+        let (outgoing, incoming, name) =
+            if showing_a { (&self.a, &self.b, "b") } else { (&self.b, &self.a, "a") };
+        // Compare against what's actually on screen (outgoing), not the
+        // hidden face — the hidden face still holds leftover text from
+        // *two* changes ago, so comparing against it wrongly no-ops (and
+        // leaves the stale visible label on screen) whenever a new title
+        // happens to coincide with that stale leftover, e.g. a repeated
+        // track title or a transient empty-title flicker that reverts.
+        if outgoing.text() == text { return; }
+        incoming.set_text(text);
+        let transition = if crate::config::with(|cfg| cfg.animations) {
+            gtk::StackTransitionType::SlideLeft
+        } else {
+            gtk::StackTransitionType::None
+        };
+        self.stack.set_visible_child_full(name, transition);
+    }
+}
 
 // ── String helpers ────────────────────────────────────────────────────────────
 
@@ -98,6 +151,34 @@ pub(crate) fn apply_repeat_ui(btn: &gtk::Button, state: RepeatMode) {
     btn.set_tooltip_text(Some(tip));
     if state == RepeatMode::Off { btn.remove_css_class("loop-active"); }
     else                        { btn.add_css_class("loop-active"); }
+}
+
+/// Icon + "Restart Pairing" label. `css_class`/`icon_px` let the mini
+/// playback display use a smaller variant than the main window's rather
+/// than duplicating the icon+label+button assembly. Not `.transport-btn`
+/// (its `border-radius:50%`/`padding:0`/fixed size is tuned for a single
+/// glyph and would clip a text label) — a dedicated class instead, styled
+/// in `system.css`/`dark.css`/`modern.css`.
+pub(crate) fn build_bt_pair_button(css_class: &str, icon_px: i32) -> gtk::Button {
+    let icon = gtk::Image::builder()
+        .icon_name("bluetooth-symbolic")
+        .pixel_size(icon_px)
+        .build();
+    let label = gtk::Label::builder().label("Restart Pairing").build();
+    let content = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal).spacing(6)
+        .halign(gtk::Align::Center)
+        .build();
+    content.append(&icon);
+    content.append(&label);
+    let btn = gtk::Button::builder()
+        .css_classes(["flat", css_class])
+        .tooltip_text("Restart Bluetooth pairing")
+        .halign(gtk::Align::Center)
+        .visible(false)
+        .build();
+    btn.set_child(Some(&content));
+    btn
 }
 
 /// Briefly apply the "key-flash" CSS class to `btn`, then remove it — the

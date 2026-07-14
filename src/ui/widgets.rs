@@ -8,65 +8,13 @@ use gtk::{Align, Box as GtkBox, Button, Label, Orientation, Scale};
 
 use super::art_background;
 use super::flip_cover::FlipCover;
-use super::scroll_fade_label::ScrollFadeLabel;
+use super::views::common::{build_bt_pair_button, SwipeText};
 use super::views::volume::VolumeControl;
 use crate::device::state::DeviceState;
 
 // ── Widget bundles ────────────────────────────────────────────────────────────
 // Grouping related widgets + associated state into structs keeps signal-handler
 // signatures short and the closures easy to read.
-
-/// Two `ScrollFadeLabel`s in a `gtk::Stack`, slid between on text change
-/// instead of a hard swap. `set_text()` matches `ScrollFadeLabel`'s own
-/// signature, so call sites don't change.
-#[derive(Clone)]
-pub(crate) struct SwipeText {
-    pub stack: gtk::Stack,
-    a: ScrollFadeLabel,
-    b: ScrollFadeLabel,
-}
-
-impl SwipeText {
-    fn new(initial: &str, css_class: &str, center_when_fits: bool, drop_shadow: bool) -> Self {
-        let a = ScrollFadeLabel::new(initial);
-        let b = ScrollFadeLabel::new("");
-        for l in [&a, &b] {
-            l.add_label_css_class(css_class);
-            l.set_hexpand(true);
-            l.set_center_when_fits(center_when_fits);
-            l.set_drop_shadow(drop_shadow);
-        }
-        let stack = gtk::Stack::new();
-        stack.set_hexpand(true);
-        stack.set_transition_duration(250);
-        stack.add_named(&a, Some("a"));
-        stack.add_named(&b, Some("b"));
-        stack.set_visible_child_name("a");
-        Self { stack, a, b }
-    }
-
-    /// Swap to `text`, sliding the new label in over the old one.
-    /// No-op if `text` already matches what's currently shown.
-    pub fn set_text(&self, text: &str) {
-        let showing_a = self.stack.visible_child_name().as_deref() == Some("a");
-        let (outgoing, incoming, name) =
-            if showing_a { (&self.a, &self.b, "b") } else { (&self.b, &self.a, "a") };
-        // Compare against what's actually on screen (outgoing), not the
-        // hidden face — the hidden face still holds leftover text from
-        // *two* changes ago, so comparing against it wrongly no-ops (and
-        // leaves the stale visible label on screen) whenever a new title
-        // happens to coincide with that stale leftover, e.g. a repeated
-        // track title or a transient empty-title flicker that reverts.
-        if outgoing.text() == text { return; }
-        incoming.set_text(text);
-        let transition = if crate::config::with(|cfg| cfg.animations) {
-            gtk::StackTransitionType::SlideLeft
-        } else {
-            gtk::StackTransitionType::None
-        };
-        self.stack.set_visible_child_full(name, transition);
-    }
-}
 
 #[derive(Clone)]
 pub(crate) struct PlaybackWidgets {
@@ -91,26 +39,20 @@ pub(crate) struct PlaybackWidgets {
     pub artwork:     FlipCover,
 }
 
+/// The mini window's *chrome*: everything around the actual playback
+/// display (which is `view`, a self-contained `MiniPlaybackView`). The
+/// top-bar controls stay chrome because they presuppose the two-panel
+/// window pair ("restore to full window" means nothing to e.g. a future
+/// devlist-row host), and the blurred `ArtBackground` because it's
+/// visually the chrome's background — the view just feeds it artwork.
 pub(crate) struct MiniWidgets {
     pub root:          gtk::WindowHandle,
-    pub art_bg:        art_background::ArtBackground,
-    pub artwork:       FlipCover,
     pub device_label:  Label,
     #[allow(dead_code)] // owned for lifetime; the widget is parented to the top bar
     pub menu_btn:      gtk::MenuButton,
     pub restore_btn:   Button,
     pub close_btn:     Button,
-    pub title_label:   SwipeText,
-    pub artist_label:  SwipeText,
-    /// "Restart Pairing" — mirrors the main window's `PlaybackWidgets::btn_bt_pair`
-    /// (same visibility rule), placed above `status_label` rather than
-    /// inside `mini_transport` alongside it.
-    pub btn_bt_pair:   Button,
-    pub status_label:  Label,
-    pub btn_prev:      Button,
-    pub btn_play:      Button,
-    pub btn_next:      Button,
-    pub volume:        VolumeControl,
+    pub view:          super::views::playback_mini::MiniPlaybackView,
 }
 
 // ── Build functions ───────────────────────────────────────────────────────────
@@ -183,34 +125,6 @@ pub(super) fn build_left_pane(
     left_pane.append(presets);
     left_pane.append(io);
     left_pane
-}
-
-/// Icon + "Restart Pairing" label, for the main window's "Restart pairing"
-/// button. `css_class`/`icon_px` let `build_mini_window()` reuse this for a
-/// smaller variant rather than duplicating the icon+label+button assembly.
-/// Not `.transport-btn` (its `border-radius:50%`/`padding:0`/fixed size is
-/// tuned for a single glyph and would clip a text label) — a dedicated
-/// class instead, styled in `system.css`/`dark.css`/`modern.css`.
-fn build_bt_pair_button(css_class: &str, icon_px: i32) -> Button {
-    let icon = gtk::Image::builder()
-        .icon_name("bluetooth-symbolic")
-        .pixel_size(icon_px)
-        .build();
-    let label = Label::builder().label("Restart Pairing").build();
-    let content = GtkBox::builder()
-        .orientation(Orientation::Horizontal).spacing(6)
-        .halign(Align::Center)
-        .build();
-    content.append(&icon);
-    content.append(&label);
-    let btn = Button::builder()
-        .css_classes(["flat", css_class])
-        .tooltip_text("Restart Bluetooth pairing")
-        .halign(Align::Center)
-        .visible(false)
-        .build();
-    btn.set_child(Some(&content));
-    btn
 }
 
 pub(super) fn build_playback_widgets(ds: &DeviceState) -> PlaybackWidgets {
@@ -334,19 +248,6 @@ pub(super) fn build_right_pane(pw: &PlaybackWidgets) -> gtk::Box {
     right_pane
 }
 
-fn build_mini_flip_cover() -> FlipCover {
-    let f = FlipCover::new();
-    f.set_hexpand(false);
-    f.set_vexpand(false);
-    f.set_valign(Align::Center);
-    f.add_css_class("mini-art");
-    // Defensive clip to the widget's own box (e.g. in case the 3D flip's
-    // perspective transform renders very slightly outside its bounds at
-    // extreme angles) — no rounded corners here, so nothing to clip normally.
-    f.set_overflow(gtk::Overflow::Hidden);
-    f
-}
-
 fn build_mini_top_bar() -> (Label, gtk::MenuButton, Button, Button, GtkBox) {
     let mini_device_label = Label::builder()
         .label("").css_classes(["mini-device-label"])
@@ -376,58 +277,6 @@ fn build_mini_top_bar() -> (Label, gtk::MenuButton, Button, Button, GtkBox) {
     mini_top_bar.append(&mini_menu_btn);
     mini_top_bar.append(&mini_close_btn);
     (mini_device_label, mini_menu_btn, mini_restore_btn, mini_close_btn, mini_top_bar)
-}
-
-fn build_mini_transport(ds: &DeviceState) -> (Label, Button, Button, Button, VolumeControl, GtkBox) {
-    let mini_status_label = Label::builder()
-        .label("").css_classes(["mini-status-label"])
-        .halign(Align::Start).hexpand(true)
-        .ellipsize(gtk::pango::EllipsizeMode::End)
-        .build();
-
-    let mini_btn_prev = Button::builder()
-        .icon_name("media-skip-backward-symbolic")
-        .css_classes(["mini-transport-btn", "flat"]).build();
-    let mini_btn_play = Button::builder()
-        .icon_name("media-playback-start-symbolic")
-        .css_classes(["mini-play-btn", "suggested-action"]).build();
-    let mini_btn_next = Button::builder()
-        .icon_name("media-skip-forward-symbolic")
-        .css_classes(["mini-transport-btn", "flat"]).build();
-
-    let volume = VolumeControl::new(ds, true);
-
-    let mini_transport_center = GtkBox::builder()
-        .orientation(Orientation::Horizontal).spacing(2).build();
-    mini_transport_center.append(&mini_btn_prev);
-    mini_transport_center.append(&mini_btn_play);
-    mini_transport_center.append(&mini_btn_next);
-
-    let mini_vol_end = GtkBox::builder()
-        .valign(Align::Center).build();
-    mini_vol_end.append(&volume);
-
-    // Card wraps only the actual playback controls (prev/play/next +
-    // volume) — mini_status_label sits outside it. mini_status_label's own
-    // hexpand(true) already pushes this group to the row's trailing edge
-    // (the only hexpand child in mini_transport, so it absorbs all the
-    // leftover width), so mini_vol_end no longer needs its own
-    // hexpand/halign(End) to get there.
-    let mini_controls_card = GtkBox::builder()
-        .orientation(Orientation::Horizontal).spacing(6)
-        .css_classes(["mini-transport-card"])
-        .build();
-    mini_controls_card.append(&mini_transport_center);
-    mini_controls_card.append(&mini_vol_end);
-
-    let mini_transport = GtkBox::builder()
-        .orientation(Orientation::Horizontal).hexpand(true)
-        .build();
-    mini_transport.append(&mini_status_label);
-    mini_transport.append(&mini_controls_card);
-
-    (mini_status_label, mini_btn_prev, mini_btn_play, mini_btn_next,
-     volume, mini_transport)
 }
 
 /// Narrowest/widest the mini window can be dragged to via `build_mini_resize_handle()`.
@@ -550,65 +399,11 @@ fn wire_mini_resize(stable: &gtk::Overlay) {
     stable.add_controller(gesture);
 }
 
-pub(super) fn build_mini_window(ds: &DeviceState) -> (MiniWidgets, gtk::WindowHandle) {
-    let mini_artwork = build_mini_flip_cover();
+pub(super) fn build_mini_window(
+    ds:    &DeviceState,
+    icons: &Rc<super::icons::IconSet>,
+) -> (MiniWidgets, gtk::WindowHandle) {
     let (mini_device_label, mini_menu_btn, mini_restore_btn, mini_close_btn, mini_top_bar) = build_mini_top_bar();
-    let (mini_status_label, mini_btn_prev, mini_btn_play, mini_btn_next,
-         mini_volume, mini_transport) = build_mini_transport(ds);
-
-    let mini_title_label  = SwipeText::new("—", "mini-title",  false, false);
-    let mini_artist_label = SwipeText::new("",  "mini-artist", false, false);
-    let mini_btn_bt_pair  = build_bt_pair_button("mini-bt-pair-btn", 11);
-    // Left-aligned (not the shared helper's default Center) so it lines up
-    // with `mini_status_label`'s own left edge (`build_mini_transport()`,
-    // halign(Start)).
-    mini_btn_bt_pair.set_halign(Align::Start);
-    mini_btn_bt_pair.set_valign(Align::Center);
-
-    // Overlaid on `mini_artist_label` rather than appended as its own row —
-    // `blank_playback_baseline()`/`has_playable_content()` guarantee title
-    // and artist are always blank exactly when this button is visible (both
-    // conditions are the same "nothing playable" check), so there's nothing
-    // real for it to cover. A real extra row would grow/shrink the whole
-    // mini window's height every time the button's visibility flips (the
-    // reported bug); `gtk::Overlay` doesn't affect the main child's size
-    // request by default (`measure_overlay` defaults to `false`), so
-    // stacking it here keeps the window a fixed height regardless.
-    let mini_artist_overlay = gtk::Overlay::new();
-    mini_artist_overlay.set_child(Some(&mini_artist_label.stack));
-    mini_artist_overlay.add_overlay(&mini_btn_bt_pair);
-
-    let mini_info_box = GtkBox::builder()
-        .orientation(Orientation::Vertical).spacing(4)
-        .valign(Align::Center).hexpand(true)
-        .build();
-    mini_info_box.append(&mini_title_label.stack);
-    mini_info_box.append(&mini_artist_overlay);
-    mini_info_box.append(&mini_transport);
-
-    let mini_main_row = GtkBox::builder()
-        .orientation(Orientation::Horizontal).spacing(12)
-        .margin_start(14).margin_end(14).margin_bottom(14)
-        .build();
-    // Explicit background fills the vertical centering gap that appears above
-    // mini_info_box (valign=Center, shorter than the art stack).  Without it
-    // the NGL renderer can leave stale GPU buffer pixels there. Not
-    // reliably reproducible since ScrollFadeLabel's rewrite to a
-    // single-pass GSK snapshot(), so it's off by default — hidden behind
-    // config.mini_stale_pixel_workaround (no Settings UI) rather than
-    // deleted outright, so it can be flipped back on by hand-editing
-    // config.json if the glitch turns up again, without a rebuild.
-    if crate::config::with(|cfg| cfg.mini_stale_pixel_workaround) {
-        mini_main_row.add_css_class("mini-main-row");
-    }
-    mini_main_row.append(&mini_artwork);
-    mini_main_row.append(&mini_info_box);
-
-    let mini_content = GtkBox::builder()
-        .orientation(Orientation::Vertical).spacing(0)
-        .build();
-    mini_content.append(&mini_top_bar);
-    mini_content.append(&mini_main_row);
 
     // ArtBackground sits *inside* mini-outer (not wrapping the whole
     // window) so mini-outer's own overflow(Hidden) + border-radius clips
@@ -616,10 +411,20 @@ pub(super) fn build_mini_window(ds: &DeviceState) -> (MiniWidgets, gtk::WindowHa
     // rounded shape — wrapping the whole window instead would let the
     // (rectangular) blur peek out past the rounded corners, where the
     // window itself is otherwise fully transparent to the real desktop.
+    // Built before the view: the view is handed a reference so it can feed
+    // it artwork (the view has the data; the chrome owns the surface).
     let mini_art_bg = art_background::ArtBackground::new();
     mini_art_bg.set_hexpand(true);
     mini_art_bg.set_vexpand(true);
     mini_art_bg.set_visible(false); // gated live — see update_art_background_visibility()
+
+    let view = super::views::playback_mini::MiniPlaybackView::new(ds, icons, Some(&mini_art_bg));
+
+    let mini_content = GtkBox::builder()
+        .orientation(Orientation::Vertical).spacing(0)
+        .build();
+    mini_content.append(&mini_top_bar);
+    mini_content.append(&view);
 
     let mini_outer = gtk::Overlay::new();
     mini_outer.set_child(Some(&mini_art_bg));
@@ -665,20 +470,11 @@ pub(super) fn build_mini_window(ds: &DeviceState) -> (MiniWidgets, gtk::WindowHa
 
     let mini = MiniWidgets {
         root:          mini_root.clone(),
-        art_bg:        mini_art_bg,
-        artwork:       mini_artwork,
         device_label:  mini_device_label,
         menu_btn:      mini_menu_btn,
         restore_btn:   mini_restore_btn,
         close_btn:     mini_close_btn,
-        title_label:   mini_title_label,
-        artist_label:  mini_artist_label,
-        btn_bt_pair:   mini_btn_bt_pair,
-        status_label:  mini_status_label,
-        btn_prev:      mini_btn_prev,
-        btn_play:      mini_btn_play,
-        btn_next:      mini_btn_next,
-        volume:        mini_volume,
+        view,
     };
 
     (mini, mini_root)

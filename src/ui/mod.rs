@@ -661,7 +661,7 @@ impl DeviceWindow {
         let left_pane = build_left_pane(&presets, &io);
         let pw = build_playback_widgets(&ds);
         let right_pane = build_right_pane(&pw);
-        let (mini, _mini_root) = build_mini_window(&ds);
+        let (mini, _mini_root) = build_mini_window(&ds, &icons);
 
         // ── Paned split + sidebar logic ───────────────────────────────────────────
         let paned = gtk::Paned::new(Orientation::Horizontal);
@@ -909,43 +909,45 @@ impl DeviceWindow {
             move |_, mask| {
                 let Some(i) = i.upgrade() else { return };
                 dbg_ui(&format!("playback-changed signal: mask={mask:#x}"));
-                // `update_playback_ui()`/`update_mini_playback()` no-op
-                // themselves while offline (`DeviceWindowInner::live()`) —
-                // needed since a signal can race with (or briefly precede) a
-                // disconnect, and acting on it anyway would repaint from
-                // `playback_state()`'s still-cached fields, undoing whatever
-                // `reset_device_ui()` just cleared.
-                if *i.mini_mode.borrow() { i.update_mini_playback(mask); } else { i.update_playback_ui(mask); }
+                // `update_playback_ui()` no-ops itself while offline
+                // (`DeviceWindowInner::live()`) — needed since a signal can
+                // race with (or briefly precede) a disconnect, and acting on
+                // it anyway would repaint from `playback_state()`'s
+                // still-cached fields, undoing whatever `reset_device_ui()`
+                // just cleared. The mini display is MiniPlaybackView's own
+                // business now (active exactly while mini mode shows).
+                if !*i.mini_mode.borrow() { i.update_playback_ui(mask); }
             }
         });
 
-        // The input/output dropdowns themselves are InputOutputView's
-        // business now — this handler only covers the input switch's side
-        // effects on the *playback* display (source-icon artwork fallback;
-        // in mini mode also the status line, hence the full refresh there,
-        // same as before).
+        // The input/output dropdowns are InputOutputView's business, the
+        // mini display MiniPlaybackView's — this handler only covers the
+        // input switch's side effect on the *full* playback display (the
+        // source-icon artwork fallback).
         ds.connect_input_changed({
             let i = Rc::downgrade(&inner);
             move |_| {
                 let Some(i) = i.upgrade() else { return };
                 // See the `playback-changed` handler above — same reasoning.
-                if *i.mini_mode.borrow() { i.update_mini_playback(crate::device::state::playback_changed::ALL); } else { i.update_artwork(); }
+                if !*i.mini_mode.borrow() { i.update_artwork(); }
             }
         });
 
         // Populate immediately from whatever the DeviceState already has cached.
         inner.populate_all();
 
-        // The views stay permanently active for now — each self-subscribes
-        // to the DeviceState signals it needs, and today's window-driven
-        // update paths refreshed them regardless of which panel was showing
-        // anyway, so this matches existing behavior. Mode-following
-        // activation (mini mode deactivating the full-panel views) comes
-        // with the playback-view split.
+        // The left-pane views (and, until the full playback display becomes
+        // a view too, the full tree's volume cluster) stay permanently
+        // active — each self-subscribes to the DeviceState signals it
+        // needs, and today's window-driven update paths refreshed them
+        // regardless of which panel was showing anyway. MiniPlaybackView is
+        // the first mode-following one: active exactly while the mini panel
+        // shows (enter/exit_mini_mode flip it; activation runs its own full
+        // catch-up refresh).
         inner.pw.volume.set_active(true);
-        inner.mini.volume.set_active(true);
         inner.presets.set_active(true);
         inner.io.set_active(true);
+        inner.mini.view.set_active(*inner.mini_mode.borrow());
 
         // Opportunistically keeps `full_mode_size` fresh from *any* genuine
         // maximize, not just the one `enter_mini_mode()` captures on its own
@@ -1178,7 +1180,8 @@ impl DeviceWindow {
                 move |_, keyval, _keycode, state| {
                     let Some(i) = i.upgrade() else { return glib::Propagation::Proceed };
                     let (prev, next, play) = if *i.mini_mode.borrow() {
-                        (i.mini.btn_prev.clone(), i.mini.btn_next.clone(), i.mini.btn_play.clone())
+                        let (prev, play, next) = i.mini.view.transport_buttons();
+                        (prev, next, play)
                     } else {
                         (i.pw.btn_prev.clone(), i.pw.btn_next.clone(), i.pw.btn_play.clone())
                     };
@@ -1265,26 +1268,6 @@ impl DeviceWindow {
             });
             inner.mini.root.add_controller(gesture);
         }
-
-        inner.mini.btn_play.connect_clicked({
-            let i = Rc::downgrade(&inner);
-            move |_| { if let Some(i) = i.upgrade() { i.ds.do_play_pause(); } }
-        });
-
-        inner.mini.btn_prev.connect_clicked({
-            let i = Rc::downgrade(&inner);
-            move |_| { if let Some(i) = i.upgrade() { i.ds.do_prev(); } }
-        });
-
-        inner.mini.btn_next.connect_clicked({
-            let i = Rc::downgrade(&inner);
-            move |_| { if let Some(i) = i.upgrade() { i.ds.do_next(); } }
-        });
-
-        inner.mini.btn_bt_pair.connect_clicked({
-            let i = Rc::downgrade(&inner);
-            move |_| { if let Some(i) = i.upgrade() { i.ds.bt_enter_pairing(); } }
-        });
 
         // ── Window actions ────────────────────────────────────────────────────────
         // win.close (Ctrl-W), win.devices, win.about, win.settings — one
