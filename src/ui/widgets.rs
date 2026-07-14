@@ -47,13 +47,6 @@ pub(crate) struct OutputWidgets {
     pub updating:    Rc<RefCell<bool>>,
 }
 
-#[derive(Clone)]
-pub(crate) struct PresetWidgets {
-    pub btns:   Rc<Vec<Button>>,
-    pub pics:   Rc<Vec<gtk::Image>>,
-    pub labels: Rc<Vec<Label>>,
-}
-
 /// Two `ScrollFadeLabel`s in a `gtk::Stack`, slid between on text change
 /// instead of a hard swap. `set_text()` matches `ScrollFadeLabel`'s own
 /// signature, so call sites don't change.
@@ -208,71 +201,6 @@ pub(super) fn build_header(
     (header, sidebar_btn, mini_btn, connecting_spinner)
 }
 
-pub(super) fn build_presets_panel() -> (PresetWidgets, gtk::ScrolledWindow) {
-    let presets_box = GtkBox::builder()
-        .orientation(Orientation::Vertical).spacing(2)
-        .margin_top(8).margin_bottom(4).margin_start(8).margin_end(8)
-        .build();
-    presets_box.append(
-        &Label::builder()
-            .label("PRESETS").css_classes(["section-label"])
-            .halign(Align::Start).margin_bottom(4)
-            .build(),
-    );
-
-    let mut preset_btns:   Vec<Button>     = Vec::new();
-    let mut preset_pics:   Vec<gtk::Image> = Vec::new();
-    let mut preset_labels: Vec<Label>      = Vec::new();
-
-    for i in 1..=12u32 {
-        let badge = Label::builder()
-            .label(&i.to_string()).css_classes(["preset-badge"])
-            .halign(Align::Center).valign(Align::Center)
-            .build();
-        let pic = gtk::Image::builder()
-            .pixel_size(40).icon_name("audio-x-generic-symbolic")
-            .build();
-        pic.add_css_class("preset-art");
-        pic.set_overflow(gtk::Overflow::Hidden);
-        let lbl = Label::builder()
-            .label("").css_classes(["preset-name"])
-            .ellipsize(gtk::pango::EllipsizeMode::End)
-            .halign(Align::Start).hexpand(true).width_chars(0)
-            .build();
-        let tile = GtkBox::builder()
-            .orientation(Orientation::Horizontal).spacing(6)
-            .css_classes(["preset-tile"]).overflow(gtk::Overflow::Hidden)
-            .build();
-        tile.append(&badge);
-        tile.append(&pic);
-        tile.append(&lbl);
-        // "preset-btn" only styled under RustyWiiM Modern (see modern.css),
-        // to trim its default flat-button horizontal padding — inert
-        // elsewhere, same pattern as "panel-card"/"controls-card".
-        let btn = Button::builder().child(&tile).css_classes(["flat", "preset-btn"]).build();
-        btn.set_tooltip_text(Some(&format!("Preset {i}")));
-        btn.set_visible(false);
-        presets_box.append(&btn);
-        preset_btns.push(btn);
-        preset_pics.push(pic);
-        preset_labels.push(lbl);
-    }
-
-    let pp = PresetWidgets {
-        btns:   Rc::new(preset_btns),
-        pics:   Rc::new(preset_pics),
-        labels: Rc::new(preset_labels),
-    };
-
-    let presets_scroll = gtk::ScrolledWindow::builder()
-        .child(&presets_box)
-        .hscrollbar_policy(gtk::PolicyType::Never)
-        .vexpand(true)
-        .build();
-
-    (pp, presets_scroll)
-}
-
 pub(super) fn build_source_widgets(icons: &Rc<icons::IconSet>) -> SourceWidgets {
     let icons = Rc::clone(icons);
     let sw = SourceWidgets {
@@ -379,7 +307,7 @@ pub(super) fn build_output_widgets(icons: &Rc<icons::IconSet>) -> OutputWidgets 
     ow
 }
 
-pub(super) fn build_left_pane(sw: &SourceWidgets, ow: &OutputWidgets, presets_scroll: &gtk::ScrolledWindow) -> gtk::Box {
+pub(super) fn build_left_pane(sw: &SourceWidgets, ow: &OutputWidgets, presets: &super::views::presets::PresetsView) -> gtk::Box {
     let io_box = GtkBox::builder()
         .orientation(Orientation::Vertical).spacing(4)
         .margin_top(4).margin_bottom(8).margin_start(8).margin_end(8)
@@ -399,7 +327,7 @@ pub(super) fn build_left_pane(sw: &SourceWidgets, ow: &OutputWidgets, presets_sc
         .orientation(Orientation::Vertical)
         .css_classes(["panel-card"])
         .build();
-    left_pane.append(presets_scroll);
+    left_pane.append(presets);
     left_pane.append(&io_box);
     left_pane
 }

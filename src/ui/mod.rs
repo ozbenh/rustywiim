@@ -348,7 +348,7 @@ struct DeviceWindowInner {
     sw:             SourceWidgets,
     ow:             OutputWidgets,
     pw:             PlaybackWidgets,
-    pp:             PresetWidgets,
+    presets:        views::presets::PresetsView,
     dev_info_label: Label,
     ip_label:       Label,
     net_icon:       gtk::Image,
@@ -657,10 +657,10 @@ impl DeviceWindow {
         dbg_ui(&format!("DeviceWindow creating (uuid={})", cfg_uuid));
 
         let (header, sidebar_btn, mini_btn, connecting_spinner) = build_header(init_dev_cfg.panel_visible);
-        let (pp, presets_scroll) = build_presets_panel();
+        let presets = views::presets::PresetsView::new(&ds, &icons);
         let sw = build_source_widgets(&icons);
         let ow = build_output_widgets(&icons);
-        let left_pane = build_left_pane(&sw, &ow, &presets_scroll);
+        let left_pane = build_left_pane(&sw, &ow, &presets);
         let pw = build_playback_widgets(&ds);
         let right_pane = build_right_pane(&pw);
         let (mini, _mini_root) = build_mini_window(&ds);
@@ -824,7 +824,7 @@ impl DeviceWindow {
             sw,
             ow,
             pw,
-            pp,
+            presets,
             dev_info_label,
             ip_label,
             net_icon,
@@ -954,22 +954,18 @@ impl DeviceWindow {
             }
         });
 
-        ds.connect_presets_changed({
-            let i = Rc::downgrade(&inner);
-            move |_| { if let Some(i) = i.upgrade() { i.on_presets_changed(); } }
-        });
-
         // Populate immediately from whatever the DeviceState already has cached.
         inner.populate_all();
 
-        // Both volume clusters stay permanently active for now — they
-        // self-subscribe to `playback-changed` (VOLUME bit), and keeping the
-        // hidden tree's one live too is cheap (an icon + a 3-char label) and
-        // means mode switches never need a volume catch-up. Once the full/
-        // mini playback views own them, activation follows the panel switch
-        // instead.
+        // The views stay permanently active for now — each self-subscribes
+        // to the DeviceState signals it needs, and today's window-driven
+        // update paths refreshed them regardless of which panel was showing
+        // anyway, so this matches existing behavior. Mode-following
+        // activation (mini mode deactivating the full-panel views) comes
+        // with the playback-view split.
         inner.pw.volume.set_active(true);
         inner.mini.volume.set_active(true);
+        inner.presets.set_active(true);
 
         // Opportunistically keeps `full_mode_size` fresh from *any* genuine
         // maximize, not just the one `enter_mini_mode()` captures on its own
@@ -1267,17 +1263,6 @@ impl DeviceWindow {
                 }
             }
         });
-
-        for (idx, btn) in inner.pp.btns.iter().enumerate() {
-            let num = (idx + 1) as u32;
-            let i = Rc::downgrade(&inner);
-            btn.connect_clicked(move |_| {
-                let Some(i) = i.upgrade() else { return };
-                if let Some(c) = i.ds.client() {
-                    i.ds.rt().spawn(async move { let _ = c.play_preset(num).await; });
-                }
-            });
-        }
 
         // ── Mini player signals ───────────────────────────────────────────────────
         // A plain click, not a toggle — this button only ever lives in the

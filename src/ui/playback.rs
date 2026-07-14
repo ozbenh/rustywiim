@@ -150,13 +150,6 @@ impl DeviceWindowInner {
             btn.set_sensitive(false);
         }
 
-        for btn in self.pp.btns.iter() { btn.set_visible(false); }
-        for lbl in self.pp.labels.iter() { lbl.set_label(""); }
-        for pic in self.pp.pics.iter() {
-            pic.set_paintable(None::<&gtk::gdk::Paintable>);
-            pic.set_icon_name(Some("audio-x-generic-symbolic"));
-        }
-
         *self.sw.updating.borrow_mut() = true;
         self.sw.dropdown.set_model(Some(&gtk::StringList::new(&["—"])));
         self.sw.dropdown.set_sensitive(false);
@@ -216,7 +209,6 @@ impl DeviceWindowInner {
         self.update_remote_display();
         if self.ds.device_info().is_some() {
             self.apply_device_info();
-            self.on_presets_changed();
         } else {
             // `Failed`/`Disconnected` show "Disconnected" text — a real,
             // potentially long-lived steady state (`set_device(...,
@@ -640,70 +632,6 @@ impl DeviceWindowInner {
             *self.ow.updating.borrow_mut() = true;
             self.ow.dropdown.set_selected(idx as u32);
             *self.ow.updating.borrow_mut() = false;
-        }
-    }
-
-    // ── Presets ───────────────────────────────────────────────────────────────
-
-    pub(super) fn on_presets_changed(&self) {
-        use crate::device::api::PresetKind;
-        let presets = self.ds.presets();
-        let device_id = self.ds.capabilities().map(|c| c.device_id);
-
-        // Clear all slots first.
-        for btn in self.pp.btns.iter() { btn.set_visible(false); }
-        for lbl in self.pp.labels.iter() { lbl.set_label(""); }
-        for pic in self.pp.pics.iter() {
-            pic.set_paintable(None::<&gtk::gdk::Paintable>);
-            pic.set_icon_name(Some("audio-x-generic-symbolic"));
-            pic.set_pixel_size(40);
-            pic.remove_css_class("preset-art-small");
-        }
-
-        for entry in &presets {
-            let idx = entry.slot.saturating_sub(1);
-            if let Some(btn) = self.pp.btns.get(idx) {
-                btn.set_visible(true);
-                btn.set_tooltip_text(Some(&entry.tooltip()));
-            }
-            if let Some(lbl) = self.pp.labels.get(idx) {
-                lbl.set_label(entry.label());
-            }
-            if let Some(pic) = self.pp.pics.get(idx) {
-                match &entry.kind {
-                    PresetKind::Media => {
-                        if !entry.art_bytes.is_empty() {
-                            let gbytes = glib::Bytes::from(&entry.art_bytes);
-                            if let Ok(tex) = gtk::gdk::Texture::from_bytes(&gbytes) {
-                                pic.set_paintable(Some(&tex));
-                            }
-                        }
-                    }
-                    PresetKind::InputSwitch { input_id } => {
-                        pic.set_pixel_size(26);
-                        pic.add_css_class("preset-art-small");
-                        let icon_key = match device_id {
-                            Some(id) => capabilities::icon_canon_for_input(input_id, id),
-                            None     => input_id.as_str(),
-                        };
-                        pic.set_paintable(Some(self.icons.source_paintable(icon_key)));
-                    }
-                    PresetKind::OutputSwitch { output_id } => {
-                        pic.set_pixel_size(26);
-                        pic.add_css_class("preset-art-small");
-                        let canon = capabilities::canon_new_output_name(output_id);
-                        let icon_canon = device_id
-                            .map(|id| capabilities::icon_canon_for_output(canon, id))
-                            .unwrap_or(canon);
-                        pic.set_paintable(Some(self.icons.output_paintable(icon_canon)));
-                    }
-                    PresetKind::OtherRoutine => {
-                        pic.set_pixel_size(26);
-                        pic.add_css_class("preset-art-small");
-                    }
-                    PresetKind::Empty => {}
-                }
-            }
         }
     }
 
