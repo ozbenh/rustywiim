@@ -1485,12 +1485,9 @@ impl DeviceWindow {
             // for the same reason enter_mini_mode() insists on it live.
             inner.window.unmaximize();
             inner.apply_window_chrome(true);
-            let mini_w = if inner.mini_mode_width.get() > 0 {
-                inner.mini_mode_width.get()
-            } else {
-                MINI_WIDTH_DEFAULT
-            };
-            inner.window.set_default_size(mini_w, -1);
+            // Same width-resolve + measured-height sizing as the live
+            // `enter_mini_mode()` transition, shared so the two can't drift.
+            inner.apply_mini_window_size();
         }
 
         Self { window, inner }

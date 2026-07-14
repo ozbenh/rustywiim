@@ -1090,6 +1090,19 @@ impl DeviceWindowInner {
             self.window.set_content(Some(&self.mini.root));
             self.window.set_decorated(false);
             self.window.set_resizable(false);
+            // AdwWindow/AdwApplicationWindow hardcodes a 360x200 minimum via
+            // `gtk_widget_set_size_request(self, 360, 200)` in its own
+            // constructor (adw-window.c) — NOT a CSS rule, so no stylesheet
+            // override touches it. On a `resizable(false)` window GTK sizes to
+            // max(content, size_request), so that floor pins the mini window at
+            // 200px tall even though the mini content only wants ~118px, packing
+            // it into the top half (the "twice as tall" bug seen on the newer
+            // libadwaita in GTK 4.22 / Fedora 44 — the 4.14 AdwWindow had no such
+            // request). Clear it while mini content is shown; restored below when
+            // returning to full mode. This works because it's the *shared* window
+            // now — the old design's mini panel was a plain gtk::ApplicationWindow,
+            // which never had this request in the first place.
+            self.window.set_size_request(-1, -1);
         } else {
             self.window.remove_css_class("mini-window");
             self.window.remove_css_class("mini-window-modern");
@@ -1097,6 +1110,9 @@ impl DeviceWindowInner {
             self.window.set_content(Some(&self.full_content));
             self.window.set_decorated(true);
             self.window.set_resizable(true);
+            // Restore AdwWindow's own default minimum, cleared for mini mode
+            // above — see that comment.
+            self.window.set_size_request(360, 200);
         }
         // Re-derives ArtBackground visibility (+ mini-window-modern +
         // ScrollFadeLabel drop-shadow) for whichever content subtree is now
@@ -1106,6 +1122,22 @@ impl DeviceWindowInner {
         // whatever it last had; harmless while it's not shown, and this
         // same call self-heals it the next time it's reattached.
         super::update_art_background_visibility();
+    }
+
+    /// The mini window's target size for `set_default_size()`: the requested
+    /// width plus the mini content's *measured* natural height at that width.
+    ///
+    /// Passes a concrete measured height rather than `-1`. On an already-built
+    /// window `-1` doesn't mean "shrink to content" — it means "leave the
+    /// height default unchanged", so the window would keep the full-mode
+    /// height (~640) it was constructed with unless something re-negotiates it
+    /// down. Requesting the measured natural height leaves nothing ambiguous
+    /// and behaves the same across GTK versions. (Note: this is complementary
+    /// to, not the cure for, the "twice as tall" bug — that was AdwWindow's
+    /// hardcoded 360x200 `size_request` floor, cleared in `apply_window_chrome()`.)
+    pub(super) fn mini_target_size(&self, mini_w: i32) -> (i32, i32) {
+        let (_, nat_h, _, _) = self.mini.root.measure(gtk::Orientation::Vertical, mini_w);
+        (mini_w, nat_h.max(1))
     }
 
     /// One-line window-geometry snapshot for the `--debug=ui` diagnostics
@@ -1125,6 +1157,25 @@ impl DeviceWindowInner {
             self.window.is_maximized(), self.window.width(), self.window.height(),
             self.window.default_size(),
         )
+    }
+
+    /// Resolve the mini window's width (the per-device saved resize width, or
+    /// `MINI_WIDTH_DEFAULT` if never resized) and request it plus the mini
+    /// content's measured natural height via `set_default_size()`. Shared by
+    /// the live `enter_mini_mode()` transition and the start-in-mini restore
+    /// in `new_inner()` (mod.rs) so the two can't drift on how the mini window
+    /// is sized — this is the logic the "twice as tall" investigation churned
+    /// through, kept in one place deliberately. Caller handles chrome swap,
+    /// bookkeeping, and present().
+    pub(super) fn apply_mini_window_size(&self) {
+        let mini_w = if self.mini_mode_width.get() > 0 {
+            self.mini_mode_width.get()
+        } else {
+            super::widgets::MINI_WIDTH_DEFAULT
+        };
+        let (mini_w, mini_h) = self.mini_target_size(mini_w);
+        super::dbg_ui(&format!("apply mini window size: requesting set_default_size({mini_w}, {mini_h})"));
+        self.window.set_default_size(mini_w, mini_h);
     }
 
     pub(super) fn enter_mini_mode(&self) {
@@ -1174,24 +1225,11 @@ impl DeviceWindowInner {
         self.window.unmaximize();
         super::dbg_ui(&format!("enter mini mode: after unmaximize(): {}", self.window_geom()));
         self.apply_window_chrome(true);
-        let mini_w = if self.mini_mode_width.get() > 0 {
-            self.mini_mode_width.get()
-        } else {
-            super::widgets::MINI_WIDTH_DEFAULT
-        };
-        // Height -1: let the content negotiate its own natural height,
-        // rather than keep whatever the full window's height happened to
-        // be — same `set_default_size()` mechanism `wire_mini_resize()`
-        // already uses live for the drag-resize, just both dimensions at
-        // once here instead of only width.
-        //
-        // This call also overwrites GTK/the compositor's own notion of
-        // "the size to restore to when this window is un-maximized" — see
-        // exit_mini_mode()'s matching set_default_size() call, which resets
-        // it back before maximize()/unmaximize() runs there, specifically
-        // to undo that side effect.
-        super::dbg_ui(&format!("enter mini mode: requesting set_default_size({mini_w}, -1)"));
-        self.window.set_default_size(mini_w, -1);
+        // `apply_mini_window_size()` also overwrites GTK/the compositor's own
+        // notion of "the size to restore to when un-maximized" — see
+        // exit_mini_mode()'s matching set_default_size() call, which resets it
+        // back before maximize()/unmaximize() runs there to undo that side effect.
+        self.apply_mini_window_size();
         super::dbg_ui(&format!("enter mini mode: after set_default_size(): {}", self.window_geom()));
         self.window.present();
     }
