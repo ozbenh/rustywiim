@@ -369,38 +369,7 @@ impl AppState {
             init_icon_resource();
         }
 
-        // Replace the app.quit action (set up in main.rs) with one that explicitly
-        // destroys every device window first so connect_destroy fires (saving
-        // config, cancelling timers). win.close() is a no-op on unrealized
-        // windows (e.g. a window never shown when starting in mini mode), and app.quit()
-        // on its own destroys windows after the main loop exits where cleanup is unreliable.
-        {
-            let s = Rc::downgrade(self_rc);
-            let app = self_rc.app.clone();
-            let quit_action = gio::SimpleAction::new("quit", None);
-            quit_action.connect_activate(move |_, _| {
-                dbg_ui("quit action fired");
-                QUITTING.store(true, Ordering::Relaxed);
-                if let Some(s) = s.upgrade() {
-                    // Collect first so connect_destroy (which mutates registry) doesn't
-                    // invalidate the iterator.
-                    let wins: Vec<_> = s.registry.borrow().iter()
-                        .map(|dw| dw.window.clone())
-                        .collect();
-                    dbg_ui(&format!("quit: closing {} window(s)", wins.len()));
-                    for win in wins {
-                        // realize() first: close() is a no-op on unrealized windows
-                        // (e.g. main window never shown when starting in mini mode).
-                        gtk::prelude::WidgetExt::realize(&win);
-                        win.close();
-                    }
-                } else {
-                    dbg_ui("quit: AppState already freed");
-                }
-                app.quit();
-            });
-            self_rc.app.add_action(&quit_action);
-        }
+        Self::install_quit_action(self_rc);
 
         // `--connect` override: skip discovery/config-restored windows entirely
         // and open exactly one device window straight at the given address.
@@ -514,6 +483,40 @@ impl AppState {
         });
 
         self_rc.disc_mgr.start();
+    }
+
+    /// Replace the app.quit action (set up in main.rs) with one that
+    /// explicitly destroys every device window first so connect_destroy
+    /// fires (saving config, cancelling timers). win.close() is a no-op on
+    /// unrealized windows (e.g. a window never shown when starting in mini
+    /// mode), and app.quit() on its own destroys windows after the main
+    /// loop exits, where cleanup is unreliable.
+    fn install_quit_action(self_rc: &Rc<Self>) {
+        let s = Rc::downgrade(self_rc);
+        let app = self_rc.app.clone();
+        let quit_action = gio::SimpleAction::new("quit", None);
+        quit_action.connect_activate(move |_, _| {
+            dbg_ui("quit action fired");
+            QUITTING.store(true, Ordering::Relaxed);
+            if let Some(s) = s.upgrade() {
+                // Collect first so connect_destroy (which mutates registry) doesn't
+                // invalidate the iterator.
+                let wins: Vec<_> = s.registry.borrow().iter()
+                    .map(|dw| dw.window.clone())
+                    .collect();
+                dbg_ui(&format!("quit: closing {} window(s)", wins.len()));
+                for win in wins {
+                    // realize() first: close() is a no-op on unrealized windows
+                    // (e.g. main window never shown when starting in mini mode).
+                    gtk::prelude::WidgetExt::realize(&win);
+                    win.close();
+                }
+            } else {
+                dbg_ui("quit: AppState already freed");
+            }
+            app.quit();
+        });
+        self_rc.app.add_action(&quit_action);
     }
 }
 
