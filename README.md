@@ -116,6 +116,8 @@ You can pretty-print this file using `target/debug/wiim-capdump`. I would apprec
       We also break up the remaining files and move things around to end up
 	  with smaller files and more logical organisation of the code in the
 	  UI overall.
+    * Fixup the visible name of inputs and outputs on some devices
+    * Some cosmetic adjustments (new icons etc...)
   
   * 0.8.2 - 2026-07-10
     * Fix volume button & scale disabled
