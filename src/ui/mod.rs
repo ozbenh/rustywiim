@@ -160,16 +160,17 @@ impl AppState {
         device_manager.connect_configure_device(|_, ds| {
             let uuid = ds.uuid();
             if uuid.is_empty() { return; }
-            let (access_override, mute_access_override) = config::with(|cfg| {
+            let (access_override, mute_access_override, loop_mode_access_override) = config::with(|cfg| {
                 let d = cfg.device(&uuid);
-                (d.playback_access_override, d.mute_access_override)
+                (d.playback_access_override, d.mute_access_override, d.loop_mode_access_override)
             });
             dbg_state(&format!(
-                "configure-device: {} ({uuid}) access_override={access_override:?} mute_access_override={mute_access_override:?}",
+                "configure-device: {} ({uuid}) access_override={access_override:?} mute_access_override={mute_access_override:?} loop_mode_access_override={loop_mode_access_override:?}",
                 ds.ip(),
             ));
             ds.set_playback_access_override(access_override);
             ds.set_mute_access_override(mute_access_override);
+            ds.set_loop_mode_access_override(loop_mode_access_override);
         });
 
         // `disc_mgr` now owns the *entire* known-device registry (SSDP

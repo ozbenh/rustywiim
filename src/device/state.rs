@@ -95,7 +95,7 @@ use super::api::{
 };
 use super::capabilities::{self, DeviceCapabilities};
 use super::playback;
-use super::playback::{AccessMethod, PlaybackState};
+use super::playback::{AccessMethod, PlaybackState, RepeatMode};
 use super::upnp::{self, UpnpClient};
 
 // ── Connection state ──────────────────────────────────────────────────────────
@@ -586,6 +586,18 @@ struct Inner {
     /// Override pushed in via `set_mute_access_override()`, mirroring
     /// `access_override` exactly.
     mute_access_override: Option<AccessMethod>,
+    /// Loop-mode (shuffle/repeat) write-path counterpart to `access`/
+    /// `mute_access` — independent because HTTP `setPlayerCmd:loopmode:5`
+    /// (shuffle + repeat-one) is confirmed silently ignored on at least the
+    /// WiiM Mini (works fine on WiiM Ultra and the Audio Pro Addon C5), so
+    /// this isn't a `playback_access`-style per-family axis — same
+    /// "one global UpnpPolled default, per-device Settings override for
+    /// the exception" shape as `mute_access`. Recomputed by
+    /// `recompute_access()` alongside `access`/`mute_access`.
+    loop_mode_access:      AccessMethod,
+    /// Override pushed in via `set_loop_mode_access_override()`, mirroring
+    /// `mute_access_override` exactly.
+    loop_mode_access_override: Option<AccessMethod>,
     output_status:   Option<AudioOutputStatus>,
     mode_renames:    HashMap<String, String>,
     /// Raw wire `mode` value from the last poll; -1 = not known
@@ -731,6 +743,8 @@ impl Default for Inner {
             access_override: None,
             mute_access:      AccessMethod::UpnpPolled,
             mute_access_override: None,
+            loop_mode_access:      AccessMethod::UpnpPolled,
+            loop_mode_access_override: None,
             output_status:   None,
             mode_renames:    HashMap::new(),
             current_mode:    -1,
@@ -924,18 +938,19 @@ impl DeviceState {
     /// means "different device, don't attach" rather than "update our
     /// identity."
     ///
-    /// `access_override`/`mute_access_override` are established here, up
-    /// front — not via a separate, later call to
-    /// `set_playback_access_override()`/`set_mute_access_override()` that
-    /// has to land before the first poll tick to matter. There's no window
-    /// where this `DeviceState` exists with the wrong override, because
-    /// there's no point at which it exists without one at all. Since this
-    /// resets *everything* (`*inner = Inner::default()`), including
-    /// whatever overrides an already-connected `DeviceState` had, a caller
-    /// reconnecting an existing instance (`DeviceManager::update_ip()`)
-    /// must read the current values first (`playback_access_override()`/
-    /// `mute_access_override()`) and pass them back in, not just fresh
-    /// defaults.
+    /// `access_override`/`mute_access_override`/`loop_mode_access_override`
+    /// are established here, up front — not via a separate, later call to
+    /// `set_playback_access_override()`/`set_mute_access_override()`/
+    /// `set_loop_mode_access_override()` that has to land before the first
+    /// poll tick to matter. There's no window where this `DeviceState`
+    /// exists with the wrong override, because there's no point at which it
+    /// exists without one at all. Since this resets *everything*
+    /// (`*inner = Inner::default()`), including whatever overrides an
+    /// already-connected `DeviceState` had, a caller reconnecting an
+    /// existing instance (`DeviceManager::update_ip()`) must read the
+    /// current values first (`playback_access_override()`/
+    /// `mute_access_override()`/`loop_mode_access_override()`) and pass them
+    /// back in, not just fresh defaults.
     ///
     /// `connect_now` — when `false`, everything above still happens
     /// (`client`/`ip`/overrides configured, `device-changed` emitted) but
@@ -954,6 +969,7 @@ impl DeviceState {
         tls: TlsMode,
         access_override: Option<AccessMethod>,
         mute_access_override: Option<AccessMethod>,
+        loop_mode_access_override: Option<AccessMethod>,
         connect_now: bool,
     ) {
         // Apply --tls CLI override if set; otherwise use the caller-supplied mode.
@@ -973,6 +989,7 @@ impl DeviceState {
             if connect_now { inner.connection_state = ConnectionState::Connecting; }
             inner.access_override  = access_override;
             inner.mute_access_override = mute_access_override;
+            inner.loop_mode_access_override = loop_mode_access_override;
         }
         self.recompute_access();
         dbg(&format!("signal: device-changed ({})", if connect_now { "connecting" } else { "configured" }));
@@ -1120,13 +1137,14 @@ impl DeviceState {
     /// `access_override`). Called whenever either input changes: after
     /// capabilities are (re)detected, and from `set_playback_access_override`.
     ///
-    /// Also recomputes `mute_access` alongside `access`. Unlike `access`,
-    /// `mute_access`'s base isn't sourced from a per-`FamilyProfile` field —
-    /// only one device family has ever needed a different mute backend
-    /// (iEAST AudioCast), and the per-device Settings override already
-    /// covers that exception, so the base here is just the global
-    /// `AccessMethod::UpnpPolled` default rather than a second capability
-    /// axis.
+    /// Also recomputes `mute_access`/`loop_mode_access` alongside `access`.
+    /// Unlike `access`, neither of those is sourced from a per-`FamilyProfile`
+    /// field — each is a real-hardware-confirmed exception on top of one
+    /// global `AccessMethod::UpnpPolled` default, with the per-device
+    /// Settings override covering it, rather than a family-level capability
+    /// axis (mute: iEAST AudioCast's `GetInfoEx` never carries `CurrentMute`;
+    /// loop mode: HTTP `setPlayerCmd:loopmode:5` confirmed silently ignored
+    /// on at least the WiiM Mini).
     fn recompute_access(&self) {
         let wants_upnp = {
             let mut inner = self.imp().inner.borrow_mut();
@@ -1136,6 +1154,7 @@ impl DeviceState {
             let prev_access = inner.access;
             inner.access = inner.access_override.unwrap_or(base);
             inner.mute_access = inner.mute_access_override.unwrap_or(AccessMethod::UpnpPolled);
+            inner.loop_mode_access = inner.loop_mode_access_override.unwrap_or(AccessMethod::UpnpPolled);
             // Debug-only visibility aid for diagnosing a device where UPnP
             // discovery/`GetInfoEx` never succeeds (playback state silently
             // stays on whatever it last held, since the poll loop only
@@ -1150,7 +1169,9 @@ impl DeviceState {
             {
                 dbg("access config: set to UpnpPolled");
             }
-            inner.access == AccessMethod::UpnpPolled || inner.mute_access == AccessMethod::UpnpPolled
+            inner.access == AccessMethod::UpnpPolled
+                || inner.mute_access == AccessMethod::UpnpPolled
+                || inner.loop_mode_access == AccessMethod::UpnpPolled
         };
         if wants_upnp {
             self.ensure_upnp_client();
@@ -1235,6 +1256,22 @@ impl DeviceState {
     /// `playback_access_override()`.
     pub fn mute_access_override(&self) -> Option<AccessMethod> {
         self.imp().inner.borrow().mute_access_override
+    }
+
+    /// Loop-mode-specific counterpart to `set_playback_access_override()` —
+    /// same semantics, independent field. See `Inner::loop_mode_access`'s
+    /// doc comment for why this exists as its own override.
+    pub fn set_loop_mode_access_override(&self, over: Option<AccessMethod>) {
+        self.imp().inner.borrow_mut().loop_mode_access_override = over;
+        self.recompute_access();
+    }
+
+    /// Current loop-mode-access override, as last established by
+    /// `set_device()` or `set_loop_mode_access_override()`. Read by
+    /// `DeviceManager::update_ip()` so reconnecting to a new IP doesn't lose
+    /// it, mirroring `playback_access_override()`/`mute_access_override()`.
+    pub fn loop_mode_access_override(&self) -> Option<AccessMethod> {
+        self.imp().inner.borrow().loop_mode_access_override
     }
 
     // ── Polling ───────────────────────────────────────────────────────────────
@@ -3047,9 +3084,33 @@ impl DeviceState {
         self.trigger_poll();
     }
 
-    pub fn do_set_loop_mode(&self, mode: i32) {
-        let Some(client) = self.imp().inner.borrow().client.clone() else { return };
-        self.rt().spawn(async move { let _ = client.set_loop_mode(mode).await; });
+    /// Takes canonical `(shuffle, repeat)` — `ui/` never passes a raw wire
+    /// number; the encoding lives in `playback::encode_loop_mode()`, the
+    /// exact inverse of the decoder every poll path already uses. Branches
+    /// on `loop_mode_access`: UPnP `PlayQueue.SetQueueLoopMode` when the
+    /// resolved backend is `UpnpPolled` (the default — see
+    /// `Inner::loop_mode_access`'s doc comment for why), otherwise HTTP
+    /// `setPlayerCmd:loopmode:N`. No HTTP fallback when UPnP is wanted but
+    /// no client has been discovered yet — same "don't silently use the
+    /// other backend" precedent `do_set_mute()`/`access` already follow. No
+    /// optimistic UI update (unlike volume) — shuffle/repeat aren't dragged
+    /// interactively, so waiting for the next poll's confirmation is fine.
+    pub fn do_set_loop_mode(&self, shuffle: bool, repeat: RepeatMode) {
+        let mode = playback::encode_loop_mode(shuffle, repeat);
+        let (loop_mode_access, client, upnp_client) = {
+            let inner = self.imp().inner.borrow();
+            (inner.loop_mode_access, inner.client.clone(), inner.upnp_client.clone())
+        };
+        match loop_mode_access {
+            AccessMethod::UpnpPolled => {
+                let Some(upnp_client) = upnp_client else { return };
+                self.rt().spawn(async move { let _ = upnp_client.set_queue_loop_mode(mode).await; });
+            }
+            AccessMethod::Http => {
+                let Some(client) = client else { return };
+                self.rt().spawn(async move { let _ = client.set_loop_mode(mode).await; });
+            }
+        }
         self.trigger_poll();
     }
 

@@ -328,6 +328,7 @@ impl DeviceWindow {
                 &spec.uuid, &spec.ip, spec.tls_mode,
                 init_dev_cfg.playback_access_override,
                 init_dev_cfg.mute_access_override,
+                init_dev_cfg.loop_mode_access_override,
                 spec.try_connect,
             ),
             None => {

@@ -102,7 +102,7 @@ use gtk::glib;
 use gtk::{Align, Box as GtkBox, Button, Label, Orientation, Scale};
 
 use crate::device::capabilities;
-use crate::device::playback::{PlaybackStatus, RepeatMode};
+use crate::device::playback::PlaybackStatus;
 use crate::device::state::{playback_changed, ConnectionState, DeviceState};
 use crate::ui::art_background::ArtBackground;
 use crate::ui::flip_cover::FlipCover;
@@ -112,23 +112,6 @@ use super::common::{
     format_quality_line, format_status_line, is_unknown, SwipeText,
 };
 use super::volume::VolumeControl;
-
-/// LinkPlay `setPlayerCmd:loopmode:<n>` encoding for a (shuffle, repeat)
-/// pair. Wire-format knowledge that belongs in `device/` — a known,
-/// deliberate abstraction violation kept UI-side for now because the
-/// device layer's loop-mode surface hasn't been redesigned yet; moved
-/// here from `ui/mod.rs` since the shuffle/repeat buttons are this
-/// view's now.
-fn loop_api_mode(shuffle: bool, repeat: RepeatMode) -> i32 {
-    match (shuffle, repeat) {
-        (false, RepeatMode::Off) => 4,
-        (false, RepeatMode::All) => 0,
-        (false, RepeatMode::One) => 1,
-        (true,  RepeatMode::Off) => 3,
-        (true,  RepeatMode::All) => 2,
-        (true,  RepeatMode::One) => 5,
-    }
-}
 
 glib::wrapper! {
     pub struct PlaybackView(ObjectSubclass<imp::PlaybackView>)
@@ -304,7 +287,7 @@ impl PlaybackView {
                 let Some(obj) = weak.upgrade() else { return };
                 let Some(ds) = obj.imp().ds.get() else { return };
                 let ps = ds.playback_state();
-                ds.do_set_loop_mode(loop_api_mode(!ps.shuffle, ps.repeat));
+                ds.do_set_loop_mode(!ps.shuffle, ps.repeat);
             }
         });
         repeat.connect_clicked({
@@ -313,7 +296,7 @@ impl PlaybackView {
                 let Some(obj) = weak.upgrade() else { return };
                 let Some(ds) = obj.imp().ds.get() else { return };
                 let ps = ds.playback_state();
-                ds.do_set_loop_mode(loop_api_mode(ps.shuffle, ps.repeat.next()));
+                ds.do_set_loop_mode(ps.shuffle, ps.repeat.next());
             }
         });
         seek.connect_change_value({

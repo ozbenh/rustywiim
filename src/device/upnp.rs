@@ -251,6 +251,28 @@ impl UpnpClient {
         ).await?;
         Ok(())
     }
+
+    /// `PlayQueue.SetQueueLoopMode`, single `<LoopMode>` argument — same 0-5
+    /// wire encoding as HTTP `setPlayerCmd:loopmode:N`
+    /// (`playback::encode_loop_mode`/`decode_loop_mode_http`), confirmed by
+    /// capturing the real WiiM phone app's own SOAP request. The real write
+    /// path for loop mode on devices where `AccessMethod` resolves
+    /// `loop_mode_access` to `UpnpPolled` (see `DeviceState::do_set_loop_mode()`)
+    /// — added because HTTP's `setPlayerCmd:loopmode:5` (shuffle + repeat
+    /// one) is silently ignored on at least the WiiM Mini, confirmed working
+    /// on WiiM Ultra and the Audio Pro Addon C5, so not a universal WiiM-HTTP
+    /// bug, but real enough on real hardware that the UPnP path (which the
+    /// vendor's own app already relies on) is the safer default.
+    pub async fn set_queue_loop_mode(&self, mode: i32) -> anyhow::Result<()> {
+        let Some(control_url) = &self.play_queue_control_url else {
+            anyhow::bail!("device has no PlayQueue service");
+        };
+        soap_call(
+            control_url, PLAY_QUEUE_SERVICE, "SetQueueLoopMode",
+            &format!("<LoopMode>{mode}</LoopMode>"),
+        ).await?;
+        Ok(())
+    }
 }
 
 fn tls_for_scheme(scheme: &str) -> TlsMode {

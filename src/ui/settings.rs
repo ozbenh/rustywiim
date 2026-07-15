@@ -560,13 +560,13 @@ fn build_general_page(disc_mgr: &DiscoveryManager) -> adw::PreferencesPage {
 // ── Device -> Advanced (access-method overrides) ──────────────────────────────
 //
 // Field diagnostics, not a supported end-user-facing feature. Lets a user
-// experiencing a playback-state or mute bug on real hardware try forcing
-// that field away from the device profile's default backend and report
-// back what does/doesn't work. Two independent rows share this machinery:
-// player status (`playback_access_override`) and mute
-// (`mute_access_override`) — see `DeviceState::recompute_access()`'s doc
-// comment for why mute needed its own override instead of reusing the
-// playback one.
+// experiencing a playback-state, mute, or loop-mode bug on real hardware
+// try forcing that field away from the device profile's default backend
+// and report back what does/doesn't work. Three independent rows share
+// this machinery: player status (`playback_access_override`), mute
+// (`mute_access_override`), and loop mode (`loop_mode_access_override`) —
+// see `DeviceState::recompute_access()`'s doc comment for why each needed
+// its own override instead of reusing the playback one.
 
 /// Display name paired with the override value it writes. `None` ("Default")
 /// must always stay index 0 and must always serialize as an absent field
@@ -751,6 +751,24 @@ fn build_advanced_page(ds: &DeviceState) -> adw::PreferencesPage {
         |ds, method| ds.set_mute_access_override(method),
     );
 
+    // Loop mode's own default is also a fixed `UpnpPolled` global, same
+    // shape as Mute — added after a real bug report: HTTP
+    // `setPlayerCmd:loopmode:5` (shuffle + repeat-one) is silently ignored
+    // on at least the WiiM Mini, confirmed working on WiiM Ultra and the
+    // Audio Pro Addon C5. This row exists for the reverse case: a device
+    // where UPnP's `PlayQueue.SetQueueLoopMode` turns out to be the broken
+    // path instead.
+    let loop_mode_over = config::with(|cfg| cfg.device(&uuid).loop_mode_access_override);
+    let loop_mode_row = build_access_row(
+        "Loop Mode", "Shuffle/repeat",
+        Some(AccessMethod::UpnpPolled), loop_mode_over,
+    );
+    wire_access_row(
+        &loop_mode_row, uuid.clone(), ds,
+        |dev, method| dev.loop_mode_access_override = method,
+        |ds, method| ds.set_loop_mode_access_override(method),
+    );
+
     let group = adw::PreferencesGroup::builder()
         .title("Playback Access Method")
         .description(
@@ -761,6 +779,7 @@ fn build_advanced_page(ds: &DeviceState) -> adw::PreferencesPage {
         .build();
     group.add(&player_status_row);
     group.add(&mute_row);
+    group.add(&loop_mode_row);
 
     let page = adw::PreferencesPage::new();
     page.add(&group);

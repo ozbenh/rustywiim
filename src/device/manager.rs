@@ -156,21 +156,22 @@ impl DeviceManager {
     /// doesn't know about (`--connect`/a brand new manual add), so there's
     /// nothing to defer to.
     ///
-    /// `access_override`/`mute_access_override` take the same
-    /// `Option<AccessMethod>` shape `DeviceState::set_playback_access_override()`/
-    /// `set_mute_access_override()` already use — already `config`-free on
-    /// their own (this module can't depend on `config`, main-binary-crate
+    /// `access_override`/`mute_access_override`/`loop_mode_access_override`
+    /// take the same `Option<AccessMethod>` shape
+    /// `DeviceState::set_playback_access_override()`/`set_mute_access_override()`/
+    /// `set_loop_mode_access_override()` already use — already `config`-free
+    /// on their own (this module can't depend on `config`, main-binary-crate
     /// only, kept out of the reusable device layer the CLI tools link
     /// against), so the caller (currently `ui/mod.rs`'s
     /// `DeviceWindow::new_for_device()`, which already has the per-device
     /// config in hand at this exact point) can pass
-    /// `config::DeviceConfig::playback_access_override`/`mute_access_override`
-    /// straight through with no conversion step. Doesn't go through
-    /// `configure-device` at all — this is the older, still-valid pattern
-    /// of the caller resolving config *before* ever calling in, which
-    /// `add_known_device()`/`create_and_configure()` below can't use since
-    /// they're triggered without a synchronous config-aware caller in the
-    /// loop.
+    /// `config::DeviceConfig::playback_access_override`/`mute_access_override`/
+    /// `loop_mode_access_override` straight through with no conversion step.
+    /// Doesn't go through `configure-device` at all — this is the older,
+    /// still-valid pattern of the caller resolving config *before* ever
+    /// calling in, which `add_known_device()`/`create_and_configure()` below
+    /// can't use since they're triggered without a synchronous config-aware
+    /// caller in the loop.
     pub fn get(
         &self,
         uuid: &str,
@@ -178,6 +179,7 @@ impl DeviceManager {
         tls: TlsMode,
         access_override: Option<AccessMethod>,
         mute_access_override: Option<AccessMethod>,
+        loop_mode_access_override: Option<AccessMethod>,
         try_connect: bool,
     ) -> DeviceState {
         if let Some(ds) = self.lookup_and_prune(uuid) {
@@ -185,7 +187,7 @@ impl DeviceManager {
         }
 
         let ds = DeviceState::new(self.rt(), uuid.to_string());
-        ds.set_device(ip, tls, access_override, mute_access_override, try_connect || uuid.is_empty());
+        ds.set_device(ip, tls, access_override, mute_access_override, loop_mode_access_override, try_connect || uuid.is_empty());
         ds.start_polling();
 
         if !uuid.is_empty() {
@@ -217,8 +219,8 @@ impl DeviceManager {
     /// its own resolved `tls`. Fires
     /// `configure-device` synchronously, then reads back whatever the
     /// connected handler set via `set_playback_access_override()`/
-    /// `set_mute_access_override()` before making first contact
-    /// (`set_device(..., connect_now: true)`).
+    /// `set_mute_access_override()`/`set_loop_mode_access_override()` before
+    /// making first contact (`set_device(..., connect_now: true)`).
     pub fn create_and_configure(&self, uuid: &str, ip: &str, tls: TlsMode) -> DeviceState {
         if let Some(ds) = self.lookup_and_prune(uuid) {
             return ds;
@@ -226,9 +228,10 @@ impl DeviceManager {
 
         let ds = DeviceState::new(self.rt(), uuid.to_string());
         self.emit_by_name::<()>("configure-device", &[&ds]);
-        let access_override      = ds.playback_access_override();
-        let mute_access_override = ds.mute_access_override();
-        ds.set_device(ip, tls, access_override, mute_access_override, true);
+        let access_override           = ds.playback_access_override();
+        let mute_access_override      = ds.mute_access_override();
+        let loop_mode_access_override = ds.loop_mode_access_override();
+        ds.set_device(ip, tls, access_override, mute_access_override, loop_mode_access_override, true);
         ds.start_polling();
 
         if !uuid.is_empty() {
@@ -271,8 +274,9 @@ impl DeviceManager {
                 // Preserve the current overrides across the reconnect —
                 // set_device() resets everything else too, and a device
                 // simply moving to a new IP shouldn't lose them.
-                let access_override = ds.playback_access_override();
-                let mute_access_override = ds.mute_access_override();
+                let access_override           = ds.playback_access_override();
+                let mute_access_override      = ds.mute_access_override();
+                let loop_mode_access_override = ds.loop_mode_access_override();
                 // Identity verification no longer needs an explicit
                 // `expected_uuid` opt-in — `ds` was looked up by `uuid`, so
                 // its own fixed `uuid()` already equals it, and
@@ -280,7 +284,7 @@ impl DeviceManager {
                 // Always connect_now: discovery just confirmed a moved IP
                 // for an already-live DeviceState, not a device devlist
                 // merely still believes offline.
-                ds.set_device(ip, tls, access_override, mute_access_override, true);
+                ds.set_device(ip, tls, access_override, mute_access_override, loop_mode_access_override, true);
             }
         }
     }

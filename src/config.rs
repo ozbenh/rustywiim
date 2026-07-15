@@ -155,6 +155,16 @@ pub struct DeviceConfig {
     /// go through `RenderingControl.SetMute`).
     #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "deserialize_lenient_access_override")]
     pub mute_access_override: Option<AccessMethod>,
+    /// Same override mechanism as `playback_access_override`, but for the
+    /// loop-mode (shuffle/repeat) write path specifically. Separate field
+    /// because HTTP `setPlayerCmd:loopmode:5` (shuffle + repeat-one) is
+    /// confirmed silently ignored on at least the WiiM Mini (works fine on
+    /// WiiM Ultra and the Audio Pro Addon C5) — the global default is
+    /// `UpnpPolled` (`PlayQueue.SetQueueLoopMode`, the same path the WiiM
+    /// phone app itself uses), with this override available for a device
+    /// where UPnP turns out to be the broken one instead.
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "deserialize_lenient_access_override")]
+    pub loop_mode_access_override: Option<AccessMethod>,
 }
 
 fn deserialize_lenient_access_override<'de, D>(deserializer: D) -> Result<Option<AccessMethod>, D::Error>
@@ -185,6 +195,7 @@ impl Default for DeviceConfig {
             tls_mode:        None,
             playback_access_override: None,
             mute_access_override: None,
+            loop_mode_access_override: None,
         }
     }
 }

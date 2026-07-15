@@ -52,14 +52,6 @@ impl Vendor {
 // identified (LinkPlayGeneric fallback), `detect_family_from_info()` runs the
 // same vendor/generation logic pywiim uses and returns the matching family.
 
-/// Which loop-mode integer scheme this family uses.
-/// WiiM scheme and Arylic/LinkPlay scheme differ in their bit assignments.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LoopModeScheme {
-    WiiM,
-    Arylic,
-}
-
 /// Connection and protocol settings.
 #[derive(Debug)]
 pub struct ConnectionConfig {
@@ -104,7 +96,6 @@ pub struct GroupingConfig {
 #[derive(Debug)]
 pub struct FamilyProfile {
     pub display_name:     &'static str,
-    pub loop_mode_scheme: LoopModeScheme,
     pub playback_access:  AccessMethod,
     pub connection:       ConnectionConfig,
     pub endpoints:        EndpointConfig,
@@ -126,7 +117,6 @@ pub struct FamilyProfile {
 
 static FAMILY_WIIM: FamilyProfile = FamilyProfile {
     display_name:     "WiiM",
-    loop_mode_scheme: LoopModeScheme::WiiM,
     playback_access: AccessMethod::UpnpPolled,
     connection: ConnectionConfig {
         requires_client_cert: false,
@@ -151,7 +141,6 @@ static FAMILY_WIIM: FamilyProfile = FamilyProfile {
 
 static FAMILY_ARYLIC: FamilyProfile = FamilyProfile {
     display_name:     "Arylic",
-    loop_mode_scheme: LoopModeScheme::Arylic,
     // Arylic's own developer docs list coverart/playlist as UPnP-only and
     // never mention `getMetaInfo` — HTTP can't deliver artwork here at all.
     playback_access: AccessMethod::UpnpPolled,
@@ -178,7 +167,6 @@ static FAMILY_ARYLIC: FamilyProfile = FamilyProfile {
 /// Audio Pro MkII: mTLS, restricted endpoints.
 static FAMILY_AUDIO_PRO_MKII: FamilyProfile = FamilyProfile {
     display_name:     "Audio Pro MkII",
-    loop_mode_scheme: LoopModeScheme::Arylic,
     // Same shared-stack gap as Arylic (no artwork, no `getMetaInfo`), plus
     // the same mTLS requirement as iEAST AudioCast. Not itself confirmed
     // that playback control is broken over HTTP, just that artwork isn't
@@ -207,7 +195,6 @@ static FAMILY_AUDIO_PRO_MKII: FamilyProfile = FamilyProfile {
 /// Audio Pro W-Generation: HTTPS-first, modern endpoints, no client cert.
 static FAMILY_AUDIO_PRO_WGEN: FamilyProfile = FamilyProfile {
     display_name:     "Audio Pro W-Generation",
-    loop_mode_scheme: LoopModeScheme::Arylic,
     // `supports_get_meta_info` is statically `true` for this generation, so
     // this is the general non-WiiM consistency call rather than a confirmed
     // artwork gap here specifically.
@@ -245,7 +232,6 @@ static FAMILY_AUDIO_PRO_WGEN: FamilyProfile = FamilyProfile {
 /// consumed by any real behavior yet at all.
 static FAMILY_AUDIO_PRO_ORIGINAL: FamilyProfile = FamilyProfile {
     display_name:     "Audio Pro Original",
-    loop_mode_scheme: LoopModeScheme::Arylic,
     // Same as W-Generation: statically `supports_get_meta_info: true`
     // already, so this is the general consistency call, not a confirmed gap.
     playback_access: AccessMethod::UpnpPolled,
@@ -274,7 +260,6 @@ static FAMILY_AUDIO_PRO_ORIGINAL: FamilyProfile = FamilyProfile {
 /// identify at all, probe to confirm.
 static FAMILY_LINKPLAY_GENERIC: FamilyProfile = FamilyProfile {
     display_name:     "LinkPlay Generic",
-    loop_mode_scheme: LoopModeScheme::Arylic,
     // No direct evidence for this specific fallback (it's whatever wasn't
     // identifiable, by definition) — but every family we *have* identified
     // needs UPnP now, so an unidentified device is more likely than not to
@@ -308,7 +293,6 @@ static FAMILY_LINKPLAY_GENERIC: FamilyProfile = FamilyProfile {
 /// outright), same as Audio Pro MkII.
 static FAMILY_IEAST_AUDIOCAST: FamilyProfile = FamilyProfile {
     display_name:     "iEAST AudioCast",
-    loop_mode_scheme: LoopModeScheme::Arylic,
     playback_access: AccessMethod::UpnpPolled,
     connection: ConnectionConfig {
         requires_client_cert: true,
@@ -877,9 +861,6 @@ pub struct DeviceCapabilities {
     pub model:              String,
     /// Family profile for protocol/endpoint/grouping behaviour.
     pub family:             &'static FamilyProfile,
-    /// Effective loop mode scheme.  Normally `family.loop_mode_scheme`, but
-    /// WiiM Ultra on firmware ≥ 5.2 switches to `Arylic` (pywiim issue #17).
-    pub loop_mode_scheme:   LoopModeScheme,
     /// Effective WiFi Direct flag.  Normally `family.grouping.uses_wifi_direct`,
     /// but overridden to `true` for Gen1 devices detected via `wmrm_version`.
     pub uses_wifi_direct:   bool,
@@ -1019,16 +1000,6 @@ impl DeviceCapabilities {
         // real future case.
         let firmware_warning: Option<&'static str> = None;
 
-        // WiiM Ultra on firmware ≥ 5.2 switches to Arylic loop mode (pywiim#17).
-        let loop_mode_scheme = if device_id == DeviceId::WiimUltra
-            && fw_ver_at_least(&info.firmware, 5, 2)
-        {
-            dbg("loop_mode_scheme: Arylic (WiiM Ultra fw ≥ 5.2 override)");
-            LoopModeScheme::Arylic
-        } else {
-            family.loop_mode_scheme
-        };
-
         // Gen1 devices (wmrm_version "2.0" or very old firmware) use WiFi Direct.
         let gen1 = is_gen1(&info.wmrm_version, &info.firmware);
         let uses_wifi_direct = family.grouping.uses_wifi_direct || gen1;
@@ -1053,7 +1024,7 @@ impl DeviceCapabilities {
 
         let caps = Self {
             device_id, vendor, model, family,
-            loop_mode_scheme, uses_wifi_direct,
+            uses_wifi_direct,
             preset_source: PresetSource::Unknown, supports_eq, supports_peq,
             inputs, firmware_warning,
             // Harmless placeholders — only `detect_capabilities()` (the real
@@ -1068,8 +1039,8 @@ impl DeviceCapabilities {
             let c  = &caps.family.connection;
             let ep = &caps.family.endpoints;
 
-            dbg(&format!("model: {:?}  loop_mode: {:?}  wifi_direct: {}",
-                caps.model, caps.loop_mode_scheme, caps.uses_wifi_direct));
+            dbg(&format!("model: {:?}  wifi_direct: {}",
+                caps.model, caps.uses_wifi_direct));
             dbg(&format!("capabilities: preset_source={:?}  eq={}  peq={}",
                 caps.preset_source, caps.supports_eq, caps.supports_peq));
             if let Some(w) = caps.firmware_warning {
@@ -1394,15 +1365,6 @@ fn is_fw_audio_pro_wgen(fw: &str) -> bool {
     parts.len() >= 2
         && parts[0] == "2"
         && parts[1].parse::<u32>().map_or(false, |n| n <= 3)
-}
-
-/// Returns `true` when firmware version is at least `major.minor`.
-/// Used for WiiM Ultra FW ≥ 5.2 loop mode detection (pywiim issue #17).
-fn fw_ver_at_least(fw: &str, major: u32, minor: u32) -> bool {
-    let mut parts = fw.splitn(3, '.');
-    let fmaj = parts.next().and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
-    let fmin = parts.next().and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
-    (fmaj, fmin) >= (major, minor)
 }
 
 /// Returns `true` for Gen1 devices that use WiFi Direct grouping.

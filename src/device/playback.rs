@@ -506,6 +506,27 @@ pub fn decode_loop_mode_http(loop_mode: i32) -> (bool, RepeatMode) {
     }
 }
 
+/// The exact inverse of `decode_loop_mode_http()` — the wire encoding for
+/// a (shuffle, repeat) pair, used by both write paths that accept this
+/// same 0-5 integer: HTTP `setPlayerCmd:loopmode:N` and UPnP `PlayQueue`'s
+/// `SetQueueLoopMode`'s `<LoopMode>` argument (confirmed identical
+/// convention on both — this is the actual XML the WiiM phone app sends
+/// for `SetQueueLoopMode`, and the numeric table matches pywiim's/
+/// wiimplay's Arylic-scheme tables exactly, cross-checked against this
+/// app's own `decode_loop_mode_http` table above). Lives here, not in
+/// `ui/`, so `ui/` only ever passes canonical `(bool, RepeatMode)` values
+/// to `DeviceState::do_set_loop_mode()` — never a raw wire number.
+pub fn encode_loop_mode(shuffle: bool, repeat: RepeatMode) -> i32 {
+    match (shuffle, repeat) {
+        (false, RepeatMode::Off) => 4,
+        (false, RepeatMode::All) => 0,
+        (false, RepeatMode::One) => 1,
+        (true,  RepeatMode::Off) => 3,
+        (true,  RepeatMode::All) => 2,
+        (true,  RepeatMode::One) => 5,
+    }
+}
+
 pub fn decode_quality_http(bit_rate: &str, sample_rate: &str, bit_depth: &str) -> Option<AudioQuality> {
     let br = bit_rate.trim();
     let sr = sample_rate.trim();
@@ -1237,5 +1258,23 @@ mod tests {
         // HTTP has no guibehavior-equivalent signal to distinguish free
         // from premium accounts, unlike UPnP — default permissive.
         assert_eq!(decode_transport_caps_http(31, ""), caps(true, true));
+    }
+
+    #[test]
+    fn loop_mode_encode_decode_roundtrip() {
+        // Every wire value 0-5 round-trips through encode/decode, and vice
+        // versa for every (shuffle, repeat) pair — guards the exact table a
+        // real WiiM-device bug report was about (mode 5 silently ignored
+        // over HTTP on some WiiM units, motivating the UPnP write path).
+        for mode in 0..=5 {
+            let (shuffle, repeat) = decode_loop_mode_http(mode);
+            assert_eq!(encode_loop_mode(shuffle, repeat), mode, "mode {mode} didn't round-trip");
+        }
+        for shuffle in [false, true] {
+            for repeat in [RepeatMode::Off, RepeatMode::All, RepeatMode::One] {
+                let mode = encode_loop_mode(shuffle, repeat);
+                assert_eq!(decode_loop_mode_http(mode), (shuffle, repeat));
+            }
+        }
     }
 }
