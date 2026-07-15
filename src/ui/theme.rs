@@ -15,13 +15,13 @@ use super::{art_background, scroll_fade_label, APP_ID};
 
 // ── CSS ───────────────────────────────────────────────────────────────────────
 
-const SYSTEM_CSS: &str = include_str!("../css/system.css");
-const DARK_CSS: &str   = include_str!("../css/dark.css");
+const SYSTEM_CSS: &str = include_str!("css/system.css");
+const DARK_CSS: &str   = include_str!("css/dark.css");
 // RustyWiiM Modern layers its own overrides (card panels, divider styling,
 // etc.) on top of the classic dark palette rather than duplicating it.
 const MODERN_CSS: &str = concat!(
-    include_str!("../css/dark.css"),
-    include_str!("../css/modern.css"),
+    include_str!("css/dark.css"),
+    include_str!("css/modern.css"),
 );
 
 thread_local! {

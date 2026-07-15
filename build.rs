@@ -53,19 +53,20 @@ fn main() {
     // glib-compile-resources at build time only (part of
     // libglib2.0-dev-bin on Debian/Ubuntu, glib2-devel on Fedora) — not a
     // runtime dependency.
-    println!("cargo:rerun-if-changed=src/rustywiim.gresource.xml");
-    println!("cargo:rerun-if-changed=src/icons/rustywiim-icon.svg");
-    println!("cargo:rerun-if-changed=src/icons/rca-inout.svg");
-    println!("cargo:rerun-if-changed=src/icons/optical-inout.svg");
-    println!("cargo:rerun-if-changed=src/icons/coax-inout.svg");
-    println!("cargo:rerun-if-changed=src/icons/audio-output.svg");
-    println!("cargo:rerun-if-changed=src/icons/wiim-remote.svg");
+    println!("cargo:rerun-if-changed=src/ui/rustywiim.gresource.xml");
+    println!("cargo:rerun-if-changed=src/ui/icons/rustywiim-icon.svg");
+    println!("cargo:rerun-if-changed=src/ui/icons/rca-inout.svg");
+    println!("cargo:rerun-if-changed=src/ui/icons/optical-inout.svg");
+    println!("cargo:rerun-if-changed=src/ui/icons/coax-inout.svg");
+    println!("cargo:rerun-if-changed=src/ui/icons/audio-output.svg");
+    println!("cargo:rerun-if-changed=src/ui/icons/wiim-remote.svg");
+    println!("cargo:rerun-if-changed=src/ui/icons/jack-inout.svg");
     let out_dir = std::env::var("OUT_DIR").unwrap();
     let status = Command::new("glib-compile-resources")
         .args([
-            "--sourcedir=src",
+            "--sourcedir=src/ui",
             &format!("--target={out_dir}/rustywiim.gresource"),
-            "src/rustywiim.gresource.xml",
+            "src/ui/rustywiim.gresource.xml",
         ])
         .status()
         .expect(
