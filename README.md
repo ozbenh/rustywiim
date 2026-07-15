@@ -76,95 +76,98 @@ You can pretty-print this file using `target/debug/wiim-capdump`. I would apprec
 
   * 0.9.0 - 2026-07-15
     * Add AudioPro C5 support (old and new firmwares)
-	* Major internal rework of device management to clean up the overall
-	  code structure, and get rid of the "split" responsibility of device
-	  polling between discovery and device state management. This simplifies
-	  things and will avoid interesting classes of bugs and enables more
-	  UI elements to be client of the device state. The device state now has
-	  a simple and a full mode, depending on whether minimal info is requested
-	  (polled every 5s) or full details (every 1s). This also moves more of
-	  the discovery code to the non-UI part which will eventually becomes
-	  a separate re-usable crate (and maybe a shared lib too).
+    * Major internal rework of device management to clean up the overall
+      code structure, and get rid of the "split" responsibility of device
+      polling between discovery and device state management. This simplifies
+      things and will avoid interesting classes of bugs and enables more
+      UI elements to be client of the device state. The device state now has
+      a simple and a full mode, depending on whether minimal info is requested
+      (polled every 5s) or full details (every 1s). This also moves more of
+      the discovery code to the non-UI part which will eventually becomes
+      a separate re-usable crate (and maybe a shared lib too).
     * The device list now uses the Device State in simple mode to display
-	  artwork and current song for active devices in the list. It also gets
-	  a volume control for quick access to devices volumes.
+      artwork and current song for active devices in the list. It also gets
+      a volume control for quick access to devices volumes.
     * Fix issues with mute setting not syncing properly
-	* Improve display quality of icons under some circumstances and add new
-	  custom icons for RCA and Jack plugs (improve detection of the plug type
-	  on some devices as well)
+    * Improve display quality of icons under some circumstances and add new
+      custom icons for RCA and Jack plugs (improve detection of the plug type
+      on some devices as well)
     * Fix incorrect inputs list on some WiiM devices (such as bogus Coax
-	  input on the Ultra).
+      input on the Ultra).
     * Add capture support for the old "TCP UART" protocol still used by some
-	  3rd party linkplay-powered devices. We don't use it in rustywiim yet
-	  but it will be eventually needed for things like bass/treble control
-	  on AudioPro C5 (and more).
+      3rd party linkplay-powered devices. We don't use it in rustywiim yet
+      but it will be eventually needed for things like bass/treble control
+      on AudioPro C5 (and more).
     * The Mini window is now the same window as the main window, it just
-	  gets resized. This fixes/simplifies a lot of internal logic and makes
-	  the switch faster. It also avoid the window popping in random places
-	  on the screen when switching. The one drawback is a visual glitch
-	  when maximizing (double click on normal window title bar), then
-	  switching to mini mode, back to normal mode, and un-maximizing. I think
-	  we can live with that.
+      gets resized. This fixes/simplifies a lot of internal logic and makes
+      the switch faster. It also avoid the window popping in random places
+      on the screen when switching. The one drawback is a visual glitch
+      when maximizing (double click on normal window title bar), then
+      switching to mini mode, back to normal mode, and un-maximizing. I think
+      we can live with that.
     * Major internal rework of the UI components. The various widget "clusters"
-	  (called views) are now in separate modules (presets, input/outputs,
-	  standard player, mini player, volume control) for better re-usability.
-	  No visible effect (hopefully) other than code cleanliness, but this will
-	  make it easier to implement different visual layouts, such as a Kiosk
-	  mode in the future where some of these things are "pop overs" over the
-	  main window for example. This hasn't yet extended to the entries in the
-	  device list.
+      (called views) are now in separate modules (presets, input/outputs,
+      standard player, mini player, volume control) for better re-usability.
+      No visible effect (hopefully) other than code cleanliness, but this will
+      make it easier to implement different visual layouts, such as a Kiosk
+      mode in the future where some of these things are "pop overs" over the
+      main window for example. This hasn't yet extended to the entries in the
+      device list.
+      We also break up the remaining files and move things around to end up
+	  with smaller files and more logical organisation of the code in the
+	  UI overall.
   
   * 0.8.2 - 2026-07-10
     * Fix volume button & scale disabled
 
   * 0.8.1 - 2026-07-10
     * Fix input pop-ver flip/flopping when switching inputs
-	* Add support for setting Mute via UPnP and make it the default.
-	  Also add fallback to querying via a separate UPnP command when
-	  GetInfoEx doesn't return it (AudioCast).
-	  This matches the WiiM App behaviour as far as I can tell and
-	  fixes mute handling on AudioCast devices.
+    * Add support for setting Mute via UPnP and make it the default.
+      Also add fallback to querying via a separate UPnP command when
+      GetInfoEx doesn't return it (AudioCast).
+      This matches the WiiM App behaviour as far as I can tell and
+      fixes mute handling on AudioCast devices.
     * Add better support for Bluetooth sink (bluetooth as input). The
-	  connection state is displayed and the UI properly cleared when
-	  disconnected. A button "Restart pairing" appears when BT is the
-	  current input and not currently in pairing state. Matches the
-	  behaviour of the WiiM App.
+      connection state is displayed and the UI properly cleared when
+      disconnected. A button "Restart pairing" appears when BT is the
+      current input and not currently in pairing state. Matches the
+      behaviour of the WiiM App.
     * Add retries on UPnP and generally improve error handling
-	* A pile of fix around devices being or going offline/online
+    * A pile of fix around devices being or going offline/online
 
   * 0.8.0 - 2026-07-08
     * Add support for iEAST AudioCast (not yet Pro, AMP, etc... just
-	  the base one, though the others might partially work, please send
-	  captures !)
+      the base one, though the others might partially work, please send
+      captures !)
     * Add UPnP support for retrieving player status. For now switch all
-	  devices to UPnP by default, but an "Advanced" Settings tab can be
-	  used to switch back to HTTP if that doesn't work for you (please
-	  open a github issue and ideally send a capture too). This provides
-	  richer information (such as the Tidal quality label) and means a
-	  single API call per 1s poll. We still just poll, GENA subscription
-	  will come later.
+      devices to UPnP by default, but an "Advanced" Settings tab can be
+      used to switch back to HTTP if that doesn't work for you (please
+      open a github issue and ideally send a capture too). This provides
+      richer information (such as the Tidal quality label) and means a
+      single API call per 1s poll. We still just poll, GENA subscription
+      will come later.
     * Add UPnP preset retrieval for use when HTTP getPresetInfo is not
-	  supported (enables preset to work with AudioCast, and there are
-	  indications that might also help Arylic devices).
+      supported (enables preset to work with AudioCast, and there are
+      indications that might also help Arylic devices).
     * wiim-captures captures more things
-	* Fix speaker out icon on WiiM amp in Outputs menu
-	* Minor cosmetic improvements (some things are a bit more readable)
-	* More --debug options and diagnostic output
-	* Preset artworks are now fetched concurrently and asynchronously,
-	  so your preset list will show up more quickly, potentially with
-	  generic icons, which will get updated as the artworks are fetched.
+    * Fix speaker out icon on WiiM amp in Outputs menu
+    * Minor cosmetic improvements (some things are a bit more readable)
+    * More --debug options and diagnostic output
+    * Preset artworks are now fetched concurrently and asynchronously,
+      so your preset list will show up more quickly, potentially with
+      generic icons, which will get updated as the artworks are fetched.
     * Prev/Next buttons, seek bar, and loop control buttons are now
-	  disabled when sources don't support them (the Spotify case is a
-	  bit finnicky ... free accounts *seem* to support "Next" but not
-	  "Prev" though the WiiM app supports neither in that case).
+      disabled when sources don't support them (the Spotify case is a
+      bit finnicky ... free accounts *seem* to support "Next" but not
+      "Prev" though the WiiM app supports neither in that case).
     * Fix input detection on WiiM Mini
 
   * 0.7.0 - 2026-07-06
     * Add cargo & Makefile rules to build packages
     * Add binary package releases on github
-	* Fixes around handling of HDMI input
-	* Improvement in device discovery, don't hammer unrelated devices
-	* Add bluetooth remote info and Wifi signal strength
+    * Fixes around handling of HDMI input
+    * Improvement in device discovery, don't hammer unrelated devices
+    * Add bluetooth remote info and Wifi signal strength
 
   * 0.6.4 - 2026-07-06
     * Add basic wiim-simulator (work in progress) for testing purposes

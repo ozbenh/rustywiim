@@ -41,7 +41,7 @@ depends = "$auto"
 assets = [
     ["target/release/rustywiim", "usr/bin/", "755"],
     ["data/io.github.ozbenh.rustywiim.desktop", "usr/share/applications/", "644"],
-    ["src/icons/rustywiim-icon.svg", "usr/share/icons/hicolor/scalable/apps/io.github.ozbenh.rustywiim.svg", "644"],
+    ["src/ui/icons/rustywiim-icon.svg", "usr/share/icons/hicolor/scalable/apps/io.github.ozbenh.rustywiim.svg", "644"],
     # Diagnostic/testing tools, not for general use — kept out of /usr/bin
     # (and the user's PATH) deliberately.
     ["target/release/wiim-capture", "usr/libexec/rustywiim/", "755"],
@@ -52,7 +52,7 @@ assets = [
 assets = [
     { source = "target/release/rustywiim", dest = "/usr/bin/rustywiim", mode = "755" },
     { source = "data/io.github.ozbenh.rustywiim.desktop", dest = "/usr/share/applications/io.github.ozbenh.rustywiim.desktop", mode = "644" },
-    { source = "src/icons/rustywiim-icon.svg", dest = "/usr/share/icons/hicolor/scalable/apps/io.github.ozbenh.rustywiim.svg", mode = "644" },
+    { source = "src/ui/icons/rustywiim-icon.svg", dest = "/usr/share/icons/hicolor/scalable/apps/io.github.ozbenh.rustywiim.svg", mode = "644" },
     # Diagnostic/testing tools, not for general use — kept out of /usr/bin
     # (and the user's PATH) deliberately.
     { source = "target/release/wiim-capture", dest = "/usr/libexec/rustywiim/wiim-capture", mode = "755" },
