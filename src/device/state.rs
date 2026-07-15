@@ -601,6 +601,14 @@ struct Inner {
     /// `input_changing` is `false`.
     input_change_time:   Option<Instant>,
     connection_state: ConnectionState,
+    /// A `maybe_self_reconnect()` probe is currently in flight. That path
+    /// deliberately stays `Failed` while it probes (see its doc comment),
+    /// so — unlike an externally-driven reconnect, which parks the state
+    /// in `Connecting` — the state alone can't stop `do_poll()`'s `Failed`
+    /// branch from dispatching a second probe on a later tick while the
+    /// first is still waiting on its timeout. Cleared unconditionally when
+    /// any `fetch_device_info()` completion runs.
+    reconnect_in_flight: bool,
     /// The device state manager has two mode: `Full` and `Simple`. `Simple`
     /// is when just the device-list is displayed, `Full` is when the device
     /// window or setting window (or both) is/are displayed. We count the
@@ -732,6 +740,7 @@ impl Default for Inner {
             rssi:             None,
             remote:           RemoteInfo::default(),
             connection_state: ConnectionState::Disconnected,
+            reconnect_in_flight: false,
             full_clients:     0,
             simple_mode_song_info: false,
             presets:          Vec::new(),
@@ -1018,6 +1027,10 @@ impl DeviceState {
         glib::spawn_future_local(async move {
             let payload = rx.recv().await.ok().flatten();
             let Some(ds) = ds.upgrade() else { return };
+            // Whatever kicked this attempt off, it has now resolved — clear
+            // unconditionally (a no-op for attempts that weren't
+            // maybe_self_reconnect()'s) before any of the outcome handling.
+            ds.imp().inner.borrow_mut().reconnect_in_flight = false;
 
             let Some(FetchOk { info, caps, renames }) = payload else {
                 ds.report_failure("fetch_device_info: getStatusEx unreachable");
@@ -1546,21 +1559,36 @@ impl DeviceState {
     /// it decides to retry. Same `SLOW_POLL_INTERVAL` cadence as ordinary
     /// slow polling, reusing `last_slow_poll` for it (untouched while
     /// `Failed`, so safe to repurpose) — no-op, cheaply, on every other tick.
+    ///
+    /// Deliberately **silent**: stays `Failed` and emits nothing while the
+    /// probe runs. An earlier version flipped to `Connecting` (+
+    /// `device-changed`) per attempt, which made an offline device's window
+    /// oscillate "Disconnected" → spinner → "Disconnected" every 10s,
+    /// indefinitely. `Connecting` should only ever show for an attempt with
+    /// some sign of life behind it (a first/explicit connect, or
+    /// `mark_reachable()` — devlist actually got an answer); a blind
+    /// background retry isn't news until it *succeeds*, at which point
+    /// `fetch_device_info()`'s completion emits `device-changed` with the
+    /// state jumping straight to `Connected`. `reconnect_in_flight` (see
+    /// its doc comment) is what now prevents a second dispatch while a
+    /// probe is still waiting on its timeout — previously the `Connecting`
+    /// state itself did that as a side effect, via `do_poll()`'s
+    /// not-`Failed` check.
     fn maybe_self_reconnect(&self) {
         if self.imp().offline_cb.borrow().is_some() {
             return; // An external caller owns recovery for this one.
         }
         let (due, client) = {
             let mut inner = self.imp().inner.borrow_mut();
+            if inner.reconnect_in_flight { return; }
             let due = inner.last_slow_poll
                 .map_or(true, |t| Instant::now().duration_since(t) >= SLOW_POLL_INTERVAL);
             if due { inner.last_slow_poll = Some(Instant::now()); }
             (due, inner.client.clone())
         };
         if due && client.is_some() {
-            dbg("connection: no external health check registered; self-reconnecting");
-            self.imp().inner.borrow_mut().connection_state = ConnectionState::Connecting;
-            self.emit_by_name::<()>("device-changed", &[]);
+            dbg("connection: no external health check registered; probing (silently, staying Failed)");
+            self.imp().inner.borrow_mut().reconnect_in_flight = true;
             self.fetch_device_info();
         }
     }
