@@ -136,6 +136,76 @@ struct Shared {
     /// doc comment).
     stateful_http: bool,
     upnp: Option<UpnpShared>,
+    /// This instance's own identity — see `generate_fresh_uuid()`'s doc
+    /// comment for why every instance gets one instead of replaying the
+    /// capture's frozen value. Patched into every JSON reply that carries a
+    /// `uuid`/`upnp_uuid` field (`handle_command()`) and into the served
+    /// `description.xml`'s `<uuid>`/`<UDN>` tags (`build_upnp_shared()`).
+    fresh_uuid: FreshUuid,
+}
+
+/// One simulator instance's fresh identity: the plain 24-hex-char LinkPlay
+/// UUID (`getStatusEx`'s `uuid` field) and its UPnP-dashed derivative
+/// (`getStatusEx`'s own `upnp_uuid` field, and `description.xml`'s `<UDN>`)
+/// — confirmed against a real WiiM Ultra (`10.1.1.73`, 2026-07-15) that the
+/// latter is deterministically `plain + plain[0..8]`, dash-grouped 8-4-4-4-12
+/// and prefixed `uuid:` (real example: plain `FF98F7F4075B5A90FA9572C3` →
+/// `uuid:FF98F7F4-075B-5A90-FA95-72C3FF98F7F4` — note the last group,
+/// `72C3FF98F7F4`, is the plain value's own tail followed by its own head
+/// repeated) — not independently random, so this is computed once from
+/// `plain`, never generated separately.
+struct FreshUuid {
+    plain: String,
+    dashed: String,
+}
+
+impl FreshUuid {
+    fn new() -> Self {
+        let plain = generate_fresh_uuid();
+        let dashed = derive_upnp_uuid(&plain);
+        Self { plain, dashed }
+    }
+}
+
+/// Generates a fresh, plausible-looking 24-hex-character LinkPlay-style
+/// device UUID (matching the shape real devices use, e.g.
+/// `"FF98F7F4075B5A90FA9572C3"` — uppercase hex, no dashes) — not
+/// cryptographically random, just distinct per process run (mixes
+/// wall-clock time, PID, and a stack address, which differs per run under
+/// ASLR), so multiple simulator instances replaying the same capture file
+/// present as genuinely different devices instead of the identical UUID
+/// baked into the capture at record time — confirmed this matters live:
+/// `DeviceManager` dedupes `DeviceState`s per UUID, discovery dedups by
+/// UUID, and multiroom grouping is UUID-keyed, all of which would treat
+/// two simulator instances from the same capture as one device otherwise.
+fn generate_fresh_uuid() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos() as u64;
+    let pid = std::process::id() as u64;
+    let stack_addr = &nanos as *const _ as u64;
+    let mut seed = nanos ^ pid.rotate_left(32) ^ stack_addr.rotate_left(17) ^ 0x9E37_79B9_7F4A_7C15;
+    let mut out = String::with_capacity(24);
+    for _ in 0..24 {
+        // xorshift64 — not cryptographic, just needs to look random and
+        // differ run to run, which the seed mixing above already ensures.
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        out.push(std::char::from_digit((seed & 0xf) as u32, 16).unwrap().to_ascii_uppercase());
+    }
+    out
+}
+
+/// `uuid:XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX` from a 24-hex-char plain
+/// UUID — see `FreshUuid`'s doc comment for the real-device-confirmed
+/// derivation (pad to the 32 hex digits a dashed UUID needs by repeating
+/// the first 8, then group 8-4-4-4-12).
+fn derive_upnp_uuid(plain: &str) -> String {
+    let padded = format!("{plain}{}", &plain[..8.min(plain.len())]);
+    format!(
+        "uuid:{}-{}-{}-{}-{}",
+        &padded[0..8], &padded[8..12], &padded[12..16], &padded[16..20], &padded[20..32],
+    )
 }
 
 /// Seeds `SimState` from the first of `getPlayerStatusEx`/`getPlayerStatus`
@@ -255,10 +325,15 @@ fn patch_player_status(body: &mut serde_json::Value, state: &SimState) {
 
 /// Builds the UPnP-serving state from whatever `wiim-capture` recorded.
 /// `None` when the capture has no `description.xml` at all — nothing to
-/// serve, so no UPnP listener is started (see `main()`).
-fn build_upnp_shared(capture: &CaptureFile) -> Option<UpnpShared> {
+/// serve, so no UPnP listener is started (see `main()`). `fresh_uuid`'s
+/// `<uuid>`/`<UDN>` are patched in here, once, rather than per-request —
+/// `description.xml` is served verbatim otherwise, so this is the one
+/// place that needs to happen.
+fn build_upnp_shared(capture: &CaptureFile, fresh_uuid: &FreshUuid) -> Option<UpnpShared> {
     let upnp = capture.upnp.as_ref()?;
     let description_xml = upnp.description.as_ref()?.body.as_str()?.to_string();
+    let description_xml = patch_tag(&description_xml, "uuid", &fresh_uuid.plain);
+    let description_xml = patch_tag(&description_xml, "UDN", &fresh_uuid.dashed);
     let info_ex_template = upnp
         .actions
         .iter()
@@ -551,14 +626,45 @@ fn render_body(cap: &CommandCapture) -> String {
     }
 }
 
+/// Rewrites a JSON body's top-level `uuid`/`upnp_uuid` fields (`getStatusEx`'s
+/// identity fields — confirmed present together on real hardware, see
+/// `FreshUuid`'s doc comment) to this instance's own fresh identity, if
+/// either key is present. A no-op for every other JSON reply (most captured
+/// commands have neither key), and for anything that isn't valid JSON.
+fn patch_uuid_fields(body: &str, fresh_uuid: &FreshUuid) -> String {
+    let Ok(mut value) = serde_json::from_str::<serde_json::Value>(body) else { return body.to_string() };
+    let Some(obj) = value.as_object_mut() else { return body.to_string() };
+    let mut patched = false;
+    if obj.contains_key("uuid") {
+        obj.insert("uuid".into(), serde_json::Value::String(fresh_uuid.plain.clone()));
+        patched = true;
+    }
+    if obj.contains_key("upnp_uuid") {
+        obj.insert("upnp_uuid".into(), serde_json::Value::String(fresh_uuid.dashed.clone()));
+        patched = true;
+    }
+    if patched { value.to_string() } else { body.to_string() }
+}
+
 /// Replays a captured entry faithfully: `outcome == Ok` serves the recorded
 /// body at its recorded (or default 200) status; anything else (the command
 /// itself failed at capture time) has no real body to replay, so it serves
 /// the recorded status if there is one, else a generic 500 — still a
-/// response, but visibly not a real one.
-fn handle_command(cap: &CommandCapture) -> (u16, String) {
+/// response, but visibly not a real one. JSON replies get their identity
+/// fields patched to this instance's own fresh UUID (see
+/// `patch_uuid_fields()`) — unconditionally, regardless of `--no-stateful`,
+/// since a fresh per-instance identity isn't "mini-device simulation," it's
+/// basic test-tool correctness (two simulator instances replaying the same
+/// capture file must not present as the same device).
+fn handle_command(cap: &CommandCapture, fresh_uuid: &FreshUuid) -> (u16, String) {
     if cap.outcome == Outcome::Ok {
-        return (cap.http_status.unwrap_or(200), render_body(cap));
+        let body = render_body(cap);
+        let body = if cap.format == Some(ResponseFormat::Json) {
+            patch_uuid_fields(&body, fresh_uuid)
+        } else {
+            body
+        };
+        return (cap.http_status.unwrap_or(200), body);
     }
     (cap.http_status.unwrap_or(500), String::new())
 }
@@ -678,8 +784,13 @@ fn main() {
     let capture = load_capture(std::path::Path::new(&args.path));
     let index = index_by_path(&capture);
     let state = Mutex::new(init_state(&capture));
-    let upnp = (!args.no_upnp).then(|| build_upnp_shared(&capture)).flatten();
-    let shared = Arc::new(Shared { index, state, stateful_http: !args.no_stateful, upnp });
+    let fresh_uuid = FreshUuid::new();
+    eprintln!(
+        "[wiim-simulator] this instance's identity: uuid={} upnp_uuid={}",
+        fresh_uuid.plain, fresh_uuid.dashed,
+    );
+    let upnp = (!args.no_upnp).then(|| build_upnp_shared(&capture, &fresh_uuid)).flatten();
+    let shared = Arc::new(Shared { index, state, stateful_http: !args.no_stateful, upnp, fresh_uuid });
 
     // One certificate, shared by every `--https` listener — generating it
     // eagerly (only if actually needed) avoids paying for it when every
@@ -783,16 +894,16 @@ fn resolve_response(key: &str, command: Option<&str>, shared: &Shared) -> (u16, 
                             patch_player_status(&mut body, &state);
                             (200, body.to_string())
                         }
-                        None => handle_command(cap),
+                        None => handle_command(cap, &shared.fresh_uuid),
                     },
-                    Some(cap) => handle_command(cap),
+                    Some(cap) => handle_command(cap, &shared.fresh_uuid),
                     None => (404, "unknown command".to_string()),
                 };
             }
         }
     }
     match shared.index.get(key) {
-        Some(cap) => handle_command(cap),
+        Some(cap) => handle_command(cap, &shared.fresh_uuid),
         None => (404, "unknown command".to_string()),
     }
 }
