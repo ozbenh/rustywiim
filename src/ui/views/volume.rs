@@ -9,11 +9,10 @@
 //! Follows the view lifecycle contract (see `views/mod.rs`): bound to one
 //! `DeviceState` at construction, subscribes to `playback-changed`
 //! itself (VOLUME bit), early-returns while inactive, and re-syncs on
-//! activation. Volume/mute deliberately stay enabled while the device is
-//! offline (they're not tied to playable content); the display keeps its
-//! "—" placeholder until the device has answered at least once, and its
-//! last-known values across a later disconnect — both matching the old
-//! window-driven update paths.
+//! activation. While the device is *offline* the whole cluster is
+//! disabled and shows level 0 (`render_offline()`); while connected it
+//! stays live even with nothing playable — volume/mute isn't tied to
+//! playback content, only to having a device to talk to.
 
 pub mod imp {
     use std::cell::{Cell, OnceCell, RefCell};
@@ -207,11 +206,12 @@ impl VolumeControl {
 
         // The connection-time catch-up. The first VOLUME-carrying
         // `playback-changed` can fire while `device_info()` is still None
-        // (sync_display() keeps the "—" placeholder then), and later polls
-        // only set the VOLUME bit again when the level actually *changes* —
-        // so without this, a device whose volume never moves after connect
-        // showed "—" forever (seen live against wiim-simulator; a real
-        // device's signal timing usually masks it).
+        // (sync_display() renders the disabled offline state then), and
+        // later polls only set the VOLUME bit again when the level
+        // actually *changes* — so without this, a device whose volume
+        // never moves after connect kept the offline rendering forever
+        // (seen live against wiim-simulator; a real device's signal
+        // timing usually masks it).
         let id = ds.connect_device_changed({
             let weak = self.downgrade();
             move |_| {
@@ -240,22 +240,25 @@ impl VolumeControl {
     /// Nudge the volume by `delta` (clamped to 0..=100) — used by the
     /// Up/Down keyboard shortcuts. Routes through the same path as a
     /// manual slider drag so it gets the same optimistic UI update,
-    /// rate-limited device command, and drag-protection timer.
+    /// rate-limited device command, and drag-protection timer. No-op while
+    /// offline, matching the disabled on-screen controls.
     pub(crate) fn step(&self, delta: i32) {
         let Some(ds) = self.imp().ds.get() else { return };
+        if ds.device_info().is_none() { return; }
         let new_vol = (ds.get_vol() as i32 + delta).clamp(0, 100);
         self.on_user_vol(new_vol as f64);
     }
 
-    /// Sync the whole cluster from device state. Skips the slider
-    /// reposition while the user is dragging it.
+    /// Sync the whole cluster from device state — live or offline. Skips
+    /// the slider reposition while the user is dragging it.
     fn sync_display(&self) {
         let imp = self.imp();
         let Some(ds) = imp.ds.get() else { return };
-        // Keep the "—" placeholder until the device has answered at least
-        // once; after a later disconnect the last-known values simply stay
-        // (this handler only ever fires again once reconnected anyway).
-        if ds.device_info().is_none() { return; }
+        if ds.device_info().is_none() {
+            self.render_offline();
+            return;
+        }
+        self.set_sensitive(true);
         let muted = ds.muted();
         // Fetch the authoritative volume first; used for both the slider
         // position and the icon so they stay consistent even when
@@ -268,6 +271,22 @@ impl VolumeControl {
         imp.level.get().unwrap().set_label(&format!("{}", vol as u32));
         imp.mute_btn.get().unwrap().set_icon_name(
             if muted { "audio-volume-muted-symbolic" } else { "audio-volume-high-symbolic" });
+    }
+
+    /// The offline rendering: whole cluster disabled, level shown as 0.
+    /// Offline is different from "connected but nothing playable" — volume
+    /// deliberately stays live in the latter (not tied to playable
+    /// content), but with no device to talk to the control is meaningless.
+    fn render_offline(&self) {
+        let imp = self.imp();
+        self.set_sensitive(false);
+        // A popover left open across the disconnect isn't closed by the
+        // sensitivity change alone.
+        imp.popover.get().unwrap().popdown();
+        imp.scale.get().unwrap().set_value(0.0);
+        imp.icon_img.get().unwrap().set_icon_name(Some(vol_icon(false, 0.0)));
+        imp.level.get().unwrap().set_label("0");
+        imp.mute_btn.get().unwrap().set_icon_name("audio-volume-muted-symbolic");
     }
 
     /// A user-initiated volume change (slider drag or keyboard step):

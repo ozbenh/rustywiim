@@ -445,8 +445,8 @@ impl PlaybackView {
         seek.set_value(0.0);
         imp.pos.get().unwrap().set_visible(false);
         imp.dur.get().unwrap().set_visible(false);
-        // Volume/mute deliberately not disabled: not tied to playable
-        // content/connection state (VolumeControl keeps the same policy).
+        // Volume needs nothing here — VolumeControl renders its own
+        // offline state (disabled, level 0) from its own subscription.
     }
 
     /// Apply the changed-field groups `mask` flags — the live-update path
