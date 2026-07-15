@@ -6,3 +6,5 @@
 //! (header, bottom bar, mini top bar/resize).
 
 pub(in crate::ui) mod chrome;
+pub(in crate::ui) mod display;
+pub(in crate::ui) mod geometry;

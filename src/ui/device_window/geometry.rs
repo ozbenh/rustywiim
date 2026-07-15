@@ -1,253 +1,18 @@
-#![allow(deprecated)] // glib clone! old-style @strong syntax
+//! Window-mode and geometry handling for `DeviceWindowInner`: the
+//! full/mini panel switch on the one shared window (chrome swap, sizing,
+//! the maximize interplay), and per-device window-state persistence.
+//! The bookkeeping here is deliberately verbose in comments — most of it
+//! exists because of live-confirmed compositor behaviors; see also
+//! `chrome::wire_mini_resize()`'s doc comment for the same spirit.
 
 use std::rc::Rc;
 
 use adw::prelude::*;
 
 use crate::config;
-
-use super::*;
-use super::views::common::flash_button;
-
-// ── impl DeviceWindowInner ────────────────────────────────────────────────────
-
-/// Minimum time `connecting_spinner` stays visible once shown, so a
-/// same-LAN reconnect that resolves in well under this doesn't hide it
-/// again before it ever renders a single visible frame — see
-/// `DeviceWindowInner::show_connecting_spinner()`/`hide_connecting_spinner()`.
-const MIN_SPINNER_DISPLAY: std::time::Duration = std::time::Duration::from_secs(1);
+use crate::ui::*;
 
 impl DeviceWindowInner {
-    // ── Connecting spinner ───────────────────────────────────────────────────
-
-    /// Shows+starts `connecting_spinner`, recording when it was first shown
-    /// (unless already showing) so `hide_connecting_spinner()` can enforce
-    /// `MIN_SPINNER_DISPLAY`. Also cancels any pending deferred hide — a
-    /// `Failed`/`Disconnected` → `Connecting` flip inside the debounce
-    /// window must not let a stale hide fire after this call.
-    fn show_connecting_spinner(self: &Rc<Self>) {
-        if let Some(id) = self.spinner_hide_timer.borrow_mut().take() { id.remove(); }
-        if self.spinner_shown_at.get().is_none() {
-            self.spinner_shown_at.set(Some(std::time::Instant::now()));
-        }
-        self.connecting_spinner.set_visible(true);
-        self.connecting_spinner.set_spinning(true);
-    }
-
-    /// Hides+stops `connecting_spinner`, deferring the actual hide if it
-    /// hasn't been visible for `MIN_SPINNER_DISPLAY` yet. A no-op (besides
-    /// making sure the widget is actually hidden) if the spinner was never
-    /// shown in the first place.
-    fn hide_connecting_spinner(self: &Rc<Self>) {
-        let Some(shown_at) = self.spinner_shown_at.get() else {
-            self.connecting_spinner.set_visible(false);
-            self.connecting_spinner.set_spinning(false);
-            return;
-        };
-        let elapsed = shown_at.elapsed();
-        if elapsed >= MIN_SPINNER_DISPLAY {
-            self.spinner_shown_at.set(None);
-            self.connecting_spinner.set_visible(false);
-            self.connecting_spinner.set_spinning(false);
-            return;
-        }
-        if self.spinner_hide_timer.borrow().is_some() {
-            return; // Hide already scheduled — let it run.
-        }
-        let i2 = Rc::clone(self);
-        let id = glib::timeout_add_local_once(MIN_SPINNER_DISPLAY - elapsed, move || {
-            *i2.spinner_hide_timer.borrow_mut() = None;
-            i2.spinner_shown_at.set(None);
-            i2.connecting_spinner.set_visible(false);
-            i2.connecting_spinner.set_spinning(false);
-        });
-        *self.spinner_hide_timer.borrow_mut() = Some(id);
-    }
-
-    // ── Reset ─────────────────────────────────────────────────────────────────
-
-    /// Shows the "no live `device_info`" state in the window chrome:
-    /// title (cached-name fallback), connecting spinner, and bottom-bar
-    /// labels. The playback panels render their own offline state
-    /// (`render_offline()` in each playback view, keyed off
-    /// `connection_state()` the same way) on their own `device-changed`
-    /// subscriptions or on activation, whichever comes first.
-    ///
-    /// `Connecting` shows the corner spinner rather than any text — it's
-    /// normally brief (a few hundred ms on a real LAN), and text that
-    /// fast just reads as an unreadable flash/glitch. `apply_device_info()`
-    /// is the other place that needs to hide the spinner again — it's the
-    /// code path taken on the opposite transition (`Connecting` →
-    /// `Connected`), which never runs through here.
-    pub(super) fn reset_device_ui(self: &Rc<Self>, state: ConnectionState) {
-        // Fall back to the cached name (see `cached_name`'s doc comment)
-        // rather than the bare generic title, while there's no live
-        // `device_info` yet to give a definitive one.
-        let cached_name = self.cached_name.borrow();
-        let win_title = if cached_name.is_empty() {
-            "RustyWiiM".to_string()
-        } else {
-            format!("RustyWiiM ({cached_name})")
-        };
-        drop(cached_name);
-        self.window.set_title(Some(&win_title));
-
-        if state == ConnectionState::Connecting {
-            self.show_connecting_spinner();
-        } else {
-            self.hide_connecting_spinner();
-        }
-
-        super::dbg_ui(&format!("reset_device_ui: state={state:?}"));
-        self.dev_info_label.set_label("");
-        self.ip_label.set_visible(false);
-    }
-
-    /// Populate the window-level UI (title, chrome, bottom bar) from
-    /// whatever the DeviceState currently has cached. Called on initial
-    /// window creation and on every `device-changed` signal. Safe to call
-    /// redundantly — all underlying setters are idempotent. The playback
-    /// displays, input/output dropdowns, presets, and volume clusters
-    /// need nothing here — each view subscribes to `device-changed`
-    /// itself.
-    pub(super) fn populate_all(self: &Rc<Self>) {
-        self.update_network_icon();
-        self.update_remote_display();
-        if self.ds.device_info().is_some() {
-            self.apply_device_info();
-        } else {
-            // A window can sit genuinely `Disconnected` for a good while
-            // (`set_device(..., connect_now: false)` means devlist already
-            // believed the device offline and no connect was attempted).
-            let state = self.ds.connection_state();
-            super::dbg_ui(&format!("populate_all: no device_info, connection_state={state:?}"));
-            self.reset_device_ui(state);
-        }
-    }
-
-    // ── Network ───────────────────────────────────────────────────────────────
-
-    pub(super) fn update_network_icon(&self) {
-        match self.ds.netstat() {
-            Some(0) => {
-                self.net_icon.set_icon_name(Some("network-wired-symbolic"));
-                self.net_icon.set_tooltip_text(None);
-                self.net_icon.set_visible(true);
-            }
-            Some(2) => {
-                let rssi = self.ds.rssi().unwrap_or(0);
-                self.net_icon.set_icon_name(Some(wifi_icon_for_rssi(rssi)));
-                let ssid = self.ds.device_info().map(|i| i.ssid_decoded()).unwrap_or_default();
-                let tooltip = if ssid.is_empty() {
-                    format!("Signal: {rssi} dBm")
-                } else {
-                    format!("Network: {ssid}\nSignal: {rssi} dBm")
-                };
-                self.net_icon.set_tooltip_text(Some(&tooltip));
-                self.net_icon.set_visible(true);
-            }
-            _ => { self.net_icon.set_visible(false); }
-        }
-    }
-
-    /// BLE remote presence/battery, bottom-left of the main window. Visible
-    /// whenever `getStatusEx` has ever answered the question at all
-    /// (`remote_info().connected.is_some()`) — including "known but
-    /// currently disconnected" — and hidden only when we truly don't know
-    /// (field absent from every response so far, e.g. no BLE remote
-    /// hardware exists on this model). Hovering shows battery/signal detail,
-    /// or "disconnected" when not currently connected.
-    pub(super) fn update_remote_display(&self) {
-        let info = self.ds.remote_info();
-        let Some(connected) = info.connected else {
-            self.remote_icon.set_visible(false);
-            self.remote_label.set_visible(false);
-            return;
-        };
-
-        let battery_text = if connected {
-            info.battery.map(|pct| format!("{pct}%")).unwrap_or_default()
-        } else {
-            String::new()
-        };
-        let tooltip = if connected {
-            format!(
-                "Battery: {}\nSignal: {}",
-                info.battery.map(|pct| format!("{pct}%")).unwrap_or_else(|| "unknown".to_string()),
-                info.rssi.map(|r| format!("{r} dBm")).unwrap_or_else(|| "unknown".to_string()),
-            )
-        } else {
-            "disconnected".to_string()
-        };
-
-        self.remote_label.set_label(&battery_text);
-        self.remote_icon.set_tooltip_text(Some(&tooltip));
-        self.remote_label.set_tooltip_text(Some(&tooltip));
-
-        self.remote_icon.set_visible(true);
-        self.remote_icon.queue_resize();
-        self.remote_label.set_visible(!battery_text.is_empty());
-        self.remote_label.queue_resize();
-    }
-
-    pub(super) fn apply_device_info(self: &Rc<Self>) {
-        let info = match self.ds.device_info() { Some(i) => i, None => return };
-        let caps = match self.ds.capabilities() { Some(c) => c, None => return };
-
-        super::dbg_ui(&format!(
-            "apply_device_info: showing real state for {:?}", info.device_name,
-        ));
-        // The only other place the corner spinner is touched is
-        // `reset_device_ui()` (the `Connecting` case) — this is the
-        // opposite transition (`Connecting` → `Connected`, a live
-        // `device_info` just arrived) and never runs through there.
-        self.hide_connecting_spinner();
-        self.window.set_title(Some(&format!("RustyWiiM ({})", info.device_name)));
-        // The mini top bar's device-name label is chrome (not part of
-        // MiniPlaybackView), so it's kept fresh here alongside the window
-        // title rather than by the view.
-        self.mini.device_label.set_label(&info.device_name);
-        // Refresh the disconnected-fallback title too (see `cached_name`'s
-        // doc comment) — this device just answered, so its name is at
-        // least as fresh as whatever config had at window-open time, and a
-        // later disconnect should fall back to this, not that stale value
-        // (e.g. the device having since been renamed in the WiiM app).
-        *self.cached_name.borrow_mut() = info.device_name.clone();
-
-        self.dev_info_label.set_label(&format!(
-            "{} · {} · FW {}",
-            caps.vendor.display_name(), caps.model, info.firmware,
-        ));
-
-        // Unlike dev_info_label (always visible, only its text ever
-        // changes), ip_label starts invisible and is shown/hidden here on
-        // every device-changed. queue_resize() forces a full fresh layout
-        // pass on the reveal rather than risking a stale allocation/clip
-        // from before the label was visible — belt-and-suspenders against
-        // the top-row clipping seen on this label but not on dev_info_label.
-        let ip = info.ip_addr();
-        if !ip.is_empty() {
-            self.ip_label.set_label(ip);
-            self.ip_label.set_visible(true);
-            self.ip_label.queue_resize();
-        } else {
-            self.ip_label.set_visible(false);
-        }
-
-        self.apply_device_window_state(&info.uuid);
-    }
-
-    // ── Volume helpers ────────────────────────────────────────────────────────
-
-    /// The volume cluster belonging to whichever panel is currently
-    /// showing — for the keyboard Up/Down shortcuts, so the flashy part
-    /// (the level readout changing) happens where the user is looking.
-    /// Returns a clone (a GObject refcount bump) since the mini one lives
-    /// inside `MiniPlaybackView` rather than as a field here.
-    pub(super) fn active_volume(&self) -> super::views::volume::VolumeControl {
-        if *self.mini_mode.borrow() { self.mini.view.volume() } else { self.playback.volume() }
-    }
-
     /// Apply per-device window/panel state (size, maximized, panel
     /// visibility/width, mini-window width) for the device identified by
     /// `uuid`. Guarded by `window_state_loaded`/`applied_window_key` so
@@ -275,7 +40,7 @@ impl DeviceWindowInner {
     /// than silently staying on the HTTP default forever. A no-op re-push
     /// for an already-known device (same uuid, same config, already applied
     /// at construction).
-    pub(super) fn apply_device_window_state(&self, uuid: &str) {
+    pub(in crate::ui) fn apply_device_window_state(&self, uuid: &str) {
         if uuid.is_empty() { return; }
         let already_loaded = self.window_state_loaded.get();
         let prev_uuid = self.applied_window_key.borrow().clone();
@@ -322,7 +87,7 @@ impl DeviceWindowInner {
         *self.applied_window_key.borrow_mut() = uuid.to_string();
 
         let dev_cfg = config::with(|cfg| cfg.device(uuid));
-        super::dbg_ui(&format!(
+        crate::ui::dbg_ui(&format!(
             "apply_device_window_state: uuid={uuid:?} playback_access_override={:?} mute_access_override={:?}",
             dev_cfg.playback_access_override, dev_cfg.mute_access_override,
         ));
@@ -372,7 +137,7 @@ impl DeviceWindowInner {
     /// Immediately persist the current device's window/panel state.
     /// Loads the full config, updates only the current device's entry, and
     /// saves so no other device's entry is overwritten.
-    pub(super) fn save_config_now(&self) {
+    pub(in crate::ui) fn save_config_now(&self) {
         let uuid = match self.ds.device_info() {
             Some(di) if !di.uuid.is_empty() => di.uuid,
             _ => return,
@@ -421,7 +186,7 @@ impl DeviceWindowInner {
     /// `exit_mini_mode()`/the startup restore each call `set_default_size()`
     /// themselves right after, since they disagree on what size to apply
     /// (mini's remembered width vs. the full window's saved/pre-mini size).
-    pub(super) fn apply_window_chrome(&self, mini: bool) {
+    pub(in crate::ui) fn apply_window_chrome(&self, mini: bool) {
         if mini {
             self.window.remove_css_class("player-window");
             self.window.add_css_class("mini-window");
@@ -459,7 +224,7 @@ impl DeviceWindowInner {
         // widgets, so the *other* subtree (now detached) simply keeps
         // whatever it last had; harmless while it's not shown, and this
         // same call self-heals it the next time it's reattached.
-        super::update_art_background_visibility();
+        crate::ui::update_art_background_visibility();
     }
 
     /// The mini window's target size for `set_default_size()`: the requested
@@ -473,7 +238,7 @@ impl DeviceWindowInner {
     /// and behaves the same across GTK versions. (Note: this is complementary
     /// to, not the cure for, the "twice as tall" bug — that was AdwWindow's
     /// hardcoded 360x200 `size_request` floor, cleared in `apply_window_chrome()`.)
-    pub(super) fn mini_target_size(&self, mini_w: i32) -> (i32, i32) {
+    pub(in crate::ui) fn mini_target_size(&self, mini_w: i32) -> (i32, i32) {
         let (_, nat_h, _, _) = self.mini.root.measure(gtk::Orientation::Vertical, mini_w);
         (mini_w, nat_h.max(1))
     }
@@ -505,20 +270,20 @@ impl DeviceWindowInner {
     /// is sized — this is the logic the "twice as tall" investigation churned
     /// through, kept in one place deliberately. Caller handles chrome swap,
     /// bookkeeping, and present().
-    pub(super) fn apply_mini_window_size(&self) {
+    pub(in crate::ui) fn apply_mini_window_size(&self) {
         let mini_w = if self.mini_mode_width.get() > 0 {
             self.mini_mode_width.get()
         } else {
-            super::device_window::chrome::MINI_WIDTH_DEFAULT
+            super::chrome::MINI_WIDTH_DEFAULT
         };
         let (mini_w, mini_h) = self.mini_target_size(mini_w);
-        super::dbg_ui(&format!("apply mini window size: requesting set_default_size({mini_w}, {mini_h})"));
+        crate::ui::dbg_ui(&format!("apply mini window size: requesting set_default_size({mini_w}, {mini_h})"));
         self.window.set_default_size(mini_w, mini_h);
     }
 
-    pub(super) fn enter_mini_mode(&self) {
+    pub(in crate::ui) fn enter_mini_mode(&self) {
         if *self.mini_mode.borrow() { return; }
-        super::dbg_ui(&format!(
+        crate::ui::dbg_ui(&format!(
             "enter mini mode (uuid={}) before: {}",
             self.applied_window_key.borrow(), self.window_geom(),
         ));
@@ -538,13 +303,13 @@ impl DeviceWindowInner {
         if !was_maximized {
             let captured = (self.window.width(), self.window.height());
             *self.full_mode_size.borrow_mut() = captured;
-            super::dbg_ui(&format!(
+            crate::ui::dbg_ui(&format!(
                 "enter mini mode: window not maximized -> storing current size into full_mode_size: full:{},{}",
                 captured.0, captured.1,
             ));
         } else {
             let (fw, fh) = *self.full_mode_size.borrow();
-            super::dbg_ui(&format!(
+            crate::ui::dbg_ui(&format!(
                 "enter mini mode: window already maximized -> NOT touching full_mode_size (keeping full:{fw},{fh})",
             ));
         }
@@ -563,20 +328,20 @@ impl DeviceWindowInner {
         // first, now that whether it *was* maximized is safely remembered
         // above for exit_mini_mode() to restore.
         self.window.unmaximize();
-        super::dbg_ui(&format!("enter mini mode: after unmaximize(): {}", self.window_geom()));
+        crate::ui::dbg_ui(&format!("enter mini mode: after unmaximize(): {}", self.window_geom()));
         self.apply_window_chrome(true);
         // `apply_mini_window_size()` also overwrites GTK/the compositor's own
         // notion of "the size to restore to when un-maximized" — see
         // exit_mini_mode()'s matching set_default_size() call, which resets it
         // back before maximize()/unmaximize() runs there to undo that side effect.
         self.apply_mini_window_size();
-        super::dbg_ui(&format!("enter mini mode: after set_default_size(): {}", self.window_geom()));
+        crate::ui::dbg_ui(&format!("enter mini mode: after set_default_size(): {}", self.window_geom()));
         self.window.present();
     }
 
-    pub(super) fn exit_mini_mode(&self) {
+    pub(in crate::ui) fn exit_mini_mode(&self) {
         if !*self.mini_mode.borrow() { return; }
-        super::dbg_ui(&format!(
+        crate::ui::dbg_ui(&format!(
             "exit mini mode (uuid={}) before: {}",
             self.applied_window_key.borrow(), self.window_geom(),
         ));
@@ -584,14 +349,14 @@ impl DeviceWindowInner {
         // swapping away from it — see `mini_mode_width`'s doc comment.
         let captured_mini_w = self.window.width();
         self.mini_mode_width.set(captured_mini_w);
-        super::dbg_ui(&format!(
+        crate::ui::dbg_ui(&format!(
             "exit mini mode: storing current width into mini_mode_width: mini:{captured_mini_w}",
         ));
         *self.mini_mode.borrow_mut() = false;
         self.mini.view.set_active(false);
 
         self.apply_window_chrome(false);
-        super::dbg_ui(&format!("exit mini mode: after apply_window_chrome(false): {}", self.window_geom()));
+        crate::ui::dbg_ui(&format!("exit mini mode: after apply_window_chrome(false): {}", self.window_geom()));
         // Request the full panel's remembered size in both branches below —
         // for the non-maximized branch this is the actual restored size;
         // for the maximized branch it's only a best-effort (see the big
@@ -599,7 +364,7 @@ impl DeviceWindowInner {
         let (w, h) = *self.full_mode_size.borrow();
         // Ensure we have a sane size
         let (w, h) = if w > 0 && h > 0 { (w, h) } else { (680, 640) };
-        super::dbg_ui(&format!(
+        crate::ui::dbg_ui(&format!(
             "exit mini mode: restoring full_mode_size (full:{w},{h}), full_mode_maximized={}",
             self.full_mode_maximized.get(),
         ));
@@ -631,11 +396,11 @@ impl DeviceWindowInner {
             // why it's still unverified whether deferring is.
             self.window.maximize();
             self.window.set_default_size(w, h);
-            super::dbg_ui(&format!("exit mini mode: after maximize() + set_default_size({w}, {h}): {}", self.window_geom()));
+            crate::ui::dbg_ui(&format!("exit mini mode: after maximize() + set_default_size({w}, {h}): {}", self.window_geom()));
         } else {
             self.window.set_default_size(w, h);
             self.window.unmaximize();
-            super::dbg_ui(&format!("exit mini mode: after set_default_size({w}, {h}) + unmaximize(): {}", self.window_geom()));
+            crate::ui::dbg_ui(&format!("exit mini mode: after set_default_size({w}, {h}) + unmaximize(): {}", self.window_geom()));
         }
         self.window.present();
         // Activation runs the incoming view's own full catch-up refresh
@@ -644,65 +409,9 @@ impl DeviceWindowInner {
     }
 } // impl DeviceWindowInner
 
-/// Global playback/volume/window-mode keyboard shortcuts, shared by the main
-/// and mini windows via the `EventControllerKey`s wired in `mod.rs`.
-/// `prev_btn`/`next_btn`/`play_btn` are whichever window's transport buttons
-/// received the key, so the flash appears on the window the user is
-/// actually looking at.
-pub(super) fn handle_transport_key(
-    i:        &Rc<DeviceWindowInner>,
-    keyval:   gtk::gdk::Key,
-    state:    gtk::gdk::ModifierType,
-    prev_btn: &gtk::Button,
-    next_btn: &gtk::Button,
-    play_btn: &gtk::Button,
-) -> glib::Propagation {
-    // Ignore Ctrl/Alt combinations so this doesn't shadow other accelerators
-    // (Ctrl-W, Ctrl-Q, Alt-based window-manager bindings, etc.).
-    if state.intersects(gtk::gdk::ModifierType::CONTROL_MASK | gtk::gdk::ModifierType::ALT_MASK) {
-        return glib::Propagation::Proceed;
-    }
-    // The transport shortcuts follow their button's sensitivity (kept
-    // current from `ps.caps.can_*` by the active playback view) — a
-    // disabled action shouldn't fire just because it came in via keyboard.
-    // `Proceed`, not `Stop`: with no action to perform, behave as if the
-    // shortcut didn't exist rather than swallowing the key.
-    match keyval {
-        gtk::gdk::Key::Left if prev_btn.is_sensitive() => {
-            i.ds.do_prev();
-            flash_button(prev_btn);
-            glib::Propagation::Stop
-        }
-        gtk::gdk::Key::Right if next_btn.is_sensitive() => {
-            i.ds.do_next();
-            flash_button(next_btn);
-            glib::Propagation::Stop
-        }
-        gtk::gdk::Key::space if play_btn.is_sensitive() => {
-            i.ds.do_play_pause();
-            flash_button(play_btn);
-            glib::Propagation::Stop
-        }
-        gtk::gdk::Key::Up => {
-            i.active_volume().step(5);
-            glib::Propagation::Stop
-        }
-        gtk::gdk::Key::Down => {
-            i.active_volume().step(-5);
-            glib::Propagation::Stop
-        }
-        gtk::gdk::Key::m | gtk::gdk::Key::M => {
-            if *i.mini_mode.borrow() { i.exit_mini_mode(); } else { i.enter_mini_mode(); }
-            schedule_config_save(i);
-            glib::Propagation::Stop
-        }
-        _ => glib::Propagation::Proceed,
-    }
-}
-
 /// Schedule a deferred config save for `inner`, debounced at 500 ms.
 /// Cancels any previously scheduled save so only one write happens per burst.
-pub(super) fn schedule_config_save(i: &Rc<DeviceWindowInner>) {
+pub(in crate::ui) fn schedule_config_save(i: &Rc<DeviceWindowInner>) {
     if let Some(id) = i.config_save_timer.borrow_mut().take() { id.remove(); }
     let i2 = Rc::clone(i);
     let id = glib::timeout_add_local_once(
@@ -713,70 +422,4 @@ pub(super) fn schedule_config_save(i: &Rc<DeviceWindowInner>) {
         },
     );
     *i.config_save_timer.borrow_mut() = Some(id);
-}
-
-/// Slide the paned's divider to `target_pos` (0 = fully closed) instead of
-/// jumping instantly, so opening/closing the side panel reads as one motion.
-/// Falls back to an instant set when animations are off (config.animations,
-/// or GTK's reduce-motion). `panel_collapsing` is held for the animation's
-/// duration so `connect_position_notify`'s drag-detection logic ignores the
-/// frames this drives — same guard the instant path already relied on.
-pub(super) fn animate_panel_to(i: &Rc<DeviceWindowInner>, target_pos: i32) {
-    // Two statements, not `if let Some(a) = i.panel_anim.borrow_mut().take() { a.skip(); }`:
-    // the RefMut temporary from borrow_mut() stays alive for the whole if-let
-    // block (Rust's temporary lifetime rule for if-let scrutinees), so
-    // panel_anim would still be borrowed while skip() runs below — and
-    // skip() synchronously fires connect_done, which borrows panel_anim
-    // again and panics. (Same bug as FlipCover's set_content/dispose/clear.)
-    let old_anim = i.panel_anim.borrow_mut().take();
-    if let Some(a) = old_anim { a.skip(); }
-
-    if target_pos > 0 {
-        // Visible immediately so it's revealed as the panel slides open,
-        // rather than popping in once the animation finishes.
-        i.left_pane.set_visible(true);
-    }
-
-    let from = i.paned.position();
-    let animate = from != target_pos
-        && config::with(|cfg| cfg.animations)
-        && gtk::Settings::default().is_some_and(|s| s.is_gtk_enable_animations());
-
-    if !animate {
-        *i.panel_collapsing.borrow_mut() = true;
-        i.paned.set_position(target_pos);
-        *i.panel_collapsing.borrow_mut() = false;
-        if target_pos <= 0 { i.left_pane.set_visible(false); }
-        schedule_config_save(i);
-        return;
-    }
-
-    *i.panel_collapsing.borrow_mut() = true;
-
-    let weak  = Rc::downgrade(i);
-    let paned = i.paned.clone();
-    let anim_target = adw::CallbackAnimationTarget::new(move |v| {
-        paned.set_position(v.round() as i32);
-    });
-    let anim = adw::TimedAnimation::new(&i.paned, from as f64, target_pos as f64, 200, anim_target);
-    anim.set_easing(adw::Easing::EaseInOutCubic);
-    anim.connect_done(move |_| {
-        let Some(i) = weak.upgrade() else { return };
-        *i.panel_collapsing.borrow_mut() = false;
-        if target_pos <= 0 { i.left_pane.set_visible(false); }
-        *i.panel_anim.borrow_mut() = None;
-        schedule_config_save(&i);
-    });
-    anim.play();
-    *i.panel_anim.borrow_mut() = Some(anim);
-}
-
-pub(super) fn wifi_icon_for_rssi(rssi: i32) -> &'static str {
-    match rssi {
-        i32::MIN..=-85 | 0 => "network-wireless-offline-symbolic",
-        -84..=-75           => "network-wireless-signal-weak-symbolic",
-        -74..=-65           => "network-wireless-signal-ok-symbolic",
-        -64..=-55           => "network-wireless-signal-good-symbolic",
-        _                   => "network-wireless-signal-excellent-symbolic",
-    }
 }

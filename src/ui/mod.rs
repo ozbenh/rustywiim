@@ -7,7 +7,6 @@ mod icons;
 pub(crate) mod menu;
 mod scroll_fade_label;
 mod device_window;
-mod playback;
 mod theme;
 pub(crate) mod settings;
 mod views;
@@ -850,7 +849,7 @@ impl DeviceWindow {
                             let pos = i2.paned.position();
                             if pos >= SNAP_PX { *i2.saved_panel_width.borrow_mut() = pos; }
                         }
-                        playback::schedule_config_save(&i2);
+                        device_window::geometry::schedule_config_save(&i2);
                     },
                 );
                 *i.settle_timer.borrow_mut() = Some(id);
@@ -881,7 +880,7 @@ impl DeviceWindow {
                                 let pos = i.paned.position();
                                 if pos >= SNAP_PX { *i.saved_panel_width.borrow_mut() = pos; }
                             }
-                            playback::schedule_config_save(&i);
+                            device_window::geometry::schedule_config_save(&i);
                         }
                         _ => {}
                     }
@@ -899,9 +898,9 @@ impl DeviceWindow {
                 if let Some(id) = i.settle_timer.borrow_mut().take() { id.remove(); }
                 if btn.is_active() {
                     let w = *i.saved_panel_width.borrow();
-                    playback::animate_panel_to(&i, w);
+                    device_window::display::animate_panel_to(&i, w);
                 } else {
-                    playback::animate_panel_to(&i, 0);
+                    device_window::display::animate_panel_to(&i, 0);
                 }
             }
         });
@@ -926,7 +925,7 @@ impl DeviceWindow {
                     } else {
                         i.playback.transport_buttons()
                     };
-                    playback::handle_transport_key(&i, keyval, state, &prev, &next, &play)
+                    device_window::display::handle_transport_key(&i, keyval, state, &prev, &next, &play)
                 }
             });
             window.add_controller(key_ctrl);
@@ -942,7 +941,7 @@ impl DeviceWindow {
             move |_btn| {
                 let Some(i) = i.upgrade() else { return };
                 i.enter_mini_mode();
-                playback::schedule_config_save(&i);
+                device_window::geometry::schedule_config_save(&i);
             }
         });
 
@@ -951,7 +950,7 @@ impl DeviceWindow {
             move |_| {
                 let Some(i) = i.upgrade() else { return };
                 i.exit_mini_mode();
-                playback::schedule_config_save(&i);
+                device_window::geometry::schedule_config_save(&i);
             }
         });
 
@@ -973,7 +972,7 @@ impl DeviceWindow {
                     let Some(i) = i.upgrade() else { return };
                     if n_press >= 2 {
                         i.exit_mini_mode();
-                        playback::schedule_config_save(&i);
+                        device_window::geometry::schedule_config_save(&i);
                     }
                 }
             });
