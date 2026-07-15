@@ -12,8 +12,6 @@
 //! `ScrollFadeLabel` — this is a custom `snapshot()` using a GSK render node
 //! (`push_blur`) rather than anything CSS-driven.
 
-#![allow(deprecated)] // glib::clone! old-style @weak syntax, matches flip_cover.rs
-
 pub mod imp {
     use std::cell::{Cell, RefCell};
 
@@ -182,7 +180,7 @@ pub mod imp {
 
             let obj = self.obj();
             let target = adw::CallbackAnimationTarget::new(glib::clone!(
-                @weak obj => move |v| {
+                #[weak] obj, move |v| {
                     obj.imp().progress.set(v as f32);
                     obj.queue_draw();
                 }
@@ -190,7 +188,7 @@ pub mod imp {
             let anim = adw::TimedAnimation::new(&*obj, 0.0, 1.0, FADE_DURATION_MS, target);
             anim.set_easing(adw::Easing::EaseInOutCubic);
             anim.connect_done(glib::clone!(
-                @weak obj => move |_| {
+                #[weak] obj, move |_| {
                     let imp = obj.imp();
                     let new_front = imp.back.borrow_mut().take();
                     imp.front.replace(new_front);

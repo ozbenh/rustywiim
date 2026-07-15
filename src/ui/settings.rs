@@ -8,8 +8,6 @@
 // application-wide settings.  Device-specific pages (added in the future) must
 // check `ds.is_some()` before rendering.
 
-#![allow(deprecated)] // glib clone! @strong syntax
-
 use adw::prelude::*;
 use gtk::glib;
 use gtk::Orientation;
@@ -257,7 +255,7 @@ impl SettingsWindow {
         window.set_content(Some(&toolbar_view));
 
         if let Some(ref d) = ds {
-            d.connect_device_changed(glib::clone!(@weak window => move |ds| {
+            d.connect_device_changed(glib::clone!(#[weak] window, move |ds| {
                 let title = match ds.device_info() {
                     Some(i) => format!("Settings ({})", i.device_name),
                     None    => "Settings".to_string(),
@@ -286,9 +284,9 @@ impl SettingsWindow {
             if let Some(ref d) = ds {
                 let was_connected = Cell::new(d.device_info().is_some());
                 d.connect_device_changed(glib::clone!(
-                    @weak advanced_row, @weak advanced_holder,
-                    @weak about_row, @weak about_holder
-                    => move |ds| {
+                    #[weak] advanced_row, #[weak] advanced_holder,
+                    #[weak] about_row, #[weak] about_holder
+                   , move |ds| {
                         let connected = ds.device_info().is_some();
                         if connected == was_connected.get() { return; }
                         was_connected.set(connected);
@@ -435,7 +433,7 @@ fn build_appearance_page() -> adw::PreferencesPage {
         crate::ui::update_art_background_visibility();
     });
 
-    theme_row.connect_selected_notify(glib::clone!(@weak mini_modern_row => move |row| {
+    theme_row.connect_selected_notify(glib::clone!(#[weak] mini_modern_row, move |row| {
             // The separator's THEMES entry is None; it's non-selectable so this
             // shouldn't fire for it, but bail rather than guess if it somehow does.
             let Some(theme) = THEMES.get(row.selected() as usize).and_then(|(_, m)| *m) else { return };
@@ -477,7 +475,7 @@ fn build_appearance_page() -> adw::PreferencesPage {
         crate::ui::apply_accent_color();
     });
 
-    theme_row.connect_selected_notify(glib::clone!(@weak accent_row => move |row| {
+    theme_row.connect_selected_notify(glib::clone!(#[weak] accent_row, move |row| {
             let Some(theme) = THEMES.get(row.selected() as usize).and_then(|(_, m)| *m) else { return };
             accent_row.set_sensitive(theme == ThemeMode::RustyWiiM || theme == ThemeMode::RustyWiiMModern);
         }
@@ -495,8 +493,8 @@ fn build_appearance_page() -> adw::PreferencesPage {
         .valign(gtk::Align::Center)
         .build();
     reset_btn.connect_clicked(glib::clone!(
-        @weak theme_row, @weak mini_modern_row, @weak animations_row, @weak accent_button
-        => move |_| {
+        #[weak] theme_row, #[weak] mini_modern_row, #[weak] animations_row, #[weak] accent_button
+       , move |_| {
             config::reset_ui_settings();
             let (theme, mini_modern, animations, accent_color) = config::with(|cfg| {
                 (cfg.theme, cfg.mini_modern, cfg.animations, cfg.accent_color.clone())
@@ -540,7 +538,7 @@ fn build_general_page(disc_mgr: &DiscoveryManager) -> adw::PreferencesPage {
                    network traffic per device")
         .active(song_info)
         .build();
-    song_info_row.connect_active_notify(glib::clone!(@weak disc_mgr => move |row| {
+    song_info_row.connect_active_notify(glib::clone!(#[weak] disc_mgr, move |row| {
         let want = row.is_active();
         // `device/`-resident DiscoveryManager can't touch config itself —
         // this is the "report out" side, mirroring how it can't read

@@ -1,5 +1,3 @@
-#![allow(deprecated)] // glib clone! @strong syntax
-
 /// Device-list window — renders `device::discovery_manager::DiscoveryManager`'s
 /// tracked-device list and lets the user pin/unpin entries, open device windows
 /// by double-clicking, and add devices manually by IP. Owns no tracking state
@@ -290,8 +288,8 @@ impl DiscoveryWindow {
         // List rebuild: structural changes only (device added/removed/
         // renamed/pinned/moved, presence flips) — see `signals()`.
         manager.connect_list_changed(clone!(
-            @strong list_box, @strong current_entries, @strong row_widgets, @strong icons
-                => move |mgr| {
+            #[strong] list_box, #[strong] current_entries, #[strong] row_widgets, #[strong] icons
+               , move |mgr| {
                     Self::rebuild_list(&list_box, &mgr.entries(), &current_entries, &row_widgets, mgr, &icons);
                 }
         ));
@@ -308,7 +306,7 @@ impl DiscoveryWindow {
         // here would catch that gap — artwork transiently absent — and flash
         // the fallback icon before the real flip instead of holding the old
         // art until the new art is actually ready to flip to.
-        manager.connect_song_info_changed(clone!(@strong row_widgets, @strong icons => move |mgr, key, mask| {
+        manager.connect_song_info_changed(clone!(#[strong] row_widgets, #[strong] icons, move |mgr, key, mask| {
             use crate::device::state::playback_changed as PC;
             let Some(entry) = mgr.entry_for(key) else { return };
             let widgets = row_widgets.borrow();
@@ -326,7 +324,7 @@ impl DiscoveryWindow {
             }
         }));
 
-        list_box.connect_row_activated(clone!(@strong current_entries, @strong open_device => move |_, row| {
+        list_box.connect_row_activated(clone!(#[strong] current_entries, #[strong] open_device, move |_, row| {
             let idx = row.index();
             if idx < 0 { return; }
             if let Some(entry) = current_entries.borrow().get(idx as usize) {
@@ -337,8 +335,8 @@ impl DiscoveryWindow {
         // Scanning indicator: clear only when the SSDP scan cycle reports in.
         let scanning = Rc::new(std::cell::Cell::new(true));
         manager.connect_scan_complete(clone!(
-            @strong subtitle_row, @strong scanning, @strong spinner
-                => move || {
+            #[strong] subtitle_row, #[strong] scanning, #[strong] spinner
+               , move || {
                     if scanning.replace(false) {
                         spinner.set_spinning(false);
                         subtitle_row.set_visible(false);
@@ -347,19 +345,19 @@ impl DiscoveryWindow {
         ));
 
         // "Add device" button.
-        add_btn.connect_clicked(clone!(@strong window, @strong manager => move |_| {
+        add_btn.connect_clicked(clone!(#[strong] window, #[strong] manager, move |_| {
             Self::show_add_dialog(&window, &manager);
         }));
 
         // win.close action — lets Ctrl-W (set app-wide) close this window.
         {
             let close_act = gtk::gio::SimpleAction::new("close", None);
-            close_act.connect_activate(clone!(@strong window => move |_, _| { window.close(); }));
+            close_act.connect_activate(clone!(#[strong] window, move |_, _| { window.close(); }));
             window.add_action(&close_act);
         }
 
         // Hide when other windows are visible; quit (propagate) when last.
-        window.connect_close_request(clone!(@strong window => move |w| {
+        window.connect_close_request(clone!(#[strong(rename_to = _window)] window, move |w| {
             let (ww, wh) = (w.width(), w.height());
             config::update(|cfg| {
                 cfg.discovery_open = false;
@@ -374,7 +372,7 @@ impl DiscoveryWindow {
                 })
             });
             if others_visible {
-                w.hide();
+                w.set_visible(false);
                 glib::Propagation::Stop
             } else {
                 glib::Propagation::Proceed
@@ -518,7 +516,7 @@ impl DiscoveryWindow {
         let vol_widgets = entry.song_info_enabled.then(|| {
             let (vol_btn, vol_icon_img, vol_label, vol_scale, mute_btn, vol_popover) = build_devlist_vol_popover();
             vol_btn.set_sensitive(entry.presence == DevicePresence::Active);
-            vol_btn.connect_clicked(clone!(@weak vol_popover => move |_| {
+            vol_btn.connect_clicked(clone!(#[weak] vol_popover, move |_| {
                 if vol_popover.is_visible() { vol_popover.popdown(); } else { vol_popover.popup(); }
             }));
             hbox.append(&vol_btn);
@@ -538,12 +536,12 @@ impl DiscoveryWindow {
                 };
                 sync_devlist_vol_display(&rw_for_sync, &ds);
 
-                mute_btn.connect_clicked(clone!(@strong ds => move |_| {
+                mute_btn.connect_clicked(clone!(#[strong] ds, move |_| {
                     ds.do_set_mute(!ds.muted());
                 }));
                 vol_scale.connect_change_value(clone!(
-                    @strong ds, @strong vol_icon_img, @strong vol_label, @strong vol_drag_timer
-                        => move |_, _, vol| {
+                    #[strong] ds, #[strong] vol_icon_img, #[strong] vol_label, #[strong] vol_drag_timer
+                       , move |_, _, vol| {
                             let icon = vol_icon(ds.muted(), vol);
                             vol_icon_img.set_icon_name(Some(icon));
                             vol_label.set_label(&format!("{}", vol as u32));
@@ -579,7 +577,7 @@ impl DiscoveryWindow {
             pin_btn.add_css_class("accent");
         }
         let uuid_for_pin = entry.uuid.clone();
-        pin_btn.connect_toggled(clone!(@strong manager => move |btn| {
+        pin_btn.connect_toggled(clone!(#[strong] manager, move |btn| {
             manager.set_pinned(&uuid_for_pin, btn.is_active());
         }));
         hbox.append(&pin_btn);
@@ -613,8 +611,8 @@ impl DiscoveryWindow {
         dialog.set_extra_child(Some(&ip_entry));
 
         dialog.connect_response(None, clone!(
-            @strong manager, @strong ip_entry
-                => move |_dlg, resp| {
+            #[strong] manager, #[strong] ip_entry
+               , move |_dlg, resp| {
                     if resp != "add" { return; }
                     let ip = ip_entry.text().to_string();
                     if ip.is_empty() { return; }
@@ -627,7 +625,7 @@ impl DiscoveryWindow {
                         let _ = tx.send(result).await;
                     });
 
-                    glib::spawn_future_local(clone!(@strong manager => async move {
+                    glib::spawn_future_local(clone!(#[strong] manager, async move {
                         if let Ok(Some(dev)) = rx.recv().await {
                             manager.add_manual(dev.name, dev.ip, dev.uuid, dev.tls_mode);
                         } else {

@@ -1,5 +1,3 @@
-#![allow(deprecated)] // glib clone! old-style @strong syntax
-
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
@@ -209,8 +207,8 @@ fn wire_mini_resize(stable: &gtk::Overlay) {
     let tick_id:       Rc<RefCell<Option<gtk::TickCallbackId>>> = Rc::new(RefCell::new(None));
 
     gesture.connect_drag_begin(glib::clone!(
-        @strong stable, @strong start_width, @strong pending_width, @strong tick_id
-        => move |gesture, x, _y| {
+        #[strong] stable, #[strong] start_width, #[strong] pending_width, #[strong] tick_id
+       , move |gesture, x, _y| {
             // `stable` spans the whole window, so this fires for a press
             // anywhere in it — only actually arm a resize near its right edge.
             if x < stable.width() as f64 - MINI_RESIZE_EDGE_PX {
@@ -226,7 +224,7 @@ fn wire_mini_resize(stable: &gtk::Overlay) {
             let Some(win) = stable.native().and_then(|n| n.downcast::<gtk::Window>().ok()) else { return };
             start_width.set(win.width());
             pending_width.set(None);
-            let id = stable.add_tick_callback(glib::clone!(@strong win, @strong pending_width => move |_, _| {
+            let id = stable.add_tick_callback(glib::clone!(#[strong] win, #[strong] pending_width, move |_, _| {
                 if let Some(w) = pending_width.take() {
                     win.set_default_width(w);
                 }
@@ -236,14 +234,14 @@ fn wire_mini_resize(stable: &gtk::Overlay) {
         }
     ));
     gesture.connect_drag_update(glib::clone!(
-        @strong start_width, @strong pending_width, @strong tick_id => move |_, offset_x, _offset_y| {
+        #[strong] start_width, #[strong] pending_width, #[strong] tick_id, move |_, offset_x, _offset_y| {
             if tick_id.borrow().is_none() { return; } // press wasn't near the edge
             let new_width = (start_width.get() + offset_x.round() as i32).clamp(MINI_WIDTH_MIN, MINI_WIDTH_MAX);
             pending_width.set(Some(new_width));
         }
     ));
     gesture.connect_drag_end(glib::clone!(
-        @strong tick_id, @strong pending_width => move |_, _, _| {
+        #[strong] tick_id, #[strong] pending_width, move |_, _, _| {
             let Some(id) = tick_id.borrow_mut().take() else { return }; // press wasn't near the edge
             id.remove();
             pending_width.set(None);

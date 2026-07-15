@@ -49,8 +49,6 @@
 //! label.set_text("New title");
 //! ```
 
-#![allow(deprecated)] // glib::clone! old-style @weak syntax
-
 pub mod imp {
     use std::cell::{Cell, RefCell};
     use std::sync::OnceLock;
@@ -180,10 +178,10 @@ pub mod imp {
         fn constructed(&self) {
             let obj = self.obj();
             let motion = gtk::EventControllerMotion::new();
-            motion.connect_enter(glib::clone!(@weak obj => move |_, _, _| {
+            motion.connect_enter(glib::clone!(#[weak] obj, move |_, _, _| {
                 obj.imp().is_hovered.set(true);
             }));
-            motion.connect_leave(glib::clone!(@weak obj => move |_| {
+            motion.connect_leave(glib::clone!(#[weak] obj, move |_| {
                 obj.imp().is_hovered.set(false);
             }));
             obj.add_controller(motion);
@@ -363,7 +361,7 @@ pub mod imp {
             let obj = self.obj();
             let id = glib::timeout_add_local(
                 Duration::from_millis(interval_ms),
-                glib::clone!(@weak obj => @default-return glib::ControlFlow::Break, move || {
+                glib::clone!(#[weak] obj, #[upgrade_or] glib::ControlFlow::Break, move || {
                     obj.imp().scroll_tick();
                     glib::ControlFlow::Continue
                 }),

@@ -1,5 +1,3 @@
-#![allow(deprecated)] // glib clone! old-style @strong syntax
-
 mod art_background;
 pub mod devlist;
 mod flip_cover;

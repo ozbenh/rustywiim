@@ -16,8 +16,6 @@
 //! `Paintable::snapshot()`, so the same code path handles either; no
 //! offscreen "pixmap" render step is needed.
 
-#![allow(deprecated)] // glib::clone! old-style @weak syntax, matches scroll_fade_label.rs
-
 pub mod imp {
     use std::cell::{Cell, RefCell};
 
@@ -215,7 +213,7 @@ pub mod imp {
 
             let obj = self.obj();
             let target = adw::CallbackAnimationTarget::new(glib::clone!(
-                @weak obj => move |v| {
+                #[weak] obj, move |v| {
                     obj.imp().progress.set(v as f32);
                     obj.queue_draw();
                 }
@@ -223,7 +221,7 @@ pub mod imp {
             let anim = adw::TimedAnimation::new(&*obj, 0.0, 1.0, duration, target);
             anim.set_easing(easing);
             anim.connect_done(glib::clone!(
-                @weak obj => move |_| {
+                #[weak] obj, move |_| {
                     let imp = obj.imp();
                     let new_front = imp.back.borrow_mut().take();
                     imp.front.replace(new_front);

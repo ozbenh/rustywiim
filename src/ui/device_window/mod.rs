@@ -648,7 +648,7 @@ fn wire_mini_chrome(inner: &Rc<DeviceWindowInner>) {
     // meaning as win.close below, just with no native titlebar button to
     // trigger it from (mini mode is undecorated).
     inner.mini.close_btn.connect_clicked({
-        clone!(@strong window => move |_| {
+        clone!(#[strong] window, move |_| {
             gtk::prelude::WidgetExt::realize(&window); // close() is a no-op on an unrealized window
             window.close();
         })
