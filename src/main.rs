@@ -27,6 +27,18 @@ fn parse_connect_url(url: &str) -> Option<(String, device::api::TlsMode)> {
     Some((host_port.to_string(), tls))
 }
 
+/// Extracts just the `host[:port]` portion from a `scheme://host[:port]`
+/// URL — used for `--connect`'s optional second, comma-separated UPnP URL
+/// (`http://api-host:port,http://upnp-host:port`), which only needs an
+/// address for `device::upnp::UpnpClient::discover()` to try (that call
+/// already tries both http/https schemes on its own, same as the normal
+/// no-override case) — no `TlsMode` to resolve, unlike the API URL.
+fn extract_host_port(url: &str) -> Option<String> {
+    let (_, rest) = url.split_once("://")?;
+    let host_port = rest.split('/').next().unwrap_or(rest);
+    if host_port.is_empty() { None } else { Some(host_port.to_string()) }
+}
+
 fn main() -> glib::ExitCode {
     let app = adw::Application::builder()
         .application_id(ui::APP_ID)
@@ -54,7 +66,9 @@ fn main() -> glib::ExitCode {
         glib::OptionFlags::NONE,
         glib::OptionArg::String,
         "Connect directly to scheme://ip[:port] (e.g. http://127.0.0.1:8080 for wiim-simulator), \
-         opening a device window for it immediately instead of discovery",
+         opening a device window for it immediately instead of discovery. Optionally followed by \
+         a comma and a second scheme://ip[:port] for the UPnP listener (e.g. wiim-simulator's \
+         --upnp-port), tried instead of the two standard UPnP ports",
         Some("URL"),
     );
     app.add_main_option(
@@ -123,11 +137,28 @@ fn main() -> glib::ExitCode {
             config::set_config_path_override(path);
         }
         if let Ok(Some(url)) = opts.lookup::<String>("connect") {
-            match parse_connect_url(&url) {
-                Some((ip, tls_mode)) => ui::set_direct_connect(ip, tls_mode),
+            let (api_url, upnp_url) = match url.split_once(',') {
+                Some((a, u)) => (a, Some(u)),
+                None => (url.as_str(), None),
+            };
+            match parse_connect_url(api_url) {
+                Some((ip, tls_mode)) => {
+                    ui::set_direct_connect(ip, tls_mode);
+                    if let Some(upnp_url) = upnp_url {
+                        match extract_host_port(upnp_url) {
+                            Some(host_port) => device::upnp::set_discover_override(host_port),
+                            None => {
+                                eprintln!(
+                                    "rustywiim: --connect's UPnP URL must be scheme://ip[:port], got {upnp_url:?}"
+                                );
+                                return 1;
+                            }
+                        }
+                    }
+                }
                 None => {
                     eprintln!(
-                        "rustywiim: --connect expects scheme://ip[:port] (e.g. http://127.0.0.1:8080), got {url:?}"
+                        "rustywiim: --connect expects scheme://ip[:port] (e.g. http://127.0.0.1:8080), got {api_url:?}"
                     );
                     return 1;
                 }

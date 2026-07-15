@@ -52,6 +52,37 @@ const RENDERING_CONTROL_SERVICE: &str = "urn:schemas-upnp-org:service:RenderingC
 /// `wiim-capture.rs`'s `fetch_description()` already probes.
 const DESCRIPTION_PORTS: &[u16] = &[49152, 59152];
 
+/// Testing-only UPnP-address override (`--connect`'s optional second,
+/// comma-separated UPnP URL — see `main.rs`'s `--connect` handling and
+/// `wiim-simulator`, which binds a fixed, printed UPnP port rather than a
+/// random one specifically so this can point at it). When set,
+/// `UpnpClient::discover()` tries *only* this host:port instead of probing
+/// the real device's two hardcoded ports — `--connect` already means
+/// "point at exactly one known test target," not "prefer this, but also
+/// try the real thing," so replacing normal probing entirely (rather than
+/// trying this first with a fallback) is the right behavior here. Set
+/// once, before `activate()` runs, same lifecycle as `api::TLS_MODE`/
+/// `ui::DIRECT_CONNECT` — there is exactly one directly-connected device
+/// per `--connect` invocation, so a single process-global override is
+/// sufficient; no need to thread it through `DeviceState`/`DeviceManager`.
+static UPNP_DISCOVER_OVERRIDE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+pub fn set_discover_override(host_port: String) {
+    let _ = UPNP_DISCOVER_OVERRIDE.set(host_port);
+}
+
+/// Splits `"host:port"` into its two parts — `port` defaults to `49152`
+/// (the primary well-known UPnP port) if missing or unparseable, which
+/// only matters for a malformed override value (a real caller always
+/// supplies one, since `wiim-simulator`'s UPnP listener always has an
+/// explicit port).
+fn split_host_port(addr: &str) -> (&str, u16) {
+    match addr.rsplit_once(':') {
+        Some((host, port_str)) => (host, port_str.parse().unwrap_or(DESCRIPTION_PORTS[0])),
+        None => (addr, DESCRIPTION_PORTS[0]),
+    }
+}
+
 /// Everything `GetInfoEx` returns, wire-shaped (not canonical — see
 /// `device/playback.rs`'s `decode_*_upnp` functions for the canonical
 /// translation).
@@ -145,12 +176,23 @@ impl UpnpClient {
     /// include an embedded `:port` (the `--connect`/simulator testing
     /// convention used elsewhere) — only the host part is used here since
     /// UPnP's own port is independent of the main HTTP API's (real hardware:
-    /// HTTPS on 443 for the API, plain HTTP on 49152 for UPnP).
+    /// HTTPS on 443 for the API, plain HTTP on 49152 for UPnP). Unless
+    /// `set_discover_override()` has been called (`--connect`'s optional
+    /// second, comma-separated UPnP URL), in which case `ip` is ignored
+    /// entirely and only the override host:port is tried — see that
+    /// function's doc comment for why this replaces normal probing rather
+    /// than being tried first with a fallback.
     pub async fn discover(ip: &str) -> anyhow::Result<Self> {
-        let host = ip.split(':').next().unwrap_or(ip);
+        let (host, ports): (&str, Vec<u16>) = match UPNP_DISCOVER_OVERRIDE.get() {
+            Some(addr) => {
+                let (host, port) = split_host_port(addr);
+                (host, vec![port])
+            }
+            None => (ip.split(':').next().unwrap_or(ip), DESCRIPTION_PORTS.to_vec()),
+        };
         let mut last_err: Option<anyhow::Error> = None;
         for scheme in ["http", "https"] {
-            for &port in DESCRIPTION_PORTS {
+            for &port in &ports {
                 let url = format!("{scheme}://{host}:{port}/description.xml");
                 dbg(&format!("trying description.xml at {url}"));
                 let client = build_reqwest_client(tls_for_scheme(scheme), REQUEST_TIMEOUT);
