@@ -10,7 +10,7 @@ use std::rc::Rc;
 use adw::prelude::*;
 
 use crate::config;
-use crate::ui::*;
+use super::*;
 
 impl DeviceWindowInner {
     /// Apply per-device window/panel state (size, maximized, panel
@@ -40,7 +40,7 @@ impl DeviceWindowInner {
     /// than silently staying on the HTTP default forever. A no-op re-push
     /// for an already-known device (same uuid, same config, already applied
     /// at construction).
-    pub(in crate::ui) fn apply_device_window_state(&self, uuid: &str) {
+    pub(super) fn apply_device_window_state(&self, uuid: &str) {
         if uuid.is_empty() { return; }
         let already_loaded = self.window_state_loaded.get();
         let prev_uuid = self.applied_window_key.borrow().clone();
@@ -137,7 +137,7 @@ impl DeviceWindowInner {
     /// Immediately persist the current device's window/panel state.
     /// Loads the full config, updates only the current device's entry, and
     /// saves so no other device's entry is overwritten.
-    pub(in crate::ui) fn save_config_now(&self) {
+    pub(super) fn save_config_now(&self) {
         let uuid = match self.ds.device_info() {
             Some(di) if !di.uuid.is_empty() => di.uuid,
             _ => return,
@@ -186,7 +186,7 @@ impl DeviceWindowInner {
     /// `exit_mini_mode()`/the startup restore each call `set_default_size()`
     /// themselves right after, since they disagree on what size to apply
     /// (mini's remembered width vs. the full window's saved/pre-mini size).
-    pub(in crate::ui) fn apply_window_chrome(&self, mini: bool) {
+    pub(super) fn apply_window_chrome(&self, mini: bool) {
         if mini {
             self.window.remove_css_class("player-window");
             self.window.add_css_class("mini-window");
@@ -238,7 +238,7 @@ impl DeviceWindowInner {
     /// and behaves the same across GTK versions. (Note: this is complementary
     /// to, not the cure for, the "twice as tall" bug — that was AdwWindow's
     /// hardcoded 360x200 `size_request` floor, cleared in `apply_window_chrome()`.)
-    pub(in crate::ui) fn mini_target_size(&self, mini_w: i32) -> (i32, i32) {
+    pub(super) fn mini_target_size(&self, mini_w: i32) -> (i32, i32) {
         let (_, nat_h, _, _) = self.mini.root.measure(gtk::Orientation::Vertical, mini_w);
         (mini_w, nat_h.max(1))
     }
@@ -270,7 +270,7 @@ impl DeviceWindowInner {
     /// is sized — this is the logic the "twice as tall" investigation churned
     /// through, kept in one place deliberately. Caller handles chrome swap,
     /// bookkeeping, and present().
-    pub(in crate::ui) fn apply_mini_window_size(&self) {
+    pub(super) fn apply_mini_window_size(&self) {
         let mini_w = if self.mini_mode_width.get() > 0 {
             self.mini_mode_width.get()
         } else {
@@ -281,7 +281,7 @@ impl DeviceWindowInner {
         self.window.set_default_size(mini_w, mini_h);
     }
 
-    pub(in crate::ui) fn enter_mini_mode(&self) {
+    pub(super) fn enter_mini_mode(&self) {
         if *self.mini_mode.borrow() { return; }
         crate::ui::dbg_ui(&format!(
             "enter mini mode (uuid={}) before: {}",
@@ -339,7 +339,7 @@ impl DeviceWindowInner {
         self.window.present();
     }
 
-    pub(in crate::ui) fn exit_mini_mode(&self) {
+    pub(super) fn exit_mini_mode(&self) {
         if !*self.mini_mode.borrow() { return; }
         crate::ui::dbg_ui(&format!(
             "exit mini mode (uuid={}) before: {}",
@@ -411,7 +411,7 @@ impl DeviceWindowInner {
 
 /// Schedule a deferred config save for `inner`, debounced at 500 ms.
 /// Cancels any previously scheduled save so only one write happens per burst.
-pub(in crate::ui) fn schedule_config_save(i: &Rc<DeviceWindowInner>) {
+pub(super) fn schedule_config_save(i: &Rc<DeviceWindowInner>) {
     if let Some(id) = i.config_save_timer.borrow_mut().take() { id.remove(); }
     let i2 = Rc::clone(i);
     let id = glib::timeout_add_local_once(

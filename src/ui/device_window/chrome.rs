@@ -19,7 +19,7 @@ use crate::device::state::DeviceState;
 /// window pair ("restore to full window" means nothing to e.g. a future
 /// devlist-row host), and the blurred `ArtBackground` because it's
 /// visually the chrome's background — the view just feeds it artwork.
-pub(crate) struct MiniWidgets {
+pub(super) struct MiniWidgets {
     pub root:          gtk::WindowHandle,
     pub device_label:  Label,
     #[allow(dead_code)] // owned for lifetime; the widget is parented to the top bar
@@ -43,7 +43,7 @@ pub(crate) struct MiniWidgets {
 /// still an overlay child, not packed, so it never shifts any of the
 /// header's own buttons even briefly, it just floats on top of whatever's
 /// already in that corner of the content instead.
-pub(in crate::ui) fn build_header(
+pub(super) fn build_header(
     init_panel_visible: bool,
 ) -> (adw::HeaderBar, gtk::ToggleButton, gtk::Button, gtk::Spinner) {
     let header = adw::HeaderBar::new();
@@ -86,7 +86,7 @@ pub(in crate::ui) fn build_header(
     (header, sidebar_btn, mini_btn, connecting_spinner)
 }
 
-pub(in crate::ui) fn build_left_pane(
+pub(super) fn build_left_pane(
     presets: &crate::ui::views::presets::PresetsView,
     io:      &crate::ui::views::io::InputOutputView,
 ) -> gtk::Box {
@@ -141,7 +141,7 @@ const MINI_WIDTH_MAX: i32 = 900;
 /// used by `ui/mod.rs`'s `DeviceWindowInner::apply_window_chrome()` and the
 /// mini-mode startup restore in `new_inner()`. Was previously just the
 /// dedicated mini window's own `default_width(380)` builder call.
-pub(in crate::ui) const MINI_WIDTH_DEFAULT: i32 = 380;
+pub(super) const MINI_WIDTH_DEFAULT: i32 = 380;
 
 /// Hit-test width (px) for the right-edge resize drag, measured inward from
 /// `stable`'s own right edge in `wire_mini_resize()` — a bit wider than the
@@ -252,7 +252,7 @@ fn wire_mini_resize(stable: &gtk::Overlay) {
     stable.add_controller(gesture);
 }
 
-pub(in crate::ui) fn build_mini_window(
+pub(super) fn build_mini_window(
     ds:    &DeviceState,
     icons: &Rc<crate::ui::icons::IconSet>,
 ) -> (MiniWidgets, gtk::WindowHandle) {

@@ -11,6 +11,7 @@ use adw::prelude::*;
 
 use crate::config;
 use crate::ui::*;
+use super::*;
 use crate::ui::views::common::flash_button;
 use super::geometry::schedule_config_save;
 
@@ -84,7 +85,7 @@ impl DeviceWindowInner {
     /// is the other place that needs to hide the spinner again — it's the
     /// code path taken on the opposite transition (`Connecting` →
     /// `Connected`), which never runs through here.
-    pub(in crate::ui) fn reset_device_ui(self: &Rc<Self>, state: ConnectionState) {
+    pub(super) fn reset_device_ui(self: &Rc<Self>, state: ConnectionState) {
         // Fall back to the cached name (see `cached_name`'s doc comment)
         // rather than the bare generic title, while there's no live
         // `device_info` yet to give a definitive one.
@@ -115,7 +116,7 @@ impl DeviceWindowInner {
     /// displays, input/output dropdowns, presets, and volume clusters
     /// need nothing here — each view subscribes to `device-changed`
     /// itself.
-    pub(in crate::ui) fn populate_all(self: &Rc<Self>) {
+    pub(super) fn populate_all(self: &Rc<Self>) {
         self.update_network_icon();
         self.update_remote_display();
         if self.ds.device_info().is_some() {
@@ -132,7 +133,7 @@ impl DeviceWindowInner {
 
     // ── Network ───────────────────────────────────────────────────────────────
 
-    pub(in crate::ui) fn update_network_icon(&self) {
+    pub(super) fn update_network_icon(&self) {
         match self.ds.netstat() {
             Some(0) => {
                 self.net_icon.set_icon_name(Some("network-wired-symbolic"));
@@ -162,7 +163,7 @@ impl DeviceWindowInner {
     /// (field absent from every response so far, e.g. no BLE remote
     /// hardware exists on this model). Hovering shows battery/signal detail,
     /// or "disconnected" when not currently connected.
-    pub(in crate::ui) fn update_remote_display(&self) {
+    pub(super) fn update_remote_display(&self) {
         let info = self.ds.remote_info();
         let Some(connected) = info.connected else {
             self.remote_icon.set_visible(false);
@@ -195,7 +196,7 @@ impl DeviceWindowInner {
         self.remote_label.queue_resize();
     }
 
-    pub(in crate::ui) fn apply_device_info(self: &Rc<Self>) {
+    pub(super) fn apply_device_info(self: &Rc<Self>) {
         let info = match self.ds.device_info() { Some(i) => i, None => return };
         let caps = match self.ds.capabilities() { Some(c) => c, None => return };
 
@@ -249,7 +250,7 @@ impl DeviceWindowInner {
     /// (the level readout changing) happens where the user is looking.
     /// Returns a clone (a GObject refcount bump) since the mini one lives
     /// inside `MiniPlaybackView` rather than as a field here.
-    pub(in crate::ui) fn active_volume(&self) -> crate::ui::views::volume::VolumeControl {
+    pub(super) fn active_volume(&self) -> crate::ui::views::volume::VolumeControl {
         if *self.mini_mode.borrow() { self.mini.view.volume() } else { self.playback.volume() }
     }
 
@@ -260,7 +261,7 @@ impl DeviceWindowInner {
 /// `prev_btn`/`next_btn`/`play_btn` are whichever window's transport buttons
 /// received the key, so the flash appears on the window the user is
 /// actually looking at.
-pub(in crate::ui) fn handle_transport_key(
+pub(super) fn handle_transport_key(
     i:        &Rc<DeviceWindowInner>,
     keyval:   gtk::gdk::Key,
     state:    gtk::gdk::ModifierType,
@@ -317,7 +318,7 @@ pub(in crate::ui) fn handle_transport_key(
 /// or GTK's reduce-motion). `panel_collapsing` is held for the animation's
 /// duration so `connect_position_notify`'s drag-detection logic ignores the
 /// frames this drives — same guard the instant path already relied on.
-pub(in crate::ui) fn animate_panel_to(i: &Rc<DeviceWindowInner>, target_pos: i32) {
+pub(super) fn animate_panel_to(i: &Rc<DeviceWindowInner>, target_pos: i32) {
     // Two statements, not `if let Some(a) = i.panel_anim.borrow_mut().take() { a.skip(); }`:
     // the RefMut temporary from borrow_mut() stays alive for the whole if-let
     // block (Rust's temporary lifetime rule for if-let scrutinees), so
@@ -367,7 +368,7 @@ pub(in crate::ui) fn animate_panel_to(i: &Rc<DeviceWindowInner>, target_pos: i32
     *i.panel_anim.borrow_mut() = Some(anim);
 }
 
-pub(in crate::ui) fn wifi_icon_for_rssi(rssi: i32) -> &'static str {
+pub(super) fn wifi_icon_for_rssi(rssi: i32) -> &'static str {
     match rssi {
         i32::MIN..=-85 | 0 => "network-wireless-offline-symbolic",
         -84..=-75           => "network-wireless-signal-weak-symbolic",
