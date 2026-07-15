@@ -662,18 +662,23 @@ pub(super) fn handle_transport_key(
     if state.intersects(gtk::gdk::ModifierType::CONTROL_MASK | gtk::gdk::ModifierType::ALT_MASK) {
         return glib::Propagation::Proceed;
     }
+    // The transport shortcuts follow their button's sensitivity (kept
+    // current from `ps.caps.can_*` by the active playback view) — a
+    // disabled action shouldn't fire just because it came in via keyboard.
+    // `Proceed`, not `Stop`: with no action to perform, behave as if the
+    // shortcut didn't exist rather than swallowing the key.
     match keyval {
-        gtk::gdk::Key::Left => {
+        gtk::gdk::Key::Left if prev_btn.is_sensitive() => {
             i.ds.do_prev();
             flash_button(prev_btn);
             glib::Propagation::Stop
         }
-        gtk::gdk::Key::Right => {
+        gtk::gdk::Key::Right if next_btn.is_sensitive() => {
             i.ds.do_next();
             flash_button(next_btn);
             glib::Propagation::Stop
         }
-        gtk::gdk::Key::space => {
+        gtk::gdk::Key::space if play_btn.is_sensitive() => {
             i.ds.do_play_pause();
             flash_button(play_btn);
             glib::Propagation::Stop
