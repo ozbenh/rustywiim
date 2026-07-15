@@ -377,3 +377,134 @@ pub(super) fn wifi_icon_for_rssi(rssi: i32) -> &'static str {
         _                   => "network-wireless-signal-excellent-symbolic",
     }
 }
+
+/// The sidebar paned's collapse/snap/settle logic and its header toggle
+/// button — a self-contained cluster around `animate_panel_to()`.
+pub(super) fn wire_sidebar(inner: &Rc<DeviceWindowInner>) {
+    // ── Sidebar toggle ────────────────────────────────────────────────────────
+    let paned_btn_held = Rc::new(RefCell::new(false));
+    const SNAP_PX: i32 = 30;
+
+    inner.paned.connect_position_notify({
+        let i    = Rc::downgrade(&inner);
+        let held = Rc::clone(&paned_btn_held);
+        move |p| {
+            let Some(i) = i.upgrade() else { return };
+            if *i.panel_collapsing.borrow() { return; }
+            let pos = p.position();
+            if pos >= SNAP_PX {
+                if !i.left_pane.is_visible() {
+                    *i.panel_collapsing.borrow_mut() = true;
+                    i.left_pane.set_visible(true);
+                    *i.panel_collapsing.borrow_mut() = false;
+                }
+            } else if i.left_pane.is_visible() {
+                *i.panel_collapsing.borrow_mut() = true;
+                i.left_pane.set_visible(false);
+                *i.panel_collapsing.borrow_mut() = false;
+            }
+            if let Some(id) = i.settle_timer.borrow_mut().take() { id.remove(); }
+            let i2    = Rc::clone(&i);
+            let held2 = Rc::clone(&held);
+            let id = glib::timeout_add_local_once(
+                std::time::Duration::from_millis(50),
+                move || {
+                    *i2.settle_timer.borrow_mut() = None;
+                    let btn_held = *held2.borrow();
+                    *held2.borrow_mut() = false;
+                    let shown = i2.left_pane.is_visible();
+                    if i2.sidebar_btn.is_active() != shown {
+                        *i2.panel_collapsing.borrow_mut() = true;
+                        i2.sidebar_btn.set_active(shown);
+                        *i2.panel_collapsing.borrow_mut() = false;
+                    }
+                    if shown && !btn_held {
+                        let pos = i2.paned.position();
+                        if pos >= SNAP_PX { *i2.saved_panel_width.borrow_mut() = pos; }
+                    }
+                    geometry::schedule_config_save(&i2);
+                },
+            );
+            *i.settle_timer.borrow_mut() = Some(id);
+        }
+    });
+
+    {
+        let drag_ctrl = gtk::EventControllerLegacy::new();
+        drag_ctrl.connect_event({
+            let i    = Rc::downgrade(&inner);
+            let held = Rc::clone(&paned_btn_held);
+            move |_, event| {
+                let Some(i) = i.upgrade() else { return glib::Propagation::Proceed };
+                match event.event_type() {
+                    gtk::gdk::EventType::ButtonPress => {
+                        *held.borrow_mut() = true;
+                    }
+                    gtk::gdk::EventType::ButtonRelease => {
+                        *held.borrow_mut() = false;
+                        if let Some(id) = i.settle_timer.borrow_mut().take() { id.remove(); }
+                        let shown = i.left_pane.is_visible();
+                        if i.sidebar_btn.is_active() != shown {
+                            *i.panel_collapsing.borrow_mut() = true;
+                            i.sidebar_btn.set_active(shown);
+                            *i.panel_collapsing.borrow_mut() = false;
+                        }
+                        if shown {
+                            let pos = i.paned.position();
+                            if pos >= SNAP_PX { *i.saved_panel_width.borrow_mut() = pos; }
+                        }
+                        geometry::schedule_config_save(&i);
+                    }
+                    _ => {}
+                }
+                glib::Propagation::Proceed
+            }
+        });
+        inner.paned.add_controller(drag_ctrl);
+    }
+
+    inner.sidebar_btn.connect_toggled({
+        let i = Rc::downgrade(&inner);
+        move |btn| {
+            let Some(i) = i.upgrade() else { return };
+            if *i.panel_collapsing.borrow() { return; }
+            if let Some(id) = i.settle_timer.borrow_mut().take() { id.remove(); }
+            if btn.is_active() {
+                let w = *i.saved_panel_width.borrow();
+                display::animate_panel_to(&i, w);
+            } else {
+                display::animate_panel_to(&i, 0);
+            }
+        }
+    });
+}
+
+/// The window-global keyboard shortcuts controller (capture phase — see
+/// `handle_transport_key()`), targeting whichever panel is active.
+pub(super) fn wire_keyboard(inner: &Rc<DeviceWindowInner>) {
+    let window = inner.window.clone();
+    // ── Keyboard shortcuts ───────────────────────────────────────────────────
+    // Capture phase: must win over a focused seek/volume Scale's own
+    // Left/Right/Up/Down handling, since the whole point is a global
+    // shortcut that works regardless of what has focus. One controller on
+    // the one shared window now (previously one per window) — which
+    // panel's transport buttons get the key-flash is picked live from
+    // `mini_mode` on every keypress, rather than being fixed per controller.
+    {
+        let key_ctrl = gtk::EventControllerKey::new();
+        key_ctrl.set_propagation_phase(gtk::PropagationPhase::Capture);
+        key_ctrl.connect_key_pressed({
+            let i = Rc::downgrade(&inner);
+            move |_, keyval, _keycode, state| {
+                let Some(i) = i.upgrade() else { return glib::Propagation::Proceed };
+                let (prev, play, next) = if *i.mini_mode.borrow() {
+                    i.mini.view.transport_buttons()
+                } else {
+                    i.playback.transport_buttons()
+                };
+                display::handle_transport_key(&i, keyval, state, &prev, &next, &play)
+            }
+        });
+        window.add_controller(key_ctrl);
+    }
+}

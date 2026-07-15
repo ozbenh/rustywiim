@@ -423,3 +423,107 @@ pub(super) fn schedule_config_save(i: &Rc<DeviceWindowInner>) {
     );
     *i.config_save_timer.borrow_mut() = Some(id);
 }
+
+/// Track OS-level maximize transitions on the shared window — capturing
+/// `full_mode_size` on genuine maximizes and correcting the default size
+/// after un-maximizes. See the comments inside for the live-confirmed
+/// compositor behaviors this encodes.
+pub(super) fn wire_maximize_tracking(inner: &Rc<DeviceWindowInner>) {
+    let window = inner.window.clone();
+    // Opportunistically keeps `full_mode_size` fresh from *any* genuine
+    // maximize, not just the one `enter_mini_mode()` captures on its own
+    // way in — covers a device that gets manually resized and then
+    // maximized directly, with no intervening un-maximize, which
+    // `enter_mini_mode()` alone can never see (by the time it runs,
+    // width()/height() would already report the maximized size, not the
+    // windowed one — see its own comment).
+    //
+    // The moment `is_maximized` flips to `true` is exactly the window
+    // to catch this in: confirmed live (--debug=ui) that width()/
+    // height() still report the *old*, pre-maximize windowed size at
+    // that exact instant, for a brief window before GTK/the compositor
+    // catches the surface up to the new maximized geometry — after
+    // that, they're useless (screen resolution, not a real size to
+    // remember). `maximize_call_pending` (see its own doc comment)
+    // is what keeps this from misfiring on `exit_mini_mode()`'s own
+    // restore-a-remembered-maximize call, which would otherwise
+    // recapture the mini panel's own small size as if it were a real
+    // windowed size the instant before maximizing.
+    window.connect_notify_local(Some("maximized"), {
+        let i = Rc::downgrade(&inner);
+        move |win, _| {
+            let Some(i) = i.upgrade() else { return };
+            if !win.is_maximized() {
+                // Not a "genuine maximize" transition — nothing to
+                // capture. Still worth clearing defensively: a pending
+                // flag that somehow never got consumed by a "true"
+                // notify (e.g. the WM coalesced/dropped one) shouldn't
+                // silently swallow a later, unrelated one.
+                i.maximize_call_pending.set(false);
+
+                // The actual guarantee behind the maximize/mini/
+                // un-maximize fix (see exit_mini_mode()'s comment for
+                // the full reasoning): whenever the window becomes
+                // un-maximized while the full panel is the one showing
+                // (never while entering mini mode itself — that's about
+                // to shrink to mini dimensions right after this, forcing
+                // full_mode_size here would just fight that), force it
+                // back to full_mode_size if it isn't already there.
+                //
+                // Deferred via idle_add_local_once rather than applied
+                // synchronously right here: an earlier version called
+                // set_default_size() directly inside this same handler
+                // and it didn't stick — confirmed live, a compositor
+                // configure event for this *same* un-maximize transition
+                // arrived a moment later and silently overwrote it back
+                // to the wrong size. That call was racing (and losing
+                // to) the compositor's own in-flight negotiation for
+                // this transition, unlike enter_mini_mode()'s own
+                // set_default_size() call after unmaximize() — that one
+                // works because it runs on an already-*settled* window
+                // (this same transition has fully finished by the time
+                // any code the user's own actions trigger next runs),
+                // making it a plain resize, not a race. `Priority::DEFAULT_IDLE`
+                // (what idle_add_local_once uses) runs after any
+                // already-queued/in-flight Wayland protocol messages —
+                // i.e. after this transition's own remaining configure
+                // events, if any — hopefully letting our correction go
+                // last instead of first.
+                if !*i.mini_mode.borrow() {
+                    let (fw, fh) = *i.full_mode_size.borrow();
+                    if fw > 0 && fh > 0 {
+                        let win = win.clone();
+                        glib::idle_add_local_once(move || {
+                            if win.width() != fw || win.height() != fh {
+                                dbg_ui(&format!(
+                                    "un-maximize fixup (deferred): size is {}x{}, correcting to full_mode_size full:{fw},{fh}",
+                                    win.width(), win.height(),
+                                ));
+                                win.set_default_size(fw, fh);
+                            } else {
+                                dbg_ui(&format!(
+                                    "un-maximize fixup (deferred): size already correct (full:{fw},{fh}), nothing to do",
+                                ));
+                            }
+                        });
+                    }
+                }
+                return;
+            }
+            if i.maximize_call_pending.replace(false) {
+                dbg_ui(&format!(
+                    "maximize notify: our own exit_mini_mode() restore skipping state saving"
+                ));
+                return; // our own restore, not a fresh external maximize
+            }
+            let (w, h) = (win.width(), win.height());
+            if w > 0 && h > 0 {
+                let (old_fw, old_fh) = *i.full_mode_size.borrow();
+                *i.full_mode_size.borrow_mut() = (w, h);
+                dbg_ui(&format!(
+                    "maximize notify: external maximize, storing size into full_mode_size: full:{w},{h} (was full:{old_fw},{old_fh})",
+                ));
+            }
+        }
+    });
+}

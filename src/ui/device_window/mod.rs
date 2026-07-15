@@ -16,7 +16,7 @@ use std::sync::atomic::Ordering;
 use adw::prelude::*;
 use glib::clone;
 use gtk::gio;
-use gtk::{Align, Box as GtkBox, Label, Orientation};
+use gtk::{Box as GtkBox, Label, Orientation};
 
 use crate::config;
 use crate::device::manager::DeviceManager;
@@ -380,65 +380,8 @@ impl DeviceWindow {
         let settle_timer:      Rc<RefCell<Option<glib::SourceId>>> = Rc::new(RefCell::new(None));
         let config_save_timer: Rc<RefCell<Option<glib::SourceId>>> = Rc::new(RefCell::new(None));
 
-        let dev_info_label = Label::builder()
-            .css_classes(["device-info"]).halign(Align::Center)
-            .hexpand(true)
-            .margin_top(4).margin_bottom(4).build();
-
-        // "ip-label" alongside "dim-label" gives modern.css a hook to match
-        // this label's exact size/treatment to "device-info" (which doesn't
-        // share dim-label's font-size with the pos/dur time labels that
-        // also use it) — see the comment on apply_device_info()'s
-        // ip_label.set_visible(true) call for why this one needed it and
-        // device-info didn't.
-        let ip_label = Label::builder()
-            .css_classes(["dim-label", "ip-label"])
-            .margin_end(6).margin_top(4).margin_bottom(4)
-            .visible(false)
-            .build();
-
-        let net_icon = gtk::Image::builder()
-            .icon_size(gtk::IconSize::Normal)
-            .css_classes(["net-icon"])
-            .margin_end(8).margin_top(4).margin_bottom(4)
-            .visible(false)
-            .build();
-
-        let bottom_end = GtkBox::new(Orientation::Horizontal, 0);
-        bottom_end.append(&ip_label);
-        bottom_end.append(&net_icon);
-
-        // BLE remote presence/battery — left-hand side of the bottom bar,
-        // hidden until the first `getStatusEx` result confirms a remote is
-        // actually connected (see `update_remote_display()`).
-        let remote_icon = gtk::Image::from_paintable(Some(icons.remote_paintable()));
-        // 21px: net_icon's IconSize::Normal (16px) plus 2px, then a further
-        // +3px per request.
-        remote_icon.set_pixel_size(28);
-        remote_icon.add_css_class("remote-icon");
-        remote_icon.set_margin_start(8);
-        remote_icon.set_margin_top(4);
-        remote_icon.set_margin_bottom(4);
-        remote_icon.set_visible(false);
-
-        // Same classes as ip_label above (not just "dim-label") so it's
-        // displayed identically — "ip-label" is specifically what fixes
-        // modern.css's top-row clipping/fade that plain "dim-label" alone
-        // doesn't (see ip_label's own comment above).
-        let remote_label = Label::builder()
-            .css_classes(["dim-label", "ip-label"])
-            .margin_start(4).margin_top(4).margin_bottom(4)
-            .visible(false)
-            .build();
-
-        let bottom_start = GtkBox::new(Orientation::Horizontal, 0);
-        bottom_start.append(&remote_icon);
-        bottom_start.append(&remote_label);
-
-        let bottom_bar = gtk::CenterBox::new();
-        bottom_bar.set_start_widget(Some(&bottom_start));
-        bottom_bar.set_center_widget(Some(&dev_info_label));
-        bottom_bar.set_end_widget(Some(&bottom_end));
+        let (bottom_bar, dev_info_label, ip_label, net_icon, remote_icon, remote_label) =
+            build_bottom_bar(&icons);
 
         let outer = GtkBox::new(Orientation::Vertical, 0);
         outer.append(&paned);
@@ -571,30 +514,7 @@ impl DeviceWindow {
             mini_btn:          mini_btn.clone(),
         });
 
-        // ── DeviceState signal connections ────────────────────────────────────────
-        // Use Rc::downgrade so the closures don't keep DeviceWindowInner alive
-        // after the window is closed — broken upgrade() calls become no-ops.
-        ds.connect_device_changed({
-            let i = Rc::downgrade(&inner);
-            move |ds| {
-                let Some(i) = i.upgrade() else { return };
-                dbg_ui(&format!(
-                    "device-changed signal: device_info_present={}",
-                    ds.device_info().is_some(),
-                ));
-                i.populate_all();
-            }
-        });
-
-        ds.connect_network_changed({
-            let i = Rc::downgrade(&inner);
-            move |_| { if let Some(i) = i.upgrade() { i.update_network_icon(); } }
-        });
-
-        ds.connect_remote_changed({
-            let i = Rc::downgrade(&inner);
-            move |_| { if let Some(i) = i.upgrade() { i.update_remote_display(); } }
-        });
+        wire_device_signals(&inner);
 
         // No playback-changed/input-changed dispatch here anymore — the
         // playback views subscribe themselves. This closes out the old
@@ -618,334 +538,15 @@ impl DeviceWindow {
         inner.playback.set_active(!*inner.mini_mode.borrow());
         inner.mini.view.set_active(*inner.mini_mode.borrow());
 
-        // Opportunistically keeps `full_mode_size` fresh from *any* genuine
-        // maximize, not just the one `enter_mini_mode()` captures on its own
-        // way in — covers a device that gets manually resized and then
-        // maximized directly, with no intervening un-maximize, which
-        // `enter_mini_mode()` alone can never see (by the time it runs,
-        // width()/height() would already report the maximized size, not the
-        // windowed one — see its own comment).
-        //
-        // The moment `is_maximized` flips to `true` is exactly the window
-        // to catch this in: confirmed live (--debug=ui) that width()/
-        // height() still report the *old*, pre-maximize windowed size at
-        // that exact instant, for a brief window before GTK/the compositor
-        // catches the surface up to the new maximized geometry — after
-        // that, they're useless (screen resolution, not a real size to
-        // remember). `maximize_call_pending` (see its own doc comment)
-        // is what keeps this from misfiring on `exit_mini_mode()`'s own
-        // restore-a-remembered-maximize call, which would otherwise
-        // recapture the mini panel's own small size as if it were a real
-        // windowed size the instant before maximizing.
-        window.connect_notify_local(Some("maximized"), {
-            let i = Rc::downgrade(&inner);
-            move |win, _| {
-                let Some(i) = i.upgrade() else { return };
-                if !win.is_maximized() {
-                    // Not a "genuine maximize" transition — nothing to
-                    // capture. Still worth clearing defensively: a pending
-                    // flag that somehow never got consumed by a "true"
-                    // notify (e.g. the WM coalesced/dropped one) shouldn't
-                    // silently swallow a later, unrelated one.
-                    i.maximize_call_pending.set(false);
+        geometry::wire_maximize_tracking(&inner);
 
-                    // The actual guarantee behind the maximize/mini/
-                    // un-maximize fix (see exit_mini_mode()'s comment for
-                    // the full reasoning): whenever the window becomes
-                    // un-maximized while the full panel is the one showing
-                    // (never while entering mini mode itself — that's about
-                    // to shrink to mini dimensions right after this, forcing
-                    // full_mode_size here would just fight that), force it
-                    // back to full_mode_size if it isn't already there.
-                    //
-                    // Deferred via idle_add_local_once rather than applied
-                    // synchronously right here: an earlier version called
-                    // set_default_size() directly inside this same handler
-                    // and it didn't stick — confirmed live, a compositor
-                    // configure event for this *same* un-maximize transition
-                    // arrived a moment later and silently overwrote it back
-                    // to the wrong size. That call was racing (and losing
-                    // to) the compositor's own in-flight negotiation for
-                    // this transition, unlike enter_mini_mode()'s own
-                    // set_default_size() call after unmaximize() — that one
-                    // works because it runs on an already-*settled* window
-                    // (this same transition has fully finished by the time
-                    // any code the user's own actions trigger next runs),
-                    // making it a plain resize, not a race. `Priority::DEFAULT_IDLE`
-                    // (what idle_add_local_once uses) runs after any
-                    // already-queued/in-flight Wayland protocol messages —
-                    // i.e. after this transition's own remaining configure
-                    // events, if any — hopefully letting our correction go
-                    // last instead of first.
-                    if !*i.mini_mode.borrow() {
-                        let (fw, fh) = *i.full_mode_size.borrow();
-                        if fw > 0 && fh > 0 {
-                            let win = win.clone();
-                            glib::idle_add_local_once(move || {
-                                if win.width() != fw || win.height() != fh {
-                                    dbg_ui(&format!(
-                                        "un-maximize fixup (deferred): size is {}x{}, correcting to full_mode_size full:{fw},{fh}",
-                                        win.width(), win.height(),
-                                    ));
-                                    win.set_default_size(fw, fh);
-                                } else {
-                                    dbg_ui(&format!(
-                                        "un-maximize fixup (deferred): size already correct (full:{fw},{fh}), nothing to do",
-                                    ));
-                                }
-                            });
-                        }
-                    }
-                    return;
-                }
-                if i.maximize_call_pending.replace(false) {
-                    dbg_ui(&format!(
-                        "maximize notify: our own exit_mini_mode() restore skipping state saving"
-                    ));
-                    return; // our own restore, not a fresh external maximize
-                }
-                let (w, h) = (win.width(), win.height());
-                if w > 0 && h > 0 {
-                    let (old_fw, old_fh) = *i.full_mode_size.borrow();
-                    *i.full_mode_size.borrow_mut() = (w, h);
-                    dbg_ui(&format!(
-                        "maximize notify: external maximize, storing size into full_mode_size: full:{w},{h} (was full:{old_fw},{old_fh})",
-                    ));
-                }
-            }
-        });
+        display::wire_sidebar(&inner);
 
-        // ── Sidebar toggle ────────────────────────────────────────────────────────
-        let paned_btn_held = Rc::new(RefCell::new(false));
-        const SNAP_PX: i32 = 30;
+        display::wire_keyboard(&inner);
 
-        inner.paned.connect_position_notify({
-            let i    = Rc::downgrade(&inner);
-            let held = Rc::clone(&paned_btn_held);
-            move |p| {
-                let Some(i) = i.upgrade() else { return };
-                if *i.panel_collapsing.borrow() { return; }
-                let pos = p.position();
-                if pos >= SNAP_PX {
-                    if !i.left_pane.is_visible() {
-                        *i.panel_collapsing.borrow_mut() = true;
-                        i.left_pane.set_visible(true);
-                        *i.panel_collapsing.borrow_mut() = false;
-                    }
-                } else if i.left_pane.is_visible() {
-                    *i.panel_collapsing.borrow_mut() = true;
-                    i.left_pane.set_visible(false);
-                    *i.panel_collapsing.borrow_mut() = false;
-                }
-                if let Some(id) = i.settle_timer.borrow_mut().take() { id.remove(); }
-                let i2    = Rc::clone(&i);
-                let held2 = Rc::clone(&held);
-                let id = glib::timeout_add_local_once(
-                    std::time::Duration::from_millis(50),
-                    move || {
-                        *i2.settle_timer.borrow_mut() = None;
-                        let btn_held = *held2.borrow();
-                        *held2.borrow_mut() = false;
-                        let shown = i2.left_pane.is_visible();
-                        if i2.sidebar_btn.is_active() != shown {
-                            *i2.panel_collapsing.borrow_mut() = true;
-                            i2.sidebar_btn.set_active(shown);
-                            *i2.panel_collapsing.borrow_mut() = false;
-                        }
-                        if shown && !btn_held {
-                            let pos = i2.paned.position();
-                            if pos >= SNAP_PX { *i2.saved_panel_width.borrow_mut() = pos; }
-                        }
-                        geometry::schedule_config_save(&i2);
-                    },
-                );
-                *i.settle_timer.borrow_mut() = Some(id);
-            }
-        });
+        wire_mini_chrome(&inner);
 
-        {
-            let drag_ctrl = gtk::EventControllerLegacy::new();
-            drag_ctrl.connect_event({
-                let i    = Rc::downgrade(&inner);
-                let held = Rc::clone(&paned_btn_held);
-                move |_, event| {
-                    let Some(i) = i.upgrade() else { return glib::Propagation::Proceed };
-                    match event.event_type() {
-                        gtk::gdk::EventType::ButtonPress => {
-                            *held.borrow_mut() = true;
-                        }
-                        gtk::gdk::EventType::ButtonRelease => {
-                            *held.borrow_mut() = false;
-                            if let Some(id) = i.settle_timer.borrow_mut().take() { id.remove(); }
-                            let shown = i.left_pane.is_visible();
-                            if i.sidebar_btn.is_active() != shown {
-                                *i.panel_collapsing.borrow_mut() = true;
-                                i.sidebar_btn.set_active(shown);
-                                *i.panel_collapsing.borrow_mut() = false;
-                            }
-                            if shown {
-                                let pos = i.paned.position();
-                                if pos >= SNAP_PX { *i.saved_panel_width.borrow_mut() = pos; }
-                            }
-                            geometry::schedule_config_save(&i);
-                        }
-                        _ => {}
-                    }
-                    glib::Propagation::Proceed
-                }
-            });
-            inner.paned.add_controller(drag_ctrl);
-        }
-
-        inner.sidebar_btn.connect_toggled({
-            let i = Rc::downgrade(&inner);
-            move |btn| {
-                let Some(i) = i.upgrade() else { return };
-                if *i.panel_collapsing.borrow() { return; }
-                if let Some(id) = i.settle_timer.borrow_mut().take() { id.remove(); }
-                if btn.is_active() {
-                    let w = *i.saved_panel_width.borrow();
-                    display::animate_panel_to(&i, w);
-                } else {
-                    display::animate_panel_to(&i, 0);
-                }
-            }
-        });
-
-
-        // ── Keyboard shortcuts ───────────────────────────────────────────────────
-        // Capture phase: must win over a focused seek/volume Scale's own
-        // Left/Right/Up/Down handling, since the whole point is a global
-        // shortcut that works regardless of what has focus. One controller on
-        // the one shared window now (previously one per window) — which
-        // panel's transport buttons get the key-flash is picked live from
-        // `mini_mode` on every keypress, rather than being fixed per controller.
-        {
-            let key_ctrl = gtk::EventControllerKey::new();
-            key_ctrl.set_propagation_phase(gtk::PropagationPhase::Capture);
-            key_ctrl.connect_key_pressed({
-                let i = Rc::downgrade(&inner);
-                move |_, keyval, _keycode, state| {
-                    let Some(i) = i.upgrade() else { return glib::Propagation::Proceed };
-                    let (prev, play, next) = if *i.mini_mode.borrow() {
-                        i.mini.view.transport_buttons()
-                    } else {
-                        i.playback.transport_buttons()
-                    };
-                    display::handle_transport_key(&i, keyval, state, &prev, &next, &play)
-                }
-            });
-            window.add_controller(key_ctrl);
-        }
-
-        // ── Mini player signals ───────────────────────────────────────────────────
-        // A plain click, not a toggle — this button only ever lives in the
-        // full panel's header, so clicking it can only ever mean "switch to
-        // mini mode" (going the other way is restore_btn/double-click/M
-        // below, none of which are this button).
-        inner.mini_btn.connect_clicked({
-            let i = Rc::downgrade(&inner);
-            move |_btn| {
-                let Some(i) = i.upgrade() else { return };
-                i.enter_mini_mode();
-                geometry::schedule_config_save(&i);
-            }
-        });
-
-        inner.mini.restore_btn.connect_clicked({
-            let i = Rc::downgrade(&inner);
-            move |_| {
-                let Some(i) = i.upgrade() else { return };
-                i.exit_mini_mode();
-                geometry::schedule_config_save(&i);
-            }
-        });
-
-        // The mini panel's own close (X) button — same "close this device"
-        // meaning as win.close below, just with no native titlebar button to
-        // trigger it from (mini mode is undecorated).
-        inner.mini.close_btn.connect_clicked({
-            clone!(@strong window => move |_| {
-                gtk::prelude::WidgetExt::realize(&window); // close() is a no-op on an unrealized window
-                window.close();
-            })
-        });
-
-        {
-            let gesture = gtk::GestureClick::builder().button(1).build();
-            gesture.connect_pressed({
-                let i = Rc::downgrade(&inner);
-                move |_, n_press, _, _| {
-                    let Some(i) = i.upgrade() else { return };
-                    if n_press >= 2 {
-                        i.exit_mini_mode();
-                        geometry::schedule_config_save(&i);
-                    }
-                }
-            });
-            inner.mini.root.add_controller(gesture);
-        }
-
-        // ── Window actions ────────────────────────────────────────────────────────
-        // win.close (Ctrl-W), win.devices, win.about, win.settings — one
-        // registration each now, on the one shared window (previously
-        // duplicated onto a separate mini_win too).
-        let close_action = gio::SimpleAction::new("close", None);
-        {
-            let win_for_close = window.clone();
-            close_action.connect_activate(move |_, _| {
-                gtk::prelude::WidgetExt::realize(&win_for_close); // close() is a no-op on an unrealized window
-                win_for_close.close();
-            });
-        }
-        window.add_action(&close_action);
-
-        let devices_action = gio::SimpleAction::new("devices", None);
-        {
-            let i = Rc::downgrade(&inner);
-            devices_action.connect_activate(move |_, _| {
-                if let Some(i) = i.upgrade() { (i.show_devices_fn)(); }
-            });
-        }
-        window.add_action(&devices_action);
-
-        wire_window_actions(&window, Some(ds.clone()), open_settings);
-
-        // close-request fires on any close attempt: the native titlebar X
-        // button (full mode only — mini mode is undecorated), win.close()
-        // (Ctrl-W / the mini panel's close_btn), Alt+F4, a compositor-level
-        // close, or the quit action closing every window on the way out.
-        // Always means "close this device", regardless of which panel is
-        // currently showing — mini mode has its own dedicated "go back to
-        // full mode without closing" affordances (the restore button,
-        // double-click, the header mini-toggle, the M shortcut); close-request
-        // itself isn't one of them, in any mode. cleanup() is idempotent so
-        // calling it here AND in connect_destroy is safe.
-        window.connect_close_request({
-            let i = Rc::downgrade(&inner);
-            move |_win| {
-                dbg_ui("window close-request");
-                if let Some(i) = i.upgrade() { i.cleanup(); }
-                glib::Propagation::Proceed
-            }
-        });
-
-        // destroy: single place for all cleanup.  Fires on every destruction path:
-        //   • user close  (close-request → Proceed → GTK destroys → destroy)
-        //   • win.destroy() from quit action (skips close-request, fires destroy directly)
-        //   • app.quit()   (GTK destroys all windows during shutdown → destroy)
-        // A second connect_destroy added later in open_device_spec clears the registry
-        // (fires after this one, in connection order), which drops the last Rc<Inner> → Drop.
-        window.connect_destroy({
-            let i = Rc::downgrade(&inner);
-            move |_win| {
-                if let Some(i) = i.upgrade() {
-                    i.cleanup();
-                } else {
-                    dbg_ui("main window destroyed (inner already freed)");
-                }
-            }
-        });
+        wire_window_lifecycle(&inner, open_settings);
 
         if init_dev_cfg.mini_mode {
             // `mini_mode` itself is already correctly seeded above (before
@@ -981,4 +582,161 @@ impl DeviceWindow {
     pub fn present(&self) {
         self.window.present();
     }
+}
+
+/// Connect the `DeviceState` signals the *window itself* consumes —
+/// `device-changed` (title/bottom bar/window state via `populate_all()`),
+/// `network-changed`, `remote-changed`, and the window-side half of
+/// `input-changed`. The views connect their own.
+fn wire_device_signals(inner: &Rc<DeviceWindowInner>) {
+    let ds = inner.ds.clone();
+    // ── DeviceState signal connections ────────────────────────────────────────
+    // Use Rc::downgrade so the closures don't keep DeviceWindowInner alive
+    // after the window is closed — broken upgrade() calls become no-ops.
+    ds.connect_device_changed({
+        let i = Rc::downgrade(&inner);
+        move |ds| {
+            let Some(i) = i.upgrade() else { return };
+            dbg_ui(&format!(
+                "device-changed signal: device_info_present={}",
+                ds.device_info().is_some(),
+            ));
+            i.populate_all();
+        }
+    });
+
+    ds.connect_network_changed({
+        let i = Rc::downgrade(&inner);
+        move |_| { if let Some(i) = i.upgrade() { i.update_network_icon(); } }
+    });
+
+    ds.connect_remote_changed({
+        let i = Rc::downgrade(&inner);
+        move |_| { if let Some(i) = i.upgrade() { i.update_remote_display(); } }
+    });
+}
+
+/// The mini top bar's buttons and the double-click-to-restore gesture —
+/// chrome around `MiniPlaybackView`, wired here because "restore to full
+/// window"/"close" act on the window, not the view.
+fn wire_mini_chrome(inner: &Rc<DeviceWindowInner>) {
+    let window = inner.window.clone();
+    // ── Mini player signals ───────────────────────────────────────────────────
+    // A plain click, not a toggle — this button only ever lives in the
+    // full panel's header, so clicking it can only ever mean "switch to
+    // mini mode" (going the other way is restore_btn/double-click/M
+    // below, none of which are this button).
+    inner.mini_btn.connect_clicked({
+        let i = Rc::downgrade(&inner);
+        move |_btn| {
+            let Some(i) = i.upgrade() else { return };
+            i.enter_mini_mode();
+            geometry::schedule_config_save(&i);
+        }
+    });
+
+    inner.mini.restore_btn.connect_clicked({
+        let i = Rc::downgrade(&inner);
+        move |_| {
+            let Some(i) = i.upgrade() else { return };
+            i.exit_mini_mode();
+            geometry::schedule_config_save(&i);
+        }
+    });
+
+    // The mini panel's own close (X) button — same "close this device"
+    // meaning as win.close below, just with no native titlebar button to
+    // trigger it from (mini mode is undecorated).
+    inner.mini.close_btn.connect_clicked({
+        clone!(@strong window => move |_| {
+            gtk::prelude::WidgetExt::realize(&window); // close() is a no-op on an unrealized window
+            window.close();
+        })
+    });
+
+    {
+        let gesture = gtk::GestureClick::builder().button(1).build();
+        gesture.connect_pressed({
+            let i = Rc::downgrade(&inner);
+            move |_, n_press, _, _| {
+                let Some(i) = i.upgrade() else { return };
+                if n_press >= 2 {
+                    i.exit_mini_mode();
+                    geometry::schedule_config_save(&i);
+                }
+            }
+        });
+        inner.mini.root.add_controller(gesture);
+    }
+}
+
+/// The window-scoped actions (win.close/win.devices/win.about/
+/// win.settings) and the close-request/destroy lifecycle handlers that
+/// funnel into `DeviceWindowInner::cleanup()`.
+fn wire_window_lifecycle(
+    inner:         &Rc<DeviceWindowInner>,
+    open_settings: Rc<dyn Fn(Option<DeviceState>)>,
+) {
+    let window = inner.window.clone();
+    let ds = inner.ds.clone();
+    // ── Window actions ────────────────────────────────────────────────────────
+    // win.close (Ctrl-W), win.devices, win.about, win.settings — one
+    // registration each now, on the one shared window (previously
+    // duplicated onto a separate mini_win too).
+    let close_action = gio::SimpleAction::new("close", None);
+    {
+        let win_for_close = window.clone();
+        close_action.connect_activate(move |_, _| {
+            gtk::prelude::WidgetExt::realize(&win_for_close); // close() is a no-op on an unrealized window
+            win_for_close.close();
+        });
+    }
+    window.add_action(&close_action);
+
+    let devices_action = gio::SimpleAction::new("devices", None);
+    {
+        let i = Rc::downgrade(&inner);
+        devices_action.connect_activate(move |_, _| {
+            if let Some(i) = i.upgrade() { (i.show_devices_fn)(); }
+        });
+    }
+    window.add_action(&devices_action);
+
+    wire_window_actions(&window, Some(ds.clone()), open_settings);
+
+    // close-request fires on any close attempt: the native titlebar X
+    // button (full mode only — mini mode is undecorated), win.close()
+    // (Ctrl-W / the mini panel's close_btn), Alt+F4, a compositor-level
+    // close, or the quit action closing every window on the way out.
+    // Always means "close this device", regardless of which panel is
+    // currently showing — mini mode has its own dedicated "go back to
+    // full mode without closing" affordances (the restore button,
+    // double-click, the header mini-toggle, the M shortcut); close-request
+    // itself isn't one of them, in any mode. cleanup() is idempotent so
+    // calling it here AND in connect_destroy is safe.
+    window.connect_close_request({
+        let i = Rc::downgrade(&inner);
+        move |_win| {
+            dbg_ui("window close-request");
+            if let Some(i) = i.upgrade() { i.cleanup(); }
+            glib::Propagation::Proceed
+        }
+    });
+
+    // destroy: single place for all cleanup.  Fires on every destruction path:
+    //   • user close  (close-request → Proceed → GTK destroys → destroy)
+    //   • win.destroy() from quit action (skips close-request, fires destroy directly)
+    //   • app.quit()   (GTK destroys all windows during shutdown → destroy)
+    // A second connect_destroy added later in open_device_spec clears the registry
+    // (fires after this one, in connection order), which drops the last Rc<Inner> → Drop.
+    window.connect_destroy({
+        let i = Rc::downgrade(&inner);
+        move |_win| {
+            if let Some(i) = i.upgrade() {
+                i.cleanup();
+            } else {
+                dbg_ui("main window destroyed (inner already freed)");
+            }
+        }
+    });
 }
