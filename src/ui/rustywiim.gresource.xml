@@ -6,6 +6,7 @@
     <file alias="rustywiim-jack-inout.svg">icons/jack-inout.svg</file>
     <file alias="rustywiim-optical-inout.svg">icons/optical-inout.svg</file>
     <file alias="rustywiim-coax-inout.svg">icons/coax-inout.svg</file>
+    <file alias="rustywiim-hdmi-inout.svg">icons/hdmi-inout.svg</file>
     <file alias="rustywiim-audio-output.svg">icons/audio-output.svg</file>
     <file alias="rustywiim-remote.svg">icons/wiim-remote.svg</file>
   </gresource>

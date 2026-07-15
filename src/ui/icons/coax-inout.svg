@@ -1,54 +1,513 @@
 <?xml version="1.0" encoding="UTF-8" standalone="no"?>
-<!-- Uploaded to: SVG Repo, www.svgrepo.com, Generator: SVG Repo Mixer Tools -->
-
 <svg
-   height="64"
-   width="64"
+   viewBox="0 0 210 210"
+   width="210"
+   height="210"
    version="1.1"
-   id="Layer_1"
-   viewBox="0 0 40.96 40.96"
-   xml:space="preserve"
+   id="svg-rca-pair"
    sodipodi:docname="coax-inout.svg"
    inkscape:version="1.2.2 (b0a8486541, 2022-12-01)"
    xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
    xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns:xlink="http://www.w3.org/1999/xlink"
    xmlns="http://www.w3.org/2000/svg"
-   xmlns:svg="http://www.w3.org/2000/svg"><defs
-   id="defs4217" /><sodipodi:namedview
-   id="namedview4215"
-   pagecolor="#ababab"
-   bordercolor="#000000"
-   borderopacity="0.25"
-   inkscape:showpageshadow="2"
-   inkscape:pageopacity="0"
-   inkscape:pagecheckerboard="0"
-   inkscape:deskcolor="#d1d1d1"
-   showgrid="false"
-   inkscape:zoom="7.2619866"
-   inkscape:cx="72.156564"
-   inkscape:cy="69.195942"
-   inkscape:window-width="2560"
-   inkscape:window-height="1371"
-   inkscape:window-x="0"
-   inkscape:window-y="0"
-   inkscape:window-maximized="1"
-   inkscape:current-layer="g4212" />
-<g
-   id="g4212"
-   transform="translate(0,-35.311)">
-	
-	<path
-   style="fill:#677777;stroke-width:0.0611875"
-   d="m 26.961652,55.791 c 0,-3.579468 -2.902184,-6.481653 -6.481652,-6.481653 -3.579468,0 -6.481652,2.902184 -6.481652,6.481652 0,3.579469 2.902184,6.481653 6.481652,6.481653 3.579468,0 6.481652,-2.902184 6.481652,-6.481653"
-   id="path4208" />
-	<path
-   style="fill:#d4dbdf;stroke-width:0.0611875"
-   d="m 23.180693,55.791 c 0,-1.491873 -1.20937,-2.700693 -2.700693,-2.700693 -1.491323,0 -2.700694,1.20882 -2.700694,2.700693 0,1.491874 1.209372,2.700694 2.700694,2.700694 1.491323,0 2.700693,-1.208821 2.700693,-2.700694"
-   id="path4210" />
-<circle
-   style="fill:none;stroke:#ffffff;stroke-width:0.96;stroke-linecap:round;stroke-linejoin:round"
-   id="path342"
-   cx="20.48"
-   cy="55.791"
-   r="10.057854" /></g>
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <sodipodi:namedview
+     id="namedview202"
+     pagecolor="#ffffff"
+     bordercolor="#000000"
+     borderopacity="0.25"
+     inkscape:showpageshadow="2"
+     inkscape:pageopacity="0.0"
+     inkscape:pagecheckerboard="0"
+     inkscape:deskcolor="#d1d1d1"
+     showgrid="false"
+     inkscape:zoom="2.054"
+     inkscape:cx="220.7887"
+     inkscape:cy="251.94742"
+     inkscape:window-width="2560"
+     inkscape:window-height="1371"
+     inkscape:window-x="0"
+     inkscape:window-y="0"
+     inkscape:window-maximized="1"
+     inkscape:current-layer="g199" />
+  <!-- RCA connector pair (red + white). Hand-built to match jack-inout.svg's
+       metallic-gradient style: gold-tinted chrome cylinders shaded
+       top->highlight->bottom and a soft radial drop shadow (no SVG filters).
+
+       IMPORTANT — keep the <svg> element as the very first thing after the XML
+       declaration (this comment lives INSIDE it, not before it). GTK's icon
+       theme rasterizes scalable SVG icons through the gdk-pixbuf SVG loader,
+       whose format sniffer only recognizes the file as SVG if it finds "<svg"
+       near the start, within a small sniff window. A long comment block before
+       <svg> pushes the tag past that window and the loader reports
+       "Unrecognised image file format" — the icon silently fails to load.
+
+       NOTE ON PORTABILITY: the shared connector metalwork is inlined verbatim
+       into each plug group rather than defined once and reused by cross-
+       reference; some gdk-pixbuf SVG loaders mishandle that. Keep both copies
+       in sync when editing. Gradients in defs referenced by url(#...) fills are
+       fine and widely supported.
+
+       PERSPECTIVE: one perspective-scale ramp s(x)=0.60+0.001449x along each
+       plug's axis (s=1.0 at the near rim x=248, ~0.60 at the far cable), and
+       EVERY part's on-screen half-height is its true radius * s(x). So cable,
+       knurled body, ferrule lip, sleeve and rim foreshorten at the same rate
+       and share one vanishing point. The pin end tips toward the viewer, so the
+       open rim shows the dark bore oval and the ferrule collar shows a solid
+       metal oval — both drawn with the same rx/ry ratio (~0.47). Every
+       circumferential feature (body ends, seam, grooves) is an elliptical arc,
+       not a flat line. The two plugs sit at slightly different tilts (-16 /
+       -24) so they converge as a pair. -->
+  <defs
+     id="defs-rca">
+    <!-- Chrome/metal, warmed to a slight gold: dark rim -> bright highlight
+         band -> dark rim, mirroring linearGradient5135/4927's reflective look. -->
+    <linearGradient
+       id="metalGrad"
+       x1="0"
+       y1="0"
+       x2="0"
+       y2="1">
+      <stop
+         offset="0"
+         stop-color="#3a3320"
+         id="stop2" />
+      <stop
+         offset="0.12"
+         stop-color="#b3a878"
+         id="stop4" />
+      <stop
+         offset="0.40"
+         stop-color="#fffdf2"
+         id="stop6" />
+      <stop
+         offset="0.50"
+         stop-color="#f2e9c9"
+         id="stop8" />
+      <stop
+         offset="0.62"
+         stop-color="#cbbc8a"
+         id="stop10" />
+      <stop
+         offset="0.85"
+         stop-color="#5a4f2c"
+         id="stop12" />
+      <stop
+         offset="1"
+         stop-color="#2a2413"
+         id="stop14" />
+    </linearGradient>
+    <!-- Center pin: same gold chrome, tuned a touch brighter for the small part. -->
+    <linearGradient
+       id="pinGrad"
+       x1="163.07552"
+       y1="-10.632497"
+       x2="163.07552"
+       y2="10.632497"
+       gradientTransform="matrix(1.5189282,0,0,0.65835897,-40.702517,-137.88264)"
+       gradientUnits="userSpaceOnUse">
+      <stop
+         offset="0"
+         stop-color="#4e4527"
+         id="stop17" />
+      <stop
+         offset="0.16"
+         stop-color="#d7c993"
+         id="stop19" />
+      <stop
+         offset="0.42"
+         stop-color="#fffdf3"
+         id="stop21" />
+      <stop
+         offset="0.58"
+         stop-color="#efe4bf"
+         id="stop23" />
+      <stop
+         offset="0.82"
+         stop-color="#6a5d33"
+         id="stop25" />
+      <stop
+         offset="1"
+         stop-color="#332c17"
+         id="stop27" />
+    </linearGradient>
+    <!-- Red body -->
+    <linearGradient
+       id="redGrad"
+       x1="36.946396"
+       y1="-48.175201"
+       x2="36.946396"
+       y2="48.175201"
+       gradientTransform="matrix(1.3803783,0,0,0.72443911,-40.702517,-137.88264)"
+       gradientUnits="userSpaceOnUse">
+      <stop
+         offset="0"
+         stop-color="#5e0606"
+         id="stop30"
+         style="stop-color:#5c5e06;stop-opacity:1;" />
+      <stop
+         offset="0.14"
+         stop-color="#c81616"
+         id="stop32"
+         style="stop-color:#c6c816;stop-opacity:1;" />
+      <stop
+         offset="0.40000001"
+         stop-color="#ff7a7a"
+         id="stop34"
+         style="stop-color:#fffd7a;stop-opacity:1;" />
+      <stop
+         offset="0.5"
+         stop-color="#f22b2b"
+         id="stop36"
+         style="stop-color:#f2ed2b;stop-opacity:1;" />
+      <stop
+         offset="0.62"
+         stop-color="#cf1414"
+         id="stop38"
+         style="stop-color:#cfca14;stop-opacity:1;" />
+      <stop
+         offset="0.85000002"
+         stop-color="#6e0808"
+         id="stop40"
+         style="stop-color:#6e6808;stop-opacity:1;" />
+      <stop
+         offset="1"
+         stop-color="#3d0303"
+         id="stop42"
+         style="stop-color:#3d3903;stop-opacity:1;" />
+    </linearGradient>
+    <!-- White body (silvered off-white) -->
+    <linearGradient
+       id="whiteGrad"
+       x1="0"
+       y1="0"
+       x2="0"
+       y2="1">
+      <stop
+         offset="0"
+         stop-color="#6f7276"
+         id="stop45" />
+      <stop
+         offset="0.14"
+         stop-color="#cfd2d6"
+         id="stop47" />
+      <stop
+         offset="0.40"
+         stop-color="#ffffff"
+         id="stop49" />
+      <stop
+         offset="0.50"
+         stop-color="#f0f1f3"
+         id="stop51" />
+      <stop
+         offset="0.62"
+         stop-color="#d2d5d9"
+         id="stop53" />
+      <stop
+         offset="0.85"
+         stop-color="#83878c"
+         id="stop55" />
+      <stop
+         offset="1"
+         stop-color="#4c4f53"
+         id="stop57" />
+    </linearGradient>
+    <!-- Dark rubber cable -->
+    <linearGradient
+       id="cableGrad"
+       x1="2.553139"
+       y1="-14.88364"
+       x2="2.553139"
+       y2="19.583736"
+       gradientTransform="matrix(1.5666989,0,0,0.63828474,-40.702517,-137.88264)"
+       gradientUnits="userSpaceOnUse">
+      <stop
+         offset="0"
+         stop-color="#2a2c2e"
+         id="stop60" />
+      <stop
+         offset="0.4"
+         stop-color="#55585c"
+         id="stop62" />
+      <stop
+         offset="0.5"
+         stop-color="#46484b"
+         id="stop64" />
+      <stop
+         offset="0.85"
+         stop-color="#202224"
+         id="stop66" />
+      <stop
+         offset="1"
+         stop-color="#101112"
+         id="stop68" />
+    </linearGradient>
+    <!-- Hollow tube interior at the open end -->
+    <radialGradient
+       id="boreGrad"
+       cx="384.21674"
+       cy="0"
+       r="15.811388"
+       gradientTransform="matrix(0.63245553,0,0,1.5811388,-40.702517,-137.88264)"
+       fx="384.21674"
+       fy="0"
+       gradientUnits="userSpaceOnUse">
+      <stop
+         offset="0"
+         stop-color="#000000"
+         id="stop71" />
+      <stop
+         offset="0.7"
+         stop-color="#141414"
+         id="stop73" />
+      <stop
+         offset="1"
+         stop-color="#2b2b2b"
+         id="stop75" />
+    </radialGradient>
+    <!-- Soft contact shadow, radial fading to transparent (matches
+         radialGradient3231's fade-to-nothing shadow in the jack art). -->
+    <radialGradient
+       id="shadowGrad"
+       cx="61.237244"
+       cy="195.95918"
+       r="73.484695"
+       gradientTransform="matrix(2.4494897,0,0,0.40824829,-37.82324,-115.3486)"
+       fx="61.237244"
+       fy="195.95918"
+       gradientUnits="userSpaceOnUse">
+      <stop
+         offset="0"
+         stop-color="#000000"
+         stop-opacity="0.42"
+         id="stop78" />
+      <stop
+         offset="0.6"
+         stop-color="#000000"
+         stop-opacity="0.22"
+         id="stop80" />
+      <stop
+         offset="1"
+         stop-color="#000000"
+         stop-opacity="0"
+         id="stop82" />
+    </radialGradient>
+    <!-- Reflective gloss streak laid over the colored body -->
+    <linearGradient
+       id="glossGrad"
+       x1="26.643045"
+       y1="-77.76889"
+       x2="26.643045"
+       y2="-38.884445"
+       gradientTransform="matrix(2.7774603,0,0,0.36004115,-40.702517,-137.88264)"
+       gradientUnits="userSpaceOnUse">
+      <stop
+         offset="0"
+         stop-color="#ffffff"
+         stop-opacity="0"
+         id="stop85" />
+      <stop
+         offset="0.5"
+         stop-color="#ffffff"
+         stop-opacity="0.75"
+         id="stop87" />
+      <stop
+         offset="1"
+         stop-color="#ffffff"
+         stop-opacity="0"
+         id="stop89" />
+    </linearGradient>
+    <linearGradient
+       inkscape:collect="always"
+       xlink:href="#metalGrad"
+       id="linearGradient857"
+       x1="232.03169"
+       y1="-26.581196"
+       x2="232.03169"
+       y2="26.581196"
+       gradientTransform="matrix(0.72231512,0,0,1.3844373,-40.702517,-137.88264)"
+       gradientUnits="userSpaceOnUse" />
+    <linearGradient
+       inkscape:collect="always"
+       xlink:href="#metalGrad"
+       id="linearGradient859"
+       x1="272.86673"
+       y1="-22.978251"
+       x2="272.86673"
+       y2="22.978251"
+       gradientTransform="matrix(0.69631062,0,0,1.4361407,-40.702517,-137.88264)"
+       gradientUnits="userSpaceOnUse" />
+    <linearGradient
+       inkscape:collect="always"
+       xlink:href="#metalGrad"
+       id="linearGradient861"
+       x1="252.8183"
+       y1="-26.515091"
+       x2="252.8183"
+       y2="26.515091"
+       gradientTransform="matrix(0.81085902,0,0,1.23326,-40.702517,-137.88264)"
+       gradientUnits="userSpaceOnUse" />
+    <linearGradient
+       inkscape:collect="always"
+       xlink:href="#metalGrad"
+       id="linearGradient863"
+       x1="333.18463"
+       y1="-22.978251"
+       x2="333.18463"
+       y2="22.978251"
+       gradientTransform="matrix(0.69631062,0,0,1.4361407,-40.702517,-137.88264)"
+       gradientUnits="userSpaceOnUse" />
+  </defs>
+  <!-- ===================== WHITE (front / lower channel) ===================== -->
+  <!-- shallower tilt; near "rail" of the converging pair -->
+  <!-- ====================== RED (back / upper channel) ===================== -->
+  <!-- steeper tilt; far "rail", converging with white's -->
+  <g
+     transform="matrix(0.73083637,-0.32538931,0.32538931,0.73083637,78,236)"
+     id="g199">
+    <path
+       fill="url(#cableGrad)"
+       d="m -32.702517,-142.38264 46,-5 q 4,0 4,4 v 11 q 0,4 -4,4 l -46,3 q -4,0 -4,-4 v -9 q 0,-4 4,-4 z"
+       id="path149"
+       style="fill:url(#cableGrad)" />
+    <path
+       fill="url(#redGrad)"
+       d="m 23.297483,-165.58264 119.999997,-7.2 a 16.400002,34.900003 0 0 0 0,69.8 l -119.999997,-7.2 a 13.000002,27.700003 0 0 1 0,-55.4 z"
+       id="path151"
+       inkscape:label="path151"
+       style="fill:url(#redGrad)" />
+    <g
+       fill="none"
+       stroke-width="2"
+       opacity="0.55"
+       id="g177"
+       transform="translate(-40.702517,-137.88264)">
+      <path
+         stroke="#3a0303"
+         d="m 88,-26 a 12.2,26 0 0 0 0,52"
+         id="path153" />
+      <path
+         stroke="#ff9a9a"
+         opacity="0.55"
+         d="m 90,-26 a 12.2,26 0 0 0 0,52"
+         id="path155" />
+      <path
+         stroke="#3a0303"
+         d="m 100,-26.7 a 12.5,26.7 0 0 0 0,53.4"
+         id="path157" />
+      <path
+         stroke="#ff9a9a"
+         opacity="0.55"
+         d="m 102,-26.7 a 12.5,26.7 0 0 0 0,53.4"
+         id="path159" />
+      <path
+         stroke="#3a0303"
+         d="m 113,-27.5 a 12.9,27.5 0 0 0 0,55"
+         id="path161" />
+      <path
+         stroke="#ff9a9a"
+         opacity="0.55"
+         d="m 115,-27.5 a 12.9,27.5 0 0 0 0,55"
+         id="path163" />
+      <path
+         stroke="#3a0303"
+         d="m 128,-28.4 a 13.3,28.4 0 0 0 0,56.8"
+         id="path165" />
+      <path
+         stroke="#ff9a9a"
+         opacity="0.55"
+         d="m 130,-28.4 a 13.3,28.4 0 0 0 0,56.8"
+         id="path167" />
+      <path
+         stroke="#3a0303"
+         d="m 145,-29.4 a 13.8,29.4 0 0 0 0,58.8"
+         id="path169" />
+      <path
+         stroke="#ff9a9a"
+         opacity="0.55"
+         d="m 147,-29.4 a 13.8,29.4 0 0 0 0,58.8"
+         id="path171" />
+      <path
+         stroke="#3a0303"
+         d="m 164,-30.5 a 14.3,30.5 0 0 0 0,61"
+         id="path173" />
+      <path
+         stroke="#ff9a9a"
+         opacity="0.55"
+         d="m 166,-30.5 a 14.3,30.5 0 0 0 0,61"
+         id="path175" />
+    </g>
+    <path
+       fill="url(#glossGrad)"
+       opacity="0.6"
+       d="m 33.297483,-157.88264 107.999997,-8 v 6 l -107.999997,8 z"
+       id="path179"
+       style="fill:url(#glossGrad)" />
+    <!-- ===== metalwork (inlined; keep in sync with the white copy) ===== -->
+    <path
+       fill="url(#metalGrad)"
+       d="m 143.29748,-173.38264 20,-1.3 q 2,0 2,2 v 69.6 q 0,2 -2,2 l -20,-1.3 a 16.400002,35.500004 0 0 1 0,-71 z"
+       id="path181"
+       style="fill:url(#linearGradient857)" />
+    <ellipse
+       cx="162.29749"
+       cy="-137.88264"
+       rx="16"
+       ry="33"
+       fill="#2a2413"
+       opacity="0.5"
+       id="ellipse183" />
+    <ellipse
+       cx="165.29749"
+       cy="-137.88264"
+       rx="16"
+       ry="33"
+       fill="url(#metalGrad)"
+       id="ellipse185"
+       style="fill:url(#linearGradient859)" />
+    <path
+       fill="url(#metalGrad)"
+       d="m 168.29748,-168.38264 35,-2.2 q 4,0 4,4 v 57.4 q 0,4 -4,4 l -35,-2.2 q -4,0 -4,-4 v -53 q 0,-4 4,-4 z"
+       id="path187"
+       style="fill:url(#linearGradient861)" />
+    <ellipse
+       cx="207.29749"
+       cy="-137.88264"
+       rx="16"
+       ry="33"
+       fill="url(#metalGrad)"
+       id="ellipse189"
+       style="fill:url(#linearGradient863)" />
+    <ellipse
+       cx="202.29749"
+       cy="-137.88264"
+       rx="10"
+       ry="25"
+       fill="url(#boreGrad)"
+       id="ellipse191"
+       style="fill:url(#boreGrad)" />
+    <path
+       fill="url(#pinGrad)"
+       d="m 210.29748,-144.88264 h 21 a 8,7 0 0 1 0,14 h -21 a 3.3,7 0 0 1 0,-14 z"
+       id="path193"
+       style="fill:url(#pinGrad)" />
+    <rect
+       x="213.29749"
+       y="-143.38266"
+       width="16"
+       height="3"
+       rx="1.5"
+       fill="#fffdf2"
+       opacity="0.7"
+       id="rect195" />
+    <ellipse
+       cx="233.29749"
+       cy="-140.08266"
+       rx="2.2"
+       ry="2.5999999"
+       fill="#fffef7"
+       opacity="0.75"
+       id="ellipse197" />
+  </g>
 </svg>

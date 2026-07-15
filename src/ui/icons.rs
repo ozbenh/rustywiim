@@ -84,16 +84,17 @@ impl IconSet {
             ("line-in-jack",  "rustywiim-jack-inout"),
             ("optical",       "rustywiim-optical-inout"),
             ("coaxial",       "rustywiim-coax-inout"),
+            ("HDMI",          "rustywiim-hdmi-inout"),
             ("wifi",          "network-wireless-symbolic"),
             ("bluetooth",     "bluetooth-symbolic"),
             ("phono",         "media-record-symbolic"),
             ("udisk",         "drive-harddisk-usb-symbolic"),
-            ("HDMI",          "tv-symbolic"),
         ];
         let output_names: &[(&'static str, &str)] = &[
             ("line-out",      "rustywiim-rca-inout"),
             ("optical-out",   "rustywiim-optical-inout"),
             ("coax-out",      "rustywiim-coax-inout"),
+            ("jack-out",      "rustywiim-jack-inout"),
             ("bluetooth-out", "bluetooth-symbolic"),
             ("headphone-out", "audio-headphones-symbolic"),
             ("usb-out",       "drive-harddisk-usb-symbolic"),

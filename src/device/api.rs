@@ -746,9 +746,8 @@ impl PresetEntry {
 ///
 /// Rules (in priority order):
 /// 1. USB outputs → `devName`, truncated at the first `" at usb"` (case-insensitive).
-/// 2. `cardName == "AMLAUGESOUND"` → use `devName` verbatim (built-in SoC codec).
-/// 3. Fallback → `output_display_name(canon)`.
-fn soundcard_display_name(canon: &'static str, card_name: &str, dev_name: &str) -> String {
+/// 2. otherwise use `devName` verbatim (built-in SoC codec).
+fn soundcard_display_name(canon: &'static str, dev_name: &str) -> String {
     if canon == "usb-out" && !dev_name.is_empty() {
         let lower = dev_name.to_ascii_lowercase();
         let label = match lower.find(" at usb") {
@@ -759,10 +758,7 @@ fn soundcard_display_name(canon: &'static str, card_name: &str, dev_name: &str) 
             return label.to_string();
         }
     }
-    if card_name == "AMLAUGESOUND" && !dev_name.is_empty() {
-        return dev_name.to_string();
-    }
-    super::capabilities::output_display_name(canon).to_string()
+    return dev_name.to_string();
 }
 
 // ── PlayerStatus fixups ───────────────────────────────────────────────────────
@@ -1120,9 +1116,8 @@ impl WiimClient {
                     v["mode"].as_str()?
                 );
                 if canon == "unknown" || !seen.insert(canon) { return None; }
-                let card_name = v["soundCard"]["cardName"].as_str().unwrap_or("");
                 let dev_name  = v["soundCard"]["devName"].as_str().unwrap_or("");
-                let name = soundcard_display_name(canon, card_name, dev_name);
+                let name = soundcard_display_name(canon, dev_name);
                 // `icon_canon` is filled in by `capabilities::detect_capabilities()`,
                 // which knows the device's profile; this method only talks to
                 // the wire format.

@@ -58,9 +58,10 @@ fn main() {
     println!("cargo:rerun-if-changed=src/ui/icons/rca-inout.svg");
     println!("cargo:rerun-if-changed=src/ui/icons/optical-inout.svg");
     println!("cargo:rerun-if-changed=src/ui/icons/coax-inout.svg");
+    println!("cargo:rerun-if-changed=src/ui/icons/jack-inout.svg");
+    println!("cargo:rerun-if-changed=src/ui/icons/hdmi-inout.svg");
     println!("cargo:rerun-if-changed=src/ui/icons/audio-output.svg");
     println!("cargo:rerun-if-changed=src/ui/icons/wiim-remote.svg");
-    println!("cargo:rerun-if-changed=src/ui/icons/jack-inout.svg");
     let out_dir = std::env::var("OUT_DIR").unwrap();
     let status = Command::new("glib-compile-resources")
         .args([

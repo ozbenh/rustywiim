@@ -577,6 +577,10 @@ pub struct DeviceProfile {
     /// reports `AUDIO_OUTPUT_SPEAKER_MODE` directly (already its own
     /// `"speaker-out"` canon, unaffected by this flag either way).
     pub line_out_is_speaker: bool,
+    /// True for device for whose line-out is a 3.5mm jack and not RCA
+    pub line_out_is_jack: bool,
+    /// Per-output display-name overrides: `(canonical_id, label)` pairs.
+    pub output_labels:    &'static [(&'static str, &'static str)],
     /// Per-input display-name overrides: `(canonical_id, label)` pairs,
     /// checked before `input_display_name()`'s generic table — for devices
     /// whose own physical silkscreen/manual labeling differs from the
@@ -602,15 +606,18 @@ static WIIM_PROFILES: [DeviceProfile; 9] = [
         ignore_plm_bits: &[2, 5],     // USB-C power only; Coaxial not present
         extra_inputs:    &["bluetooth", "line-in"],
         outputs:         &["line-out", "optical-out"],
-        line_out_is_speaker: false,
-        input_labels: &[], line_in_is_jack: false,
+        line_out_is_speaker: false, line_out_is_jack: true,
+        output_labels:    &[("line-out", "Aux Out"), ("optical-out", "SPDIF Out")],
+        input_labels:    &[("line-in", "Aux In")],
+        line_in_is_jack: true,
     },
     /* 1 WiimPro */ DeviceProfile {
         model_name:      Some("WiiM Pro"),
         ignore_plm_bits: &[2, 5],     // USB-C power only; Coaxial output only
         extra_inputs:    &["bluetooth", "line-in", "optical"],
         outputs:         &["line-out", "optical-out", "coax-out"],
-        line_out_is_speaker: false,
+        output_labels: &[],
+        line_out_is_speaker: false, line_out_is_jack: false,
         input_labels: &[], line_in_is_jack: false,
     },
     /* 2 WiimProPlus */ DeviceProfile {
@@ -618,7 +625,8 @@ static WIIM_PROFILES: [DeviceProfile; 9] = [
         ignore_plm_bits: &[2, 5],     // USB-C power only; Coaxial output only
         extra_inputs:    &["bluetooth", "line-in", "optical"],
         outputs:         &["line-out", "optical-out", "coax-out"],
-        line_out_is_speaker: false,
+        line_out_is_speaker: false, line_out_is_jack: false,
+        output_labels: &[],
         input_labels: &[], line_in_is_jack: false,
     },
     /* 3 WiimAmp */ DeviceProfile {
@@ -626,7 +634,8 @@ static WIIM_PROFILES: [DeviceProfile; 9] = [
         ignore_plm_bits: &[],
         extra_inputs:    &["bluetooth", "line-in", "optical", "udisk", "HDMI"],
         outputs:         &["line-out", "usb-out"],
-        line_out_is_speaker: true,
+        line_out_is_speaker: true, line_out_is_jack: false,
+        output_labels: &[("line-out", "Speaker Out")],
         input_labels: &[], line_in_is_jack: false,
     },
     /* 4 WiimAmpPro */ DeviceProfile {
@@ -634,19 +643,17 @@ static WIIM_PROFILES: [DeviceProfile; 9] = [
         ignore_plm_bits: &[],
         extra_inputs:    &["bluetooth", "line-in", "optical", "udisk"],
         outputs:         &["line-out", "usb-out"],
-        line_out_is_speaker: true,
+        line_out_is_speaker: true, line_out_is_jack: false,
+        output_labels: &[],
         input_labels: &[], line_in_is_jack: false,
     },
     /* 5 WiimAmpUltra */ DeviceProfile {
         model_name:      Some("WiiM Amp Ultra"),
         ignore_plm_bits: &[],
         extra_inputs:    &["bluetooth", "line-in", "optical", "udisk", "HDMI"],
-        outputs:         &["speaker-out"],
-        // Real firmware already reports `AUDIO_OUTPUT_SPEAKER_MODE`
-        // directly (canon `"speaker-out"`, not `"line-out"`), so this flag
-        // is inert today — set for consistency/defense against firmware
-        // variance.
-        line_out_is_speaker: true,
+        outputs:         &["speaker-out", "usb-out"],
+        line_out_is_speaker: true, line_out_is_jack: false,
+        output_labels: &[],
         input_labels: &[], line_in_is_jack: false,
     },
     /* 6 WiimUltra */ DeviceProfile {
@@ -654,7 +661,8 @@ static WIIM_PROFILES: [DeviceProfile; 9] = [
         ignore_plm_bits: &[],
         extra_inputs:    &["bluetooth", "line-in", "optical", "coaxial", "udisk", "HDMI", "phono"],
         outputs:         &["line-out", "optical-out", "coax-out", "headphone-out", "usb-out"],
-        line_out_is_speaker: false,
+        line_out_is_speaker: false, line_out_is_jack: false,
+        output_labels: &[],
         input_labels: &[], line_in_is_jack: false,
     },
     /* 7 WiimSound */ DeviceProfile {
@@ -662,15 +670,17 @@ static WIIM_PROFILES: [DeviceProfile; 9] = [
         ignore_plm_bits: &[2, 3, 5],  // No USB, Optical, or Coaxial
         extra_inputs:    &["bluetooth", "line-in"],
         outputs:         &[],          // Internal speakers only
-        line_out_is_speaker: true,
-        input_labels: &[], line_in_is_jack: false,
+        line_out_is_speaker: true, line_out_is_jack: false,
+        output_labels: &[],
+        input_labels: &[], line_in_is_jack: true,
     },
     /* 8 WiimGeneric */ DeviceProfile {
         model_name:      None,
         ignore_plm_bits: &[],
         extra_inputs:    &["bluetooth", "line-in", "optical"],
         outputs:         &["optical-out", "line-out"],
-        line_out_is_speaker: false,
+        line_out_is_speaker: false, line_out_is_jack: false,
+        output_labels: &[],
         input_labels: &[], line_in_is_jack: false,
     },
 ];
@@ -681,7 +691,8 @@ static ARYLIC_PROFILES: [DeviceProfile; 3] = [
         ignore_plm_bits: &[],
         extra_inputs:    &["bluetooth", "line-in", "optical", "udisk"],
         outputs:         &["line-out"],
-        line_out_is_speaker: false,
+        line_out_is_speaker: false, line_out_is_jack: false,
+        output_labels: &[],
         input_labels: &[], line_in_is_jack: false,
     },
     /* 101 ArylicH50 */ DeviceProfile {
@@ -689,7 +700,8 @@ static ARYLIC_PROFILES: [DeviceProfile; 3] = [
         ignore_plm_bits: &[],
         extra_inputs:    &["bluetooth", "line-in", "optical", "udisk", "phono", "HDMI"],
         outputs:         &["line-out", "optical-out"],
-        line_out_is_speaker: false,
+        line_out_is_speaker: false, line_out_is_jack: false,
+        output_labels: &[],
         input_labels: &[], line_in_is_jack: false,
     },
     /* 102 ArylicGeneric */ DeviceProfile {
@@ -697,7 +709,8 @@ static ARYLIC_PROFILES: [DeviceProfile; 3] = [
         ignore_plm_bits: &[],
         extra_inputs:    &["bluetooth", "line-in", "optical"],
         outputs:         &["line-out", "optical-out"],
-        line_out_is_speaker: false,
+        line_out_is_speaker: false, line_out_is_jack: false,
+        output_labels: &[],
         input_labels: &[], line_in_is_jack: false,
     },
 ];
@@ -707,8 +720,9 @@ static AUDIO_PRO_PROFILES: [DeviceProfile; 6] = [
         model_name:      Some("Audio Pro Link 2"),
         ignore_plm_bits: &[],
         extra_inputs:    &["bluetooth", "optical", "coaxial", "line-in"],
-        outputs:         &[],
-        line_out_is_speaker: false,
+        outputs:         &["optical-out", "coax-out", "line-out"],
+        line_out_is_speaker: false, line_out_is_jack: false,
+        output_labels: &[],
         input_labels: &[], line_in_is_jack: false,
     },
     /* 201 AudioProA28 */ DeviceProfile {
@@ -716,7 +730,8 @@ static AUDIO_PRO_PROFILES: [DeviceProfile; 6] = [
         ignore_plm_bits: &[],
         extra_inputs:    &["bluetooth", "optical", "line-in", "HDMI"],
         outputs:         &[],
-        line_out_is_speaker: false,
+        line_out_is_speaker: false, line_out_is_jack: false,
+        output_labels: &[],
         input_labels: &[], line_in_is_jack: false,
     },
     /* 202 AudioProAddonC5 */ DeviceProfile {
@@ -740,6 +755,8 @@ static AUDIO_PRO_PROFILES: [DeviceProfile; 6] = [
         // "Speaker" output, no line/optical/coax/headphone/USB out.
         outputs:         &["speaker-out"],
         line_out_is_speaker: true,
+        line_out_is_jack: false,
+        output_labels: &[],
         // Device's own silkscreen/manual says "AUX In", not the generic
         // "Line-In" — confirmed live, 2026-07-13.
         input_labels:    &[("line-in", "AUX In")],
@@ -752,7 +769,9 @@ static AUDIO_PRO_PROFILES: [DeviceProfile; 6] = [
         ignore_plm_bits: &[],
         extra_inputs:    &["bluetooth", "line-in", "optical"],
         outputs:         &[],
+        output_labels: &[],
         line_out_is_speaker: false,
+        line_out_is_jack: false,
         input_labels: &[], line_in_is_jack: false,
     },
     /* 204 AudioProWGen (generic — model unknown) */ DeviceProfile {
@@ -760,7 +779,8 @@ static AUDIO_PRO_PROFILES: [DeviceProfile; 6] = [
         ignore_plm_bits: &[],
         extra_inputs:    &["bluetooth", "line-in", "optical"],
         outputs:         &[],
-        line_out_is_speaker: false,
+        output_labels: &[],
+        line_out_is_speaker: false, line_out_is_jack: false,
         input_labels: &[], line_in_is_jack: false,
     },
     /* 205 AudioProOriginal (generic — model unknown) */ DeviceProfile {
@@ -768,7 +788,8 @@ static AUDIO_PRO_PROFILES: [DeviceProfile; 6] = [
         ignore_plm_bits: &[],
         extra_inputs:    &["bluetooth", "line-in", "optical"],
         outputs:         &[],
-        line_out_is_speaker: false,
+        output_labels: &[],
+        line_out_is_speaker: false, line_out_is_jack: false,
         input_labels: &[], line_in_is_jack: false,
     },
 ];
@@ -783,7 +804,8 @@ static IEAST_PROFILES: [DeviceProfile; 1] = [
         // line-out, `plm_support` genuinely `0x0`.
         extra_inputs:    &[],
         outputs:         &["line-out"],
-        line_out_is_speaker: false,
+        output_labels: &[],
+        line_out_is_speaker: false, line_out_is_jack: true,
         input_labels: &[], line_in_is_jack: false,
     },
 ];
@@ -812,7 +834,8 @@ static LINKPLAY_PROFILES: [DeviceProfile; 1] = [
         // hardware, not the catch-all for unidentified ones.
         extra_inputs:    &[],
         outputs:         &["line-out"],
-        line_out_is_speaker: false,
+        output_labels: &[],
+        line_out_is_speaker: false, line_out_is_jack: false,
         input_labels: &[], line_in_is_jack: false,
     },
 ];
@@ -1091,10 +1114,11 @@ impl DeviceCapabilities {
     pub fn record_outputs(&mut self, mut list: Vec<OutputEntry>) -> bool {
         // The raw API call (`WiimClient::get_sound_card_mode_support_list()`)
         // has no notion of per-device profiles, so it always returns
-        // `icon_canon == canon` — the `line_out_is_speaker` quirk must be
-        // (re)applied here on every probe, not just the initial one in
-        // `detect_capabilities()`, or a corrected icon from connect time
-        // gets clobbered back to the wrong one on the very next slow poll.
+        // `icon_canon == canon` — the `line_out_is_speaker` and
+        // `line_out_is_jack` quirks must be (re)applied here on every probe,
+        // not just the initial one in `detect_capabilities()`, or a corrected
+        // icon from connect time gets clobbered back to the wrong one on the
+        // very next slow poll.
         for e in &mut list {
             e.icon_canon = icon_canon_for_output(e.canon, self.device_id);
         }
@@ -1174,7 +1198,7 @@ async fn detect_outputs(client: &WiimClient, caps: &mut DeviceCapabilities) {
                 .iter()
                 .map(|&canon| {
                     let icon_canon = icon_canon_for_output(canon, caps.device_id);
-                    let name = output_display_name(icon_canon).to_string();
+                    let name = output_display_name(canon, caps.device_id).to_string();
                     OutputEntry { canon, icon_canon, name }
                 })
                 .collect();
@@ -1543,8 +1567,11 @@ pub fn output_canon_to_mode(name: &str) -> Option<u32> {
 }
 
 /// Human-readable display name for a canonical output name.
-pub fn output_display_name(name: &str) -> &'static str {
-    match name {
+pub fn output_display_name(id: &str, device_id: DeviceId) -> &str {
+    if let Some((_, label)) = device_id.profile().output_labels.iter().find(|(i, _)| *i == id) {
+        return label;
+    }
+    match id {
         "optical-out"   => "Optical Out",
         "line-out"      => "Line Out",
         "coax-out"      => "Coax Out",
@@ -1667,8 +1694,15 @@ pub fn canon_new_output_name(mode: &str) -> &'static str {
 /// the quirk applies — never adjusts `canon` itself, which must keep
 /// resolving to the correct wire value/hardware match.
 pub fn icon_canon_for_output(canon: &'static str, device_id: DeviceId) -> &'static str {
-    if canon == "line-out" && device_id.profile().line_out_is_speaker {
-        "speaker-out"
+    if canon == "line-out" {
+        if device_id.profile().line_out_is_speaker {
+            "speaker-out"
+        } else if device_id.profile().line_out_is_jack {
+            "jack-out"
+        }
+        else {
+            canon
+        }
     } else {
         canon
     }
