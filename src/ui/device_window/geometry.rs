@@ -54,34 +54,7 @@ impl DeviceWindowInner {
         // (not just pre-seeded at construction) — otherwise there's nothing real
         // to save yet.
         if already_loaded && !prev_uuid.is_empty() {
-            // Same in_mini-aware read `save_config_now()` uses just below —
-            // needed here too now that `self.window` is the *one* shared
-            // window (showing whichever content is currently active)
-            // rather than a dedicated always-full-size window that simply
-            // sat hidden while mini content showed elsewhere.
-            let in_mini = *self.mini_mode.borrow();
-            let maximized = if in_mini { self.full_mode_maximized.get() } else { self.window.is_maximized() };
-            let (w, h) = if in_mini {
-                *self.full_mode_size.borrow()
-            } else {
-                (self.window.width(), self.window.height())
-            };
-            config::update(|cfg| {
-                let dev = cfg.device_mut(&prev_uuid);
-                dev.window_maximized = maximized;
-                dev.window_width     = if maximized { 0 } else { w };
-                dev.window_height    = if maximized { 0 } else { h };
-                dev.panel_visible    = self.sidebar_btn.is_active();
-                dev.paned_position   = *self.saved_panel_width.borrow();
-                dev.mini_mode        = in_mini;
-                // Only overwrite if the mini panel has actually been shown
-                // this session (`mini_mode_width` starts at 0 same as a
-                // never-realized window's width() used to) — otherwise this
-                // would clobber a previously saved good value with 0 every
-                // time a session never happens to enter mini mode.
-                let mw = if in_mini { self.window.width() } else { self.mini_mode_width.get() };
-                if mw > 0 { dev.mini_window_width = mw; }
-            });
+            config::update(|cfg| self.write_window_state(cfg.device_mut(&prev_uuid)));
         }
 
         *self.applied_window_key.borrow_mut() = uuid.to_string();
@@ -134,6 +107,37 @@ impl DeviceWindowInner {
         }
     }
 
+    /// Write the current window/panel state into `dev` — only the
+    /// window-related fields; pinned / window_open / etc. are preserved.
+    /// Mini-mode aware: while the mini panel is showing, the full panel's
+    /// size/maximized state come from the remembered `full_mode_*` fields
+    /// (the one shared window is showing mini content right now, so
+    /// reading it live would record the wrong panel), and the mini width
+    /// reads live off the window (accurate mid-drag too); in full mode
+    /// it's exactly the reverse.
+    fn write_window_state(&self, dev: &mut config::DeviceConfig) {
+        let in_mini = *self.mini_mode.borrow();
+        let maximized = if in_mini { self.full_mode_maximized.get() } else { self.window.is_maximized() };
+        let (w, h) = if in_mini {
+            *self.full_mode_size.borrow()
+        } else {
+            (self.window.width(), self.window.height())
+        };
+        dev.window_maximized = maximized;
+        dev.window_width     = if maximized { 0 } else { w };
+        dev.window_height    = if maximized { 0 } else { h };
+        dev.panel_visible    = self.sidebar_btn.is_active();
+        dev.paned_position   = *self.saved_panel_width.borrow();
+        dev.mini_mode        = in_mini;
+        // Only overwrite once the mini panel has actually been shown this
+        // session (`mini_mode_width` starts at 0 same as a never-realized
+        // window's width() used to) — otherwise this would clobber a
+        // previously saved good value with 0 every time a session never
+        // happens to enter mini mode.
+        let mw = if in_mini { self.window.width() } else { self.mini_mode_width.get() };
+        if mw > 0 { dev.mini_window_width = mw; }
+    }
+
     /// Immediately persist the current device's window/panel state.
     /// Loads the full config, updates only the current device's entry, and
     /// saves so no other device's entry is overwritten.
@@ -142,32 +146,9 @@ impl DeviceWindowInner {
             Some(di) if !di.uuid.is_empty() => di.uuid,
             _ => return,
         };
-        // In mini mode, use the remembered full-panel size/maximized state
-        // rather than reading them off the window, which is showing mini
-        // content right now, not the full panel.
-        let in_mini = *self.mini_mode.borrow();
-        let maximized = if in_mini { self.full_mode_maximized.get() } else { self.window.is_maximized() };
-        let (w, h) = if in_mini {
-            *self.full_mode_size.borrow()
-        } else {
-            (self.window.width(), self.window.height())
-        };
         config::update(|cfg| {
             cfg.last_uuid = uuid.clone();
-            // Update only the window-related fields; preserve pinned / window_open / etc.
-            let dev = cfg.device_mut(&uuid);
-            dev.window_maximized = maximized;
-            dev.window_width     = if maximized { 0 } else { w };
-            dev.window_height    = if maximized { 0 } else { h };
-            dev.panel_visible    = self.sidebar_btn.is_active();
-            dev.paned_position   = *self.saved_panel_width.borrow();
-            dev.mini_mode        = in_mini;
-            // See the matching guard in apply_device_window_state(): only
-            // overwrite once the mini panel has actually been shown this
-            // session (in which case reading it live off the window, which
-            // is currently showing it, is accurate — mid-drag too).
-            let mw = if in_mini { self.window.width() } else { self.mini_mode_width.get() };
-            if mw > 0 { dev.mini_window_width = mw; }
+            self.write_window_state(cfg.device_mut(&uuid));
         });
     }
 
