@@ -65,10 +65,11 @@ fn apply_now_playing(flip: &FlipCover, icons: &IconSet, entry: &ManagedEntry) {
     }
 }
 
-/// Volume button + popover slider + mute button, same shape as the mini
-/// window's own (`widgets.rs`'s `build_mini_flip_cover()`'s sibling —
-/// see `.devlist-vol-*` CSS) sized for a compact row rather than a
-/// standalone window. Caller wires the actual click/drag/mute handlers.
+/// Volume button + popover slider + mute button, same shape as
+/// `views::volume::VolumeControl` (see `.devlist-vol-*` CSS) sized for a
+/// compact row rather than a standalone window. Caller wires the actual
+/// click/drag/mute handlers. Replacing this with a real `VolumeControl`
+/// is Phase 3 material — rows don't hold a `DeviceState` to bind one to.
 fn build_devlist_vol_popover() -> (gtk::Button, gtk::Image, gtk::Label, gtk::Scale, gtk::Button, gtk::Popover) {
     let vol_icon_img = gtk::Image::builder()
         .icon_name("audio-volume-high-symbolic")
@@ -163,9 +164,9 @@ struct RowWidgets {
     /// children left: GtkPopover" (confirmed live, first SSDP response —
     /// exactly the first time old rows get torn down). Kept here so
     /// `rebuild_list()` can unparent every outgoing row's popover before
-    /// removing it from the list. `widgets.rs`'s main/mini window
-    /// `vol_popover`s have the identical latent gap — just never exercised
-    /// repeatedly there (built once, torn down once at window close).
+    /// removing it from the list. (The main/mini windows' volume popovers
+    /// had the identical latent gap until `VolumeControl::dispose()` took
+    /// over unparenting them on every teardown path.)
     vol_popover: gtk::Popover,
     /// Same drag-protection pattern as the main/mini windows'
     /// `DeviceWindowInner::ui_state.drag_timer` — while set, a live poll

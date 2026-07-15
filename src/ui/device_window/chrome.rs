@@ -6,7 +6,7 @@ use std::rc::Rc;
 use adw::prelude::*;
 use gtk::{Align, Box as GtkBox, Button, Label, Orientation};
 
-use super::art_background;
+use crate::ui::art_background;
 use crate::device::state::DeviceState;
 
 // ── Widget bundles ────────────────────────────────────────────────────────────
@@ -26,7 +26,7 @@ pub(crate) struct MiniWidgets {
     pub menu_btn:      gtk::MenuButton,
     pub restore_btn:   Button,
     pub close_btn:     Button,
-    pub view:          super::views::playback_mini::MiniPlaybackView,
+    pub view:          crate::ui::views::playback_mini::MiniPlaybackView,
 }
 
 // ── Build functions ───────────────────────────────────────────────────────────
@@ -43,7 +43,7 @@ pub(crate) struct MiniWidgets {
 /// still an overlay child, not packed, so it never shifts any of the
 /// header's own buttons even briefly, it just floats on top of whatever's
 /// already in that corner of the content instead.
-pub(super) fn build_header(
+pub(in crate::ui) fn build_header(
     init_panel_visible: bool,
 ) -> (adw::HeaderBar, gtk::ToggleButton, gtk::Button, gtk::Spinner) {
     let header = adw::HeaderBar::new();
@@ -56,7 +56,7 @@ pub(super) fn build_header(
     sidebar_btn.add_css_class("sidebar-toggle");
     header.pack_start(&sidebar_btn);
 
-    header.pack_end(&super::menu::build_menu_button(true));
+    header.pack_end(&crate::ui::menu::build_menu_button(true));
 
     // Plain Button, not ToggleButton: clicking it only ever means "switch to
     // mini mode" — a one-shot action, not a persistent on/off state. It also
@@ -86,9 +86,9 @@ pub(super) fn build_header(
     (header, sidebar_btn, mini_btn, connecting_spinner)
 }
 
-pub(super) fn build_left_pane(
-    presets: &super::views::presets::PresetsView,
-    io:      &super::views::io::InputOutputView,
+pub(in crate::ui) fn build_left_pane(
+    presets: &crate::ui::views::presets::PresetsView,
+    io:      &crate::ui::views::io::InputOutputView,
 ) -> gtk::Box {
     // "panel-card" is only ever styled under the RustyWiiM Modern theme
     // (see modern.css) — inert everywhere else, so no theme branching here.
@@ -112,7 +112,7 @@ fn build_mini_top_bar() -> (Label, gtk::MenuButton, Button, Button, GtkBox) {
         .css_classes(["mini-restore-btn"])
         .tooltip_text("Restore to full window")
         .build();
-    let mini_menu_btn = super::menu::build_menu_button(true);
+    let mini_menu_btn = crate::ui::menu::build_menu_button(true);
     mini_menu_btn.add_css_class("mini-restore-btn");
     mini_menu_btn.add_css_class("flat");
     let mini_close_btn = Button::builder()
@@ -141,7 +141,7 @@ const MINI_WIDTH_MAX: i32 = 900;
 /// used by `ui/mod.rs`'s `DeviceWindowInner::apply_window_chrome()` and the
 /// mini-mode startup restore in `new_inner()`. Was previously just the
 /// dedicated mini window's own `default_width(380)` builder call.
-pub(super) const MINI_WIDTH_DEFAULT: i32 = 380;
+pub(in crate::ui) const MINI_WIDTH_DEFAULT: i32 = 380;
 
 /// Hit-test width (px) for the right-edge resize drag, measured inward from
 /// `stable`'s own right edge in `wire_mini_resize()` — a bit wider than the
@@ -252,9 +252,9 @@ fn wire_mini_resize(stable: &gtk::Overlay) {
     stable.add_controller(gesture);
 }
 
-pub(super) fn build_mini_window(
+pub(in crate::ui) fn build_mini_window(
     ds:    &DeviceState,
-    icons: &Rc<super::icons::IconSet>,
+    icons: &Rc<crate::ui::icons::IconSet>,
 ) -> (MiniWidgets, gtk::WindowHandle) {
     let (mini_device_label, mini_menu_btn, mini_restore_btn, mini_close_btn, mini_top_bar) = build_mini_top_bar();
 
@@ -271,7 +271,7 @@ pub(super) fn build_mini_window(
     mini_art_bg.set_vexpand(true);
     mini_art_bg.set_visible(false); // gated live — see update_art_background_visibility()
 
-    let view = super::views::playback_mini::MiniPlaybackView::new(ds, icons, Some(&mini_art_bg));
+    let view = crate::ui::views::playback_mini::MiniPlaybackView::new(ds, icons, Some(&mini_art_bg));
 
     let mini_content = GtkBox::builder()
         .orientation(Orientation::Vertical).spacing(0)

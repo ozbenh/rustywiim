@@ -6,13 +6,13 @@ mod flip_cover;
 mod icons;
 pub(crate) mod menu;
 mod scroll_fade_label;
+mod device_window;
 mod playback;
 mod theme;
 pub(crate) mod settings;
 mod views;
-mod widgets;
 
-use widgets::*;
+use device_window::chrome::*;
 pub(crate) use theme::{apply_accent_color, apply_theme, update_art_background_visibility};
 use theme::{init_css, init_icon_resource};
 

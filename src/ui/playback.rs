@@ -415,7 +415,7 @@ impl DeviceWindowInner {
     /// Toggling `decorated`/swapping which content is packed at runtime is a
     /// technique with no prior art elsewhere in this codebase, unlike the
     /// resize-on-switch technique used just below (`set_default_size()`,
-    /// already proven live by `widgets::wire_mini_resize()`'s drag-resize).
+    /// already proven live by `chrome::wire_mini_resize()`'s drag-resize).
     ///
     /// Sizing is the caller's job, not this function's — `enter_mini_mode()`/
     /// `exit_mini_mode()`/the startup restore each call `set_default_size()`
@@ -509,7 +509,7 @@ impl DeviceWindowInner {
         let mini_w = if self.mini_mode_width.get() > 0 {
             self.mini_mode_width.get()
         } else {
-            super::widgets::MINI_WIDTH_DEFAULT
+            super::device_window::chrome::MINI_WIDTH_DEFAULT
         };
         let (mini_w, mini_h) = self.mini_target_size(mini_w);
         super::dbg_ui(&format!("apply mini window size: requesting set_default_size({mini_w}, {mini_h})"));
@@ -557,7 +557,7 @@ impl DeviceWindowInner {
         self.mini.view.set_active(true);
 
         // Mini mode is never maximized (resizable(false) below relies on
-        // it, same reasoning `widgets::build_mini_window()`'s doc comment
+        // it, same reasoning `chrome::build_mini_window()`'s doc comment
         // gives for why an always-resizable undecorated window risks
         // GNOME's edge-tiling/snap-to-maximize gesture) — un-maximize
         // first, now that whether it *was* maximized is safely remembered
