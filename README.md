@@ -2,7 +2,7 @@
 
 [![GitHub release](https://img.shields.io/github/v/release/ozbenh/rustywiim)](https://github.com/ozbenh/rustywiim/releases)
 
-A simple Linux GTK4 front-end for WiiM media players written in Rust.
+A Linux GTK4 front-end for WiiM media players written in Rust. It should also work with other LinkPlay based players, tested with iEAST AudioCast and an AudioPro C5 for now, see below how to send me data to help support other devices if you own them.
 
 Copyright (c) 2026 Benjamin Herrenschmidt
 
@@ -50,8 +50,12 @@ For now just this one:
 
 | Option              | Description                                                                                                                                                              |
 |:--------------------|:-------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `--debug=<options>` | Comma-separated list of debug/tracing options: `api` (dump API calls), `state` (state change messages), `device` (device capabilities detection), `discovery` (the discovery machinery), `ui` (parts of the GUI code), `all` (all of the above) |
-| `--tls=<mode>`      | Override TLS mode: `wiim` (default), `audio-pro`, `any`, `http`                                                                                                         |
+| `--debug=<options>`   | Comma-separated list of debug/tracing options: `api` (dump API calls), `state` (state change messages), `device` (device capabilities detection), `discovery` (the discovery machinery), `upnp` (the UPnP protocol layer), `ui` (parts of the GUI code), `config` (config file management), `all` (all of the above) |
+| `--tls=<mode>`        | Override TLS mode: `wiim` (default), `audio-pro`, `any`, `http`                                                                                                         |
+| `--connect=<url>`     | Connect directly to `scheme://ip[:port]` (e.g. `http://127.0.0.1:8080` for `wiim-simulator`), opening a device window for it immediately instead of discovery |
+| `--no-config`         | Don't load or save the config file — every run behaves like a fresh install |
+| `--config-file=<path>`| Use an alternate config file path instead of the default (for testing) |
+
 ## Helping with your device ##
 
 Since I can only really test here with a WiiM Ultra and the implementation of the API seems to vary fairly wildly from device to device (or FW version to FW version), I have added a little tool that gets built in `target/debug/wiim-capture`.
@@ -70,6 +74,46 @@ You can pretty-print this file using `target/debug/wiim-capdump`. I would apprec
 
 ## Changelog ##
 
+  * 0.9.0 - 2026-07-15
+    * Add AudioPro C5 support (old and new firmwares)
+	* Major internal rework of device management to clean up the overall
+	  code structure, and get rid of the "split" responsibility of device
+	  polling between discovery and device state management. This simplifies
+	  things and will avoid interesting classes of bugs and enables more
+	  UI elements to be client of the device state. The device state now has
+	  a simple and a full mode, depending on whether minimal info is requested
+	  (polled every 5s) or full details (every 1s). This also moves more of
+	  the discovery code to the non-UI part which will eventually becomes
+	  a separate re-usable crate (and maybe a shared lib too).
+    * The device list now uses the Device State in simple mode to display
+	  artwork and current song for active devices in the list. It also gets
+	  a volume control for quick access to devices volumes.
+    * Fix issues with mute setting not syncing properly
+	* Improve display quality of icons under some circumstances and add new
+	  custom icons for RCA and Jack plugs (improve detection of the plug type
+	  on some devices as well)
+    * Fix incorrect inputs list on some WiiM devices (such as bogus Coax
+	  input on the Ultra).
+    * Add capture support for the old "TCP UART" protocol still used by some
+	  3rd party linkplay-powered devices. We don't use it in rustywiim yet
+	  but it will be eventually needed for things like bass/treble control
+	  on AudioPro C5 (and more).
+    * The Mini window is now the same window as the main window, it just
+	  gets resized. This fixes/simplifies a lot of internal logic and makes
+	  the switch faster. It also avoid the window popping in random places
+	  on the screen when switching. The one drawback is a visual glitch
+	  when maximizing (double click on normal window title bar), then
+	  switching to mini mode, back to normal mode, and un-maximizing. I think
+	  we can live with that.
+    * Major internal rework of the UI components. The various widget "clusters"
+	  (called views) are now in separate modules (presets, input/outputs,
+	  standard player, mini player, volume control) for better re-usability.
+	  No visible effect (hopefully) other than code cleanliness, but this will
+	  make it easier to implement different visual layouts, such as a Kiosk
+	  mode in the future where some of these things are "pop overs" over the
+	  main window for example. This hasn't yet extended to the entries in the
+	  device list.
+  
   * 0.8.2 - 2026-07-10
     * Fix volume button & scale disabled
 
