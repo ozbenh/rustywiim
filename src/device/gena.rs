@@ -1,12 +1,18 @@
 /// UPnP GENA (General Event Notification Architecture) eventing — `SUBSCRIBE`/
-/// `UNSUBSCRIBE`/renewal plumbing plus the process-wide NOTIFY listener.
-/// Structurally a sibling to `upnp.rs` the way `upnp.rs` is to `api.rs`:
-/// `upnp.rs` stays request/response SOAP calls only, this module owns the
-/// long-lived-subscription side of UPnP (a genuinely different shape —
-/// persistent state, renewal timers, an inbound listener — not just more SOAP
-/// actions). `state.rs` decides *when* a device should hold a GENA session;
-/// this module owns *how*.
-///
+/// `UNSUBSCRIBE`/renewal plumbing, the process-wide NOTIFY listener, NOTIFY
+/// body parsing, and the per-service `GenaHealth` state machine. Structurally
+/// a sibling to `upnp.rs` the way `upnp.rs` is to `api.rs`: `upnp.rs` stays
+/// request/response SOAP calls only, this module owns the long-lived-
+/// subscription side of UPnP (a genuinely different shape — persistent
+/// state, renewal timers, an inbound listener — not just more SOAP actions).
+/// `state.rs` decides *when* a device should hold a GENA session, applies
+/// parsed NOTIFY events into canonical `PlaybackState`, and drives
+/// `GenaHealth` from its poll path's own comparisons; this module owns *how*
+/// the subscription itself works and the pure health-transition/parsing
+/// logic. `service_loop()` retries `SUBSCRIBE` indefinitely (never a
+/// one-shot give-up) — a permanently blocked callback path costs nothing
+/// beyond one attempt per retry interval while regular polling keeps
+/// covering the device fully in the meantime.
 use std::collections::HashMap;
 use std::net::UdpSocket;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -14,13 +20,37 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use super::api::{build_reqwest_client, TlsMode};
-use super::upnp::{discover_description, extract_tag, extract_url_for_service, unescape_xml_entities};
+use super::upnp::{discover_description, extract_attr, extract_tag, extract_url_for_service, unescape_xml_entities};
 
 pub static DEBUG_GENA: AtomicBool = AtomicBool::new(false);
+/// `--debug=gena:verbose` (or `all:verbose`): include a NOTIFY's full
+/// `LastChange` content in `dbg_notify()`'s output. Without it, a NOTIFY
+/// logs just the service and sequence number — lifecycle messages
+/// (subscribe/renew/unsubscribe, all always via plain `dbg()`) are already
+/// single-line, so only NOTIFY bodies have a "full content" dimension to
+/// strip in summary mode.
+pub static DEBUG_GENA_VERBOSE: AtomicBool = AtomicBool::new(false);
 
 fn dbg(msg: &str) {
     if DEBUG_GENA.load(Ordering::Relaxed) {
         println!("{} [gena] {msg}", super::timestamp());
+    }
+}
+
+/// NOTIFY-specific logging: `summary` (service + seq, always shown) plus
+/// `full` (the `LastChange` content, `None` when absent) only in verbose
+/// mode.
+fn dbg_notify(summary: &str, full: Option<&str>) {
+    if !DEBUG_GENA.load(Ordering::Relaxed) {
+        return;
+    }
+    if !DEBUG_GENA_VERBOSE.load(Ordering::Relaxed) {
+        println!("{} [gena] {summary}", super::timestamp());
+        return;
+    }
+    match full {
+        Some(f) => println!("{} [gena] {summary} {f}", super::timestamp()),
+        None => println!("{} [gena] {summary} (no LastChange content)", super::timestamp()),
     }
 }
 
@@ -30,7 +60,11 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 /// verbatim.
 const REQUESTED_TIMEOUT_SECS: u32 = 1800;
 /// Retry interval once a subscription is confirmed dead (renewal failed and
-/// a fresh `SUBSCRIBE` also failed)
+/// a fresh `SUBSCRIBE` also failed) — retries forever at this cadence
+/// rather than giving up once, since a permanently
+/// blocked callback path (e.g. a corporate firewall) costs nothing beyond
+/// one `SUBSCRIBE` attempt per interval while full-rate polling already
+/// covers the device fully in the meantime.
 const RETRY_INTERVAL_SECS: u64 = 30;
 
 struct WantedService {
@@ -188,6 +222,107 @@ async fn unsubscribe(event_sub_url: &str, host_header: &str, sid: &str, context:
     }
 }
 
+// ── NOTIFY body parsing ───────────────────────────────────────────────────────
+//
+// `LastChange`'s inner content is real XML, but shaped as self-closing
+// `<Tag val="...">` attributes (`<InstanceID val="0"><TransportState
+// val="PLAYING"/>...`, or `<QueueID><LoopMode val="4"/></QueueID>` for
+// `PlayQueue`) — a different envelope from `GetInfoEx`'s nested
+// `<Tag>value</Tag>` elements (`upnp.rs`'s `parse_info_ex_response`), even
+// though several of the same tag names and wire encodings apply. None of
+// these tags repeat/nest per NOTIFY, so a flat search for `<TagName ...>`
+// works regardless of which wrapper element (`InstanceID` vs `QueueID`)
+// happens to contain it — no need to scope the search to a specific
+// wrapper block first.
+
+/// One payload delivered from the shared NOTIFY listener thread to the
+/// owning `DeviceState`, over a per-session channel — just enough for
+/// `state.rs` to decode and compare, parsing itself stays here.
+pub struct NotifyPayload {
+    pub service: &'static str,
+    pub last_change: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct AvTransportEvent {
+    pub transport_state: Option<String>,
+    pub title: Option<String>,
+    pub artist: Option<String>,
+    pub album: Option<String>,
+    /// Shares its vocabulary with `GetInfoEx`'s `PlayMedium` (confirmed
+    /// live: `PHONO`/`TIDAL_CONNECT`/`SONGLIST-NETWORK`/`SPOTIFY` all seen
+    /// on both) — `playback::mode_from_play_medium()` maps it to a `mode`/
+    /// `play_type`-equivalent number the same way `fetch_upnp_fast_poll()`
+    /// already does for `GetInfoEx` when `PlayType` is absent.
+    pub playback_storage_medium: Option<String>,
+    /// Shares its vocabulary with `GetInfoEx`'s `TrackSource` — not acted
+    /// on yet, kept for future use alongside `playback_storage_medium`.
+    pub track_source: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct RenderingControlEvent {
+    pub volume: Option<u32>,
+    pub mute: Option<bool>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct PlayQueueEvent {
+    pub loop_mode: Option<i32>,
+}
+
+/// Extracts `<tag ... val="X" .../>`'s `val` attribute, unescaping XML
+/// entities in it — a present tag's value is always at least single-escaped
+/// (it's an XML attribute), matching `extract_attr`'s own raw-string return.
+fn extract_val_attr(xml: &str, tag: &str) -> Option<String> {
+    let needle = format!("<{tag} ");
+    let start = xml.find(&needle)?;
+    let rest = &xml[start..];
+    let tag_end = rest.find('>')?;
+    extract_attr(&rest[..tag_end], "val").map(|s| unescape_xml_entities(&s))
+}
+
+/// `CurrentTrackMetaData`'s `val` attribute holds a whole DIDL-Lite XML
+/// document, escaped to fit inside an XML attribute — the same double-
+/// escaping depth `parse_info_ex_response`'s nested-element
+/// `TrackMetaData` has, just via a different embedding mechanism (attribute
+/// vs. element text). `extract_val_attr` above already did the first
+/// unescape pass (recovering real DIDL-Lite tags); a second pass on each
+/// extracted leaf value recovers real characters from any DIDL-level entity
+/// still present in their content, exactly like that function's title/
+/// artist/album handling.
+pub fn parse_av_transport_event(last_change: &str) -> AvTransportEvent {
+    let transport_state = extract_val_attr(last_change, "TransportState");
+    let (title, artist, album) = match extract_val_attr(last_change, "CurrentTrackMetaData") {
+        Some(didl) => (
+            extract_tag(&didl, "dc:title").map(|s| unescape_xml_entities(&s)),
+            extract_tag(&didl, "upnp:artist").map(|s| unescape_xml_entities(&s)),
+            extract_tag(&didl, "upnp:album").map(|s| unescape_xml_entities(&s)),
+        ),
+        None => (None, None, None),
+    };
+    let playback_storage_medium = extract_val_attr(last_change, "PlaybackStorageMedium");
+    let track_source = extract_val_attr(last_change, "TrackSource");
+    AvTransportEvent { transport_state, title, artist, album, playback_storage_medium, track_source }
+}
+
+pub fn parse_rendering_control_event(last_change: &str) -> RenderingControlEvent {
+    RenderingControlEvent {
+        volume: extract_val_attr(last_change, "Volume").and_then(|s| s.parse().ok()),
+        mute: extract_val_attr(last_change, "Mute").map(|s| s == "1"),
+    }
+}
+
+/// Checks both `LoopMode` and `LoopMpde` — a confirmed real misspelling on
+/// the wire (the `wiim` SDK's own comments), same defensive spirit
+/// `decode_loop_mode_http`'s catch-all already has for its own inputs.
+pub fn parse_play_queue_event(last_change: &str) -> PlayQueueEvent {
+    let loop_mode = extract_val_attr(last_change, "LoopMode")
+        .or_else(|| extract_val_attr(last_change, "LoopMpde"))
+        .and_then(|s| s.parse().ok());
+    PlayQueueEvent { loop_mode }
+}
+
 // ── Process-wide NOTIFY listener ─────────────────────────────────────────────
 //
 // One `tiny_http` listener for the whole process (not one per device, since a
@@ -201,6 +336,7 @@ async fn unsubscribe(event_sub_url: &str, host_header: &str, sid: &str, context:
 struct RouteEntry {
     label: String,
     service: &'static str,
+    notify_tx: async_channel::Sender<NotifyPayload>,
 }
 
 struct Listener {
@@ -243,10 +379,10 @@ fn ensure_listener() -> anyhow::Result<u16> {
     Ok(LISTENER.get().expect("just set above").port)
 }
 
-fn register_route(sid: &str, label: String, service: &'static str) -> anyhow::Result<u16> {
+fn register_route(sid: &str, label: String, service: &'static str, notify_tx: async_channel::Sender<NotifyPayload>) -> anyhow::Result<u16> {
     let port = ensure_listener()?;
     if let Some(l) = LISTENER.get() {
-        l.routes.lock().unwrap().insert(sid.to_string(), RouteEntry { label, service });
+        l.routes.lock().unwrap().insert(sid.to_string(), RouteEntry { label, service, notify_tx });
     }
     Ok(port)
 }
@@ -260,8 +396,14 @@ fn unregister_route(sid: &str) {
 /// Request-handling loop for the shared NOTIFY listener thread. Every
 /// request goes through `catch_unwind` — same discipline `wiim-simulator.rs`
 /// established — so a panic handling one NOTIFY can't kill the listener for
-/// every other device sharing it. Phase 1: logs only, no field parsing into
-/// `PlaybackState`.
+/// every other device sharing it. Logs via `dbg_notify()` (summary always,
+/// full `LastChange` content only under `--debug=gena:verbose`), and
+/// forwards it (unparsed — parsing happens on the receiving end, in
+/// `state.rs`, which is where the comparison target lives) to the owning
+/// session's channel via `try_send`, never `send_blocking`: this thread
+/// must never block on a momentarily-full channel — losing an occasional
+/// sample under backpressure is fine, applying it a tick late isn't worth
+/// stalling every other device's NOTIFY delivery over.
 fn serve_notify(server: tiny_http::Server, routes: &Arc<Mutex<HashMap<String, RouteEntry>>>) {
     for mut request in server.incoming_requests() {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -278,12 +420,20 @@ fn serve_notify(server: tiny_http::Server, routes: &Arc<Mutex<HashMap<String, Ro
             let mut body = String::new();
             let _ = request.as_reader().read_to_string(&mut body);
 
-            match sid.as_deref().and_then(|s| routes.lock().unwrap().get(s).map(|r| (r.label.clone(), r.service))) {
-                Some((label, service)) => {
+            let route = sid.as_deref().and_then(|s| {
+                let routes = routes.lock().unwrap();
+                routes.get(s).map(|r| (r.label.clone(), r.service, r.notify_tx.clone()))
+            });
+            match route {
+                Some((label, service, notify_tx)) => {
                     let last_change = extract_tag(&body, "LastChange").map(|s| unescape_xml_entities(&s));
+                    let summary = format!("{label}: {service}: NOTIFY (seq={})", seq.as_deref().unwrap_or("?"));
                     match last_change {
-                        Some(lc) => dbg(&format!("{label}: {service}: NOTIFY (seq={}) {lc}", seq.as_deref().unwrap_or("?"))),
-                        None => dbg(&format!("{label}: {service}: NOTIFY (seq={}) with no LastChange property: {body}", seq.as_deref().unwrap_or("?"))),
+                        Some(lc) => {
+                            dbg_notify(&summary, Some(&lc));
+                            let _ = notify_tx.try_send(NotifyPayload { service, last_change: lc });
+                        }
+                        None => dbg_notify(&format!("{summary} with no LastChange property"), Some(&body)),
                     }
                 }
                 None => {
@@ -299,6 +449,89 @@ fn serve_notify(server: tiny_http::Server, routes: &Arc<Mutex<HashMap<String, Ro
     }
 }
 
+// ── Health tracking ───────────────────────────────────────────────────────────
+//
+// Per-service health state machine — one independent instance per service
+// (`AVTransport`/`RenderingControl`/`PlayQueue`), not one shared per-device
+// blob: a device can be `Healthy` on two of these and stuck on the third at
+// the same time (confirmed real — a device that accepts a
+// `RenderingControl` `SUBSCRIBE` but never actually fires a NOTIFY for a
+// volume/mute change, while `AVTransport`/`PlayQueue` eventing works fine on
+// the same device at the same time).
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum GenaHealth {
+    /// No GENA session for this service right now (GENA disabled, session
+    /// not yet started, or the device doesn't advertise this service).
+    #[default]
+    Off,
+    /// A `SUBSCRIBE` is held (or being retried) but no real NOTIFY has been
+    /// confirmed consistent with polling yet since this attempt — covers
+    /// both the very first subscribe and post-recovery re-subscribe
+    /// identically (Ben: "recovery is the same as initial start of GENA").
+    Subscribing,
+    /// At least one real NOTIFY has been confirmed consistent with polling
+    /// for this service.
+    Healthy,
+    /// A single poll-vs-NOTIFY mismatch was seen (poll request sent after
+    /// the last NOTIFY, but still disagreed) — not yet acted on, could be a
+    /// race with a clarifying NOTIFY still in flight. A second consecutive
+    /// mismatch confirms unhealthy, which isn't its own variant — it's
+    /// acted on immediately (forced `UNSUBSCRIBE`+`SUBSCRIBE`), landing
+    /// straight back on `Subscribing`.
+    MaybeUnhealthy,
+}
+
+/// Per-service GENA state — deliberately *just* the health, nothing else.
+/// An earlier version of this also kept a shadow snapshot of the last
+/// NOTIFY event to re-compare against each poll, but that's redundant once
+/// a NOTIFY's fields are applied directly into `PlaybackState`
+/// (`DeviceState::apply_gena_notify()`): `playback` itself already *is*
+/// "what GENA last told us," so the poll side doesn't need its own copy to
+/// compare against — it already does its own change-detection against the
+/// previous raw response (`process_poll_http()`/`process_poll_upnp()`'s
+/// existing `*_changed` diffing), so this just rides on that instead of
+/// re-implementing a parallel comparison.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct GenaServiceState {
+    pub health: GenaHealth,
+}
+
+impl GenaServiceState {
+    /// A real NOTIFY was just applied for this service — always (re)confirms
+    /// `Healthy`, self-healing from `MaybeUnhealthy` or advancing from
+    /// `Subscribing`: a NOTIFY arriving at all is evidence the subscription
+    /// is alive and delivering, regardless of what it happened to carry.
+    /// Returns the previous health, so the caller can log an actual
+    /// transition rather than a no-op re-confirmation.
+    pub fn notify_received(&mut self) -> GenaHealth {
+        let old = self.health;
+        self.health = GenaHealth::Healthy;
+        old
+    }
+
+    /// The poll's own existing change-detection (`process_poll_http()`/
+    /// `process_poll_upnp()`'s `*_changed` diffing) independently found a
+    /// new value for something this service should already have delivered
+    /// via NOTIFY, but didn't (or delivered differently). Degrades one
+    /// step: `Healthy` -> `MaybeUnhealthy` (could be a harmless race — Ben:
+    /// "if it's stale, we'll get another one"), `MaybeUnhealthy` ->
+    /// `Subscribing` (a *second* miss confirms unhealthy — the caller must
+    /// force a real `UNSUBSCRIBE`+`SUBSCRIBE`), `Subscribing`/`Off`
+    /// unchanged (nothing to degrade from — no session, or no confirmed
+    /// health yet to lose). Returns `true` exactly on the confirmed-
+    /// unhealthy transition.
+    pub fn poll_mismatch(&mut self) -> bool {
+        let old = self.health;
+        self.health = match old {
+            GenaHealth::Healthy => GenaHealth::MaybeUnhealthy,
+            GenaHealth::MaybeUnhealthy => GenaHealth::Subscribing,
+            other => other,
+        };
+        old == GenaHealth::MaybeUnhealthy
+    }
+}
+
 // ── Per-device session ───────────────────────────────────────────────────────
 
 struct HeldSub {
@@ -307,19 +540,77 @@ struct HeldSub {
     sid: String,
 }
 
+/// Per-service context needed to spawn a fresh `service_loop` task on
+/// demand — captured once at `GenaSession::start()` time (right alongside
+/// the initial spawn) so `GenaSessionHandle::force_resubscribe()` can
+/// restart one service later without re-running discovery for the other
+/// two.
+struct ServiceContext {
+    event_sub_url: String,
+    host_header: String,
+}
+
+/// Cheaply-`Clone`able handle to a live `GenaSession`'s mutable state, so
+/// `state.rs`'s health-check code can force one service's
+/// `UNSUBSCRIBE`+`SUBSCRIBE` cycle (`force_resubscribe()`) from an
+/// `rt().spawn()`'d async block without holding the owning `DeviceState`'s
+/// `RefCell` borrow across an `.await` — same reason `stop_gena_session()`
+/// already `take()`s the whole session out first, just finer-grained here
+/// since the other services must keep running regardless of one service's
+/// health outcome.
+#[derive(Clone)]
+pub struct GenaSessionHandle {
+    tasks: Arc<Mutex<HashMap<&'static str, tokio::task::JoinHandle<()>>>>,
+    subs: Arc<Mutex<HashMap<&'static str, HeldSub>>>,
+    contexts: Arc<HashMap<&'static str, ServiceContext>>,
+    callback_url: Arc<str>,
+    label: Arc<str>,
+    notify_tx: async_channel::Sender<NotifyPayload>,
+}
+
+impl GenaSessionHandle {
+    /// Aborts `service`'s current task, best-effort `UNSUBSCRIBE`s its held
+    /// subscription (if any — a service still stuck retrying its initial
+    /// `SUBSCRIBE` has nothing to unsubscribe), then spawns a fresh
+    /// `service_loop` for it, re-entering the same "(re)subscribe, retrying
+    /// indefinitely" entry point a real renewal failure already goes
+    /// through. No-op if `service` isn't one this session actually
+    /// holds a context for (the device never advertised it — nothing to
+    /// restart).
+    pub async fn force_resubscribe(&self, service: &'static str) {
+        if let Some(task) = self.tasks.lock().unwrap().remove(service) {
+            task.abort();
+        }
+        let sub = self.subs.lock().unwrap().remove(service);
+        if let Some(sub) = sub {
+            unregister_route(&sub.sid);
+            unsubscribe(
+                &sub.event_sub_url, &sub.host_header, &sub.sid,
+                &format!("{}: {service} (forced resubscribe)", self.label),
+            ).await;
+        }
+        let Some(ctx) = self.contexts.get(service) else { return };
+        let task = tokio::spawn(service_loop(
+            service, ctx.event_sub_url.clone(), ctx.host_header.clone(),
+            self.callback_url.to_string(), self.label.to_string(),
+            Arc::clone(&self.subs), self.notify_tx.clone(),
+        ));
+        self.tasks.lock().unwrap().insert(service, task);
+    }
+}
+
 /// One device's live GENA subscriptions (whichever of the three services it
 /// actually advertised). Owns the renewal tasks; `stop()` must be called
 /// (from an async context, since it does real `UNSUBSCRIBE` network calls)
 /// before dropping — plain `Drop` only aborts the renewal tasks as a safety
 /// net, it can't do the network round-trip itself.
 pub struct GenaSession {
-    tasks: Vec<tokio::task::JoinHandle<()>>,
-    subs: Arc<Mutex<HashMap<&'static str, HeldSub>>>,
+    handle: GenaSessionHandle,
 }
 
 impl Drop for GenaSession {
     fn drop(&mut self) {
-        for task in &self.tasks {
+        for task in self.handle.tasks.lock().unwrap().values() {
             task.abort();
         }
     }
@@ -336,19 +627,23 @@ impl GenaSession {
     /// listener startup) can fail the whole session outright; an individual
     /// service's `SUBSCRIBE` failing never does, exactly like a real device
     /// that only advertises some of the three would look from here.
-    pub async fn start(ip: &str, label: String) -> Self {
+    /// `notify_tx` is where parsed-ready-to-compare NOTIFY payloads for this
+    /// device end up — the caller (`state.rs`) owns the receiving end and
+    /// the actual comparison logic.
+    pub async fn start(ip: &str, label: String, notify_tx: async_channel::Sender<NotifyPayload>) -> Self {
+        let tasks: Arc<Mutex<HashMap<&'static str, tokio::task::JoinHandle<()>>>> = Arc::new(Mutex::new(HashMap::new()));
         let subs: Arc<Mutex<HashMap<&'static str, HeldSub>>> = Arc::new(Mutex::new(HashMap::new()));
-        let mut tasks = Vec::new();
+        let label_arc: Arc<str> = Arc::from(label.as_str());
 
         let found = match discover_event_sub_urls(ip).await {
             Ok(f) if !f.is_empty() => f,
             Ok(_) => {
                 dbg(&format!("{label}: device advertises no GENA-eventable services"));
-                return Self { tasks, subs };
+                return Self::empty(tasks, subs, label_arc, notify_tx);
             }
             Err(e) => {
                 dbg(&format!("{label}: description.xml discovery failed: {e}"));
-                return Self { tasks, subs };
+                return Self::empty(tasks, subs, label_arc, notify_tx);
             }
         };
 
@@ -356,28 +651,64 @@ impl GenaSession {
             Ok(addr) => addr,
             Err(e) => {
                 dbg(&format!("{label}: could not determine local callback IP: {e}"));
-                return Self { tasks, subs };
+                return Self::empty(tasks, subs, label_arc, notify_tx);
             }
         };
         let port = match ensure_listener() {
             Ok(p) => p,
             Err(e) => {
                 dbg(&format!("{label}: could not start NOTIFY listener: {e}"));
-                return Self { tasks, subs };
+                return Self::empty(tasks, subs, label_arc, notify_tx);
             }
         };
         let callback_url = format!("<http://{local_ip}:{port}/notify>");
+        let callback_url_arc: Arc<str> = Arc::from(callback_url.as_str());
 
+        let mut contexts = HashMap::new();
         for (service, event_sub_url) in found {
             let host_header = host_port_of(&event_sub_url);
+            contexts.insert(service, ServiceContext {
+                event_sub_url: event_sub_url.clone(),
+                host_header: host_header.clone(),
+            });
             let task = tokio::spawn(service_loop(
                 service, event_sub_url, host_header, callback_url.clone(),
-                label.clone(), Arc::clone(&subs),
+                label.clone(), Arc::clone(&subs), notify_tx.clone(),
             ));
-            tasks.push(task);
+            tasks.lock().unwrap().insert(service, task);
         }
 
-        Self { tasks, subs }
+        Self {
+            handle: GenaSessionHandle {
+                tasks, subs, contexts: Arc::new(contexts),
+                callback_url: callback_url_arc, label: label_arc, notify_tx,
+            },
+        }
+    }
+
+    /// Shared tail for every early-return path in `start()` above — a
+    /// session that never got as far as finding anything to subscribe to
+    /// still needs a valid (empty) handle, since `state.rs` unconditionally
+    /// stores whatever `start()` returns.
+    fn empty(
+        tasks: Arc<Mutex<HashMap<&'static str, tokio::task::JoinHandle<()>>>>,
+        subs: Arc<Mutex<HashMap<&'static str, HeldSub>>>,
+        label: Arc<str>,
+        notify_tx: async_channel::Sender<NotifyPayload>,
+    ) -> Self {
+        Self {
+            handle: GenaSessionHandle {
+                tasks, subs, contexts: Arc::new(HashMap::new()),
+                callback_url: Arc::from(""), label, notify_tx,
+            },
+        }
+    }
+
+    /// Cheap `Clone` of this session's mutable-state handle — see
+    /// `GenaSessionHandle`'s doc comment for why `state.rs`'s health-check
+    /// code needs this instead of a `&GenaSession` reference.
+    pub fn handle(&self) -> GenaSessionHandle {
+        self.handle.clone()
     }
 
     /// Aborts every service's task and sends `UNSUBSCRIBE` for whichever
@@ -386,11 +717,11 @@ impl GenaSession {
     /// unsubscribe). Async because `UNSUBSCRIBE` is a real network call —
     /// callers must run this on `rt()`, not from a GTK signal handler
     /// directly (same rule as every other device network call in this app).
-    pub async fn stop(mut self) {
-        for task in self.tasks.drain(..) {
+    pub async fn stop(self) {
+        for (_, task) in self.handle.tasks.lock().unwrap().drain() {
             task.abort();
         }
-        let subs = std::mem::take(&mut *self.subs.lock().unwrap());
+        let subs = std::mem::take(&mut *self.handle.subs.lock().unwrap());
         for (service, sub) in subs {
             unregister_route(&sub.sid);
             unsubscribe(&sub.event_sub_url, &sub.host_header, &sub.sid, service).await;
@@ -401,11 +732,11 @@ impl GenaSession {
 /// One service's entire lifetime, for as long as the session lives: keep
 /// retrying `SUBSCRIBE` every `RETRY_INTERVAL_SECS` **until it succeeds**,
 /// then renew on schedule until a renewal fails, then go right back to
-/// retrying `SUBSCRIBE` — never a one-shot give-up at any point.
-/// This is also handles retries for a failed initial `SUBSCRIBE`, it runs
-/// through the exact same retry loop a post-renewal recovery does, since
-/// "recovery is the same as initial start of GENA".
-/// Only ends when its `JoinHandle` is aborted externally
+/// retrying `SUBSCRIBE` — never a one-shot give-up at any point. This is
+/// also the fix for "does a failed *initial* `SUBSCRIBE` ever get
+/// retried": it runs through the exact same retry loop a post-renewal
+/// recovery does, since recovery genuinely is the same thing as an initial
+/// start. Only ends when its `JoinHandle` is aborted externally
 /// (`GenaSession::stop()`/`Drop`) — never exits on its own.
 async fn service_loop(
     service: &'static str,
@@ -414,38 +745,36 @@ async fn service_loop(
     callback_url: String,
     label: String,
     subs: Arc<Mutex<HashMap<&'static str, HeldSub>>>,
+    notify_tx: async_channel::Sender<NotifyPayload>,
 ) {
     loop {
-        // Phase 1: (re)subscribe, retrying indefinitely on failure — this
-        // covers both the very first attempt and post-renewal-failure
-        // recovery identically.
+        // (Re)subscribe, retrying indefinitely on failure — this covers
+        // both the very first attempt and post-renewal-failure recovery
+        // identically.
         let (sid, mut timeout_secs) = loop {
             match subscribe(&event_sub_url, &host_header, &callback_url, &format!("{label}: {service}")).await {
                 Ok(ok) => break ok,
                 Err(_) => {
                     // subscribe() already logged the detailed error via
                     // log_request_error — this is just visibility that
-                    // we're still trying, not giving up (there's no other
-                    // log line distinguishing "still retrying" from
-                    // "silently stuck" until Phase 3's GenaHealth state
-                    // machine exists).
+                    // we're still trying, not giving up.
                     dbg(&format!("{label}: {service}: still trying, next SUBSCRIBE attempt in {RETRY_INTERVAL_SECS}s"));
                     tokio::time::sleep(Duration::from_secs(RETRY_INTERVAL_SECS)).await;
                 }
             }
         };
         dbg(&format!("{label}: {service}: subscribed (sid={sid}, timeout={timeout_secs}s)"));
-        let _ = register_route(&sid, label.clone(), service);
+        let _ = register_route(&sid, label.clone(), service, notify_tx.clone());
         subs.lock().unwrap().insert(service, HeldSub {
             event_sub_url: event_sub_url.clone(),
             host_header: host_header.clone(),
             sid: sid.clone(),
         });
 
-        // Phase 2: renew on schedule until a renewal fails, then loop back
-        // to phase 1. Checks `subs` on each wake since that's the one point
-        // this task can notice `GenaSession::stop()` already ran (its task
-        // will also be aborted around the same time, but this avoids
+        // Renew on schedule until a renewal fails, then loop back to
+        // (re)subscribing. Checks `subs` on each wake since that's the one
+        // point this task can notice `GenaSession::stop()` already ran (its
+        // task will also be aborted around the same time, but this avoids
         // firing one last unnecessary renewal request in the meantime).
         loop {
             let delay = timeout_secs.saturating_sub(60).max(30);
@@ -466,5 +795,168 @@ async fn service_loop(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── GenaServiceState::{notify_received,poll_mismatch}() ───────────────
+
+    #[test]
+    fn notify_received_confirms_healthy_from_subscribing() {
+        let mut s = GenaServiceState { health: GenaHealth::Subscribing };
+        let old = s.notify_received();
+        assert_eq!(old, GenaHealth::Subscribing);
+        assert_eq!(s.health, GenaHealth::Healthy);
+    }
+
+    #[test]
+    fn notify_received_self_heals_from_maybe_unhealthy() {
+        let mut s = GenaServiceState { health: GenaHealth::MaybeUnhealthy };
+        s.notify_received();
+        assert_eq!(s.health, GenaHealth::Healthy);
+    }
+
+    #[test]
+    fn notify_received_is_a_no_op_transition_while_already_healthy() {
+        let mut s = GenaServiceState { health: GenaHealth::Healthy };
+        let old = s.notify_received();
+        assert_eq!(old, GenaHealth::Healthy);
+        assert_eq!(s.health, GenaHealth::Healthy);
+    }
+
+    #[test]
+    fn poll_mismatch_degrades_healthy_to_maybe_unhealthy() {
+        let mut s = GenaServiceState { health: GenaHealth::Healthy };
+        let confirmed_unhealthy = s.poll_mismatch();
+        assert!(!confirmed_unhealthy);
+        assert_eq!(s.health, GenaHealth::MaybeUnhealthy);
+    }
+
+    #[test]
+    fn poll_mismatch_confirms_unhealthy_on_second_miss() {
+        let mut s = GenaServiceState { health: GenaHealth::MaybeUnhealthy };
+        let confirmed_unhealthy = s.poll_mismatch();
+        assert!(confirmed_unhealthy);
+        assert_eq!(s.health, GenaHealth::Subscribing);
+    }
+
+    #[test]
+    fn poll_mismatch_is_a_no_op_with_no_session_or_no_confirmed_health_yet() {
+        let mut off = GenaServiceState { health: GenaHealth::Off };
+        assert!(!off.poll_mismatch());
+        assert_eq!(off.health, GenaHealth::Off);
+
+        let mut subscribing = GenaServiceState { health: GenaHealth::Subscribing };
+        assert!(!subscribing.poll_mismatch());
+        assert_eq!(subscribing.health, GenaHealth::Subscribing);
+    }
+
+    // Shapes taken directly from real captured NOTIFY bodies (confirmed
+    // from the `wiim` SDK's own parsing code), not invented — same
+    // discipline the rest of this codebase's wire-format tests follow.
+
+    #[test]
+    fn av_transport_event_parses_transport_state_and_title() {
+        let last_change = r#"<Event xmlns="urn:schemas-upnp-org:metadata-1-0/AVT/">
+  <InstanceID val="0">
+    <TransportState val="PLAYING"/>
+    <CurrentTrackMetaData val="&lt;DIDL-Lite&gt;&lt;item&gt;&lt;dc:title&gt;Foo &amp;amp; Bar&lt;/dc:title&gt;&lt;upnp:artist&gt;Some Artist&lt;/upnp:artist&gt;&lt;upnp:album&gt;Some Album&lt;/upnp:album&gt;&lt;/item&gt;&lt;/DIDL-Lite&gt;"/>
+  </InstanceID>
+</Event>"#;
+        let ev = parse_av_transport_event(last_change);
+        assert_eq!(ev.transport_state.as_deref(), Some("PLAYING"));
+        // Double-escaped (DIDL-Lite's own serialization escaping a literal
+        // "&", then the whole DIDL-Lite document escaped again to fit
+        // inside the outer `val="..."` attribute) — same depth as
+        // `parse_info_ex_response`'s nested-element `TrackMetaData` case,
+        // just via a different embedding mechanism.
+        assert_eq!(ev.title.as_deref(), Some("Foo & Bar"));
+        assert_eq!(ev.artist.as_deref(), Some("Some Artist"));
+        assert_eq!(ev.album.as_deref(), Some("Some Album"));
+    }
+
+    /// Real captured shapes: an Audio Pro C5 (phono input) and an Audio Pro
+    /// with built-in TIDAL, respectively.
+    #[test]
+    fn av_transport_event_parses_playback_storage_medium_and_track_source() {
+        let last_change = r#"<Event xmlns="urn:schemas-upnp-org:metadata-1-0/AVT/">
+  <InstanceID val="0">
+    <TransportState val="PLAYING"/>
+    <PlaybackStorageMedium val="PHONO"/>
+  </InstanceID>
+</Event>"#;
+        let ev = parse_av_transport_event(last_change);
+        assert_eq!(ev.playback_storage_medium.as_deref(), Some("PHONO"));
+        assert_eq!(ev.track_source, None);
+
+        let last_change_tidal = r#"<Event xmlns="urn:schemas-upnp-org:metadata-1-0/AVT/">
+  <InstanceID val="0">
+    <TransportState val="PLAYING"/>
+    <PlaybackStorageMedium val="SONGLIST-NETWORK"/>
+    <TrackSource val="Tidal"/>
+  </InstanceID>
+</Event>"#;
+        let ev = parse_av_transport_event(last_change_tidal);
+        assert_eq!(ev.playback_storage_medium.as_deref(), Some("SONGLIST-NETWORK"));
+        assert_eq!(ev.track_source.as_deref(), Some("Tidal"));
+    }
+
+    #[test]
+    fn av_transport_event_missing_metadata_gives_none_fields() {
+        let last_change = r#"<Event xmlns="urn:schemas-upnp-org:metadata-1-0/AVT/">
+  <InstanceID val="0">
+    <TransportState val="PAUSED_PLAYBACK"/>
+  </InstanceID>
+</Event>"#;
+        let ev = parse_av_transport_event(last_change);
+        assert_eq!(ev.transport_state.as_deref(), Some("PAUSED_PLAYBACK"));
+        assert_eq!(ev.title, None);
+        assert_eq!(ev.artist, None);
+        assert_eq!(ev.album, None);
+    }
+
+    #[test]
+    fn rendering_control_event_parses_volume_and_mute() {
+        let last_change = r#"<Event xmlns="urn:schemas-upnp-org:metadata-1-0/RCS/">
+  <InstanceID val="0">
+    <Volume channel="Master" val="50"/>
+    <Mute channel="Master" val="0"/>
+  </InstanceID>
+</Event>"#;
+        let ev = parse_rendering_control_event(last_change);
+        assert_eq!(ev.volume, Some(50));
+        assert_eq!(ev.mute, Some(false));
+    }
+
+    #[test]
+    fn play_queue_event_parses_loop_mode() {
+        let last_change = r#"<Event xmlns="urn:schemas-wiimu-com:metadata-1-0/PlayQueue/">
+  <QueueID>
+    <LoopMode val="4"/>
+  </QueueID>
+</Event>"#;
+        let ev = parse_play_queue_event(last_change);
+        assert_eq!(ev.loop_mode, Some(4));
+    }
+
+    /// Confirmed real wire quirk (the `wiim` SDK's own comments): `LoopMode`
+    /// sometimes arrives misspelled `LoopMpde`.
+    #[test]
+    fn play_queue_event_handles_loopmpde_misspelling() {
+        let last_change = r#"<Event xmlns="urn:schemas-wiimu-com:metadata-1-0/PlayQueue/">
+  <QueueID>
+    <LoopMpde val="2"/>
+  </QueueID>
+</Event>"#;
+        let ev = parse_play_queue_event(last_change);
+        assert_eq!(ev.loop_mode, Some(2));
+    }
+
+    #[test]
+    fn extract_val_attr_returns_none_for_absent_tag() {
+        assert_eq!(extract_val_attr("<Event></Event>", "TransportState"), None);
     }
 }

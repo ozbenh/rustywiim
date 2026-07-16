@@ -59,7 +59,7 @@ fn main() -> glib::ExitCode {
         glib::OptionFlags::NONE,
         glib::OptionArg::String,
         "Enable debug output: comma-separated list of api, state, device, discovery, upnp, gena, ui, config, or all. \
-         api/upnp (and all) may add \":verbose\" (e.g. upnp:verbose) for full request/response content \
+         api/upnp/gena (and all) may add \":verbose\" (e.g. upnp:verbose) for full request/response content \
          instead of a one-line summary",
         Some("LIST"),
     );
@@ -128,7 +128,10 @@ fn main() -> glib::ExitCode {
                         device::upnp::DEBUG_UPNP.store(true, Ordering::Relaxed);
                         if verbose { device::upnp::DEBUG_UPNP_VERBOSE.store(true, Ordering::Relaxed); }
                     }
-                    "gena"      => { device::gena::DEBUG_GENA.store(true, Ordering::Relaxed); }
+                    "gena"      => {
+                        device::gena::DEBUG_GENA.store(true, Ordering::Relaxed);
+                        if verbose { device::gena::DEBUG_GENA_VERBOSE.store(true, Ordering::Relaxed); }
+                    }
                     "ui"        => { ui::DEBUG_UI.store(true, Ordering::Relaxed); }
                     "config"    => { config::DEBUG_CONFIG.store(true, Ordering::Relaxed); }
                     "all"       => {
@@ -143,6 +146,7 @@ fn main() -> glib::ExitCode {
                         if verbose {
                             device::api::DEBUG_VERBOSE.store(true, Ordering::Relaxed);
                             device::upnp::DEBUG_UPNP_VERBOSE.store(true, Ordering::Relaxed);
+                            device::gena::DEBUG_GENA_VERBOSE.store(true, Ordering::Relaxed);
                         }
                     }
                     other => {

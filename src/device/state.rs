@@ -98,7 +98,10 @@ use super::api::{
     PresetEntry, PresetFetchOutcome, TlsMode, WiimClient, TLS_MODE,
 };
 use super::capabilities::{self, DeviceCapabilities};
-use super::gena::GenaSession;
+use super::gena::{
+    self, parse_av_transport_event, parse_play_queue_event, parse_rendering_control_event,
+    GenaSession, NotifyPayload,
+};
 use super::playback;
 use super::playback::{AccessMethod, PlaybackState, RepeatMode};
 use super::upnp::{self, UpnpClient};
@@ -528,14 +531,6 @@ struct Inner {
     client:          Option<WiimClient>,
     device_info:     Option<DeviceInfo>,
     capabilities:    Option<DeviceCapabilities>,
-    /// Raw wire-shaped responses, cached purely as a diffing baseline for
-    /// next tick — the UI never reads these directly; see `playback` below.
-    /// `player_status` in particular must stay read-only outside
-    /// `process_poll()`'s `inner.player_status = Some(st)` assignment: an
-    /// optimistic command write here would make the next real poll's diff
-    /// see no change and silently skip updating `playback` to match.
-    player_status:   Option<PlayerStatus>,
-    metadata:        Option<MetaData>,
     /// UPnP `AVTransport` client, lazily discovered once any field group in
     /// `access` resolves to `AccessMethod::UpnpPolled` (see
     /// `ensure_upnp_client`/`recompute_access`). `None` until discovery
@@ -546,9 +541,6 @@ struct Inner {
     /// True while a `UpnpClient::discover()` attempt is in flight, so
     /// `ensure_upnp_client` doesn't fire a second concurrent discovery.
     upnp_discovery_in_flight: bool,
-    /// Raw UPnP `GetInfoEx` response, cached purely as a diffing baseline
-    /// for next tick — parallel to `player_status`/`metadata` above.
-    upnp_info:        Option<upnp::InfoEx>,
     /// Canonical, backend-independent playback state — updated in place,
     /// field by field, by `process_poll()` rather than rebuilt and diffed
     /// wholesale every tick.
@@ -558,12 +550,12 @@ struct Inner {
     /// no (idle, or Bluetooth not confirmed connected) — set once a
     /// tick successfully decodes real content again. Exists to force a
     /// full re-decode the instant `has_playable_content()` flips back to
-    /// `false`, even if the underlying wire response happens not to have
+    /// `true`, even if the underlying wire response happens not to have
     /// changed since the last real decode (e.g. `play_medium` stayed
-    /// `"BLUETOOTH"` across a whole disconnect→reconnect cycle) — without
-    /// this, the plain per-field diff against the raw response cache
-    /// wouldn't detect anything to re-decode, and real values would never
-    /// repopulate.
+    /// `"BLUETOOTH"` across a whole disconnect→reconnect cycle) — belt and
+    /// suspenders alongside comparing against `playback` directly (which
+    /// `blank_playback_baseline()` already reset to blank while content was
+    /// absent, so a real re-decode would differ from that blank anyway).
     has_content: bool,
     /// Backend selection for this device: capability-profile default with
     /// `access_override` applied on top, if set. Recomputed by
@@ -634,11 +626,12 @@ struct Inner {
     /// changes rather than read lazily, so a toggle takes effect
     /// immediately on every already-tracked device.
     simple_mode_song_info: bool,
-    /// logging-only GENA session — started while `Full` and `gena_enabled`
-    /// is true, stopped (real `UNSUBSCRIBE`s sent) the moment `full_clients`
-    /// drops back to 0 (or `gena_enabled` flips off while still `Full`).
-    /// `None` whenever GENA isn't active for this device, including the entire
-    /// time it's in `Simple` mode.
+
+    /// This device's live GENA session — started while `Full` and
+    /// `gena_enabled` is true, stopped (real `UNSUBSCRIBE`s sent) the
+    /// moment `full_clients` drops back to 0 (or `gena_enabled` flips off
+    /// while still `Full`). `None` whenever GENA isn't active for this
+    /// device, including the entire time it's in `Simple` mode.
     gena_session: Option<GenaSession>,
     /// True while `GenaSession::start()` is in flight, so entering `Full`
     /// mode twice in quick succession (two windows) doesn't fire a second
@@ -652,6 +645,20 @@ struct Inner {
     /// window before `configure-device`/`set_device()` runs) doesn't
     /// silently disagree with the actual config default.
     gena_enabled: bool,
+    /// Per-service GENA health, one independent instance per service (a
+    /// device can be `Healthy` on two of these and stuck on the third at
+    /// once — see `gena::GenaServiceState`'s doc comment). Reset to
+    /// `Subscribing` (not `Off` — a session is actually starting) by
+    /// `ensure_gena_session()`, and back to the `Default` (`Off`) by
+    /// `stop_gena_session()`. `DeviceState::apply_gena_notify()` advances a
+    /// service to `Healthy` whenever a real NOTIFY arrives for it;
+    /// `process_poll_http()`/`process_poll_upnp()` degrade it via
+    /// `GenaServiceState::poll_mismatch()` whenever they independently
+    /// discover a new value for something this service should already have
+    /// delivered.
+    gena_av: gena::GenaServiceState,
+    gena_rc: gena::GenaServiceState,
+    gena_pq: gena::GenaServiceState,
     /// Last known network connection type (0=ethernet, 2=wifi).
     /// `None` until first `getStatusEx` result arrives.
     netstat:          Option<u32>,
@@ -749,11 +756,8 @@ impl Default for Inner {
             client:          None,
             device_info:     None,
             capabilities:    None,
-            player_status:   None,
-            metadata:        None,
             upnp_client:      None,
             upnp_discovery_in_flight: false,
-            upnp_info:        None,
             playback:        PlaybackState::default(),
             has_content:     false,
             access:          AccessMethod::Http,
@@ -777,6 +781,9 @@ impl Default for Inner {
             gena_session: None,
             gena_session_in_flight: false,
             gena_enabled: true,
+            gena_av: Default::default(),
+            gena_rc: Default::default(),
+            gena_pq: Default::default(),
             presets:          Vec::new(),
             preset_fp:        String::new(),
             preset_probe_failures: 0,
@@ -2538,15 +2545,30 @@ impl DeviceState {
         }
     }
 
-    /// Diffs the raw HTTP responses against the cached baseline *before* any
-    /// decoding happens (plain field/value comparisons — this is also the
-    /// `playback_changed` bitmask computation), then decodes only the field
-    /// groups whose bit came out set, writing straight into `inner.playback`
-    /// in place. An unchanged `title` never gets re-run through metadata
-    /// decoding, an unchanged `mode`/`vendor` pair never re-runs the
-    /// source-name lookup, an unchanged `curpos`/`totlen` never re-runs the
-    /// ms/µs heuristic — decode cost is paid only when the raw diff already
-    /// told us something changed.
+    /// Decodes each field and compares it directly against `inner.playback`
+    /// — never against a separate raw-response cache — deciding both
+    /// whether to write it and what `playback_changed` bits to signal. This
+    /// used to compare the raw wire values against a cached copy of the
+    /// previous response instead (cheaper for fields nothing else could
+    /// touch), but `volume`/`mute` already couldn't use that shortcut
+    /// (`do_set_mute()`/`do_set_volume()`'s optimistic writes update
+    /// `playback` outside this function entirely, so a device that
+    /// silently rejected the command would never show up as "changed"
+    /// against its own previous answer — only against what's actually
+    /// displayed), and now a GENA NOTIFY can update `playback` the same
+    /// way, so every field needs the same treatment: compare against
+    /// current state, not against what the last poll happened to see.
+    ///
+    /// Status/loop-mode/title/artist/album/volume/mute are the fields a
+    /// live GENA subscription can also deliver — for each, the *write* is
+    /// additionally gated on that field's owning service **not** being
+    /// `Healthy` (`av_mismatch`/`rc_mismatch`/`pq_mismatch` still record
+    /// the raw disagreement either way, regardless of whether the write
+    /// happened, since that's what `check_gena_health()` needs to know
+    /// whether GENA is still keeping up). While `Healthy`, a disagreement
+    /// is trusted to be the poll racing ahead of (or simply not yet
+    /// catching up to) a NOTIFY that's already correct, not something to
+    /// act on immediately.
     ///
     /// `bt_status` is this exact tick's `getbtstatus` reading (already
     /// fetched by `fetch_http_fast_poll()`, ahead of `getPlayerStatusEx`) —
@@ -2569,6 +2591,16 @@ impl DeviceState {
         self.note_fast_poll_result(status.is_none());
 
         let mut playback_mask: u32 = 0;
+        let mut av_mismatch = false;
+        let mut rc_mismatch = false;
+        let mut pq_mismatch = false;
+        // Set true for the one tick a poll-detected mode/input switch is
+        // seen — see the big comment at the point of use below for why
+        // that tick treats AVTransport/PlayQueue as untrusted regardless of
+        // their actual `GenaHealth`. Also read from the `meta` block below,
+        // which is why it's hoisted out here rather than staying local to
+        // the `status` block.
+        let mut mode_changed_this_tick = false;
 
         // Fallback for the (very unlikely) case `status` itself failed this
         // tick but `meta` somehow still arrived — uses last tick's mode.
@@ -2581,56 +2613,7 @@ impl DeviceState {
 
         if let Some(st) = status {
             has_content = Self::has_playable_content(st.mode, &bt_status);
-
-            // 1. Borrow: diff against previous status, compute everything we
-            //    need from `inner` before it's dropped.
-            let (mode_changed, prev_mode, mute_changed, vol_changed, timing_valid, time_changed, other_changed) = {
-                let inner = self.imp().inner.borrow();
-                let prev = inner.player_status.as_ref();
-                // Mute and volume both have an optimistic write
-                // (`do_set_mute()`/`do_set_volume()`, for instant UI
-                // feedback), so a plain diff against the *previous* raw
-                // response isn't enough for either: if a `SetMute`/
-                // `SetVolume` command silently failed to stick device-side,
-                // the device's own answer never changes between polls, so
-                // that diff would never fire and `playback.muted`/`.volume`
-                // would stay wrong forever. Instead, resync straight
-                // against the device's answer whenever nothing we sent is
-                // still in flight/settling — this self-heals a rejected/
-                // clamped command exactly the same way it picks up a
-                // genuine remote change (physical remote, another app,
-                // slave-speaker sync): both look like "device says X,
-                // canonical state says Y" from here. Also gated on
-                // `VOLUME_POLL_SETTLE` — a real device can keep reporting
-                // its pre-command value for a moment after accepting a
-                // command, so "nothing in flight" alone
-                // isn't enough; see that constant's doc comment.
-                let vol_settled = inner.last_volume_cmd
-                    .map_or(true, |t| Instant::now().duration_since(t) >= VOLUME_POLL_SETTLE);
-                let vol_changed = inner.target_volume < 0 && vol_settled && st.vol != inner.playback.volume;
-                let mute_settled = inner.last_mute_cmd
-                    .map_or(true, |t| Instant::now().duration_since(t) >= VOLUME_POLL_SETTLE);
-                let mute_changed = mute_settled && st.mute != inner.playback.muted;
-                let timing_valid = playback::timing_looks_valid(st.curpos, st.totlen);
-                let time_changed = timing_valid
-                    && prev.map_or(true, |p| p.curpos != st.curpos || p.totlen != st.totlen);
-                let other_changed = prev.map_or(true, |p| {
-                    p.status != st.status || p.loop_mode != st.loop_mode || p.vendor != st.vendor
-                });
-                let prev_mode = inner.current_mode;
-                (st.mode != prev_mode, prev_mode, mute_changed, vol_changed, timing_valid, time_changed, other_changed)
-            };
-
-            if mute_changed || vol_changed { playback_mask |= playback_changed::VOLUME; }
-            if time_changed                { playback_mask |= playback_changed::TIME; }
-            if other_changed               { playback_mask |= playback_changed::OTHER; }
-
-            if mode_changed {
-                dbg(self, &format!(
-                    "input changed: mode {} → {} (status={})",
-                    prev_mode, st.mode, st.status,
-                ));
-            }
+            let timing_valid = playback::timing_looks_valid(st.curpos, st.totlen);
             if !timing_valid {
                 dbg(self, &format!(
                     "timing: ignoring garbage reading (curpos={} > totlen={})",
@@ -2638,57 +2621,118 @@ impl DeviceState {
                 ));
             }
 
-            // 2. Borrow_mut: decode only what changed, straight into `playback`.
             let emit_input_changed;
             let emit_inputs_changed;
             {
                 let mut inner = self.imp().inner.borrow_mut();
+
+                let prev_mode = inner.current_mode;
+                let mode_changed = st.mode != prev_mode;
+                mode_changed_this_tick = mode_changed;
                 (emit_input_changed, emit_inputs_changed) =
                     Self::handle_input_mode_poll(self, &mut inner, mode_changed, st.mode);
-                if mode_changed { playback_mask |= playback_changed::ALL; }
+                if mode_changed {
+                    playback_mask |= playback_changed::ALL;
+                    dbg(self, &format!(
+                        "input changed: mode {prev_mode} → {} (status={})",
+                        st.mode, st.status,
+                    ));
+                }
 
                 if let Some(bts) = &bt_status {
                     if Self::apply_bt_status(&mut inner, bts) { playback_mask |= playback_changed::ALL; }
                 }
 
-                if mute_changed { inner.playback.muted  = st.mute; }
-                if vol_changed  { inner.playback.volume = st.vol;  }
-                if time_changed {
+                // Mute and volume both have an optimistic write
+                // (`do_set_mute()`/`do_set_volume()`, for instant UI
+                // feedback), so a plain diff against the device's answer
+                // isn't enough on its own for either: if a command silently
+                // failed to stick device-side, the device's own answer
+                // never changes, so comparing against it directly is what
+                // self-heals a rejected/clamped command exactly the same
+                // way it picks up a genuine remote change (physical remote,
+                // another app, slave-speaker sync). Also gated on
+                // `VOLUME_POLL_SETTLE` — a real device can keep reporting
+                // its pre-command value for a moment after accepting a
+                // command, so "nothing in flight" alone isn't enough; see
+                // that constant's doc comment. Not affected by mode changes
+                // (volume/mute aren't tied to which input is selected).
+                let vol_settled = inner.last_volume_cmd
+                    .map_or(true, |t| Instant::now().duration_since(t) >= VOLUME_POLL_SETTLE);
+                let vol_changed = inner.target_volume < 0 && vol_settled && st.vol != inner.playback.volume;
+                let mute_settled = inner.last_mute_cmd
+                    .map_or(true, |t| Instant::now().duration_since(t) >= VOLUME_POLL_SETTLE);
+                let mute_changed = mute_settled && st.mute != inner.playback.muted;
+                if vol_changed || mute_changed { rc_mismatch = true; }
+                let rc_trusted = inner.gena_rc.health == gena::GenaHealth::Healthy;
+                if vol_changed && !rc_trusted  { inner.playback.volume = st.vol;  playback_mask |= playback_changed::VOLUME; }
+                if mute_changed && !rc_trusted { inner.playback.muted  = st.mute; playback_mask |= playback_changed::VOLUME; }
+
+                if timing_valid {
                     let (pos, dur) = playback::decode_timing_http(st.curpos, st.totlen, st.mode);
-                    inner.playback.position = pos;
-                    inner.playback.duration = dur;
+                    if pos != inner.playback.position || dur != inner.playback.duration {
+                        inner.playback.position = pos;
+                        inner.playback.duration = dur;
+                        playback_mask |= playback_changed::TIME;
+                    }
                 }
-                if other_changed {
-                    inner.playback.status      = playback::decode_status_http(&st.status);
-                    let dev_id = inner.capabilities.as_ref().map(|c| c.device_id);
-                    inner.playback.source_name = playback::decode_source_name_http(st.mode, &st.vendor, dev_id);
-                    let (shuffle, repeat) = playback::decode_loop_mode_http(st.loop_mode);
-                    inner.playback.shuffle = shuffle;
-                    inner.playback.repeat  = repeat;
+
+                let decoded_status = playback::decode_status_http(&st.status);
+                let status_mismatch = decoded_status != inner.playback.status;
+                let (decoded_shuffle, decoded_repeat) = playback::decode_loop_mode_http(st.loop_mode);
+                let loop_mode_mismatch = decoded_shuffle != inner.playback.shuffle || decoded_repeat != inner.playback.repeat;
+                // A poll-detected mode/input switch means this tick's
+                // AVTransport/PlayQueue-covered fields describe a whole new
+                // content epoch that GENA hasn't necessarily caught up to —
+                // some sources give GENA no reliable way to signal a switch
+                // at all (confirmed live: an AVTransport NOTIFY missing any
+                // source/mode indicator entirely). So this one tick treats
+                // both as untrusted regardless of `GenaHealth`, and doesn't
+                // count a disagreement here as a missed NOTIFY (it's an
+                // expected discontinuity, not evidence GENA is failing).
+                if !mode_changed {
+                    av_mismatch = status_mismatch;
+                    pq_mismatch = loop_mode_mismatch;
                 }
+                let av_trusted = !mode_changed && inner.gena_av.health == gena::GenaHealth::Healthy;
+                let pq_trusted = !mode_changed && inner.gena_pq.health == gena::GenaHealth::Healthy;
+                if status_mismatch && !av_trusted {
+                    inner.playback.status = decoded_status;
+                    playback_mask |= playback_changed::OTHER;
+                }
+                if loop_mode_mismatch && !pq_trusted {
+                    inner.playback.shuffle = decoded_shuffle;
+                    inner.playback.repeat  = decoded_repeat;
+                    playback_mask |= playback_changed::OTHER;
+                }
+
+                let dev_id = inner.capabilities.as_ref().map(|c| c.device_id);
+                let decoded_source_name = playback::decode_source_name_http(st.mode, &st.vendor, dev_id);
+                if decoded_source_name != inner.playback.source_name {
+                    inner.playback.source_name = decoded_source_name;
+                    playback_mask |= playback_changed::OTHER;
+                }
+
                 if has_content {
-                    // `had_content` false forces a redecode even without a raw
-                    // diff — see `Inner::has_content`'s doc comment:
-                    // the wire fields may genuinely not have changed across
-                    // a disconnect→reconnect cycle.
-                    if other_changed || !had_content {
-                        let caps = playback::decode_transport_caps_http(st.mode, &st.vendor);
+                    let decoded_caps = playback::decode_transport_caps_http(st.mode, &st.vendor);
+                    // `!had_content` forces a redecode even without a
+                    // detected diff — see `Inner::has_content`'s doc
+                    // comment: the wire fields may genuinely not have
+                    // changed across a disconnect→reconnect cycle.
+                    if decoded_caps != inner.playback.caps || !had_content {
                         dbg(self, &format!(
-                            "transport caps (http): mode={} vendor={:?} -> {caps:?}",
+                            "transport caps (http): mode={} vendor={:?} -> {decoded_caps:?}",
                             st.mode, st.vendor,
                         ));
-                        inner.playback.caps = caps;
+                        inner.playback.caps = decoded_caps;
                         playback_mask |= playback_changed::OTHER;
                     }
                 } else if Self::blank_playback_baseline(self, &mut inner) {
                     playback_mask |= playback_changed::ALL;
                 }
                 inner.has_content = has_content;
-
-                inner.player_status = Some(st);
             }
 
-            // 3. Side effects, after the borrow is dropped.
             if emit_input_changed {
                 dbg(self, "signal: input-changed");
                 self.emit_by_name::<()>("input-changed", &[]);
@@ -2701,76 +2745,80 @@ impl DeviceState {
 
         if let Some(m) = meta {
             let art_url = m.art_uri().to_string();
-
-            // 1. Borrow: diff against previous metadata, compute everything we
-            //    need from `inner` before it's dropped. Diffed regardless of
-            //    `has_content` — the raw cache below always tracks the
-            //    latest response so a future tick's diff stays accurate,
-            //    even while nothing's being applied to `playback` right now.
-            let (url_changed, title_changed, artist_changed, album_changed, other_changed) = {
-                let inner = self.imp().inner.borrow();
-                let prev = inner.metadata.as_ref();
-                let title_changed  = prev.map_or(true, |p| p.title != m.title);
-                let artist_changed = prev.map_or(true, |p| p.artist != m.artist);
-                let album_changed  = prev.map_or(true, |p| p.album != m.album);
-                let other_changed  = prev.map_or(true, |p| {
-                    p.bit_rate != m.bit_rate || p.sample_rate != m.sample_rate || p.bit_depth != m.bit_depth
-                });
-                let cached_url = inner.playback.art_url.as_deref().unwrap_or("");
-                (art_url != cached_url, title_changed, artist_changed, album_changed, other_changed)
-            };
-            if has_content != had_content { playback_mask |= playback_changed::ALL; }
-            else if has_content {
-                if title_changed  { playback_mask |= playback_changed::TITLE; }
-                if artist_changed { playback_mask |= playback_changed::ARTIST; }
-                if album_changed  { playback_mask |= playback_changed::ALBUM; }
-                if url_changed    { playback_mask |= playback_changed::OTHER; }
-            }
-
-            // 2. Borrow_mut: decode only what changed, straight into `playback`.
+            let mut art_cleared = false;
+            let mut art_url_for_fetch: Option<String> = None;
             {
                 let mut inner = self.imp().inner.borrow_mut();
                 if has_content {
-                    if title_changed  { inner.playback.title  = Rc::from(m.title.as_str()); }
-                    if artist_changed { inner.playback.artist = Rc::from(m.artist.as_str()); }
-                    if album_changed  { inner.playback.album  = Rc::from(m.album.as_str()); }
-                    if other_changed {
-                        inner.playback.quality =
-                            playback::decode_quality_http(&m.bit_rate, &m.sample_rate, &m.bit_depth);
-                        // HTTP has no codec-badge equivalent at all — always clear
-                        // here so switching `metadata`'s access method back to
-                        // HTTP (from a Settings override) doesn't leave a stale
-                        // UPnP-sourced badge on screen forever. If `metadata` is
-                        // actually still `UpnpPolled` and this tick also carries a
-                        // fresh `GetInfoEx` result, the UPnP block below runs
+                    // See the `status`-block comment above: a poll-detected
+                    // mode/input switch means these fields describe a new
+                    // content epoch GENA hasn't necessarily caught up to,
+                    // so this tick treats AVTransport as untrusted
+                    // regardless of `GenaHealth`.
+                    let av_trusted = !mode_changed_this_tick && inner.gena_av.health == gena::GenaHealth::Healthy;
+                    let title_changed  = m.title.as_str()  != inner.playback.title.as_ref();
+                    let artist_changed = m.artist.as_str() != inner.playback.artist.as_ref();
+                    let album_changed  = m.album.as_str()  != inner.playback.album.as_ref();
+                    if !mode_changed_this_tick && (title_changed || artist_changed || album_changed) { av_mismatch = true; }
+                    if title_changed && !av_trusted {
+                        inner.playback.title = Rc::from(m.title.as_str());
+                        playback_mask |= playback_changed::TITLE;
+                    }
+                    if artist_changed && !av_trusted {
+                        inner.playback.artist = Rc::from(m.artist.as_str());
+                        playback_mask |= playback_changed::ARTIST;
+                    }
+                    if album_changed && !av_trusted {
+                        inner.playback.album = Rc::from(m.album.as_str());
+                        playback_mask |= playback_changed::ALBUM;
+                    }
+
+                    let decoded_quality = playback::decode_quality_http(&m.bit_rate, &m.sample_rate, &m.bit_depth);
+                    if decoded_quality != inner.playback.quality {
+                        inner.playback.quality = decoded_quality;
+                        // HTTP has no codec-badge equivalent at all — always
+                        // clear here so switching `metadata`'s access method
+                        // back to HTTP (from a Settings override) doesn't
+                        // leave a stale UPnP-sourced badge on screen
+                        // forever. If `metadata` is actually still
+                        // `UpnpPolled` and this tick also carries a fresh
+                        // `GetInfoEx` result, the UPnP block below runs
                         // right after this and sets it again.
                         inner.playback.codec_label = None;
+                        playback_mask |= playback_changed::OTHER;
                     }
-                    if url_changed {
+
+                    let cached_url = inner.playback.art_url.as_deref().unwrap_or("");
+                    if art_url != cached_url {
                         inner.playback.art_url =
                             if art_url.is_empty() { None } else { Some(Rc::from(art_url.as_str())) };
                         Self::replace_artwork(self, &mut inner, None);
+                        if art_url.is_empty() {
+                            art_cleared = true;
+                        } else {
+                            art_url_for_fetch = Some(art_url);
+                        }
                     }
+                } else if has_content != had_content {
+                    playback_mask |= playback_changed::ALL;
                 }
-                inner.metadata = Some(m);
             }
 
-            // 3. Side effects, after the borrow is dropped.
-            if has_content && url_changed {
-                if art_url.is_empty() {
-                    // Current track has no artwork at all (was non-empty before,
-                    // or this is the first metadata) — clear immediately rather
-                    // than leaving the previous track's art on screen forever.
-                    dbg(self, "art url cleared: current track has no artwork");
-                    playback_mask |= playback_changed::ARTWORK;
-                } else {
-                    dbg(self, &format!("art url changed: {art_url}"));
-                    // No immediate ARTWORK signal here: artwork is already
-                    // cleared, but we hold off telling the UI until fetch_art()
-                    // resolves (success or failure — see start_art_loader) so a
-                    // fast reload doesn't flash the fallback icon in between.
-                    self.fetch_art(art_url, art_tx);
-                }
+            if art_cleared {
+                // Current track has no artwork at all (was non-empty
+                // before, or this is the first metadata) — clear
+                // immediately rather than leaving the previous track's art
+                // on screen forever.
+                dbg(self, "art url cleared: current track has no artwork");
+                playback_mask |= playback_changed::ARTWORK;
+            }
+            if let Some(url) = art_url_for_fetch {
+                dbg(self, &format!("art url changed: {url}"));
+                // No immediate ARTWORK signal here: artwork is already
+                // cleared, but we hold off telling the UI until fetch_art()
+                // resolves (success or failure — see start_art_loader) so a
+                // fast reload doesn't flash the fallback icon in between.
+                self.fetch_art(url, art_tx);
             }
         }
 
@@ -2778,6 +2826,7 @@ impl DeviceState {
             dbg(self, &format!("signal: playback-changed mask={:#x}", playback_mask));
             self.emit_by_name::<()>("playback-changed", &[&playback_mask]);
         }
+        self.check_gena_health(av_mismatch, rc_mismatch, pq_mismatch);
     }
 
     /// UPnP counterpart to `process_poll_http()` — decodes a `GetInfoEx`
@@ -2795,11 +2844,15 @@ impl DeviceState {
     ///   of which backend supplies reads (see `do_set_volume`), so the same
     ///   "don't clobber an in-flight optimistic write" guard
     ///   (`target_volume < 0`) applies here too.
-    /// - **Per-field diffing**, not a coarse "did the whole response change
-    ///   at all" check: `GetInfoEx` includes `RelTime`, which changes every
-    ///   second regardless of anything the user cares about, so a coarse
-    ///   check would be true almost every tick and flood the UI with
-    ///   redundant redraws.
+    /// - **Per-field diffing against `playback` directly**, not a raw-
+    ///   response cache and not a coarse "did the whole response change at
+    ///   all" check (`GetInfoEx` includes `RelTime`, which changes every
+    ///   second regardless of anything the user cares about) — see
+    ///   `process_poll_http()`'s identical note on why comparing against
+    ///   `playback` is what's actually correct once anything besides the
+    ///   immediately-preceding poll (an optimistic command write, or now
+    ///   GENA) can also update it, and on the GENA-trust gating shared by
+    ///   both functions.
     ///
     /// `bt_status` — see `process_poll_http()`'s identical doc comment on
     /// its own `bt_status` parameter; the same "apply in the same borrow
@@ -2814,149 +2867,147 @@ impl DeviceState {
         self.note_fast_poll_result(info.is_none());
         let Some(info) = info else { return };
         let mut playback_mask: u32 = 0;
+        let mut av_mismatch = false;
+        let mut rc_mismatch = false;
+        let mut pq_mismatch = false;
 
-        // 1. Borrow: diff each field group against the previous response.
-        let (
-            mode_changed, prev_mode,
-            status_changed, time_changed, mute_changed, vol_changed,
-            source_changed, title_changed, artist_changed, album_changed, quality_changed,
-            had_content,
-        ) = {
-            let inner = self.imp().inner.borrow();
-            let prev = inner.upnp_info.as_ref();
-            let prev_mode = inner.current_mode;
-            let status_changed = prev.map_or(true, |p| {
-                p.transport_state != info.transport_state || p.loop_mode != info.loop_mode
-            });
-            let time_changed = prev.map_or(true, |p| {
-                p.rel_time != info.rel_time || p.track_duration != info.track_duration
-            });
-            // `None` (still-unresolved mute, even after `fetch_upnp_fast_poll`'s
-            // supplementary call) means "no new information" — never treated
-            // as a change, and never written below. Self-heals against
-            // `playback.muted` (not the raw previous response), same
-            // reasoning as `process_poll_http()`'s `mute_changed` — see its
-            // doc comment. `SetMute`/`SetVolume` still go over HTTP or UPnP
-            // per `mute_access`/`access`, but `last_mute_cmd`/
-            // `last_volume_cmd` themselves are shared between both poll
-            // backends regardless of which one actually sent the command.
-            let mute_settled = inner.last_mute_cmd
-                .map_or(true, |t| Instant::now().duration_since(t) >= VOLUME_POLL_SETTLE);
-            let mute_changed = info.current_mute.is_some_and(|m| m != inner.playback.muted)
-                && mute_settled;
-            // Same self-heal reasoning as process_poll_http()'s vol_changed
-            // — see its doc comment (including `VOLUME_POLL_SETTLE`).
-            // `SetVolume` still goes over HTTP regardless of poll backend,
-            // so the debounce/`target_volume`/`last_volume_cmd` state is
-            // shared between both paths.
-            let vol_settled = inner.last_volume_cmd
-                .map_or(true, |t| Instant::now().duration_since(t) >= VOLUME_POLL_SETTLE);
-            let vol_changed = inner.target_volume < 0 && vol_settled && info.current_volume != inner.playback.volume;
-            let source_changed = prev.map_or(true, |p| {
-                p.play_medium != info.play_medium || p.track_source != info.track_source
-                    || p.gui_behavior != info.gui_behavior
-            });
-            let title_changed  = prev.map_or(true, |p| p.title != info.title);
-            let artist_changed = prev.map_or(true, |p| p.artist != info.artist);
-            let album_changed  = prev.map_or(true, |p| p.album != info.album);
-            let quality_changed = prev.map_or(true, |p| {
-                p.actual_quality != info.actual_quality || p.bitrate != info.bitrate
-                    || p.format_s != info.format_s || p.rate_hz != info.rate_hz
-                    || p.protocol_info != info.protocol_info
-            });
-            (
-                info.play_type != prev_mode, prev_mode,
-                status_changed, time_changed, mute_changed, vol_changed,
-                source_changed, title_changed, artist_changed, album_changed, quality_changed,
-                inner.has_content,
-            )
-        };
-
+        let had_content = self.imp().inner.borrow().has_content;
         // `info.play_type` is never the `-1` "tag absent" sentinel by this
         // point — `fetch_upnp_fast_poll()` already substitutes a real value
         // from `PlayMedium` when `GetInfoEx` doesn't carry `<PlayType>` at
         // all (confirmed permanent on some devices, e.g. Audio Pro Addon
         // C5), so this needs no special-casing here the way it briefly did.
         let has_content = Self::has_playable_content(info.play_type, &bt_status);
-        if (has_content != had_content) || mode_changed {
-            playback_mask |= playback_changed::ALL
-        } else {
-            if mute_changed || vol_changed { playback_mask |= playback_changed::VOLUME; }
-            if time_changed                { playback_mask |= playback_changed::TIME; }
-            if status_changed              { playback_mask |= playback_changed::OTHER; }
-            if has_content  {
-                if title_changed  { playback_mask |= playback_changed::TITLE; }
-                if artist_changed { playback_mask |= playback_changed::ARTIST; }
-                if album_changed  { playback_mask |= playback_changed::ALBUM; }
-                if source_changed || quality_changed { playback_mask |= playback_changed::OTHER; }
-            }
-        }
-
-        if mode_changed {
-            dbg(self, &format!("input changed (upnp): mode {prev_mode} → {}", info.play_type));
-        }
 
         let mut art_url_for_fetch: Option<String> = None;
         let mut art_cleared = false;
 
-        // 2. Borrow_mut: decode only what changed, straight into `playback`.
         let emit_input_changed;
         let emit_inputs_changed;
         {
             let mut inner = self.imp().inner.borrow_mut();
+
+            let prev_mode = inner.current_mode;
+            let mode_changed = info.play_type != prev_mode;
             (emit_input_changed, emit_inputs_changed) =
                 Self::handle_input_mode_poll(self, &mut inner, mode_changed, info.play_type);
+            if mode_changed {
+                dbg(self, &format!("input changed (upnp): mode {prev_mode} → {}", info.play_type));
+            }
+            if (has_content != had_content) || mode_changed {
+                playback_mask |= playback_changed::ALL;
+            }
 
             if let Some(bts) = &bt_status {
                 if Self::apply_bt_status(&mut inner, bts) { playback_mask |= playback_changed::ALL; }
             }
 
-            if status_changed {
-                inner.playback.status = playback::decode_status_upnp(&info.transport_state);
-                let (shuffle, repeat) = playback::decode_loop_mode_http(info.loop_mode);
-                inner.playback.shuffle = shuffle;
-                inner.playback.repeat  = repeat;
+            let decoded_status = playback::decode_status_upnp(&info.transport_state);
+            let status_mismatch = decoded_status != inner.playback.status;
+            let (decoded_shuffle, decoded_repeat) = playback::decode_loop_mode_http(info.loop_mode);
+            let loop_mode_mismatch = decoded_shuffle != inner.playback.shuffle || decoded_repeat != inner.playback.repeat;
+            // A poll-detected mode/input switch means these fields describe
+            // a new content epoch GENA hasn't necessarily caught up to (see
+            // `process_poll_http()`'s identical note) — this tick treats
+            // AVTransport/PlayQueue as untrusted regardless of `GenaHealth`,
+            // and doesn't count a disagreement here as a missed NOTIFY.
+            if !mode_changed {
+                av_mismatch = status_mismatch;
+                pq_mismatch = loop_mode_mismatch;
             }
-            if time_changed {
-                inner.playback.position = playback::decode_hms_duration(&info.rel_time);
-                inner.playback.duration = playback::decode_hms_duration(&info.track_duration);
+            let av_trusted = !mode_changed && inner.gena_av.health == gena::GenaHealth::Healthy;
+            let pq_trusted = !mode_changed && inner.gena_pq.health == gena::GenaHealth::Healthy;
+            if status_mismatch && !av_trusted {
+                inner.playback.status = decoded_status;
+                playback_mask |= playback_changed::OTHER;
             }
-            // See doc comment above: don't clobber a pending optimistic write.
-            if vol_changed  { inner.playback.volume = info.current_volume; }
+            if loop_mode_mismatch && !pq_trusted {
+                inner.playback.shuffle = decoded_shuffle;
+                inner.playback.repeat  = decoded_repeat;
+                playback_mask |= playback_changed::OTHER;
+            }
+
+            let decoded_pos = playback::decode_hms_duration(&info.rel_time);
+            let decoded_dur = playback::decode_hms_duration(&info.track_duration);
+            if decoded_pos != inner.playback.position || decoded_dur != inner.playback.duration {
+                inner.playback.position = decoded_pos;
+                inner.playback.duration = decoded_dur;
+                playback_mask |= playback_changed::TIME;
+            }
+
+            // See `process_poll_http()`'s identical doc comment: don't
+            // clobber a pending optimistic write.
+            let vol_settled = inner.last_volume_cmd
+                .map_or(true, |t| Instant::now().duration_since(t) >= VOLUME_POLL_SETTLE);
+            let vol_changed = inner.target_volume < 0 && vol_settled && info.current_volume != inner.playback.volume;
+            // `None` (still-unresolved mute, even after
+            // `fetch_upnp_fast_poll()`'s supplementary call) means "no new
+            // information" — never treated as a change.
+            let mute_settled = inner.last_mute_cmd
+                .map_or(true, |t| Instant::now().duration_since(t) >= VOLUME_POLL_SETTLE);
+            let mute_changed = info.current_mute.is_some_and(|m| m != inner.playback.muted) && mute_settled;
+            if vol_changed || mute_changed { rc_mismatch = true; }
+            let rc_trusted = inner.gena_rc.health == gena::GenaHealth::Healthy;
+            if vol_changed && !rc_trusted {
+                inner.playback.volume = info.current_volume;
+                playback_mask |= playback_changed::VOLUME;
+            }
             // Safe: `mute_changed` only true when `info.current_mute.is_some()`.
-            if mute_changed { inner.playback.muted  = info.current_mute.unwrap(); }
+            if mute_changed && !rc_trusted {
+                inner.playback.muted = info.current_mute.unwrap();
+                playback_mask |= playback_changed::VOLUME;
+            }
 
             // `source_name` stays unconditional (cheap, always correct, and
-            // the Bluetooth status line needs it current immediately) —
-            // only the transport-capability decode is gated.
-            if source_changed || (has_content && !had_content) {
-                let dev_id = inner.capabilities.as_ref().map(|c| c.device_id);
-                inner.playback.source_name =
-                    playback::decode_source_name_upnp(&info.play_medium, &info.track_source, dev_id);
+            // the Bluetooth status line needs it current immediately).
+            let dev_id = inner.capabilities.as_ref().map(|c| c.device_id);
+            let decoded_source_name =
+                playback::decode_source_name_upnp(&info.play_medium, &info.track_source, dev_id);
+            if decoded_source_name != inner.playback.source_name {
+                inner.playback.source_name = decoded_source_name;
+                playback_mask |= playback_changed::OTHER;
             }
+
             if has_content {
-                if source_changed || (has_content != had_content) {
-                    let caps = playback::decode_transport_caps_upnp(
-                        &info.play_medium, &info.track_source, info.play_type, info.gui_behavior,
-                    );
+                let decoded_caps = playback::decode_transport_caps_upnp(
+                    &info.play_medium, &info.track_source, info.play_type, info.gui_behavior,
+                );
+                if decoded_caps != inner.playback.caps || (has_content != had_content) {
                     dbg(self, &format!(
-                        "transport caps (upnp): play_medium={:?} track_source={:?} gui_behavior={:?} -> {caps:?}",
+                        "transport caps (upnp): play_medium={:?} track_source={:?} gui_behavior={:?} -> {decoded_caps:?}",
                         info.play_medium, info.track_source, info.gui_behavior,
                     ));
-                    inner.playback.caps = caps;
+                    inner.playback.caps = decoded_caps;
+                    playback_mask |= playback_changed::OTHER;
                 }
-                if title_changed  { inner.playback.title  = Rc::from(info.title.as_str()); }
-                if artist_changed { inner.playback.artist = Rc::from(info.artist.as_str()); }
-                if album_changed  { inner.playback.album  = Rc::from(info.album.as_str()); }
-                if quality_changed {
-                    let (quality, codec_label) = playback::decode_quality_upnp(
-                        info.actual_quality.as_deref(),
-                        &info.bitrate, &info.format_s, &info.rate_hz,
-                        info.protocol_info.as_deref(),
-                        &info.play_medium,
-                    );
-                    inner.playback.quality     = quality;
-                    inner.playback.codec_label = codec_label;
+
+                let title_changed  = info.title.as_str()  != inner.playback.title.as_ref();
+                let artist_changed = info.artist.as_str() != inner.playback.artist.as_ref();
+                let album_changed  = info.album.as_str()  != inner.playback.album.as_ref();
+                if title_changed || artist_changed || album_changed { av_mismatch = true; }
+                if title_changed && !av_trusted {
+                    inner.playback.title = Rc::from(info.title.as_str());
+                    playback_mask |= playback_changed::TITLE;
+                }
+                if artist_changed && !av_trusted {
+                    inner.playback.artist = Rc::from(info.artist.as_str());
+                    playback_mask |= playback_changed::ARTIST;
+                }
+                if album_changed && !av_trusted {
+                    inner.playback.album = Rc::from(info.album.as_str());
+                    playback_mask |= playback_changed::ALBUM;
+                }
+
+                let (decoded_quality, decoded_codec_label) = playback::decode_quality_upnp(
+                    info.actual_quality.as_deref(),
+                    &info.bitrate, &info.format_s, &info.rate_hz,
+                    info.protocol_info.as_deref(),
+                    &info.play_medium,
+                );
+                if decoded_quality != inner.playback.quality || decoded_codec_label != inner.playback.codec_label {
+                    inner.playback.quality     = decoded_quality;
+                    inner.playback.codec_label = decoded_codec_label;
+                    playback_mask |= playback_changed::OTHER;
                 }
 
                 let art_url = info.album_art_uri.clone().unwrap_or_default();
@@ -2969,7 +3020,6 @@ impl DeviceState {
                     };
                     Self::replace_artwork(self, &mut inner, None);
                     if art_url.is_empty() {
-                        dbg(self, "upnp art url cleared: current track has no artwork");
                         art_cleared = true;
                     } else {
                         art_url_for_fetch = Some(art_url);
@@ -2979,11 +3029,8 @@ impl DeviceState {
                 playback_mask |= playback_changed::ALL;
             }
             inner.has_content = has_content;
-
-            inner.upnp_info = Some(info);
         }
 
-        // 3. Side effects, after the borrow is dropped.
         if emit_input_changed {
             dbg(self, "signal: input-changed");
             self.emit_by_name::<()>("input-changed", &[]);
@@ -2992,7 +3039,10 @@ impl DeviceState {
             dbg(self, "signal: inputs-changed");
             self.emit_by_name::<()>("inputs-changed", &[]);
         }
-        if art_cleared { playback_mask |= playback_changed::ARTWORK; }
+        if art_cleared {
+            dbg(self, "upnp art url cleared: current track has no artwork");
+            playback_mask |= playback_changed::ARTWORK;
+        }
         if let Some(url) = art_url_for_fetch {
             dbg(self, &format!("upnp art url changed: {url}"));
             self.fetch_art(url, art_tx);
@@ -3001,6 +3051,7 @@ impl DeviceState {
             dbg(self, &format!("signal: playback-changed mask={:#x}", playback_mask));
             self.emit_by_name::<()>("playback-changed", &[&playback_mask]);
         }
+        self.check_gena_health(av_mismatch, rc_mismatch, pq_mismatch);
     }
 
     fn fetch_art(&self, url: String, art_tx: &async_channel::Sender<(String, Vec<u8>)>) {
@@ -3397,11 +3448,17 @@ impl DeviceState {
         }
     }
 
-    /// if `gena_enabled` is true, start a logging-only GENA session for
-    /// this device now that it's in `Full` mode. No-op if one is already
-    /// running or already being started, or if either toggle is off.
-    /// Same fire-and-forget spawn-then-channel-back shape as
-    /// `ensure_upnp_client()`.
+    /// If `gena_enabled` (the already-resolved app-wide-AND-per-device
+    /// Settings toggle, see `set_gena_enabled()`) is true, start a GENA
+    /// session for this device now that it's in `Full` mode. No-op if one
+    /// is already running or already being started, or if either toggle is
+    /// off. Same fire-and-forget spawn-then-channel-back shape as
+    /// `ensure_upnp_client()`. Also wires up the NOTIFY-processing loop
+    /// (`spawn_gena_notify_loop()`) — its own
+    /// `glib::spawn_future_local`, reading a channel only this device's
+    /// `GenaSession` ever sends into, so it naturally ends once that
+    /// session's `stop()` drops every registered sender and the channel
+    /// closes — no separate cancellation needed.
     fn ensure_gena_session(&self) {
         {
             let inner = self.imp().inner.borrow();
@@ -3415,6 +3472,9 @@ impl DeviceState {
         }
         self.imp().inner.borrow_mut().gena_session_in_flight = true;
         let label = ip.clone();
+
+        let (notify_tx, notify_rx) = async_channel::bounded::<NotifyPayload>(32);
+        self.spawn_gena_notify_loop(notify_rx);
 
         let (tx, rx) = async_channel::bounded(1);
         self.rt().spawn(async move {
@@ -3432,7 +3492,7 @@ impl DeviceState {
             // subscribing 1s later than it otherwise would is invisible to
             // the user either way.
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-            let session = GenaSession::start(&ip, label).await;
+            let session = GenaSession::start(&ip, label, notify_tx).await;
             let _ = tx.send(session).await;
         });
 
@@ -3452,6 +3512,224 @@ impl DeviceState {
                 return;
             }
             inner.gena_session = Some(session);
+            // A session just (re)started — every service goes to
+            // `Subscribing` regardless of whether the device actually
+            // advertises it (an unadvertised service just never leaves
+            // `Subscribing`, which is harmless).
+            let subscribing = gena::GenaServiceState { health: gena::GenaHealth::Subscribing };
+            inner.gena_av = subscribing;
+            inner.gena_rc = subscribing;
+            inner.gena_pq = subscribing;
+        });
+    }
+
+    /// Reads parsed NOTIFY payloads off the channel and applies each one.
+    /// Ends on its own once `notify_rx`'s channel closes.
+    fn spawn_gena_notify_loop(&self, notify_rx: async_channel::Receiver<NotifyPayload>) {
+        let ds = self.downgrade();
+        glib::spawn_future_local(async move {
+            while let Ok(payload) = notify_rx.recv().await {
+                let Some(ds) = ds.upgrade() else { return };
+                ds.apply_gena_notify(&payload);
+            }
+        });
+    }
+
+    /// Applies one real NOTIFY's fields directly into `playback` (whichever
+    /// of status/title/artist/album, volume/mute, or shuffle/repeat this
+    /// particular NOTIFY carried — fields it didn't carry are left
+    /// untouched, not cleared) and marks that service `Healthy` — a NOTIFY
+    /// arriving at all is evidence the subscription is alive and
+    /// delivering, regardless of what it happened to carry (see
+    /// `GenaServiceState::notify_received()`'s doc comment). Emits
+    /// `playback-changed` if anything actually changed. `process_poll_http()`/
+    /// `process_poll_upnp()` only ever write one of these same fields back
+    /// into `playback` themselves when this service *isn't* `Healthy` —
+    /// while it is, a poll disagreeing is trusted to be catching up to (or
+    /// racing) this same NOTIFY, not evidence to act on immediately; see
+    /// `GenaServiceState::poll_mismatch()`.
+    fn apply_gena_notify(&self, payload: &NotifyPayload) {
+        let mut inner = self.imp().inner.borrow_mut();
+        let mut emit_input_changed = false;
+        let mut emit_inputs_changed = false;
+        let mut needs_immediate_poll = false;
+        let (mask, old_health, new_health): (u32, gena::GenaHealth, gena::GenaHealth) = match payload.service {
+            "AVTransport" => {
+                let ev = parse_av_transport_event(&payload.last_change);
+                let mut mask = 0;
+
+                // `PlaybackStorageMedium` shares its vocabulary with
+                // `GetInfoEx`'s `PlayMedium` (confirmed live across several
+                // devices — see `mode_from_play_medium()`'s doc comment).
+                // A real mode/input switch means this NOTIFY (and whatever
+                // comes right after it) describes a whole new content
+                // epoch: blank the stale baseline immediately rather than
+                // waiting for the next poll to notice, exactly like a
+                // poll-detected mode change already does. `source_name`/
+                // `caps` still need a real poll to resolve correctly
+                // (`TrackSource`/`GuiBehavior` aren't reliably in the
+                // NOTIFY), so this always triggers one regardless of
+                // whether the medium was recognized — an unrecognized
+                // value additionally gets an unconditional warning so real
+                // values can be reported and added to the table over time.
+                if let Some(medium) = &ev.playback_storage_medium {
+                    match playback::mode_from_play_medium(medium) {
+                        Some(new_mode) if new_mode != inner.current_mode => {
+                            let prev_mode = inner.current_mode;
+                            let (ic, oc) = Self::handle_input_mode_poll(self, &mut inner, true, new_mode);
+                            emit_input_changed  = ic;
+                            emit_inputs_changed = oc;
+                            needs_immediate_poll = true;
+                            mask |= playback_changed::ALL;
+                            dbg(self, &format!(
+                                "gena: AVTransport: PlaybackStorageMedium {medium:?} -> mode {prev_mode} → {new_mode}",
+                            ));
+                        }
+                        Some(_) => {} // matches current_mode already — nothing to do
+                        None => {
+                            eprintln!(
+                                "{} [gena] unrecognized PlaybackStorageMedium {medium:?} — possible mode \
+                                 change, triggering an immediate poll to confirm",
+                                super::timestamp(),
+                            );
+                            needs_immediate_poll = true;
+                        }
+                    }
+                }
+
+                if let Some(raw) = &ev.transport_state {
+                    let decoded = playback::decode_status_upnp(raw);
+                    if decoded != inner.playback.status {
+                        inner.playback.status = decoded;
+                        mask |= playback_changed::OTHER;
+                    }
+                }
+                if let Some(v) = &ev.title {
+                    if v.as_str() != inner.playback.title.as_ref() {
+                        inner.playback.title = Rc::from(v.as_str());
+                        mask |= playback_changed::TITLE;
+                    }
+                }
+                if let Some(v) = &ev.artist {
+                    if v.as_str() != inner.playback.artist.as_ref() {
+                        inner.playback.artist = Rc::from(v.as_str());
+                        mask |= playback_changed::ARTIST;
+                    }
+                }
+                if let Some(v) = &ev.album {
+                    if v.as_str() != inner.playback.album.as_ref() {
+                        inner.playback.album = Rc::from(v.as_str());
+                        mask |= playback_changed::ALBUM;
+                    }
+                }
+                let old = inner.gena_av.notify_received();
+                (mask, old, inner.gena_av.health)
+            }
+            "RenderingControl" => {
+                let ev = parse_rendering_control_event(&payload.last_change);
+                let mut mask = 0;
+                if let Some(v) = ev.volume {
+                    if v != inner.playback.volume {
+                        inner.playback.volume = v;
+                        mask |= playback_changed::VOLUME;
+                    }
+                }
+                if let Some(v) = ev.mute {
+                    if v != inner.playback.muted {
+                        inner.playback.muted = v;
+                        mask |= playback_changed::VOLUME;
+                    }
+                }
+                let old = inner.gena_rc.notify_received();
+                (mask, old, inner.gena_rc.health)
+            }
+            "PlayQueue" => {
+                let ev = parse_play_queue_event(&payload.last_change);
+                let mut mask = 0;
+                if let Some(loop_mode) = ev.loop_mode {
+                    let (shuffle, repeat) = playback::decode_loop_mode_http(loop_mode);
+                    if shuffle != inner.playback.shuffle || repeat != inner.playback.repeat {
+                        inner.playback.shuffle = shuffle;
+                        inner.playback.repeat = repeat;
+                        mask |= playback_changed::OTHER;
+                    }
+                }
+                let old = inner.gena_pq.notify_received();
+                (mask, old, inner.gena_pq.health)
+            }
+            _ => return,
+        };
+        drop(inner);
+        if new_health != old_health {
+            dbg(self, &format!("gena health: {}: {old_health:?} -> {new_health:?} (NOTIFY)", payload.service));
+        }
+        if emit_input_changed {
+            dbg(self, "signal: input-changed (from GENA NOTIFY)");
+            self.emit_by_name::<()>("input-changed", &[]);
+        }
+        if emit_inputs_changed {
+            dbg(self, "signal: inputs-changed (from GENA NOTIFY)");
+            self.emit_by_name::<()>("inputs-changed", &[]);
+        }
+        if mask != 0 {
+            dbg(self, &format!("signal: playback-changed mask={:#x} (from GENA {} NOTIFY)", mask, payload.service));
+            self.emit_by_name::<()>("playback-changed", &[&mask]);
+        }
+        if needs_immediate_poll {
+            self.trigger_poll();
+        }
+    }
+
+    /// Health-check tail, called from the end of both `process_poll_http()`/
+    /// `process_poll_upnp()` (after either's own `borrow_mut()` has already
+    /// closed): `av_mismatch`/`rc_mismatch`/`pq_mismatch` are `true` when
+    /// that poll's own comparison against `playback` found a value one of
+    /// these services should already have delivered via NOTIFY but hadn't
+    /// (or had delivered differently) — see each poll function's own doc
+    /// comment for how that comparison works. Advances the relevant
+    /// service's `GenaHealth` via `GenaServiceState::poll_mismatch()` and
+    /// forces a real `UNSUBSCRIBE`+`SUBSCRIBE` on whichever service(s) just
+    /// confirmed unhealthy. A no-op device-wide if all three flags are
+    /// `false` (by far the common case, so this never touches `inner` at
+    /// all when nothing changed).
+    fn check_gena_health(&self, av_mismatch: bool, rc_mismatch: bool, pq_mismatch: bool) {
+        if !av_mismatch && !rc_mismatch && !pq_mismatch {
+            return;
+        }
+        let (to_resubscribe, handle) = {
+            let mut inner = self.imp().inner.borrow_mut();
+            let mut to_resubscribe = Vec::new();
+            if av_mismatch {
+                let old = inner.gena_av.health;
+                if inner.gena_av.poll_mismatch() { to_resubscribe.push("AVTransport"); }
+                if inner.gena_av.health != old {
+                    dbg(self, &format!("gena health: AVTransport: {old:?} -> {:?} (poll mismatch)", inner.gena_av.health));
+                }
+            }
+            if rc_mismatch {
+                let old = inner.gena_rc.health;
+                if inner.gena_rc.poll_mismatch() { to_resubscribe.push("RenderingControl"); }
+                if inner.gena_rc.health != old {
+                    dbg(self, &format!("gena health: RenderingControl: {old:?} -> {:?} (poll mismatch)", inner.gena_rc.health));
+                }
+            }
+            if pq_mismatch {
+                let old = inner.gena_pq.health;
+                if inner.gena_pq.poll_mismatch() { to_resubscribe.push("PlayQueue"); }
+                if inner.gena_pq.health != old {
+                    dbg(self, &format!("gena health: PlayQueue: {old:?} -> {:?} (poll mismatch)", inner.gena_pq.health));
+                }
+            }
+            (to_resubscribe, inner.gena_session.as_ref().map(GenaSession::handle))
+        };
+        if to_resubscribe.is_empty() {
+            return;
+        }
+        let Some(handle) = handle else { return };
+        self.rt().spawn(async move {
+            for service in to_resubscribe {
+                handle.force_resubscribe(service).await;
+            }
         });
     }
 
@@ -3460,7 +3738,13 @@ impl DeviceState {
     /// sync context (this is itself called from `release_full()`, which
     /// `FullModeGuard`'s `Drop` impl calls).
     fn stop_gena_session(&self) {
-        let session = self.imp().inner.borrow_mut().gena_session.take();
+        let session = {
+            let mut inner = self.imp().inner.borrow_mut();
+            inner.gena_av = Default::default();
+            inner.gena_rc = Default::default();
+            inner.gena_pq = Default::default();
+            inner.gena_session.take()
+        };
         if let Some(session) = session {
             self.rt().spawn(async move { session.stop().await; });
         }

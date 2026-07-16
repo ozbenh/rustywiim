@@ -288,7 +288,7 @@ fn vendor_display(vendor: &str) -> &'static str {
         "iheartradio" | "iheart"            => "iHeartRadio",
         "spotify"                            => "Spotify",
         "tidal"                              => "TIDAL",
-        "amazon" | "amazonmusic"             => "Amazon Music",
+        "amazon" | "amazonmusic" | "prime"   => "Amazon Music",
         "deezer"                             => "Deezer",
         "qobuz"                              => "Qobuz",
         "pandora"                            => "Pandora",
@@ -406,41 +406,53 @@ fn is_physical_input_mode(mode: i32) -> bool {
     matches!(mode, 40 | 60 | 43 | 44 | 49 | 54)
 }
 
-/// Fabricates a substitute `mode`/`play_type` value from `PlayMedium` for
-/// devices whose `GetInfoEx` never carries `<PlayType>` at all (confirmed,
-/// 2026-07-13, on an Audio Pro Addon C5 — see `capabilities.rs`'s
-/// `FAMILY_AUDIO_PRO_ADDON_C5` doc comment). Zero extra network cost,
-/// unlike the alternative considered (fetching `getPlayerStatusEx` too,
-/// purely for its `mode` field) — `PlayMedium` is already present in the
-/// exact same `GetInfoEx` response, and its vocabulary is already fully
-/// mapped for input-source purposes elsewhere in this file
-/// (`decode_source_name_upnp`/`loop_tier_upnp`), so this just reuses that
-/// same mapping in the numeric direction instead. Confirmed against real
-/// captures both ways: `"NONE"` while genuinely idle
-/// (`NO_MEDIA_PRESENT`/no track), `"SPOTIFY"`/`"RADIO-NETWORK"` while
-/// playing.
+/// Fabricates a substitute `mode`/`play_type` value from a `PlayMedium`-
+/// shaped string — both `GetInfoEx`'s own `PlayMedium` (devices whose
+/// `GetInfoEx` never carries `<PlayType>` at all — confirmed, 2026-07-13,
+/// on an Audio Pro Addon C5, see `capabilities.rs`'s
+/// `FAMILY_AUDIO_PRO_ADDON_C5` doc comment) and GENA's `AVTransport`
+/// NOTIFY's `PlaybackStorageMedium` share this vocabulary (confirmed live:
+/// `"PHONO"`/`"TIDAL_CONNECT"`/`"SONGLIST-NETWORK"` all match values
+/// already in this table or `decode_source_name_upnp()`'s own table below).
+/// `None` for anything not in the confirmed list — the caller decides what
+/// to do with an unrecognized value (`mode_from_play_medium_fallback()`
+/// below still wants *some* number regardless; `DeviceState`'s GENA NOTIFY
+/// handling wants to know whether to trust it enough to skip triggering a
+/// confirming poll).
 ///
-/// The exact numeric value returned only matters for two things:
+/// The exact numeric value only matters for two things:
 /// `mode_to_input_source()`'s bucket (line-in/optical/HDMI/phono/
 /// bluetooth/"everything else is wifi") and `is_physical_input_mode()`'s
 /// bool — *not* for distinguishing between different streaming services
 /// (Spotify vs. TuneIn vs. Tidal), which `process_poll_upnp`'s separate
 /// `play_medium`/`track_source` diffing already handles on its own. So
-/// every unrecognized/streaming `PlayMedium` collapses to one arbitrary
-/// non-physical, non-idle placeholder (`10`) rather than needing its own
-/// distinct value.
-pub fn mode_from_play_medium_fallback(play_medium: &str) -> i32 {
+/// every confirmed non-physical streaming source shares one placeholder
+/// (`10`), not a distinct value each.
+pub fn mode_from_play_medium(play_medium: &str) -> Option<i32> {
     match play_medium {
-        "" | "NONE" | "UNKNOWN" => 0, // idle — matches `has_playable_content()`'s own `0` sentinel
-        "BLUETOOTH"  => 41,
-        "LINE-IN"    => 40,
-        "RCA"        => 44,
-        "OPTICAL"    => 43,
-        "HDMI"       => 49,
-        "PHONO"      => 54,
-        "SPOTIFY"    => 31, // confirmed live, 2026-07-13 — matches HTTP's own `31 => "Spotify"`
-        _            => 10, // any other/unknown streaming source — bucket-only, not a confirmed value
+        "" | "NONE" | "UNKNOWN" => Some(0), // idle — matches `has_playable_content()`'s own `0` sentinel
+        "BLUETOOTH"  => Some(41),
+        "LINE-IN"    => Some(40),
+        "RCA"        => Some(44),
+        "OPTICAL"    => Some(43),
+        "HDMI"       => Some(49),
+        "PHONO"      => Some(54),
+        "SPOTIFY"    => Some(31), // confirmed live, 2026-07-13 — matches HTTP's own `31 => "Spotify"`
+        // Both confirmed live, 2026-07-18, matching this device's own
+        // `getPlayerStatusEx` `mode` for the same session — see
+        // `decode_source_name_upnp()`'s own handling of these two values.
+        "TIDAL_CONNECT" | "SONGLIST-NETWORK" => Some(10),
+        _ => None, // unrecognized — not a confirmed value, let the caller decide
     }
+}
+
+/// `mode_from_play_medium()`, but with the generic "some other streaming
+/// source" bucket (`10`) substituted for anything unrecognized — for
+/// callers that need *a* value no matter what, since there's no other
+/// source of a mode number to fall back to (`fetch_upnp_fast_poll()`'s
+/// `PlayType`-missing case).
+pub fn mode_from_play_medium_fallback(play_medium: &str) -> i32 {
+    mode_from_play_medium(play_medium).unwrap_or(10)
 }
 
 /// `pywiim`'s `SOURCE_CAPABILITIES` table, translated into HTTP's
@@ -943,6 +955,11 @@ mod tests {
         assert_eq!(mode_from_play_medium_fallback("LINE-IN"), 40);
         assert_eq!(mode_from_play_medium_fallback("RCA"), 44);
         assert_eq!(mode_from_play_medium_fallback("SPOTIFY"), 31);
+        assert_eq!(mode_from_play_medium_fallback("TIDAL_CONNECT"), 10);
+        assert_eq!(mode_from_play_medium_fallback("SONGLIST-NETWORK"), 10);
+        assert_eq!(mode_from_play_medium_fallback("SOME_FUTURE_SERVICE"), 10);
+        assert_eq!(mode_from_play_medium("SOME_FUTURE_SERVICE"), None);
+        assert_eq!(mode_from_play_medium("TIDAL_CONNECT"), Some(10));
     }
 
     #[test]

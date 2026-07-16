@@ -436,7 +436,7 @@ pub(crate) fn extract_tag(xml: &str, tag: &str) -> Option<String> {
     Some(xml[start..end].trim().to_string())
 }
 
-fn extract_attr(tag_text: &str, attr: &str) -> Option<String> {
+pub(crate) fn extract_attr(tag_text: &str, attr: &str) -> Option<String> {
     let needle = format!("{attr}=\"");
     let start = tag_text.find(&needle)? + needle.len();
     let end = tag_text[start..].find('"')? + start;
