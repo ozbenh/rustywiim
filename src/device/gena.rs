@@ -754,6 +754,41 @@ impl GenaSession {
     }
 }
 
+/// Count of `spawn_tracked_stop()` calls whose `GenaSession::stop()` hasn't
+/// finished yet — lets `wait_for_all_stops()` wait deterministically for
+/// real `UNSUBSCRIBE` traffic to complete on quit, instead of a blind fixed
+/// sleep. `state.rs`'s two `session.stop()` call sites (`stop_gena_session()`
+/// and the "abandoned session" case in `ensure_gena_session()`'s async
+/// completion) both go through `spawn_tracked_stop()` rather than a bare
+/// `rt.spawn(async move { session.stop().await })`, so this always reflects
+/// every outstanding stop, not just ones fired during shutdown specifically.
+static PENDING_STOPS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// The one place any `GenaSession::stop()` call should go through.
+pub fn spawn_tracked_stop(rt: &tokio::runtime::Runtime, session: GenaSession) {
+    PENDING_STOPS.fetch_add(1, Ordering::SeqCst);
+    rt.spawn(async move {
+        session.stop().await;
+        PENDING_STOPS.fetch_sub(1, Ordering::SeqCst);
+    });
+}
+
+/// Waits until every `spawn_tracked_stop()`'d task has actually finished, or
+/// `timeout` elapses, whichever comes first. Called once from `main.rs`'s
+/// shutdown sequence in place of a fixed sleep: a normal quit (unsubscribes
+/// typically finish in well under a second) doesn't wait any longer than it
+/// has to, while a stuck/unreachable device still can't hang shutdown past
+/// `timeout`. Polls on a short interval rather than using a `Notify` — this
+/// runs once per process life on a path where a few extra milliseconds of
+/// latency are irrelevant, so the simpler, obviously-correct implementation
+/// wins over avoiding the poll.
+pub async fn wait_for_all_stops(timeout: Duration) {
+    let deadline = tokio::time::Instant::now() + timeout;
+    while PENDING_STOPS.load(Ordering::SeqCst) > 0 && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
 /// One service's entire lifetime, for as long as the session lives: keep
 /// retrying `SUBSCRIBE` every `RETRY_INTERVAL_SECS` **until it succeeds**,
 /// then renew on schedule until a renewal fails, then go right back to

@@ -3665,7 +3665,7 @@ impl DeviceState {
             // than leaving it running with nothing holding Full anymore.
             if inner.full_clients == 0 {
                 drop(inner);
-                ds.rt().spawn(async move { session.stop().await; });
+                gena::spawn_tracked_stop(&ds.rt(), session);
                 return;
             }
             inner.gena_session = Some(session);
@@ -3973,7 +3973,7 @@ impl DeviceState {
             inner.gena_session.take()
         };
         if let Some(session) = session {
-            self.rt().spawn(async move { session.stop().await; });
+            gena::spawn_tracked_stop(&self.rt(), session);
         }
     }
 

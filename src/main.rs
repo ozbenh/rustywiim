@@ -214,12 +214,12 @@ fn main() -> glib::ExitCode {
     // The runtime is driven by a permanent background thread, which blocks on
     // `shutdown_rx` rather than `pending()` so it can be signalled to stop
     // (and joined) on quit instead of being killed mid-flight by process exit.
-    // After the shutdown signal arrives, it waits out a short grace period
-    // before returning — long enough for an already-spawned cleanup task
-    // (concretely: a `GenaSession::stop()`'s real `UNSUBSCRIBE` calls, fired
-    // from window-close-on-quit) to actually be polled to completion by this
-    // same runtime, rather than being dropped mid-flight the instant this
-    // thread is joined and the process exits.
+    // After the shutdown signal arrives, it waits (deterministically, not a
+    // blind fixed sleep — see `device::gena::wait_for_all_stops()`) for
+    // already-spawned cleanup tasks (concretely: `GenaSession::stop()`'s real
+    // `UNSUBSCRIBE` calls, fired from window-close-on-quit) to actually
+    // finish, capped at 2s, rather than being dropped mid-flight the instant
+    // this thread is joined and the process exits.
     let rt = Arc::new(
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -234,7 +234,7 @@ fn main() -> glib::ExitCode {
             .spawn(move || {
                 rt2.block_on(async move {
                     let _ = shutdown_rx.await;
-                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                    device::gena::wait_for_all_stops(std::time::Duration::from_secs(2)).await;
                 });
             })
             .expect("tokio thread")
