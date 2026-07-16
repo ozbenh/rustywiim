@@ -304,9 +304,7 @@ impl PlaybackView {
             move |_, _, value| {
                 if let Some(obj) = weak.upgrade() {
                     if let Some(ds) = obj.imp().ds.get() {
-                        if let Some(c) = ds.client() {
-                            ds.rt().spawn(async move { let _ = c.seek(value as u32).await; });
-                        }
+                        ds.do_seek(value as u32);
                     }
                 }
                 glib::Propagation::Proceed
@@ -444,19 +442,29 @@ impl PlaybackView {
         let ps = ds.playback_state();
 
         if mask & (PC::TIME | PC::OTHER) != 0 {
+            // Position/duration are only valid while `Playing` or `Paused`
+            // (`device/state.rs` deliberately clears them to zero and won't
+            // trust a poll's reading of either otherwise, including an
+            // unrecognized `Unknown(_)` status) — the seek bar needs to
+            // agree, not just show "0:00" while still letting the (stale,
+            // previous track's) range/interactivity linger.
+            let seekable = ps.caps.can_seek && matches!(ps.status, PlaybackStatus::Playing | PlaybackStatus::Paused);
             if mask & PC::TIME != 0 {
                 let cur_s = ps.position.as_secs();
                 let tot_s = ps.duration.as_secs();
                 let seek = imp.seek.get().unwrap();
-                if tot_s > 0 {
-                    seek.set_range(0.0, tot_s as f64);
-                }
+                // Reset the range too, not just the value — leaving a stale
+                // (previous track's) upper bound while duration reads 0
+                // meant the thumb's on-screen position was still relative
+                // to the old range on the next `set_value()`, not visually
+                // "at zero" the way `pos`/`dur`'s labels already were.
+                seek.set_range(0.0, if tot_s > 0 { tot_s as f64 } else { 1.0 });
                 // Keep the fill empty while seeking isn't possible, rather
                 // than showing a real (but non-interactive/misleading)
                 // position — the position ticking away on a source with no
                 // real seek concept (radio, a physical input) reads as
                 // "there's a track here to scrub through," which isn't true.
-                seek.set_value(if ps.caps.can_seek { cur_s as f64 } else { 0.0 });
+                seek.set_value(if seekable { cur_s as f64 } else { 0.0 });
                 imp.pos.get().unwrap().set_label(&format!("{}:{:02}", cur_s / 60, cur_s % 60));
                 imp.dur.get().unwrap().set_label(&format!("{}:{:02}", tot_s / 60, tot_s % 60));
                 // Duration is meaningless when unknown (0), regardless of
@@ -467,7 +475,7 @@ impl PlaybackView {
                 // (still useful to know "how far in" even on a source with
                 // no seek concept, e.g. a live stream) — only hidden when
                 // seek is unavailable *and* there's nothing to show anyway.
-                imp.pos.get().unwrap().set_visible(ps.caps.can_seek || cur_s > 0);
+                imp.pos.get().unwrap().set_visible(seekable || cur_s > 0);
             }
             if mask & PC::OTHER != 0 {
                 let playing = matches!(ps.status, PlaybackStatus::Playing);
@@ -493,12 +501,12 @@ impl PlaybackView {
                 imp.shuffle.get().unwrap().set_sensitive(ps.caps.can_shuffle);
                 imp.repeat.get().unwrap().set_sensitive(ps.caps.can_repeat);
                 let seek = imp.seek.get().unwrap();
-                seek.set_sensitive(ps.caps.can_seek);
-                if !ps.caps.can_seek {
+                seek.set_sensitive(seekable);
+                if !seekable {
                     seek.set_value(0.0);
                 }
                 imp.dur.get().unwrap().set_visible(ps.duration.as_secs() > 0);
-                imp.pos.get().unwrap().set_visible(ps.caps.can_seek || ps.position.as_secs() > 0);
+                imp.pos.get().unwrap().set_visible(seekable || ps.position.as_secs() > 0);
             }
         }
 

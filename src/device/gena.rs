@@ -270,6 +270,15 @@ pub struct AvTransportEvent {
     /// Shares its vocabulary with `GetInfoEx`'s `TrackSource` — not acted
     /// on yet, kept for future use alongside `playback_storage_medium`.
     pub track_source: Option<String>,
+    /// `"HH:MM:SS"` wire format, same as `GetInfoEx`'s `TrackDuration` —
+    /// decode via `playback::decode_hms_duration`. Confirmed live: arrives
+    /// together with `TransportState val="PLAYING"` on a track change, in a
+    /// *separate* NOTIFY from the one carrying `CurrentTrackMetaData` (not
+    /// with `STOPPED`/`TRANSITIONING`, which carry neither this nor
+    /// metadata — see `apply_gena_notify()`'s clearing logic for those).
+    /// `CurrentMediaDuration` is also present alongside it in every capture
+    /// seen so far, always identical — not parsed separately.
+    pub track_duration: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -314,6 +323,7 @@ pub fn parse_av_transport_event(last_change: &str) -> AvTransportEvent {
         .map(|didl| super::upnp::parse_didl_item(&didl));
     let playback_storage_medium = extract_val_attr(last_change, "PlaybackStorageMedium");
     let track_source = extract_val_attr(last_change, "TrackSource");
+    let track_duration = extract_val_attr(last_change, "CurrentTrackDuration");
     AvTransportEvent {
         transport_state,
         title:  item.as_ref().map(|i| i.title.clone()),
@@ -328,6 +338,7 @@ pub fn parse_av_transport_event(last_change: &str) -> AvTransportEvent {
         gui_behavior:   item.as_ref().and_then(|i| i.gui_behavior.clone()),
         playback_storage_medium,
         track_source,
+        track_duration,
     }
 }
 
@@ -978,6 +989,29 @@ mod tests {
         assert_eq!(ev.album, None);
         assert_eq!(ev.album_art_uri, None);
         assert_eq!(ev.bitrate, None);
+        assert_eq!(ev.track_duration, None);
+    }
+
+    /// Real Audio Pro (built-in TIDAL) capture shape: the second half of a
+    /// track-change pair of NOTIFYs — the first carries `CurrentTrackMetaData`
+    /// and `TransportState val="TRANSITIONING"` (covered by
+    /// `av_transport_event_parses_playback_storage_medium_and_track_source`'s
+    /// Tidal case), this one carries `TransportState val="PLAYING"` and the
+    /// real duration, no song metadata at all.
+    #[test]
+    fn av_transport_event_parses_track_duration_with_playing_state() {
+        let last_change = r#"<Event xmlns="urn:schemas-upnp-org:metadata-1-0/AVT/">
+  <InstanceID val="0">
+    <TransportState val="PLAYING"/>
+    <CurrentTransportActions val="Stop,Seek,X_DLNA_SeekTime,Pause"/>
+    <CurrentTrackDuration val="00:06:44"/>
+    <CurrentMediaDuration val="00:06:44"/>
+  </InstanceID>
+</Event>"#;
+        let ev = parse_av_transport_event(last_change);
+        assert_eq!(ev.transport_state.as_deref(), Some("PLAYING"));
+        assert_eq!(ev.track_duration.as_deref(), Some("00:06:44"));
+        assert_eq!(ev.title, None);
     }
 
     /// Real WiiM Ultra capture shape (TuneIn "ABC Jazz" station NOTIFY) —

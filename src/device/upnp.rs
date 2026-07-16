@@ -227,6 +227,27 @@ impl UpnpClient {
         parse_info_ex_response(&body)
     }
 
+    /// Standard `AVTransport.GetPositionInfo` — just `RelTime`/
+    /// `TrackDuration`, the same "HH:MM:SS" wire format and tag names
+    /// `GetInfoEx` already uses for the same two fields (`decode_hms_duration`
+    /// decodes either). A much lighter call than `GetInfoEx`'s full bundle.
+    /// Not currently called anywhere — `DeviceState`'s seek-convergence
+    /// tracking forces full-rate `dispatch_fast_poll()` polling instead of
+    /// using this directly, deliberately kept simple for now. Kept (rather
+    /// than deleted) for a possible later optimization: issuing this
+    /// alongside/instead of a full poll specifically while waiting for a
+    /// seek to converge, to avoid the cost of a full `GetInfoEx` every
+    /// second during a multi-second settle.
+    #[allow(dead_code)]
+    pub async fn get_position_info(&self) -> anyhow::Result<(String, String)> {
+        let body = soap_call(&self.control_url, AV_TRANSPORT_SERVICE, "GetPositionInfo", "<InstanceID>0</InstanceID>").await?;
+        let rel_time = extract_tag(&body, "RelTime")
+            .ok_or_else(|| anyhow::anyhow!("GetPositionInfo response has no RelTime tag"))?;
+        let track_duration = extract_tag(&body, "TrackDuration")
+            .ok_or_else(|| anyhow::anyhow!("GetPositionInfo response has no TrackDuration tag"))?;
+        Ok((rel_time, track_duration))
+    }
+
     /// Fetches `GetKeyMapping` (no arguments — confirmed against Arylic's
     /// own `upnp_hack` reference scripts) and resolves it into the same
     /// `PresetFetchOutcome` shape `WiimClient::fetch_presets()` uses, so

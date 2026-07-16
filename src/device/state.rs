@@ -48,6 +48,12 @@ const SLOW_POLL_INTERVAL: Duration = Duration::from_secs(10);
 const SIMPLE_POLL_INTERVAL: Duration = Duration::from_secs(5);
 /// Volume commands are rate-limited: at most one per this interval.
 const VOLUME_DEBOUNCE: Duration = Duration::from_millis(500);
+/// Seek commands are rate-limited the same way — confirmed live that
+/// dragging the seek slider fires several `do_seek()` calls within
+/// milliseconds of each other, and sending each one individually (rather
+/// than just the final value once the drag settles) makes the device
+/// slower to actually reflect the real position, not just wasteful.
+const SEEK_DEBOUNCE: Duration = Duration::from_millis(500);
 /// After sending a volume command, poll-reported volume is distrusted for
 /// this long — a real device (confirmed on AudioCast) can keep reporting
 /// its *pre-command* volume for a moment after accepting a `SetVolume`, so
@@ -62,6 +68,20 @@ const VOLUME_POLL_SETTLE: Duration = Duration::from_secs(1);
 /// after whichever poll happened most recently — long enough that a real
 /// device has almost certainly applied the command that prompted it.
 const POLL_SETTLE_DELAY: Duration = Duration::from_millis(400);
+/// While `Inner::seek_pending`, a poll-reported position within this much
+/// of the optimistic target (`playback.position`, unchanged since
+/// `do_seek()` wrote it — see `maybe_update_position()`) counts as converged.
+/// Not exact equality: playback keeps advancing during the round-trip, and
+/// the device's own seek precision isn't exact either.
+const SEEK_CONVERGE_TOLERANCE: Duration = Duration::from_secs(2);
+/// Guardrail: give up waiting for `seek_pending` to converge after this
+/// long regardless (confirmed live a device can take several seconds to
+/// actually reflect a seek internally — see `maybe_update_position()`) and
+/// just trust whatever the next poll says. The other guardrail — a mode or
+/// track change firing while still seeking — is handled where those are
+/// already detected (`handle_input_mode_poll()` and each poller's own
+/// title/artist/album-change checks), not here.
+const SEEK_TIMEOUT: Duration = Duration::from_secs(5);
 /// While every GENA-covered service is confirmed `Healthy`, `dispatch_fast_poll()`
 /// skips this many consecutive 1s ticks (doing local position extrapolation
 /// instead — see `extrapolate_position_while_playing()`) before running an
@@ -709,6 +729,46 @@ struct Inner {
     target_volume:    i32,
     /// When the last volume API command was sent (None = never).
     last_volume_cmd:  Option<Instant>,
+    /// Pending seek target to send on the next 1s tick (`None` = none
+    /// pending) — same `VOLUME_DEBOUNCE`-style pattern as `target_volume`,
+    /// for the same reason: dragging the seek slider can fire many
+    /// `do_seek()` calls in quick succession, and confirmed live that
+    /// sending each one individually (as opposed to just the final value)
+    /// makes the device slower to settle on the real position, not just
+    /// wasteful.
+    target_seek:      Option<u32>,
+    /// When the last seek API command was actually sent (None = never) —
+    /// `SEEK_DEBOUNCE`'s counterpart to `last_volume_cmd`.
+    last_seek_cmd:    Option<Instant>,
+    /// The position `do_seek()` last actually sent to the device (`None` =
+    /// never). Confirmed live: consecutive `connect_change_value` events
+    /// can round to the same integer second more than `SEEK_DEBOUNCE`
+    /// apart, each one otherwise looking like a legitimately new command —
+    /// `do_seek()` drops a request outright when it matches this, since
+    /// the device has nothing new to do.
+    last_seek_sent_pos: Option<u32>,
+    /// `true` from the moment `do_seek()` issues a seek command until the
+    /// seek converges — a poll-reported position lands within
+    /// `SEEK_CONVERGE_TOLERANCE` of the optimistic target
+    /// (`maybe_update_position()`) — or one of two guardrails fires instead:
+    /// `SEEK_TIMEOUT` elapses, or a mode/track change is detected while
+    /// still seeking (checked in `handle_input_mode_poll()` and each
+    /// poller's own title/artist/album-change logic — a change means
+    /// whatever we were seeking *within* isn't current anymore anyway).
+    /// While set, two things happen: `extrapolate_position_while_playing()`
+    /// doesn't advance `position` at all (without this, extrapolation kept
+    /// advancing from the *pre-seek* baseline during the round-trip,
+    /// confirmed live: seeking to 141s from ~53s showed "54s" for about a
+    /// second before snapping to 141s — unrelated to the seek target, just
+    /// the old value plus one extrapolation tick), and `dispatch_fast_poll()`
+    /// forces full-rate polling regardless of `GenaHealth` (same mechanism
+    /// as `bt_pending` — GENA has no eventable position of any kind, and a
+    /// real device confirmed live can take several seconds to actually
+    /// reflect a seek internally, so a single delayed check isn't reliable).
+    seek_pending: bool,
+    /// Wall-clock instant `do_seek()` last issued a seek command, alongside
+    /// setting `seek_pending` — the anchor `SEEK_TIMEOUT` counts from.
+    seek_issued_at: Option<Instant>,
     /// When the last `SetMute` command was sent (None = never) — same
     /// settle-window role as `last_volume_cmd`, see `do_set_mute()`.
     last_mute_cmd:    Option<Instant>,
@@ -824,12 +884,17 @@ impl Default for Inner {
             preset_art_inflight: HashSet::new(),
             target_volume:    -1,
             last_volume_cmd:  None,
+            target_seek:      None,
+            last_seek_cmd:    None,
+            last_seek_sent_pos: None,
             last_mute_cmd:    None,
             last_slow_poll:   None,
             last_poll:        None,
             fast_poll_skip_ticks: 0,
             ever_polled: false,
             position_synced_at: None,
+            seek_pending: false,
+            seek_issued_at: None,
             slow_poll_active: false,
             slow_poll_phase:  SlowPollPhase::FIRST,
             fast_poll_handle: None,
@@ -1519,6 +1584,22 @@ impl DeviceState {
             None
         };
 
+        // Flush any pending debounced seek the same way — see `do_seek()`'s
+        // doc comment.
+        let pending_seek = if inner.target_seek.is_some()
+            && inner.target_seek != inner.last_seek_sent_pos
+            && inner.last_seek_cmd
+                .map_or(true, |t| now.duration_since(t) >= SEEK_DEBOUNCE)
+        {
+            let s = inner.target_seek.take();
+            inner.last_seek_cmd      = Some(now);
+            inner.last_seek_sent_pos = s;
+            inner.seek_issued_at     = Some(now);
+            s
+        } else {
+            None
+        };
+
         // Same "don't pile on top of a still-outstanding call" reasoning as
         // `fast_poll_handle` (see its doc comment) — don't even advance
         // the rotation while the previous phase's call hasn't resolved yet,
@@ -1552,6 +1633,9 @@ impl DeviceState {
         if let Some(vol) = pending_vol {
             let cv = client.clone();
             self.rt().spawn(async move { let _ = cv.set_volume(vol).await; });
+        }
+        if let Some(pos) = pending_seek {
+            self.dispatch_seek(pos, Some(client.clone()));
         }
 
         self.dispatch_fast_poll(false);
@@ -1888,10 +1972,15 @@ impl DeviceState {
             // normal cadence reduction resumes (a disconnect is expected to
             // surface some other detectable state change).
             let bt_pending = want_bt && !inner.playback.bt_connected;
+            // GENA has no eventable position of any kind either (see
+            // `Inner::seek_pending`'s doc comment) — same reasoning as
+            // `bt_pending`: force full-rate polling until the seek
+            // converges, times out, or the state changes out from under it.
+            let seek_pending = inner.seek_pending;
             // `ever_polled` guards against GENA racing to `Healthy` on every
             // service before the first real poll for this connection has
             // ever run — see its doc comment on `Inner`.
-            let skip_this_tick = !force && gena_fully_healthy && inner.ever_polled && !bt_pending
+            let skip_this_tick = !force && gena_fully_healthy && inner.ever_polled && !bt_pending && !seek_pending
                 && inner.fast_poll_skip_ticks < GENA_HEALTHY_FAST_POLL_TICKS;
             if skip_this_tick {
                 inner.fast_poll_skip_ticks += 1;
@@ -1904,6 +1993,8 @@ impl DeviceState {
                     dbg(self, "fast poll: dispatching (forced)");
                 } else if bt_pending {
                     dbg(self, "fast poll: dispatching (Bluetooth pending connection, staying at full cadence)");
+                } else if seek_pending {
+                    dbg(self, "fast poll: dispatching (seek pending, staying at full cadence)");
                 } else if gena_fully_healthy {
                     dbg(self, if inner.ever_polled {
                         "fast poll: dispatching (GENA healthy, periodic consistency check)"
@@ -1957,6 +2048,34 @@ impl DeviceState {
         }
     }
 
+    /// Called by every poller's result handler with a freshly-decoded
+    /// position reading, *after* that handler has already applied its own
+    /// state/input-change detection (which may have cleared `seek_pending`
+    /// itself — see that field's doc comment on the mode/track-change
+    /// guardrail; this function only implements the other two conditions:
+    /// convergence and timeout). Returns `true` if `decoded_pos` should be
+    /// applied normally; `false` if it should be suppressed in favor of
+    /// the optimistic value `do_seek()` already wrote.
+    fn maybe_update_position(inner: &mut Inner, decoded_pos: Duration) -> bool {
+        if !inner.seek_pending {
+            return true;
+        }
+        if inner.seek_issued_at.is_none_or(|t| Instant::now().duration_since(t) >= SEEK_TIMEOUT) {
+            inner.seek_pending = false;
+            return true;
+        }
+        // The optimistic target `do_seek()` wrote and neither this
+        // function nor `extrapolate_position_while_playing()` has touched
+        // since (the latter no-ops entirely while `seek_pending`).
+        let target = inner.playback.position;
+        let diff = decoded_pos.max(target) - decoded_pos.min(target);
+        if diff <= SEEK_CONVERGE_TOLERANCE {
+            inner.seek_pending = false;
+            return true;
+        }
+        false
+    }
+
     /// Fills the gap `dispatch_fast_poll()`'s skipped ticks leave: advances
     /// `playback.position` by plain wall-clock elapsed time since it was
     /// last known-good, clamped to `duration`. A no-op unless actually
@@ -1973,6 +2092,11 @@ impl DeviceState {
         if inner.playback.status != playback::PlaybackStatus::Playing {
             return;
         }
+        // See `Inner::seek_pending`'s doc comment — don't advance from the
+        // pre-seek baseline while still waiting for the seek to converge.
+        if inner.seek_pending {
+            return;
+        }
         let now = Instant::now();
         let elapsed = inner.position_synced_at.map_or(Duration::ZERO, |t| now.duration_since(t));
         let new_position = (inner.playback.position + elapsed).min(inner.playback.duration);
@@ -1980,9 +2104,13 @@ impl DeviceState {
         if new_position == inner.playback.position {
             return;
         }
+        let old_position = inner.playback.position;
         inner.playback.position = new_position;
         drop(inner);
-        dbg(self, "signal: playback-changed mask=TIME (extrapolated, GENA healthy)");
+        dbg(self, &format!(
+            "extrapolate: position {}s -> {}s (+{}ms, GENA healthy)",
+            old_position.as_secs(), new_position.as_secs(), elapsed.as_millis(),
+        ));
         self.emit_by_name::<()>("playback-changed", &[&playback_changed::TIME]);
     }
 
@@ -2218,6 +2346,10 @@ impl DeviceState {
     /// the stale greyed-out styling on that entry.
     fn apply_mode_change(ds: &DeviceState, inner: &mut Inner, new_mode: i32) -> bool {
         inner.current_mode = new_mode;
+        // A mode/input switch means whatever we were seeking within isn't
+        // current anymore — see `Inner::seek_pending`'s doc comment on this
+        // guardrail.
+        inner.seek_pending = false;
         Self::blank_playback_baseline(ds, inner);
         // Not (still) Bluetooth: nothing left to track for it either.
         if capabilities::mode_to_input_source(new_mode) != "bluetooth" {
@@ -2796,21 +2928,61 @@ impl DeviceState {
                 if vol_changed && !rc_trusted  { inner.playback.volume = st.vol;  playback_mask |= playback_changed::VOLUME; }
                 if mute_changed && !rc_trusted { inner.playback.muted  = st.mute; playback_mask |= playback_changed::VOLUME; }
 
-                if timing_valid {
+                let decoded_status = playback::decode_status_http(&st.status);
+                // Position/duration only mean anything while `Playing` or
+                // `Paused` — anything else (`Stopped`, `Loading`/mid-
+                // transition, or an unrecognized `Unknown(_)` wire value we
+                // don't even understand) has no valid position by
+                // definition, not just the two states we happen to know
+                // are "between tracks". A poll landing mid-transition can
+                // report a stale/intermediate reading otherwise, fighting
+                // with `apply_gena_notify()`'s own clear-to-zero logic for
+                // the same states.
+                let has_valid_position = matches!(decoded_status, playback::PlaybackStatus::Playing | playback::PlaybackStatus::Paused);
+                if timing_valid && has_valid_position {
                     let (pos, dur) = playback::decode_timing_http(st.curpos, st.totlen, st.mode);
-                    // Always resynced here, whether or not it actually
-                    // changed this tick — this is the one real ground-truth
-                    // reading `extrapolate_position_while_playing()`'s
-                    // wall-clock math measures forward from.
-                    inner.position_synced_at = Some(Instant::now());
-                    if pos != inner.playback.position || dur != inner.playback.duration {
-                        inner.playback.position = pos;
-                        inner.playback.duration = dur;
-                        playback_mask |= playback_changed::TIME;
+                    if Self::maybe_update_position(&mut inner, pos) {
+                        // Always resynced here, whether or not it actually
+                        // changed this tick — this is the one real
+                        // ground-truth reading
+                        // `extrapolate_position_while_playing()`'s
+                        // wall-clock math measures forward from.
+                        inner.position_synced_at = Some(Instant::now());
+                        if pos != inner.playback.position || dur != inner.playback.duration {
+                            dbg(self, &format!(
+                                "poll (http): position {}s/{}s -> {}s/{}s (status={:?})",
+                                inner.playback.position.as_secs(), inner.playback.duration.as_secs(),
+                                pos.as_secs(), dur.as_secs(), decoded_status,
+                            ));
+                            inner.playback.position = pos;
+                            inner.playback.duration = dur;
+                            playback_mask |= playback_changed::TIME;
+                        }
                     }
+                } else if !has_valid_position
+                    && (inner.playback.position != Duration::ZERO || inner.playback.duration != Duration::ZERO)
+                {
+                    // A track ending/changing mid-seek means whatever we
+                    // were seeking within isn't current anymore — see
+                    // `Inner::seek_pending`'s doc comment on this guardrail.
+                    inner.seek_pending = false;
+                    dbg(self, &format!(
+                        "poll (http): clearing position {}s/{}s -> 0s/0s (status={:?}, between tracks)",
+                        inner.playback.position.as_secs(), inner.playback.duration.as_secs(), decoded_status,
+                    ));
+                    // Refusing to *write* a stale reading above isn't the
+                    // same as clearing it — without this, a poll (as
+                    // opposed to a NOTIFY, which `apply_gena_notify()`
+                    // already clears explicitly) landing on `Stopped`/
+                    // `Loading` left whatever `position`/`duration` was
+                    // showing before untouched forever, since nothing else
+                    // ever writes to it during the transition.
+                    inner.playback.position = Duration::ZERO;
+                    inner.playback.duration = Duration::ZERO;
+                    inner.position_synced_at = Some(Instant::now());
+                    playback_mask |= playback_changed::TIME;
                 }
 
-                let decoded_status = playback::decode_status_http(&st.status);
                 let status_mismatch = decoded_status != inner.playback.status;
                 let (decoded_shuffle, decoded_repeat) = playback::decode_loop_mode_http(st.loop_mode);
                 let loop_mode_mismatch = decoded_shuffle != inner.playback.shuffle || decoded_repeat != inner.playback.repeat;
@@ -2832,6 +3004,11 @@ impl DeviceState {
                 if status_mismatch && !av_trusted {
                     inner.playback.status = decoded_status;
                     playback_mask |= playback_changed::OTHER;
+                    // See `apply_gena_notify()`'s identical comment: any
+                    // status transition resets the extrapolation clock's
+                    // anchor, so a Paused → Playing change doesn't compute
+                    // elapsed time all the way back from before the pause.
+                    inner.position_synced_at = Some(Instant::now());
                 }
                 if loop_mode_mismatch && !pq_trusted {
                     inner.playback.shuffle = decoded_shuffle;
@@ -2893,7 +3070,14 @@ impl DeviceState {
                     let title_changed  = m.title.as_str()  != inner.playback.title.as_ref();
                     let artist_changed = m.artist.as_str() != inner.playback.artist.as_ref();
                     let album_changed  = m.album.as_str()  != inner.playback.album.as_ref();
-                    if !mode_changed_this_tick && (title_changed || artist_changed || album_changed) { av_mismatch = true; }
+                    if title_changed || artist_changed || album_changed {
+                        // A track change means whatever we were seeking
+                        // within isn't current anymore — see
+                        // `Inner::seek_pending`'s doc comment on this
+                        // guardrail.
+                        inner.seek_pending = false;
+                        if !mode_changed_this_tick { av_mismatch = true; }
+                    }
                     if title_changed && !av_trusted {
                         inner.playback.title = Rc::from(m.title.as_str());
                         playback_mask |= playback_changed::TITLE;
@@ -3037,6 +3221,11 @@ impl DeviceState {
             }
 
             let decoded_status = playback::decode_status_upnp(&info.transport_state);
+            // See `process_poll_http()`'s identical comment: valid only
+            // while `Playing` or `Paused` — everything else (including an
+            // unrecognized `Unknown(_)`) has no valid position by
+            // definition.
+            let has_valid_position = matches!(decoded_status, playback::PlaybackStatus::Playing | playback::PlaybackStatus::Paused);
             let status_mismatch = decoded_status != inner.playback.status;
             let (decoded_shuffle, decoded_repeat) = playback::decode_loop_mode_http(info.loop_mode);
             let loop_mode_mismatch = decoded_shuffle != inner.playback.shuffle || decoded_repeat != inner.playback.repeat;
@@ -3052,8 +3241,13 @@ impl DeviceState {
             let av_trusted = !mode_changed && inner.gena_av.health == gena::GenaHealth::Healthy;
             let pq_trusted = !mode_changed && inner.gena_pq.health == gena::GenaHealth::Healthy;
             if status_mismatch && !av_trusted {
-                inner.playback.status = decoded_status;
+                inner.playback.status = decoded_status.clone();
                 playback_mask |= playback_changed::OTHER;
+                // See `apply_gena_notify()`'s identical comment: any status
+                // transition resets the extrapolation clock's anchor, so a
+                // Paused → Playing change doesn't compute elapsed time all
+                // the way back from before the pause started.
+                inner.position_synced_at = Some(Instant::now());
             }
             if loop_mode_mismatch && !pq_trusted {
                 inner.playback.shuffle = decoded_shuffle;
@@ -3061,14 +3255,44 @@ impl DeviceState {
                 playback_mask |= playback_changed::OTHER;
             }
 
-            let decoded_pos = playback::decode_hms_duration(&info.rel_time);
-            let decoded_dur = playback::decode_hms_duration(&info.track_duration);
-            // See `process_poll_http()`'s identical comment: always
-            // resynced here regardless of whether it changed this tick.
-            inner.position_synced_at = Some(Instant::now());
-            if decoded_pos != inner.playback.position || decoded_dur != inner.playback.duration {
-                inner.playback.position = decoded_pos;
-                inner.playback.duration = decoded_dur;
+            if has_valid_position {
+                let decoded_pos = playback::decode_hms_duration(&info.rel_time);
+                let decoded_dur = playback::decode_hms_duration(&info.track_duration);
+                if Self::maybe_update_position(&mut inner, decoded_pos) {
+                    // Always resynced here, whether or not it actually
+                    // changed this tick — this is the one real
+                    // ground-truth reading
+                    // `extrapolate_position_while_playing()`'s wall-clock
+                    // math measures forward from.
+                    inner.position_synced_at = Some(Instant::now());
+                    if decoded_pos != inner.playback.position || decoded_dur != inner.playback.duration {
+                        dbg(self, &format!(
+                            "poll (upnp): position {}s/{}s -> {}s/{}s (status={:?})",
+                            inner.playback.position.as_secs(), inner.playback.duration.as_secs(),
+                            decoded_pos.as_secs(), decoded_dur.as_secs(), decoded_status,
+                        ));
+                        inner.playback.position = decoded_pos;
+                        inner.playback.duration = decoded_dur;
+                        playback_mask |= playback_changed::TIME;
+                    }
+                }
+            } else if !has_valid_position
+                && (inner.playback.position != Duration::ZERO || inner.playback.duration != Duration::ZERO) {
+                // See `process_poll_http()`'s identical comment on this
+                // guardrail.
+                inner.seek_pending = false;
+                dbg(self, &format!(
+                    "poll (upnp): clearing position {}s/{}s -> 0s/0s (status={:?}, between tracks)",
+                    inner.playback.position.as_secs(), inner.playback.duration.as_secs(), decoded_status,
+                ));
+                // See `process_poll_http()`'s identical comment: refusing to
+                // *write* a stale reading above isn't the same as clearing
+                // it — without this the old position just sits there
+                // forever once a poll (not a NOTIFY) is what reports the
+                // transition.
+                inner.playback.position = Duration::ZERO;
+                inner.playback.duration = Duration::ZERO;
+                inner.position_synced_at = Some(Instant::now());
                 playback_mask |= playback_changed::TIME;
             }
 
@@ -3121,7 +3345,12 @@ impl DeviceState {
                 let title_changed  = info.title.as_str()  != inner.playback.title.as_ref();
                 let artist_changed = info.artist.as_str() != inner.playback.artist.as_ref();
                 let album_changed  = info.album.as_str()  != inner.playback.album.as_ref();
-                if title_changed || artist_changed || album_changed { av_mismatch = true; }
+                if title_changed || artist_changed || album_changed {
+                    // See `process_poll_http()`'s identical comment on this
+                    // guardrail.
+                    inner.seek_pending = false;
+                    av_mismatch = true;
+                }
                 if title_changed && !av_trusted {
                     inner.playback.title = Rc::from(info.title.as_str());
                     playback_mask |= playback_changed::TITLE;
@@ -3358,28 +3587,113 @@ impl DeviceState {
         self.rt().spawn(async move {
             if playing { let _ = client.pause().await; } else { let _ = client.play().await; }
         });
-        // See `do_set_mute()`'s identical comment: AVTransport's own NOTIFY
-        // already confirms play/pause reliably while healthy, so a real
-        // poll on top is only needed as a fallback.
+        // AVTransport's own NOTIFY reliably confirms play/pause status
+        // while healthy — a real poll on top is only needed as a fallback.
+        // Unlike `do_seek()`, play/pause doesn't jump `position` at all
+        // (the pause/resume extrapolation-clock reset in `apply_gena_notify()`/
+        // both poll paths' status-transition handling already keeps it
+        // correct across the toggle), so no seek-style convergence tracking
+        // applies here.
         if self.imp().inner.borrow().gena_av.health != gena::GenaHealth::Healthy {
             self.trigger_poll();
         }
     }
 
+    // Unlike `do_play_pause()`/`do_set_mute()`, this always triggers a
+    // poll regardless of `gena_av`'s health: prev/next changes the *entire
+    // track* (title/artist/album/art/duration/quality/…), not just
+    // `position` the way `do_seek()` does — position specifically is the
+    // one thing NOTIFY never carries (not eventable in the UPnP AVTransport
+    // service to begin with — polled via `GetInfoEx`, same reason
+    // `extrapolate_position_while_playing()` exists). Without this, jumping
+    // tracks while GENA is healthy left position/duration stuck at the
+    // previous track's values (clamped there by
+    // `extrapolate_position_while_playing()`'s own `.min(duration)`) until
+    // the next ~30s consistency-check poll. (Ideally NOTIFY alone would be
+    // trustworthy enough to drop this poll entirely — not done yet.)
     pub fn do_prev(&self) {
         let Some(client) = self.imp().inner.borrow().client.clone() else { return };
         self.rt().spawn(async move { let _ = client.prev().await; });
-        if self.imp().inner.borrow().gena_av.health != gena::GenaHealth::Healthy {
-            self.trigger_poll();
-        }
+        self.trigger_poll();
     }
 
+    /// See `do_prev()`'s doc comment — same reasoning, always triggers.
     pub fn do_next(&self) {
         let Some(client) = self.imp().inner.borrow().client.clone() else { return };
         self.rt().spawn(async move { let _ = client.next().await; });
-        if self.imp().inner.borrow().gena_av.health != gena::GenaHealth::Healthy {
-            self.trigger_poll();
+        self.trigger_poll();
+    }
+
+    /// Seeking directly changes `playback.position`, which — unlike
+    /// `do_prev()`/`do_next()`/`do_play_pause()`'s fields — no GENA NOTIFY
+    /// ever carries at all, so `seek_pending` forces `dispatch_fast_poll()`
+    /// to full-rate polling regardless of `GenaHealth` until the seek
+    /// converges (see `Inner::seek_pending`'s doc comment) — no separate
+    /// dedicated resync call needed.
+    ///
+    /// Debounced the same way `do_set_volume()` debounces volume commands
+    /// (`target_seek`/`last_seek_cmd`/`SEEK_DEBOUNCE`, flushed on the next
+    /// 1s tick — see `do_poll()`): confirmed live that dragging the seek
+    /// slider fires several calls within milliseconds of each other, and
+    /// sending each one individually (rather than just the final value
+    /// once the drag settles) made the device slower to actually reflect
+    /// the real position, not just wasteful. Also drops a request outright
+    /// (no send, no debounce entry) when it exactly matches whatever was
+    /// last actually sent (`last_seek_sent_pos`) — confirmed live that
+    /// consecutive `connect_change_value` events can round to the same
+    /// integer second more than `SEEK_DEBOUNCE` apart. The optimistic UI
+    /// update (below) still happens on *every* call regardless of any of
+    /// this — the slider should visually track the drag in real time even
+    /// though the device only ever hears about the final value.
+    pub fn do_seek(&self, position_secs: u32) {
+        let (send_now, dropped_duplicate, client) = {
+            let mut inner = self.imp().inner.borrow_mut();
+            inner.seek_pending = true;
+            // Optimistic, same spirit as `do_set_volume()`: show the
+            // requested position immediately rather than waiting on a poll
+            // that (confirmed live) can still return the *pre-seek*
+            // position for several seconds — see `maybe_update_position()`.
+            inner.playback.position = Duration::from_secs(u64::from(position_secs));
+            inner.position_synced_at = Some(Instant::now());
+
+            if inner.last_seek_sent_pos == Some(position_secs) {
+                // See `Inner::last_seek_sent_pos`'s doc comment — nothing
+                // new to tell the device. Doesn't touch `target_seek`: a
+                // *different*, more recent value could already be pending
+                // there, and this duplicate must not wipe it out.
+                (false, true, None)
+            } else {
+                let now = Instant::now();
+                let since_last = inner.last_seek_cmd.map_or(SEEK_DEBOUNCE, |t| now.duration_since(t));
+                if since_last < SEEK_DEBOUNCE {
+                    inner.target_seek = Some(position_secs);
+                    (false, false, None)
+                } else {
+                    inner.target_seek       = None;
+                    inner.last_seek_cmd     = Some(now);
+                    inner.last_seek_sent_pos = Some(position_secs);
+                    inner.seek_issued_at    = Some(now);
+                    (true, false, inner.client.clone())
+                }
+            }
+        };
+        dbg(self, &format!(
+            "seek: requesting position {position_secs}s{}",
+            if send_now { "" } else if dropped_duplicate { " (duplicate of last sent, dropped)" } else { " (debounced, pending)" },
+        ));
+        self.emit_by_name::<()>("playback-changed", &[&playback_changed::TIME]);
+        if send_now {
+            self.dispatch_seek(position_secs, client);
         }
+    }
+
+    /// Actually sends the seek command — shared by `do_seek()`'s immediate
+    /// path and the debounced flush (`do_poll()`). No dedicated resync to
+    /// schedule: `seek_pending` (already set by `do_seek()`) is what forces
+    /// `dispatch_fast_poll()` to full-rate polling until convergence.
+    fn dispatch_seek(&self, position_secs: u32, client: Option<WiimClient>) {
+        let Some(client) = client else { return };
+        self.rt().spawn(async move { let _ = client.seek(position_secs).await; });
     }
 
     /// Takes canonical `(shuffle, repeat)` — `ui/` never passes a raw wire
@@ -3776,27 +4090,117 @@ impl DeviceState {
 
                 if let Some(raw) = &ev.transport_state {
                     let decoded = playback::decode_status_upnp(raw);
+                    // Position/duration are only valid while `Playing` or
+                    // `Paused` (see `process_poll_http()`'s identical
+                    // comment) — any other status here (`STOPPED`,
+                    // `TRANSITIONING`, or an unrecognized value) means
+                    // whatever `position`/`duration` currently hold
+                    // describe a track that's gone or about to be replaced —
+                    // clear them rather than let a stale number sit on
+                    // screen (or get clamped there by
+                    // `extrapolate_position_while_playing()`) until the
+                    // `PLAYING` NOTIFY's real `CurrentTrackDuration` (parsed
+                    // below) catches up.
+                    let has_valid_position = matches!(decoded, playback::PlaybackStatus::Playing | playback::PlaybackStatus::Paused);
                     if decoded != inner.playback.status {
-                        inner.playback.status = decoded;
+                        inner.playback.status = decoded.clone();
                         mask |= playback_changed::OTHER;
+                        // Any status transition resets the extrapolation
+                        // clock's anchor — critical for Paused → Playing:
+                        // `extrapolate_position_while_playing()` doesn't
+                        // touch `position_synced_at` while paused (position
+                        // is meant to stay put, not advance), so without
+                        // this reset here, resuming would compute elapsed
+                        // time all the way back from whenever the anchor was
+                        // last set *before* the pause, jumping position
+                        // forward by however long the whole pause lasted.
+                        // Doesn't touch `position` itself — pausing must not
+                        // change what's displayed, only stop it advancing.
+                        inner.position_synced_at = Some(Instant::now());
+                    }
+                    if !has_valid_position {
+                        // See `process_poll_http()`'s identical comment on
+                        // this guardrail.
+                        inner.seek_pending = false;
+                        if inner.playback.position != Duration::ZERO || inner.playback.duration != Duration::ZERO {
+                            dbg(self, &format!(
+                                "gena NOTIFY: clearing position {}s/{}s -> 0s/0s (status={decoded:?}, between tracks)",
+                                inner.playback.position.as_secs(), inner.playback.duration.as_secs(),
+                            ));
+                            inner.playback.position = Duration::ZERO;
+                            inner.playback.duration = Duration::ZERO;
+                            mask |= playback_changed::TIME;
+                        }
                     }
                 }
+                // `CurrentTrackDuration` is eventable (confirmed live,
+                // arriving with `TransportState val="PLAYING"` on a track
+                // change) — continuous *position* isn't (not eventable in
+                // the UPnP AVTransport service at all, polled via
+                // `GetPositionInfo`/`GetInfoEx`, same reason
+                // `extrapolate_position_while_playing()` exists). A fresh
+                // duration means a fresh track just started, so position
+                // resets to zero here rather than waiting on a poll. Gated
+                // on the canonical status actually being `Playing` by this
+                // point (updated just above, from this same NOTIFY, if it
+                // carried `TransportState` at all) — a stale/redundant
+                // `CurrentTrackDuration` value co-arriving on a
+                // `STOPPED`/`TRANSITIONING` NOTIFY must not undo that same
+                // block's clear-to-zero.
+                if let Some(raw) = &ev.track_duration {
+                    if inner.playback.status == playback::PlaybackStatus::Playing {
+                        let decoded = playback::decode_hms_duration(raw);
+                        // Only the *duration* actually changing means a
+                        // fresh track — `position` is non-zero for
+                        // basically this entire event's whole existence
+                        // during normal playback (it's constantly
+                        // advancing), so it must not be part of this
+                        // condition: including it made this fire on every
+                        // `CurrentTrackDuration`-bearing NOTIFY regardless
+                        // of whether the duration was actually new,
+                        // resetting position to zero mid-song.
+                        if decoded != inner.playback.duration {
+                            dbg(self, &format!(
+                                "gena NOTIFY: duration {}s -> {}s, position -> 0s (CurrentTrackDuration={raw:?})",
+                                inner.playback.duration.as_secs(), decoded.as_secs(),
+                            ));
+                            inner.playback.duration = decoded;
+                            inner.playback.position = Duration::ZERO;
+                            inner.position_synced_at = Some(Instant::now());
+                            mask |= playback_changed::TIME;
+                        }
+                    }
+                }
+                // A track change here (song ending naturally and advancing,
+                // not just a mode/input switch) also needs a confirming
+                // poll for anything this NOTIFY didn't happen to carry
+                // itself (title/artist/album, or a `PLAYING` transition with
+                // no accompanying `CurrentTrackDuration`) — see `do_prev()`'s
+                // identical reasoning for the explicit-command case.
                 if let Some(v) = &ev.title {
                     if v.as_str() != inner.playback.title.as_ref() {
                         inner.playback.title = Rc::from(v.as_str());
                         mask |= playback_changed::TITLE;
+                        needs_immediate_poll = true;
+                        // See `Inner::seek_pending`'s doc comment on this
+                        // guardrail.
+                        inner.seek_pending = false;
                     }
                 }
                 if let Some(v) = &ev.artist {
                     if v.as_str() != inner.playback.artist.as_ref() {
                         inner.playback.artist = Rc::from(v.as_str());
                         mask |= playback_changed::ARTIST;
+                        needs_immediate_poll = true;
+                        inner.seek_pending = false;
                     }
                 }
                 if let Some(v) = &ev.album {
                     if v.as_str() != inner.playback.album.as_ref() {
                         inner.playback.album = Rc::from(v.as_str());
                         mask |= playback_changed::ALBUM;
+                        needs_immediate_poll = true;
+                        inner.seek_pending = false;
                     }
                 }
                 // Same DIDL-Lite item `GetInfoEx` parses (see
