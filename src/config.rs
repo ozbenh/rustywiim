@@ -41,6 +41,10 @@ pub fn set_config_path_override(path: PathBuf) {
 fn default_panel_visible() -> bool { true }
 fn default_animations() -> bool { true }
 fn default_mini_modern() -> bool { true }
+/// Both the app-wide (`Config::gena_enabled`) and per-device
+/// (`DeviceConfig::gena_enabled`) GENA toggles default on — GENA only ever
+/// starts a session when *both* are true (see `resolved_gena_enabled()`).
+fn default_gena_enabled() -> bool { true }
 /// Matches the accent colour hardcoded in dark.css before it became
 /// user-configurable, so existing users see no visual change by default.
 fn default_accent_color() -> String { "#4ecdc4".to_string() }
@@ -165,6 +169,12 @@ pub struct DeviceConfig {
     /// where UPnP turns out to be the broken one instead.
     #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "deserialize_lenient_access_override")]
     pub loop_mode_access_override: Option<AccessMethod>,
+    /// Per-device GENA (UPnP eventing) on/off switch, editable via Settings'
+    /// "Device -> Advanced" panel. GENA only ever starts a session for this
+    /// device when this **and** the app-wide `Config::gena_enabled` are both
+    /// true — see `resolved_gena_enabled()`. Defaults on.
+    #[serde(default = "default_gena_enabled")]
+    pub gena_enabled: bool,
 }
 
 fn deserialize_lenient_access_override<'de, D>(deserializer: D) -> Result<Option<AccessMethod>, D::Error>
@@ -196,6 +206,7 @@ impl Default for DeviceConfig {
             playback_access_override: None,
             mute_access_override: None,
             loop_mode_access_override: None,
+            gena_enabled: default_gena_enabled(),
         }
     }
 }
@@ -261,6 +272,12 @@ pub struct Config {
     /// opt-in.
     #[serde(default = "default_devlist_song_info")]
     pub devlist_song_info: bool,
+    /// App-wide GENA (UPnP eventing) on/off switch. GENA only ever starts a
+    /// session for a device when this **and** that device's own
+    /// `DeviceConfig::gena_enabled` are both true — see
+    /// `resolved_gena_enabled()`. Defaults on.
+    #[serde(default = "default_gena_enabled")]
+    pub gena_enabled: bool,
 }
 
 impl Default for Config {
@@ -278,6 +295,7 @@ impl Default for Config {
             accent_color: default_accent_color(),
             mini_stale_pixel_workaround: false,
             devlist_song_info: default_devlist_song_info(),
+            gena_enabled: default_gena_enabled(),
         }
     }
 }
@@ -442,6 +460,15 @@ thread_local! {
 /// Read-only access to the live config.
 pub fn with<R>(f: impl FnOnce(&Config) -> R) -> R {
     CONFIG.with(|c| f(&c.borrow()))
+}
+
+/// Combines the app-wide and per-device GENA toggles into the one resolved
+/// bool `device::state::DeviceState::set_gena_enabled()` actually takes —
+/// `device/` has no concept of "two separate switches" (it can't read
+/// config at all), so callers pushing this into a `DeviceState` always
+/// resolve it here first, never pass either flag through on its own.
+pub fn resolved_gena_enabled(uuid: &str) -> bool {
+    with(|cfg| cfg.gena_enabled && cfg.device(uuid).gena_enabled)
 }
 
 /// Mutate the live config via `f`, then persist to disk — but only if `f`

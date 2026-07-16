@@ -301,7 +301,11 @@ impl DiscoveryManager {
         obj
     }
 
-    fn device_manager(&self) -> &DeviceManager {
+    /// `pub` (not just an internal helper) so `ui/settings.rs`'s general
+    /// preferences page can reach `DeviceManager::for_each_live()` to
+    /// re-push the app-wide GENA toggle to every open device — see that
+    /// page's build function.
+    pub fn device_manager(&self) -> &DeviceManager {
         self.imp().device_manager.get().unwrap()
     }
 

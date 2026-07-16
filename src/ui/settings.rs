@@ -552,8 +552,38 @@ fn build_general_page(disc_mgr: &DiscoveryManager) -> adw::PreferencesPage {
         .build();
     group.add(&song_info_row);
 
+    // App-wide GENA (UPnP eventing) switch. GENA only ever starts a session
+    // for a given device when this **and** that device's own per-device
+    // switch (Settings' "Device -> Advanced" panel) are both on — see
+    // `config::resolved_gena_enabled()`. Toggling this re-pushes the
+    // resolved value to every currently-live device at once
+    // (`DeviceManager::for_each_live()`), not just whichever device (if
+    // any) this settings window happens to be scoped to.
+    let gena_enabled = config::with(|cfg| cfg.gena_enabled);
+    let gena_row = adw::SwitchRow::builder()
+        .title("Enable GENA")
+        .subtitle("Use UPnP event subscriptions (push updates) alongside \
+                   regular polling, when a device supports it — also needs \
+                   the per-device switch in that device's Settings -> \
+                   Advanced panel")
+        .active(gena_enabled)
+        .build();
+    gena_row.connect_active_notify(glib::clone!(#[weak] disc_mgr, move |row| {
+        let want = row.is_active();
+        config::update(|cfg| cfg.gena_enabled = want);
+        disc_mgr.device_manager().for_each_live(|ds| {
+            ds.set_gena_enabled(config::resolved_gena_enabled(&ds.uuid()));
+        });
+    }));
+
+    let gena_group = adw::PreferencesGroup::builder()
+        .title("GENA (UPnP Eventing)")
+        .build();
+    gena_group.add(&gena_row);
+
     let page = adw::PreferencesPage::new();
     page.add(&group);
+    page.add(&gena_group);
     page
 }
 
@@ -781,8 +811,36 @@ fn build_advanced_page(ds: &DeviceState) -> adw::PreferencesPage {
     group.add(&mute_row);
     group.add(&loop_mode_row);
 
+    // Per-device GENA (UPnP eventing) switch — also needs the app-wide
+    // switch in Settings' general page to actually start a session; see
+    // `config::resolved_gena_enabled()`.
+    let gena_device_enabled = config::with(|cfg| cfg.device(&uuid).gena_enabled);
+    let gena_row = adw::SwitchRow::builder()
+        .title("Enable GENA")
+        .subtitle("Use UPnP event subscriptions for this device, if the \
+                   app-wide switch (Settings -> General) is also on")
+        .active(gena_device_enabled)
+        .build();
+    let ds_weak = ds.downgrade();
+    let uuid_for_gena = uuid.clone();
+    gena_row.connect_active_notify(move |row| {
+        let want = row.is_active();
+        if !uuid_for_gena.is_empty() {
+            config::update(|cfg| cfg.device_mut(&uuid_for_gena).gena_enabled = want);
+        }
+        if let Some(ds) = ds_weak.upgrade() {
+            let global_enabled = config::with(|cfg| cfg.gena_enabled);
+            ds.set_gena_enabled(global_enabled && want);
+        }
+    });
+    let gena_group = adw::PreferencesGroup::builder()
+        .title("GENA (UPnP Eventing)")
+        .build();
+    gena_group.add(&gena_row);
+
     let page = adw::PreferencesPage::new();
     page.add(&group);
+    page.add(&gena_group);
     page
 }
 

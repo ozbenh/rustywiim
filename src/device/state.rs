@@ -98,6 +98,7 @@ use super::api::{
     PresetEntry, PresetFetchOutcome, TlsMode, WiimClient, TLS_MODE,
 };
 use super::capabilities::{self, DeviceCapabilities};
+use super::gena::GenaSession;
 use super::playback;
 use super::playback::{AccessMethod, PlaybackState, RepeatMode};
 use super::upnp::{self, UpnpClient};
@@ -633,6 +634,24 @@ struct Inner {
     /// changes rather than read lazily, so a toggle takes effect
     /// immediately on every already-tracked device.
     simple_mode_song_info: bool,
+    /// logging-only GENA session — started while `Full` and `gena_enabled`
+    /// is true, stopped (real `UNSUBSCRIBE`s sent) the moment `full_clients`
+    /// drops back to 0 (or `gena_enabled` flips off while still `Full`).
+    /// `None` whenever GENA isn't active for this device, including the entire
+    /// time it's in `Simple` mode.
+    gena_session: Option<GenaSession>,
+    /// True while `GenaSession::start()` is in flight, so entering `Full`
+    /// mode twice in quick succession (two windows) doesn't fire a second
+    /// concurrent subscribe attempt — same guard shape as
+    /// `upnp_discovery_in_flight`.
+    gena_session_in_flight: bool,
+    /// Already-resolved (app-wide AND per-device — `device/` has no concept
+    /// of two separate switches) enable/disable for this device's GENA
+    /// session, pushed in by `set_device()`/`set_gena_enabled()`. Defaults
+    /// `true` so a `DeviceState` that hasn't heard from `ui/` yet (a brief
+    /// window before `configure-device`/`set_device()` runs) doesn't
+    /// silently disagree with the actual config default.
+    gena_enabled: bool,
     /// Last known network connection type (0=ethernet, 2=wifi).
     /// `None` until first `getStatusEx` result arrives.
     netstat:          Option<u32>,
@@ -755,6 +774,9 @@ impl Default for Inner {
             reconnect_in_flight: false,
             full_clients:     0,
             simple_mode_song_info: false,
+            gena_session: None,
+            gena_session_in_flight: false,
+            gena_enabled: true,
             presets:          Vec::new(),
             preset_fp:        String::new(),
             preset_probe_failures: 0,
@@ -959,8 +981,13 @@ impl DeviceState {
     /// already-connected `DeviceState` had, a caller reconnecting an
     /// existing instance (`DeviceManager::update_ip()`) must read the
     /// current values first (`playback_access_override()`/
-    /// `mute_access_override()`/`loop_mode_access_override()`) and pass them
-    /// back in, not just fresh defaults.
+    /// `mute_access_override()`/`loop_mode_access_override()`/
+    /// `gena_enabled()`) and pass them back in, not just fresh defaults.
+    ///
+    /// `gena_enabled` is the already-resolved (app-wide AND per-device)
+    /// bool `config::resolved_gena_enabled()` produces — `device/` can't
+    /// read config itself, so the caller always resolves both switches
+    /// before calling in, same as the three access-method overrides above.
     ///
     /// `connect_now` — when `false`, everything above still happens
     /// (`client`/`ip`/overrides configured, `device-changed` emitted) but
@@ -980,6 +1007,7 @@ impl DeviceState {
         access_override: Option<AccessMethod>,
         mute_access_override: Option<AccessMethod>,
         loop_mode_access_override: Option<AccessMethod>,
+        gena_enabled: bool,
         connect_now: bool,
     ) {
         // Apply --tls CLI override if set; otherwise use the caller-supplied mode.
@@ -996,6 +1024,7 @@ impl DeviceState {
             inner.access_override  = access_override;
             inner.mute_access_override = mute_access_override;
             inner.loop_mode_access_override = loop_mode_access_override;
+            inner.gena_enabled = gena_enabled;
         }
         // Now that `self.imp().ip` above is actually set to the new value,
         // dbg()'s own ds.ip() prefix reflects it correctly (it's a separate
@@ -1295,6 +1324,38 @@ impl DeviceState {
     /// it, mirroring `playback_access_override()`/`mute_access_override()`.
     pub fn loop_mode_access_override(&self) -> Option<AccessMethod> {
         self.imp().inner.borrow().loop_mode_access_override
+    }
+
+    /// Live-apply an already-resolved (app-wide AND per-device —
+    /// `config::resolved_gena_enabled()`) enable/disable for this device's
+    /// GENA session. Unlike the three access-method overrides above, this
+    /// takes effect immediately rather than waiting for the next poll tick:
+    /// if currently `Full` mode, flipping to `true` starts a session right
+    /// away and flipping to `false` tears one down right away (real
+    /// `UNSUBSCRIBE`s sent); outside `Full` mode this just updates the
+    /// stored flag for the next `acquire_full()`. No-op if the resolved
+    /// value hasn't actually changed.
+    pub fn set_gena_enabled(&self, enabled: bool) {
+        let (changed, in_full_mode) = {
+            let mut inner = self.imp().inner.borrow_mut();
+            let changed = inner.gena_enabled != enabled;
+            inner.gena_enabled = enabled;
+            (changed, inner.full_clients > 0)
+        };
+        if !changed || !in_full_mode { return; }
+        if enabled {
+            self.ensure_gena_session();
+        } else {
+            self.stop_gena_session();
+        }
+    }
+
+    /// Current resolved GENA enable/disable, as last established by
+    /// `set_device()` or `set_gena_enabled()`. Read by
+    /// `DeviceManager::update_ip()` so reconnecting to a new IP doesn't lose
+    /// it, mirroring the three access-method overrides above.
+    pub fn gena_enabled(&self) -> bool {
+        self.imp().inner.borrow().gena_enabled
     }
 
     // ── Polling ───────────────────────────────────────────────────────────────
@@ -3318,6 +3379,7 @@ impl DeviceState {
         };
         if n == 1 {
             dbg(self, &format!("Simple → Full mode (full_clients={n})"));
+            self.ensure_gena_session();
         }
         FullModeGuard { ds: self.clone() }
     }
@@ -3331,6 +3393,76 @@ impl DeviceState {
         };
         if n == 0 {
             dbg(self, &format!("Full → Simple mode (full_clients={n})"));
+            self.stop_gena_session();
+        }
+    }
+
+    /// if `gena_enabled` is true, start a logging-only GENA session for
+    /// this device now that it's in `Full` mode. No-op if one is already
+    /// running or already being started, or if either toggle is off.
+    /// Same fire-and-forget spawn-then-channel-back shape as
+    /// `ensure_upnp_client()`.
+    fn ensure_gena_session(&self) {
+        {
+            let inner = self.imp().inner.borrow();
+            if !inner.gena_enabled || inner.gena_session.is_some() || inner.gena_session_in_flight {
+                return;
+            }
+        }
+        let ip = self.ip();
+        if ip.is_empty() {
+            return;
+        }
+        self.imp().inner.borrow_mut().gena_session_in_flight = true;
+        let label = ip.clone();
+
+        let (tx, rx) = async_channel::bounded(1);
+        self.rt().spawn(async move {
+            // A short head start for the device's own first regular poll
+            // (dispatched around this same Full-mode-entry moment) before
+            // GENA's discovery/SUBSCRIBE traffic begins — these embedded
+            // HTTP servers handle concurrent connections to the same device
+            // poorly (see this file's other poll-dispatch code, which is
+            // deliberately never parallelized for the same reason), and
+            // firing 3 SUBSCRIBEs at the exact instant the first poll also
+            // goes out was observed live to cause spurious connection
+            // failures. Not a hard guarantee (a later renewal could still
+            // coincide with a regular poll tick), but it fixes the reliably
+            // reproducing startup collision at negligible cost — GENA
+            // subscribing 1s later than it otherwise would is invisible to
+            // the user either way.
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            let session = GenaSession::start(&ip, label).await;
+            let _ = tx.send(session).await;
+        });
+
+        let ds = self.downgrade();
+        glib::spawn_future_local(async move {
+            let Ok(session) = rx.recv().await else { return };
+            let Some(ds) = ds.upgrade() else { return };
+            let mut inner = ds.imp().inner.borrow_mut();
+            inner.gena_session_in_flight = false;
+            // Full mode may already have been released again by the time
+            // this resolves (a window opened and closed very quickly) — in
+            // that case, tear the just-started session back down rather
+            // than leaving it running with nothing holding Full anymore.
+            if inner.full_clients == 0 {
+                drop(inner);
+                ds.rt().spawn(async move { session.stop().await; });
+                return;
+            }
+            inner.gena_session = Some(session);
+        });
+    }
+
+    /// Stops this device's GENA session, if one is running or starting.
+    /// Fires the real `UNSUBSCRIBE` calls on `rt()` — safe to call from a
+    /// sync context (this is itself called from `release_full()`, which
+    /// `FullModeGuard`'s `Drop` impl calls).
+    fn stop_gena_session(&self) {
+        let session = self.imp().inner.borrow_mut().gena_session.take();
+        if let Some(session) = session {
+            self.rt().spawn(async move { session.stop().await; });
         }
     }
 

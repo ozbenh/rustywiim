@@ -167,6 +167,10 @@ impl DeviceManager {
     /// config in hand at this exact point) can pass
     /// `config::DeviceConfig::playback_access_override`/`mute_access_override`/
     /// `loop_mode_access_override` straight through with no conversion step.
+    /// `gena_enabled` mirrors this exactly, except it's already the fully
+    /// resolved bool (`config::resolved_gena_enabled()`) rather than an
+    /// override to combine with a profile default — see
+    /// `DeviceState::set_device()`'s doc comment.
     /// Doesn't go through `configure-device` at all — this is the older,
     /// still-valid pattern of the caller resolving config *before* ever
     /// calling in, which `add_known_device()`/`create_and_configure()` below
@@ -180,6 +184,7 @@ impl DeviceManager {
         access_override: Option<AccessMethod>,
         mute_access_override: Option<AccessMethod>,
         loop_mode_access_override: Option<AccessMethod>,
+        gena_enabled: bool,
         try_connect: bool,
     ) -> DeviceState {
         if let Some(ds) = self.lookup_and_prune(uuid) {
@@ -187,7 +192,7 @@ impl DeviceManager {
         }
 
         let ds = DeviceState::new(self.rt(), uuid.to_string());
-        ds.set_device(ip, tls, access_override, mute_access_override, loop_mode_access_override, try_connect || uuid.is_empty());
+        ds.set_device(ip, tls, access_override, mute_access_override, loop_mode_access_override, gena_enabled, try_connect || uuid.is_empty());
         ds.start_polling();
 
         if !uuid.is_empty() {
@@ -219,8 +224,9 @@ impl DeviceManager {
     /// its own resolved `tls`. Fires
     /// `configure-device` synchronously, then reads back whatever the
     /// connected handler set via `set_playback_access_override()`/
-    /// `set_mute_access_override()`/`set_loop_mode_access_override()` before
-    /// making first contact (`set_device(..., connect_now: true)`).
+    /// `set_mute_access_override()`/`set_loop_mode_access_override()`/
+    /// `set_gena_enabled()` before making first contact
+    /// (`set_device(..., connect_now: true)`).
     pub fn create_and_configure(&self, uuid: &str, ip: &str, tls: TlsMode) -> DeviceState {
         if let Some(ds) = self.lookup_and_prune(uuid) {
             return ds;
@@ -231,7 +237,8 @@ impl DeviceManager {
         let access_override           = ds.playback_access_override();
         let mute_access_override      = ds.mute_access_override();
         let loop_mode_access_override = ds.loop_mode_access_override();
-        ds.set_device(ip, tls, access_override, mute_access_override, loop_mode_access_override, true);
+        let gena_enabled              = ds.gena_enabled();
+        ds.set_device(ip, tls, access_override, mute_access_override, loop_mode_access_override, gena_enabled, true);
         ds.start_polling();
 
         if !uuid.is_empty() {
@@ -251,6 +258,21 @@ impl DeviceManager {
     pub fn get_state(&self, uuid: &str) -> Option<DeviceState> {
         if uuid.is_empty() { return None; }
         self.imp().states.borrow().get(uuid).and_then(|w| w.upgrade())
+    }
+
+    /// Calls `f` for every currently-live `DeviceState` this manager still
+    /// tracks (upgradable `WeakRef`s only — a stale entry is silently
+    /// skipped, not pruned; pruning happens lazily wherever
+    /// `lookup_and_prune()` already runs). Used to re-push an app-wide
+    /// setting change (the GENA on/off switch) to every open device at
+    /// once, rather than only the one `DeviceState` a Settings window
+    /// happens to be scoped to.
+    pub fn for_each_live(&self, f: impl Fn(&DeviceState)) {
+        for weak in self.imp().states.borrow().values() {
+            if let Some(ds) = weak.upgrade() {
+                f(&ds);
+            }
+        }
     }
 
     /// Push a possibly-new `ip`/`tls` to the live `DeviceState` for `uuid`,
@@ -277,6 +299,7 @@ impl DeviceManager {
                 let access_override           = ds.playback_access_override();
                 let mute_access_override      = ds.mute_access_override();
                 let loop_mode_access_override = ds.loop_mode_access_override();
+                let gena_enabled              = ds.gena_enabled();
                 // Identity verification no longer needs an explicit
                 // `expected_uuid` opt-in — `ds` was looked up by `uuid`, so
                 // its own fixed `uuid()` already equals it, and
@@ -284,7 +307,7 @@ impl DeviceManager {
                 // Always connect_now: discovery just confirmed a moved IP
                 // for an already-live DeviceState, not a device devlist
                 // merely still believes offline.
-                ds.set_device(ip, tls, access_override, mute_access_override, loop_mode_access_override, true);
+                ds.set_device(ip, tls, access_override, mute_access_override, loop_mode_access_override, gena_enabled, true);
             }
         }
     }

@@ -206,51 +206,20 @@ impl UpnpClient {
     /// function's doc comment for why this replaces normal probing rather
     /// than being tried first with a fallback.
     pub async fn discover(ip: &str) -> anyhow::Result<Self> {
-        let (host, ports): (&str, Vec<u16>) = match UPNP_DISCOVER_OVERRIDE.get() {
-            Some(addr) => {
-                let (host, port) = split_host_port(addr);
-                (host, vec![port])
+        let (body, url) = discover_description(ip).await?;
+        match extract_url_for_service(&body, &url, ":service:AVTransport:", "controlURL") {
+            Some(control_url) => {
+                dbg(&format!("AVTransport control URL: {control_url}"));
+                let play_queue_control_url =
+                    extract_url_for_service(&body, &url, "wiimu-com:service:PlayQueue", "controlURL");
+                dbg(&format!("PlayQueue control URL: {play_queue_control_url:?}"));
+                let rendering_control_url =
+                    extract_url_for_service(&body, &url, ":service:RenderingControl:", "controlURL");
+                dbg(&format!("RenderingControl control URL: {rendering_control_url:?}"));
+                Ok(Self { control_url, play_queue_control_url, rendering_control_url })
             }
-            None => (ip.split(':').next().unwrap_or(ip), DESCRIPTION_PORTS.to_vec()),
-        };
-        let mut last_err: Option<anyhow::Error> = None;
-        for scheme in ["http", "https"] {
-            for &port in &ports {
-                let url = format!("{scheme}://{host}:{port}/description.xml");
-                dbg(&format!("trying description.xml at {url}"));
-                let client = build_reqwest_client(tls_for_scheme(scheme), REQUEST_TIMEOUT);
-                let resp = match client.get(&url).send().await {
-                    Ok(r) => r,
-                    Err(e) => { last_err = Some(e.into()); continue; }
-                };
-                if !resp.status().is_success() {
-                    last_err = Some(anyhow::anyhow!("{url}: HTTP {}", resp.status()));
-                    continue;
-                }
-                let body = match resp.text().await {
-                    Ok(b) => b,
-                    Err(e) => { last_err = Some(e.into()); continue; }
-                };
-                match extract_control_url_for_service(&body, &url, ":service:AVTransport:") {
-                    Some(control_url) => {
-                        dbg(&format!("AVTransport control URL: {control_url}"));
-                        let play_queue_control_url =
-                            extract_control_url_for_service(&body, &url, "wiimu-com:service:PlayQueue");
-                        dbg(&format!("PlayQueue control URL: {play_queue_control_url:?}"));
-                        let rendering_control_url =
-                            extract_control_url_for_service(&body, &url, ":service:RenderingControl:");
-                        dbg(&format!("RenderingControl control URL: {rendering_control_url:?}"));
-                        return Ok(Self { control_url, play_queue_control_url, rendering_control_url });
-                    }
-                    None => {
-                        last_err = Some(anyhow::anyhow!(
-                            "description.xml at {url} has no AVTransport service"
-                        ));
-                    }
-                }
-            }
+            None => Err(anyhow::anyhow!("description.xml at {url} has no AVTransport service")),
         }
-        Err(last_err.unwrap_or_else(|| anyhow::anyhow!("no description.xml candidate answered")))
     }
 
     pub async fn get_info_ex(&self) -> anyhow::Result<InfoEx> {
@@ -340,6 +309,44 @@ impl UpnpClient {
     }
 }
 
+/// Probes `description.xml` at the well-known LinkPlay UPnP ports/schemes
+/// (or the `--connect` override, same as `UpnpClient::discover()` uses),
+/// returning the raw body and the URL that answered. `pub(crate)` so
+/// `device/gena.rs` can reuse the exact same probing this module's own
+/// `UpnpClient::discover()` is built on, rather than duplicating it, since
+/// GENA needs `eventSubURL`s from the same document `discover()` already
+/// fetches for `controlURL`s.
+pub(crate) async fn discover_description(ip: &str) -> anyhow::Result<(String, String)> {
+    let (host, ports): (&str, Vec<u16>) = match UPNP_DISCOVER_OVERRIDE.get() {
+        Some(addr) => {
+            let (host, port) = split_host_port(addr);
+            (host, vec![port])
+        }
+        None => (ip.split(':').next().unwrap_or(ip), DESCRIPTION_PORTS.to_vec()),
+    };
+    let mut last_err: Option<anyhow::Error> = None;
+    for scheme in ["http", "https"] {
+        for &port in &ports {
+            let url = format!("{scheme}://{host}:{port}/description.xml");
+            dbg(&format!("trying description.xml at {url}"));
+            let client = build_reqwest_client(tls_for_scheme(scheme), REQUEST_TIMEOUT);
+            let resp = match client.get(&url).send().await {
+                Ok(r) => r,
+                Err(e) => { last_err = Some(e.into()); continue; }
+            };
+            if !resp.status().is_success() {
+                last_err = Some(anyhow::anyhow!("{url}: HTTP {}", resp.status()));
+                continue;
+            }
+            match resp.text().await {
+                Ok(body) => return Ok((body, url)),
+                Err(e) => last_err = Some(e.into()),
+            }
+        }
+    }
+    Err(last_err.unwrap_or_else(|| anyhow::anyhow!("no description.xml candidate answered")))
+}
+
 fn tls_for_scheme(scheme: &str) -> TlsMode {
     if scheme == "https" { TlsMode::HttpsAny } else { TlsMode::Http }
 }
@@ -421,7 +428,7 @@ async fn soap_call(control_url: &str, service_type: &str, action: &str, args_xml
 /// absent — a present-but-empty tag (`<tag></tag>`) still returns `Some("")`.
 /// Callers that care about that distinction (`actual_quality`) must not
 /// collapse it with `.unwrap_or_default()`.
-fn extract_tag(xml: &str, tag: &str) -> Option<String> {
+pub(crate) fn extract_tag(xml: &str, tag: &str) -> Option<String> {
     let open = format!("<{tag}>");
     let close = format!("</{tag}>");
     let start = xml.find(&open)? + open.len();
@@ -443,7 +450,7 @@ fn extract_res_protocol_info(didl: &str) -> Option<String> {
     extract_attr(&didl[start..tag_end], "protocolInfo")
 }
 
-fn extract_service_blocks(xml: &str) -> Vec<String> {
+pub(crate) fn extract_service_blocks(xml: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut rest = xml;
     while let Some(start) = rest.find("<service>") {
@@ -461,7 +468,7 @@ fn extract_service_blocks(xml: &str) -> Vec<String> {
 
 /// Resolves a (possibly relative) `controlURL` against the origin
 /// (`scheme://host:port`) of the `description.xml` URL it came from.
-fn resolve_url(description_url: &str, maybe_relative: &str) -> String {
+pub(crate) fn resolve_url(description_url: &str, maybe_relative: &str) -> String {
     if maybe_relative.starts_with("http://") || maybe_relative.starts_with("https://") {
         return maybe_relative.to_string();
     }
@@ -478,17 +485,22 @@ fn resolve_url(description_url: &str, maybe_relative: &str) -> String {
     }
 }
 
-/// Finds the `controlURL` of the first advertised service whose `serviceType`
-/// contains `service_type_substr`, resolved against `description_url`'s
-/// origin. Shared by AVTransport (required — `discover()` fails outright if
-/// absent) and PlayQueue (optional — presets simply aren't available via
-/// UPnP if a device doesn't advertise it).
-fn extract_control_url_for_service(description_xml: &str, description_url: &str, service_type_substr: &str) -> Option<String> {
+/// Finds `url_tag`'s value (`controlURL` or `eventSubURL`) of the first
+/// advertised service whose `serviceType` contains `service_type_substr`,
+/// resolved against `description_url`'s origin. `pub(crate)` so
+/// `device/gena.rs` can reuse this for `eventSubURL` discovery rather than
+/// hand-rolling a third copy of this parsing (`wiim-capture.rs`'s own copy
+/// is a separate diagnostic binary crate that can't depend on this library
+/// crate's internals, so that one stays independent). Shared here by
+/// AVTransport (required — `discover()` fails outright if absent) and
+/// PlayQueue (optional — presets simply aren't available via UPnP if a
+/// device doesn't advertise it).
+pub(crate) fn extract_url_for_service(description_xml: &str, description_url: &str, service_type_substr: &str, url_tag: &str) -> Option<String> {
     for block in extract_service_blocks(description_xml) {
         let Some(service_type) = extract_tag(&block, "serviceType") else { continue };
         if !service_type.contains(service_type_substr) { continue; }
-        let control_url_raw = extract_tag(&block, "controlURL")?;
-        return Some(resolve_url(description_url, &control_url_raw));
+        let url_raw = extract_tag(&block, url_tag)?;
+        return Some(resolve_url(description_url, &url_raw));
     }
     None
 }
@@ -497,7 +509,7 @@ fn extract_control_url_for_service(description_xml: &str, description_url: &str,
 /// `&amp;` is replaced last so a literal `&amp;lt;` in the source (an
 /// escaped ampersand followed by plain text "lt;") doesn't get
 /// double-unescaped into `<`.
-fn unescape_xml_entities(s: &str) -> String {
+pub(crate) fn unescape_xml_entities(s: &str) -> String {
     s.replace("&lt;", "<")
         .replace("&gt;", ">")
         .replace("&quot;", "\"")
@@ -713,7 +725,7 @@ mod tests {
         let upnp = cap.upnp.as_ref().unwrap();
         let description_url = upnp.description_url.as_deref().unwrap();
         let description_xml = blob_text(upnp.description.as_ref().unwrap());
-        let url = extract_control_url_for_service(description_xml, description_url, ":service:AVTransport:").unwrap();
+        let url = extract_url_for_service(description_xml, description_url, ":service:AVTransport:", "controlURL").unwrap();
         assert_eq!(url, "http://xx.x.x.xx:49152/upnp/control/rendertransport1");
     }
 

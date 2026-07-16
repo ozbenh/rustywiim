@@ -329,6 +329,7 @@ impl DeviceWindow {
                 init_dev_cfg.playback_access_override,
                 init_dev_cfg.mute_access_override,
                 init_dev_cfg.loop_mode_access_override,
+                config::resolved_gena_enabled(&spec.uuid),
                 spec.try_connect,
             ),
             None => {

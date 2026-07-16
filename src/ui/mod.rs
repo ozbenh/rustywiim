@@ -164,13 +164,15 @@ impl AppState {
                 let d = cfg.device(&uuid);
                 (d.playback_access_override, d.mute_access_override, d.loop_mode_access_override)
             });
+            let gena_enabled = config::resolved_gena_enabled(&uuid);
             dbg_state(&format!(
-                "configure-device: {} ({uuid}) access_override={access_override:?} mute_access_override={mute_access_override:?} loop_mode_access_override={loop_mode_access_override:?}",
+                "configure-device: {} ({uuid}) access_override={access_override:?} mute_access_override={mute_access_override:?} loop_mode_access_override={loop_mode_access_override:?} gena_enabled={gena_enabled}",
                 ds.ip(),
             ));
             ds.set_playback_access_override(access_override);
             ds.set_mute_access_override(mute_access_override);
             ds.set_loop_mode_access_override(loop_mode_access_override);
+            ds.set_gena_enabled(gena_enabled);
         });
 
         // `disc_mgr` now owns the *entire* known-device registry (SSDP

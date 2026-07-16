@@ -58,7 +58,7 @@ fn main() -> glib::ExitCode {
         glib::Char(0),
         glib::OptionFlags::NONE,
         glib::OptionArg::String,
-        "Enable debug output: comma-separated list of api, state, device, discovery, upnp, ui, config, or all. \
+        "Enable debug output: comma-separated list of api, state, device, discovery, upnp, gena, ui, config, or all. \
          api/upnp (and all) may add \":verbose\" (e.g. upnp:verbose) for full request/response content \
          instead of a one-line summary",
         Some("LIST"),
@@ -128,6 +128,7 @@ fn main() -> glib::ExitCode {
                         device::upnp::DEBUG_UPNP.store(true, Ordering::Relaxed);
                         if verbose { device::upnp::DEBUG_UPNP_VERBOSE.store(true, Ordering::Relaxed); }
                     }
+                    "gena"      => { device::gena::DEBUG_GENA.store(true, Ordering::Relaxed); }
                     "ui"        => { ui::DEBUG_UI.store(true, Ordering::Relaxed); }
                     "config"    => { config::DEBUG_CONFIG.store(true, Ordering::Relaxed); }
                     "all"       => {
@@ -136,6 +137,7 @@ fn main() -> glib::ExitCode {
                         device::capabilities::DEBUG_DEVICE.store(true, Ordering::Relaxed);
                         device::discovery::DEBUG_DISCOVERY.store(true, Ordering::Relaxed);
                         device::upnp::DEBUG_UPNP.store(true, Ordering::Relaxed);
+                        device::gena::DEBUG_GENA.store(true, Ordering::Relaxed);
                         ui::DEBUG_UI.store(true, Ordering::Relaxed);
                         config::DEBUG_CONFIG.store(true, Ordering::Relaxed);
                         if verbose {
@@ -144,7 +146,7 @@ fn main() -> glib::ExitCode {
                         }
                     }
                     other => {
-                        eprintln!("rustywiim: unknown debug token {:?} (valid: api, state, device, discovery, upnp, ui, config, all)", other);
+                        eprintln!("rustywiim: unknown debug token {:?} (valid: api, state, device, discovery, upnp, gena, ui, config, all)", other);
                     }
                 }
             }
@@ -208,6 +210,12 @@ fn main() -> glib::ExitCode {
     // The runtime is driven by a permanent background thread, which blocks on
     // `shutdown_rx` rather than `pending()` so it can be signalled to stop
     // (and joined) on quit instead of being killed mid-flight by process exit.
+    // After the shutdown signal arrives, it waits out a short grace period
+    // before returning — long enough for an already-spawned cleanup task
+    // (concretely: a `GenaSession::stop()`'s real `UNSUBSCRIBE` calls, fired
+    // from window-close-on-quit) to actually be polled to completion by this
+    // same runtime, rather than being dropped mid-flight the instant this
+    // thread is joined and the process exits.
     let rt = Arc::new(
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -219,7 +227,12 @@ fn main() -> glib::ExitCode {
         let rt2 = Arc::clone(&rt);
         std::thread::Builder::new()
             .name("tokio-rt".into())
-            .spawn(move || { let _ = rt2.block_on(shutdown_rx); })
+            .spawn(move || {
+                rt2.block_on(async move {
+                    let _ = shutdown_rx.await;
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                });
+            })
             .expect("tokio thread")
     };
 
