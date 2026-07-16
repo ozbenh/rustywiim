@@ -64,10 +64,6 @@ const SEEK_DEBOUNCE: Duration = Duration::from_millis(500);
 /// — this instead limits how soon an *incoming* poll reading is trusted
 /// after the last outgoing one.
 const VOLUME_POLL_SETTLE: Duration = Duration::from_secs(1);
-/// `trigger_poll()`'s one-shot follow-up poll is spaced at least this long
-/// after whichever poll happened most recently — long enough that a real
-/// device has almost certainly applied the command that prompted it.
-const POLL_SETTLE_DELAY: Duration = Duration::from_millis(400);
 /// While `Inner::seek_pending`, a poll-reported position within this much
 /// of the optimistic target (`playback.position`, unchanged since
 /// `do_seek()` wrote it — see `maybe_update_position()`) counts as converged.
@@ -83,18 +79,19 @@ const SEEK_CONVERGE_TOLERANCE: Duration = Duration::from_secs(2);
 /// title/artist/album-change checks), not here.
 const SEEK_TIMEOUT: Duration = Duration::from_secs(5);
 /// While every GENA-covered service is confirmed `Healthy`, `dispatch_fast_poll()`
-/// skips this many consecutive 1s ticks (doing local position extrapolation
-/// instead — see `extrapolate_position_while_playing()`) before running an
-/// actual real poll again, purely as an ongoing consistency check (see
-/// `check_gena_health()`) — GENA itself is what's actually keeping playback
-/// state current in the meantime. Reset to 0 (full-rate polling resumes
-/// immediately) the instant any of the three drops out of `Healthy`.
+/// waits this many 1s ticks between real polls (doing local position
+/// extrapolation instead in between — see
+/// `extrapolate_position_while_playing()`) as an ongoing consistency check
+/// (see `check_gena_health()`) — GENA itself is what's actually keeping
+/// playback state current in the meantime. One of `Inner::fast_poll_target`'s
+/// possible values — see that field's doc comment for the other two
+/// (unhealthy `Full`/`Simple` mode) and how the countdown itself works.
 const GENA_HEALTHY_FAST_POLL_TICKS: u32 = 30;
 /// How long to wait for a `switch_input()` to actually take effect (a poll
 /// reporting the new mode) before giving up and reverting the UI to
 /// whatever the device is still really on. Input switches can take real
 /// device-side time (e.g. an HDMI handshake/EDID negotiation), so this is
-/// longer than `POLL_SETTLE_DELAY`.
+/// longer than a normal poll tick.
 const INPUT_CHANGE_TIMEOUT: Duration = Duration::from_secs(2);
 
 use glib::prelude::*;
@@ -775,29 +772,52 @@ struct Inner {
     /// When the current/most recent slow-poll cycle started (None = never;
     /// triggers a new cycle immediately).
     last_slow_poll:   Option<Instant>,
-    /// When the last fast (status/metadata) poll was dispatched — either a
-    /// regular 1s-tick poll or a `trigger_poll()` one-shot. Used to space
-    /// `trigger_poll()`'s one-shot polls at least `POLL_SETTLE_DELAY` after
-    /// whichever poll happened most recently, rather than always waiting a
-    /// fixed delay from "now".
-    last_poll:        Option<Instant>,
-    /// Consecutive fast-poll ticks skipped in favor of local position
-    /// extrapolation (see `extrapolate_position_while_playing()`) — only
-    /// accumulates while every GENA-covered service is `Healthy`; reset to
-    /// `0` the instant a real poll dispatches for any reason, including
-    /// "not fully healthy anymore". Compared against
-    /// `GENA_HEALTHY_FAST_POLL_TICKS` in `dispatch_fast_poll()`.
-    fast_poll_skip_ticks: u32,
-    /// Whether at least one real fast poll has completed since this device
-    /// last connected. GENA can race to `Healthy` on all three services
-    /// within milliseconds of subscribing (well before the first real poll
-    /// would otherwise run) — and `apply_gena_notify()` deliberately never
-    /// populates `art_url`/`quality`/etc (NOTIFY doesn't reliably carry
-    /// them), so a device that reaches "fully healthy" before any real poll
-    /// has ever executed would otherwise have those fields stay empty for
-    /// up to `GENA_HEALTHY_FAST_POLL_TICKS` ticks. Gates `skip_this_tick` in
-    /// `dispatch_fast_poll()` so the very first tick after connecting always
-    /// does a real poll regardless of how fast GENA claims health.
+    /// Ticks remaining until `dispatch_fast_poll()`'s next real poll —
+    /// decremented once per 1s tick, dispatching (and resetting to whatever
+    /// the current target should be) when it reaches 0. One counter drives
+    /// every mode/health combination, not just GENA's own cadence
+    /// reduction: `GENA_HEALTHY_FAST_POLL_TICKS` (30) while fully `Healthy`,
+    /// `1` for `Full` mode otherwise (poll every tick, today's plain
+    /// behavior), or `SIMPLE_POLL_INTERVAL` in ticks for `Simple` mode
+    /// otherwise — `Simple` mode's song-info fast-poll piggyback used to
+    /// have its own separate interval-based gate; now it's just another
+    /// value on this same mechanism, and `dispatch_fast_poll()` can be
+    /// called every tick uniformly regardless of mode.
+    /// `force`/`bt_pending`/`seek_pending` all want `0` (poll *now*, and
+    /// keep polling every tick for as long as the condition holds) —
+    /// `trigger_poll()` is just `fast_poll_target = 0`, no separate timer.
+    /// The target is only ever *clamped down*, never raised, mid-countdown
+    /// — a worsening situation (health drop, `bt`/`seek` newly pending) is
+    /// always noticed on the very next tick; a newly-favorable one (GENA
+    /// just became healthy, `bt`/`seek` just cleared) only takes effect
+    /// starting from the next real dispatch, not retroactively — which
+    /// naturally means one last confirming poll happens right at the
+    /// transition, for free, before the longer cadence begins. Also
+    /// subsumes the old `ever_polled` bootstrapping guard: starting at `0`
+    /// (see `Default for Inner`) already guarantees the very first tick
+    /// for a fresh connection always dispatches for real, regardless of how
+    /// fast GENA claims health.
+    fast_poll_target: u32,
+    /// Whether at least one real fast poll *response* has completed since
+    /// this device last connected — set inside `process_poll_http()`/
+    /// `process_poll_upnp()` themselves (not at dispatch time; a NOTIFY
+    /// racing an outstanding request shouldn't be trusted either), the
+    /// instant a real `status`/`info` response lands, before that poll's
+    /// own trust/mismatch logic runs. Two consumers, both bootstrapping
+    /// guards against the same underlying race (GENA can race a service to
+    /// `Healthy` off a NOTIFY that arrives before any real poll has ever
+    /// landed): `apply_gena_notify()`'s own guard (see its doc comment)
+    /// against trusting NOTIFY-delivered *data* before a baseline exists,
+    /// and each poll-processing function's own `is_first_poll` (`!ever_polled`
+    /// captured before this flips it `true`) — forcing every GENA-trust
+    /// check false and suppressing every mismatch flag for the one poll
+    /// response that *establishes* that baseline, since comparing it
+    /// against `playback`'s still-`Default` fields would otherwise look
+    /// exactly like a disagreement and immediately knock a service that
+    /// just raced to `Healthy` back down to `MaybeUnhealthy` — confirmed
+    /// live, this is what caused a device to alternate between `Healthy`
+    /// and unsubscribe/resubscribe cycles right after connecting, with no
+    /// underlying state ever actually changing.
     ever_polled: bool,
     /// Wall-clock instant `playback.position` was last known-good — set
     /// both by a real poll's decode and by each extrapolation tick itself
@@ -889,8 +909,7 @@ impl Default for Inner {
             last_seek_sent_pos: None,
             last_mute_cmd:    None,
             last_slow_poll:   None,
-            last_poll:        None,
-            fast_poll_skip_ticks: 0,
+            fast_poll_target: 0,
             ever_polled: false,
             position_synced_at: None,
             seek_pending: false,
@@ -1267,6 +1286,15 @@ impl DeviceState {
                 inner.connection_state  = ConnectionState::Connected;
             }
             ds.recompute_access();
+            // `configure_simple_mode()` may have already asked for
+            // song-info tracking before this device finished connecting
+            // (its own `ensure_gena_session()` call would have been a
+            // no-op with no IP yet available) — check again now that one
+            // is. Redundant (and harmless) if `Full` mode's own
+            // `acquire_full()` already started it.
+            if ds.imp().inner.borrow().simple_mode_song_info {
+                ds.ensure_gena_session();
+            }
             dbg(&ds, "signal: device-changed (ready)");
             ds.emit_by_name::<()>("device-changed", &[]);
             // Kick off the slow-poll rotation on the very next 1s tick,
@@ -1549,20 +1577,18 @@ impl DeviceState {
         let now = Instant::now();
 
         if inner.full_clients == 0 {
-            let dispatched = self.do_simple_poll(&mut inner, now, simple_tx);
-            // Only piggyback the song-info fetch onto the *same* tick
-            // `do_simple_poll()` actually dispatched on — not every tick —
-            // or this would run at 1s cadence instead of
-            // `SIMPLE_POLL_INTERVAL`, defeating the point of `Simple` mode
-            // being cheaper. Reuses `dispatch_fast_poll()` (and its
-            // existing `fast_poll_handle` in-flight guard/`process_poll()`
-            // decode pipeline) unchanged rather than a second
-            // implementation — same content `Full` mode's fast poll
-            // fetches, just gated to a slower cadence here.
-            let want_song_info = dispatched && inner.simple_mode_song_info;
+            self.do_simple_poll(&mut inner, now, simple_tx);
+            // Runs every tick when wanted (unlike `do_simple_poll()`'s own
+            // `SIMPLE_POLL_INTERVAL` gating) — `dispatch_fast_poll()`'s own
+            // `Inner::fast_poll_target` mechanism is what actually decides
+            // this tick's real cadence (`SIMPLE_POLL_INTERVAL` in ticks
+            // while GENA isn't healthy, `GENA_HEALTHY_FAST_POLL_TICKS`
+            // while it is), reusing the exact same countdown `Full` mode
+            // uses rather than a second cheaper-cadence implementation.
+            let want_song_info = inner.simple_mode_song_info;
             drop(inner);
             if want_song_info {
-                self.dispatch_fast_poll(false);
+                self.dispatch_fast_poll();
             }
             return glib::ControlFlow::Continue;
         }
@@ -1638,7 +1664,7 @@ impl DeviceState {
             self.dispatch_seek(pos, Some(client.clone()));
         }
 
-        self.dispatch_fast_poll(false);
+        self.dispatch_fast_poll();
         self.dispatch_slow_poll(
             &client, slow_tx, dispatch_phase, probe_outputs, probe_output_status,
             preset_source, preset_probe_failures, preset_fp, upnp_client,
@@ -1648,34 +1674,31 @@ impl DeviceState {
         glib::ControlFlow::Continue
     }
 
-    /// `Simple`-mode poll dispatch — one reduced-cadence loop
-    /// (`SIMPLE_POLL_INTERVAL`) instead of `Full` mode's separate fast +
-    /// slow timers, and no volume/preset-art dispatch at all (nothing to
-    /// drive those without an open window). Always fetches `getStatusEx` —
-    /// that alone *is* this device's liveness/identity check now, handled
-    /// by the same `handle_slow_poll_device_info()` `Full` mode's
+    /// `Simple`-mode `getStatusEx` liveness/identity poll, on its own
+    /// `SIMPLE_POLL_INTERVAL` cadence — no separate fast+slow timers the
+    /// way `Full` mode has, and no volume/preset-art dispatch at all
+    /// (nothing to drive those without an open window). That alone *is*
+    /// this device's liveness/identity check now, handled by the same
+    /// `handle_slow_poll_device_info()` `Full` mode's
     /// `SlowPollPhase::DeviceInfo` already uses (see
     /// `start_simple_poll_processor()`), not a separate implementation.
-    ///
-    /// Returns whether this tick actually dispatched (vs. skipped: not due
-    /// yet, or a previous call still in flight) — `do_poll()`'s caller uses
-    /// this to piggyback the optional song-info fetch
-    /// (`Inner::simple_mode_song_info`) onto the exact same cadence, rather
-    /// than every 1s tick.
+    /// The optional song-info fast-poll piggyback (`do_poll()`'s caller) is
+    /// entirely independent of this now — it runs every tick regardless,
+    /// on `dispatch_fast_poll()`'s own `Inner::fast_poll_target` cadence.
     fn do_simple_poll(
         &self,
         inner: &mut Inner,
         now: Instant,
         simple_tx: &async_channel::Sender<Option<DeviceInfo>>,
-    ) -> bool {
+    ) {
         let due = inner.last_simple_poll
             .map_or(true, |t| now.duration_since(t) >= SIMPLE_POLL_INTERVAL);
         // Same "don't pile on top of a still-outstanding call" reasoning as
         // `fast_poll_handle`/`slow_poll_handle` (see their doc comments).
         if !due || inner.simple_poll_handle.is_some() {
-            return false;
+            return;
         }
-        let Some(client) = inner.client.clone() else { return false };
+        let Some(client) = inner.client.clone() else { return };
         inner.last_simple_poll = Some(now);
         let tx = simple_tx.clone();
         let handle = self.rt().spawn(async move {
@@ -1683,7 +1706,6 @@ impl DeviceState {
             let _ = tx.send(info).await;
         });
         inner.simple_poll_handle = Some(handle);
-        true
     }
 
     /// Advances the slow-poll rotation (see `SlowPollPhase`), starting a
@@ -1930,23 +1952,22 @@ impl DeviceState {
     /// deferred as unnecessary complexity for what's currently an opt-in
     /// diagnostic path, not the default.)
     ///
-    /// `force`: bypass the GENA-healthy skip window entirely and always do
-    /// a real poll this call — used by `trigger_poll()`'s one-shot after a
-    /// command or a GENA-detected event that needs confirming; without it,
-    /// that "poll now" request could itself land on a tick that the skip
-    /// logic below would otherwise have skipped, defeating the point of
-    /// triggering it at all. The regular 1s-tick callers pass `false`.
+    /// Called every 1s tick, from both `Full` and `Simple` mode alike (the
+    /// mode/health-dependent cadence is entirely `Inner::fast_poll_target`'s
+    /// job now — see its doc comment). Also called directly by
+    /// `trigger_poll()`'s callers indirectly: they just zero
+    /// `fast_poll_target` and let the next natural tick pick it up, no
+    /// separate one-shot timer.
     ///
-    /// Otherwise takes no parameters — fetches its own `client`/`poll_tx`
-    /// (a couple of cheap `Option` clones off two `RefCell`s) rather than
-    /// requiring the caller to already have them in hand, so both regular
-    /// call sites can share this one function outright: `do_poll()`'s
-    /// every-tick call (which happens to have `client` in scope anyway, for
+    /// Takes no parameters — fetches its own `client`/`poll_tx` (a couple
+    /// of cheap `Option` clones off two `RefCell`s) rather than requiring
+    /// the caller to already have them in hand, so both regular call sites
+    /// can share this one function outright: `do_poll()`'s every-tick call
+    /// for `Full` mode (which happens to have `client` in scope anyway, for
     /// the slow-poll/preset-art dispatchers running the same tick, but
-    /// doesn't need to pass it here too) and `trigger_poll()`'s delayed
-    /// one-shot after a command (which doesn't have either in scope at all,
-    /// running from its own `glib::timeout_add_local_once` closure).
-    fn dispatch_fast_poll(&self, force: bool) {
+    /// doesn't need to pass it here too) and its every-tick call for
+    /// `Simple` mode with song-info tracking on.
+    fn dispatch_fast_poll(&self) {
         let Some(poll_tx) = self.imp().poll_tx.borrow().clone() else { return };
         let (wants_upnp, upnp_client, want_bt, client, inflight, has_meta_info, probe_bt, skip_this_tick) = {
             let mut inner = self.imp().inner.borrow_mut();
@@ -1955,14 +1976,15 @@ impl DeviceState {
                 .map_or(true, |c| c.family.endpoints.supports_get_meta_info);
             let probe_bt = inner.capabilities.as_ref().map_or(true, |c| c.probes_bt);
 
-            // See `GENA_HEALTHY_FAST_POLL_TICKS`'s doc comment. Re-evaluated
+            // See `Inner::fast_poll_target`'s doc comment. Re-evaluated
             // fresh every tick (never a schedule fixed at the moment health
             // became `Healthy`), so a service dropping out of `Healthy` is
             // reflected on the very next tick, not after some stale
             // countdown finishes.
-            let gena_fully_healthy = inner.gena_av.health == gena::GenaHealth::Healthy
-                && inner.gena_rc.health == gena::GenaHealth::Healthy
-                && inner.gena_pq.health == gena::GenaHealth::Healthy;
+            let av_healthy = inner.gena_av.health == gena::GenaHealth::Healthy;
+            let rc_healthy = inner.gena_rc.health == gena::GenaHealth::Healthy;
+            let pq_healthy = inner.gena_pq.health == gena::GenaHealth::Healthy;
+            let gena_fully_healthy = av_healthy && rc_healthy && pq_healthy;
             // GENA has no concept of Bluetooth sink connection state at all
             // (none of its three services cover it) — `getbtstatus` only
             // ever gets fetched as part of this same dispatch, so as long
@@ -1977,33 +1999,46 @@ impl DeviceState {
             // `bt_pending`: force full-rate polling until the seek
             // converges, times out, or the state changes out from under it.
             let seek_pending = inner.seek_pending;
-            // `ever_polled` guards against GENA racing to `Healthy` on every
-            // service before the first real poll for this connection has
-            // ever run — see its doc comment on `Inner`.
-            let skip_this_tick = !force && gena_fully_healthy && inner.ever_polled && !bt_pending && !seek_pending
-                && inner.fast_poll_skip_ticks < GENA_HEALTHY_FAST_POLL_TICKS;
+            let is_full = inner.full_clients > 0;
+            let desired_target: u32 = if bt_pending || seek_pending {
+                0
+            } else if gena_fully_healthy {
+                GENA_HEALTHY_FAST_POLL_TICKS
+            } else if is_full {
+                1
+            } else {
+                SIMPLE_POLL_INTERVAL.as_secs() as u32
+            };
+            // Only ever clamp *down* — see `Inner::fast_poll_target`'s doc
+            // comment for why a newly-favorable target doesn't retroactively
+            // extend a countdown already in progress.
+            if inner.fast_poll_target > desired_target {
+                inner.fast_poll_target = desired_target;
+            }
+            if inner.fast_poll_target > 0 {
+                inner.fast_poll_target -= 1;
+            }
+            let skip_this_tick = inner.fast_poll_target > 0;
             if skip_this_tick {
-                inner.fast_poll_skip_ticks += 1;
                 dbg(self, &format!(
-                    "fast poll: skipped ({}/{GENA_HEALTHY_FAST_POLL_TICKS}, GENA healthy, extrapolating position)",
-                    inner.fast_poll_skip_ticks,
+                    "fast poll: skipped ({} ticks remaining until next real poll)",
+                    inner.fast_poll_target,
                 ));
             } else {
-                if force {
-                    dbg(self, "fast poll: dispatching (forced)");
-                } else if bt_pending {
+                if bt_pending {
                     dbg(self, "fast poll: dispatching (Bluetooth pending connection, staying at full cadence)");
                 } else if seek_pending {
                     dbg(self, "fast poll: dispatching (seek pending, staying at full cadence)");
                 } else if gena_fully_healthy {
-                    dbg(self, if inner.ever_polled {
-                        "fast poll: dispatching (GENA healthy, periodic consistency check)"
-                    } else {
-                        "fast poll: dispatching (GENA healthy, but no real poll yet this connection)"
-                    });
+                    dbg(self, "fast poll: dispatching (GENA healthy, periodic consistency check)");
+                } else {
+                    dbg(self, &format!(
+                        "fast poll: dispatching ({} mode, GENA not fully healthy: A:{},P:{},R:{})",
+                        if is_full { "Full" } else { "Simple" },
+                        av_healthy as u8, pq_healthy as u8, rc_healthy as u8,
+                    ));
                 }
-                inner.ever_polled = true;
-                inner.fast_poll_skip_ticks = 0;
+                inner.fast_poll_target = desired_target;
             }
 
             (inner.access == AccessMethod::UpnpPolled, inner.upnp_client.clone(), want_bt,
@@ -2032,18 +2067,14 @@ impl DeviceState {
                     let (info, bt_status) = fetch_upnp_fast_poll(uc, client, want_bt, probe_bt).await;
                     let _ = poll_tx.send(PollData::Upnp { info, bt_status }).await;
                 });
-                let mut inner = self.imp().inner.borrow_mut();
-                inner.last_poll = Some(Instant::now());
-                inner.fast_poll_handle = Some(handle);
+                self.imp().inner.borrow_mut().fast_poll_handle = Some(handle);
             }
             (false, _) => {
                 let handle = self.rt().spawn(async move {
                     let (status, meta, bt_status) = fetch_http_fast_poll(client, want_bt, probe_bt, has_meta_info).await;
                     let _ = poll_tx.send(PollData::Http { status, meta, bt_status }).await;
                 });
-                let mut inner = self.imp().inner.borrow_mut();
-                inner.last_poll = Some(Instant::now());
-                inner.fast_poll_handle = Some(handle);
+                self.imp().inner.borrow_mut().fast_poll_handle = Some(handle);
             }
         }
     }
@@ -2089,6 +2120,13 @@ impl DeviceState {
     /// traffic).
     fn extrapolate_position_while_playing(&self) {
         let mut inner = self.imp().inner.borrow_mut();
+        // `Simple` mode has no live position display for any tracked
+        // device to begin with (no open window) — extrapolating and
+        // emitting a `playback-changed(TIME)` signal every skipped tick
+        // would be pure overhead with nothing listening.
+        if inner.full_clients == 0 {
+            return;
+        }
         if inner.playback.status != playback::PlaybackStatus::Playing {
             return;
         }
@@ -2107,8 +2145,12 @@ impl DeviceState {
         let old_position = inner.playback.position;
         inner.playback.position = new_position;
         drop(inner);
+        // No need to state *why* this tick was skipped — the "fast poll:
+        // skipped (...)" line `dispatch_fast_poll()` just logged already
+        // covers that; this used to hardcode "(GENA healthy)", which was
+        // misleading on the rare tick skipped for another reason.
         dbg(self, &format!(
-            "extrapolate: position {}s -> {}s (+{}ms, GENA healthy)",
+            "extrapolate: position {}s -> {}s (+{}ms)",
             old_position.as_secs(), new_position.as_secs(), elapsed.as_millis(),
         ));
         self.emit_by_name::<()>("playback-changed", &[&playback_changed::TIME]);
@@ -2861,6 +2903,19 @@ impl DeviceState {
         // which is why it's hoisted out here rather than staying local to
         // the `status` block.
         let mut mode_changed_this_tick = false;
+        // Set true for the one poll response that establishes this
+        // connection's real baseline in `playback` (i.e. `Inner::ever_polled`
+        // was still `false` going in) — see that field's doc comment. Forces
+        // every GENA-trust check below to act as if nothing were `Healthy`
+        // yet and suppresses all three mismatch flags, since comparing this
+        // response against `playback`'s still-`Default` fields would
+        // otherwise look like a disagreement (GENA can race a service to
+        // `Healthy` off a NOTIFY that arrived before any real poll — see
+        // `apply_gena_notify()`'s doc comment — and that early health must
+        // not immediately get knocked back down to `MaybeUnhealthy` just
+        // because the *first* real poll finally lands and, unsurprisingly,
+        // disagrees with data nothing had ever actually written yet).
+        let mut is_first_poll = false;
 
         // Fallback for the (very unlikely) case `status` itself failed this
         // tick but `meta` somehow still arrived — uses last tick's mode.
@@ -2885,6 +2940,9 @@ impl DeviceState {
             let emit_inputs_changed;
             {
                 let mut inner = self.imp().inner.borrow_mut();
+
+                is_first_poll = !inner.ever_polled;
+                inner.ever_polled = true;
 
                 let prev_mode = inner.current_mode;
                 let mode_changed = st.mode != prev_mode;
@@ -2923,8 +2981,8 @@ impl DeviceState {
                 let mute_settled = inner.last_mute_cmd
                     .map_or(true, |t| Instant::now().duration_since(t) >= VOLUME_POLL_SETTLE);
                 let mute_changed = mute_settled && st.mute != inner.playback.muted;
-                if vol_changed || mute_changed { rc_mismatch = true; }
-                let rc_trusted = inner.gena_rc.health == gena::GenaHealth::Healthy;
+                if !is_first_poll && (vol_changed || mute_changed) { rc_mismatch = true; }
+                let rc_trusted = !is_first_poll && inner.gena_rc.health == gena::GenaHealth::Healthy;
                 if vol_changed && !rc_trusted  { inner.playback.volume = st.vol;  playback_mask |= playback_changed::VOLUME; }
                 if mute_changed && !rc_trusted { inner.playback.muted  = st.mute; playback_mask |= playback_changed::VOLUME; }
 
@@ -2995,12 +3053,12 @@ impl DeviceState {
                 // both as untrusted regardless of `GenaHealth`, and doesn't
                 // count a disagreement here as a missed NOTIFY (it's an
                 // expected discontinuity, not evidence GENA is failing).
-                if !mode_changed {
+                if !mode_changed && !is_first_poll {
                     av_mismatch = status_mismatch;
                     pq_mismatch = loop_mode_mismatch;
                 }
-                let av_trusted = !mode_changed && inner.gena_av.health == gena::GenaHealth::Healthy;
-                let pq_trusted = !mode_changed && inner.gena_pq.health == gena::GenaHealth::Healthy;
+                let av_trusted = !mode_changed && !is_first_poll && inner.gena_av.health == gena::GenaHealth::Healthy;
+                let pq_trusted = !mode_changed && !is_first_poll && inner.gena_pq.health == gena::GenaHealth::Healthy;
                 if status_mismatch && !av_trusted {
                     inner.playback.status = decoded_status;
                     playback_mask |= playback_changed::OTHER;
@@ -3066,7 +3124,7 @@ impl DeviceState {
                     // content epoch GENA hasn't necessarily caught up to,
                     // so this tick treats AVTransport as untrusted
                     // regardless of `GenaHealth`.
-                    let av_trusted = !mode_changed_this_tick && inner.gena_av.health == gena::GenaHealth::Healthy;
+                    let av_trusted = !mode_changed_this_tick && !is_first_poll && inner.gena_av.health == gena::GenaHealth::Healthy;
                     let title_changed  = m.title.as_str()  != inner.playback.title.as_ref();
                     let artist_changed = m.artist.as_str() != inner.playback.artist.as_ref();
                     let album_changed  = m.album.as_str()  != inner.playback.album.as_ref();
@@ -3076,7 +3134,7 @@ impl DeviceState {
                         // `Inner::seek_pending`'s doc comment on this
                         // guardrail.
                         inner.seek_pending = false;
-                        if !mode_changed_this_tick { av_mismatch = true; }
+                        if !mode_changed_this_tick && !is_first_poll { av_mismatch = true; }
                     }
                     if title_changed && !av_trusted {
                         inner.playback.title = Rc::from(m.title.as_str());
@@ -3190,6 +3248,9 @@ impl DeviceState {
         let mut pq_mismatch = false;
 
         let had_content = self.imp().inner.borrow().has_content;
+        // See `process_poll_http()`'s identical `is_first_poll` — set below,
+        // inside the first `inner` borrow, from `Inner::ever_polled`.
+        let is_first_poll;
         // `info.play_type` is never the `-1` "tag absent" sentinel by this
         // point — `fetch_upnp_fast_poll()` already substitutes a real value
         // from `PlayMedium` when `GetInfoEx` doesn't carry `<PlayType>` at
@@ -3204,6 +3265,9 @@ impl DeviceState {
         let emit_inputs_changed;
         {
             let mut inner = self.imp().inner.borrow_mut();
+
+            is_first_poll = !inner.ever_polled;
+            inner.ever_polled = true;
 
             let prev_mode = inner.current_mode;
             let mode_changed = info.play_type != prev_mode;
@@ -3234,12 +3298,12 @@ impl DeviceState {
             // `process_poll_http()`'s identical note) — this tick treats
             // AVTransport/PlayQueue as untrusted regardless of `GenaHealth`,
             // and doesn't count a disagreement here as a missed NOTIFY.
-            if !mode_changed {
+            if !mode_changed && !is_first_poll {
                 av_mismatch = status_mismatch;
                 pq_mismatch = loop_mode_mismatch;
             }
-            let av_trusted = !mode_changed && inner.gena_av.health == gena::GenaHealth::Healthy;
-            let pq_trusted = !mode_changed && inner.gena_pq.health == gena::GenaHealth::Healthy;
+            let av_trusted = !mode_changed && !is_first_poll && inner.gena_av.health == gena::GenaHealth::Healthy;
+            let pq_trusted = !mode_changed && !is_first_poll && inner.gena_pq.health == gena::GenaHealth::Healthy;
             if status_mismatch && !av_trusted {
                 inner.playback.status = decoded_status.clone();
                 playback_mask |= playback_changed::OTHER;
@@ -3307,8 +3371,8 @@ impl DeviceState {
             let mute_settled = inner.last_mute_cmd
                 .map_or(true, |t| Instant::now().duration_since(t) >= VOLUME_POLL_SETTLE);
             let mute_changed = info.current_mute.is_some_and(|m| m != inner.playback.muted) && mute_settled;
-            if vol_changed || mute_changed { rc_mismatch = true; }
-            let rc_trusted = inner.gena_rc.health == gena::GenaHealth::Healthy;
+            if !is_first_poll && (vol_changed || mute_changed) { rc_mismatch = true; }
+            let rc_trusted = !is_first_poll && inner.gena_rc.health == gena::GenaHealth::Healthy;
             if vol_changed && !rc_trusted {
                 inner.playback.volume = info.current_volume;
                 playback_mask |= playback_changed::VOLUME;
@@ -3349,7 +3413,7 @@ impl DeviceState {
                     // See `process_poll_http()`'s identical comment on this
                     // guardrail.
                     inner.seek_pending = false;
-                    av_mismatch = true;
+                    if !is_first_poll { av_mismatch = true; }
                 }
                 if title_changed && !av_trusted {
                     inner.playback.title = Rc::from(info.title.as_str());
@@ -3731,23 +3795,14 @@ impl DeviceState {
     }
 
     /// Trigger a one-shot status/metadata poll after issuing a device
-    /// command, instead of waiting for the next regular ~1s tick. Spaced at
-    /// least `POLL_SETTLE_DELAY` after whichever poll happened most
-    /// recently (regular tick or a previous `trigger_poll()`) — e.g. if the
-    /// last poll was 200ms ago, this fires in 200ms, not a full
-    /// `POLL_SETTLE_DELAY` from now; if it's already been longer than that,
-    /// this fires on the next main-loop iteration.
+    /// command, instead of waiting for however many ticks
+    /// `Inner::fast_poll_target` currently has left. Zeroing it is the
+    /// whole mechanism — the next 1s tick's `dispatch_fast_poll()` call
+    /// (already running regardless, for every connected device in either
+    /// mode) sees `0` and dispatches for real; no separate one-shot timer
+    /// needed.
     fn trigger_poll(&self) {
-        let now   = Instant::now();
-        let delay = match self.imp().inner.borrow().last_poll {
-            Some(t) => POLL_SETTLE_DELAY.saturating_sub(now.duration_since(t)),
-            None    => Duration::ZERO,
-        };
-        let ds = self.downgrade();
-        glib::timeout_add_local_once(delay, move || {
-            let Some(ds) = ds.upgrade() else { return };
-            ds.dispatch_fast_poll(true);
-        });
+        self.imp().inner.borrow_mut().fast_poll_target = 0;
     }
 
     // ── Accessors ─────────────────────────────────────────────────────────────
@@ -3907,23 +3962,40 @@ impl DeviceState {
     }
 
     fn release_full(&self) {
-        let n = {
+        let (n, still_wanted) = {
             let mut inner = self.imp().inner.borrow_mut();
             debug_assert!(inner.full_clients > 0, "release_full() with no outstanding FullModeGuard");
             inner.full_clients = inner.full_clients.saturating_sub(1);
-            inner.full_clients
+            (inner.full_clients, Self::wants_gena_session(&inner))
         };
         if n == 0 {
             dbg(self, &format!("Full → Simple mode (full_clients={n})"));
-            self.stop_gena_session();
+            // Simple mode's own song-info tracking may still want GENA
+            // running — see `wants_gena_session()`'s doc comment.
+            if !still_wanted {
+                self.stop_gena_session();
+            }
         }
+    }
+
+    /// Whether *anything* currently wants this device's GENA session kept
+    /// alive: `Full` mode (any open window), or `Simple` mode with
+    /// song-info tracking on (nothing to do with `Full` mode's
+    /// `Inner::full_clients` at all — a device can be tracked with
+    /// song-info while no window for it is open). Doesn't check
+    /// `gena_enabled` itself — that's `ensure_gena_session()`'s own gate,
+    /// checked separately wherever a session might actually need starting.
+    fn wants_gena_session(inner: &Inner) -> bool {
+        inner.full_clients > 0 || inner.simple_mode_song_info
     }
 
     /// If `gena_enabled` (the already-resolved app-wide-AND-per-device
     /// Settings toggle, see `set_gena_enabled()`) is true, start a GENA
-    /// session for this device now that it's in `Full` mode. No-op if one
-    /// is already running or already being started, or if either toggle is
-    /// off. Same fire-and-forget spawn-then-channel-back shape as
+    /// session for this device now that something wants it (`Full` mode,
+    /// or `Simple` mode with song-info tracking — see
+    /// `wants_gena_session()`). No-op if one is already running or already
+    /// being started, or if either toggle is off. Same fire-and-forget
+    /// spawn-then-channel-back shape as
     /// `ensure_upnp_client()`. Also wires up the NOTIFY-processing loop
     /// (`spawn_gena_notify_loop()`) — its own
     /// `glib::spawn_future_local`, reading a channel only this device's
@@ -3974,10 +4046,12 @@ impl DeviceState {
             let mut inner = ds.imp().inner.borrow_mut();
             inner.gena_session_in_flight = false;
             // Full mode may already have been released again by the time
-            // this resolves (a window opened and closed very quickly) — in
-            // that case, tear the just-started session back down rather
-            // than leaving it running with nothing holding Full anymore.
-            if inner.full_clients == 0 {
+            // this resolves (a window opened and closed very quickly), and
+            // Simple mode's own song-info toggle may equally have flipped
+            // back off in the meantime — in that case, tear the just-started
+            // session back down rather than leaving it running with nothing
+            // wanting it anymore. See `wants_gena_session()`.
+            if !Self::wants_gena_session(&inner) {
                 drop(inner);
                 gena::spawn_tracked_stop(&ds.rt(), session);
                 return;
@@ -4021,24 +4095,42 @@ impl DeviceState {
     /// `GenaServiceState::poll_mismatch()`.
     fn apply_gena_notify(&self, payload: &NotifyPayload) {
         let mut inner = self.imp().inner.borrow_mut();
-        // Don't trust anything from GENA until at least one real fast poll
-        // has established a baseline for this connection — see
+        // Don't trust *data* from GENA until at least one real fast poll
+        // response has established a baseline for this connection — see
         // `Inner::ever_polled`'s doc comment. Without this, a NOTIFY racing
-        // ahead of the first-ever poll can mark a service `Healthy` before
-        // any of the fields it doesn't cover itself (`art_url` used to be
-        // one of these) have ever been populated at all.
-        if !inner.ever_polled {
-            dbg(self, &format!("gena: {} NOTIFY ignored — no real poll yet this connection", payload.service));
-            return;
+        // ahead of the first-ever poll response can apply fields before any
+        // of the ones it doesn't cover itself (`art_url` used to be one of
+        // these) have ever been populated at all. But `Inner::fast_poll_target`
+        // defaulting to `0` already independently guarantees the first real
+        // poll for a connection is never skipped regardless of GENA health —
+        // so unlike an earlier version of this guard, health itself always
+        // still advances (`notify_received()`, below, is unconditional): a
+        // service's *only* NOTIFY for a good while (a device sitting idle
+        // sends nothing else to re-confirm it with) must not be silently
+        // discarded entirely just because it happened to race the bootstrap
+        // poll — confirmed live, that left GENA stuck at `Subscribing`
+        // forever for a device whose state never changed again afterward,
+        // `Simple`-mode `dispatch_fast_poll()` cadence staying at the
+        // unhealthy target the whole session.
+        let apply_data = inner.ever_polled;
+        if !apply_data {
+            dbg(self, &format!(
+                "gena: {} NOTIFY — no real poll yet this connection, marking healthy but not applying data",
+                payload.service,
+            ));
         }
         let mut emit_input_changed = false;
         let mut emit_inputs_changed = false;
         let mut needs_immediate_poll = false;
         let mut art_url_for_fetch: Option<String> = None;
         let (mask, old_health, new_health): (u32, gena::GenaHealth, gena::GenaHealth) = match payload.service {
-            "AVTransport" => {
+            "AVTransport" => 'av: {
                 let ev = parse_av_transport_event(&payload.last_change);
                 let mut mask = 0;
+                if !apply_data {
+                    let old = inner.gena_av.notify_received();
+                    break 'av (mask, old, inner.gena_av.health);
+                }
 
                 // `PlaybackStorageMedium`/`TrackSource` share their
                 // vocabulary with `GetInfoEx`'s `PlayMedium`/`TrackSource`
@@ -4250,9 +4342,13 @@ impl DeviceState {
                 let old = inner.gena_av.notify_received();
                 (mask, old, inner.gena_av.health)
             }
-            "RenderingControl" => {
+            "RenderingControl" => 'rc: {
                 let ev = parse_rendering_control_event(&payload.last_change);
                 let mut mask = 0;
+                if !apply_data {
+                    let old = inner.gena_rc.notify_received();
+                    break 'rc (mask, old, inner.gena_rc.health);
+                }
                 if let Some(v) = ev.volume {
                     if v != inner.playback.volume {
                         inner.playback.volume = v;
@@ -4268,9 +4364,13 @@ impl DeviceState {
                 let old = inner.gena_rc.notify_received();
                 (mask, old, inner.gena_rc.health)
             }
-            "PlayQueue" => {
+            "PlayQueue" => 'pq: {
                 let ev = parse_play_queue_event(&payload.last_change);
                 let mut mask = 0;
+                if !apply_data {
+                    let old = inner.gena_pq.notify_received();
+                    break 'pq (mask, old, inner.gena_pq.health);
+                }
                 if let Some(loop_mode) = ev.loop_mode {
                     let (shuffle, repeat) = playback::decode_loop_mode_http(loop_mode);
                     if shuffle != inner.playback.shuffle || repeat != inner.playback.repeat {
@@ -4390,12 +4490,26 @@ impl DeviceState {
     /// Configure whether `Simple`-mode polling additionally fetches title/
     /// artist/artwork content, on top of the bare `getStatusEx` liveness/
     /// identity check it always does — see `Inner::simple_mode_song_info`'s
-    /// doc comment. No effect while in `Full` mode. Pushed explicitly
+    /// doc comment. Doesn't change *what* `Full` mode itself fetches (it
+    /// already fetches everything regardless), but does now also drive
+    /// whether a `Simple`-mode device's GENA session stays alive after
+    /// `Full` mode ends — see `wants_gena_session()`. Pushed explicitly
     /// (rather than read lazily) so toggling the underlying setting takes
     /// effect immediately on an already-tracked device, not just ones
     /// created afterward.
     pub fn configure_simple_mode(&self, want_song_info: bool) {
-        self.imp().inner.borrow_mut().simple_mode_song_info = want_song_info;
+        let was_wanted = {
+            let mut inner = self.imp().inner.borrow_mut();
+            let was_wanted = Self::wants_gena_session(&inner);
+            inner.simple_mode_song_info = want_song_info;
+            was_wanted
+        };
+        let now_wanted = Self::wants_gena_session(&self.imp().inner.borrow());
+        if now_wanted && !was_wanted {
+            self.ensure_gena_session();
+        } else if was_wanted && !now_wanted {
+            self.stop_gena_session();
+        }
     }
 
     pub fn netstat(&self) -> Option<u32> {
