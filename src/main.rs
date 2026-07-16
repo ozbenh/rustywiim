@@ -58,7 +58,9 @@ fn main() -> glib::ExitCode {
         glib::Char(0),
         glib::OptionFlags::NONE,
         glib::OptionArg::String,
-        "Enable debug output: comma-separated list of api, state, device, discovery, upnp, ui, config, or all",
+        "Enable debug output: comma-separated list of api, state, device, discovery, upnp, ui, config, or all. \
+         api/upnp (and all) may add \":verbose\" (e.g. upnp:verbose) for full request/response content \
+         instead of a one-line summary",
         Some("LIST"),
     );
     app.add_main_option(
@@ -100,12 +102,32 @@ fn main() -> glib::ExitCode {
     app.connect_handle_local_options(|_, opts| {
         if let Ok(Some(list)) = opts.lookup::<String>("debug") {
             for token in list.split(',').map(str::trim) {
-                match token {
-                    "api"       => { device::api::DEBUG.store(true, Ordering::Relaxed); }
+                let (name, modifier) = match token.split_once(':') {
+                    Some((n, m)) => (n, Some(m)),
+                    None => (token, None),
+                };
+                let verbose = modifier == Some("verbose");
+                if let Some(m) = modifier {
+                    if m != "verbose" {
+                        eprintln!("rustywiim: unknown debug modifier {m:?} for {name:?} (only \"verbose\" is supported)");
+                    }
+                }
+                // `verbose` is a no-op for tokens with no verbose distinction
+                // (state/device/discovery/ui/config) — enabling them plainly
+                // is still the right behavior, matching "all:verbose applies
+                // verbose only to whatever supports it."
+                match name {
+                    "api"       => {
+                        device::api::DEBUG.store(true, Ordering::Relaxed);
+                        if verbose { device::api::DEBUG_VERBOSE.store(true, Ordering::Relaxed); }
+                    }
                     "state"     => { device::state::DEBUG_STATE.store(true, Ordering::Relaxed); }
                     "device"    => { device::capabilities::DEBUG_DEVICE.store(true, Ordering::Relaxed); }
                     "discovery" => { device::discovery::DEBUG_DISCOVERY.store(true, Ordering::Relaxed); }
-                    "upnp"      => { device::upnp::DEBUG_UPNP.store(true, Ordering::Relaxed); }
+                    "upnp"      => {
+                        device::upnp::DEBUG_UPNP.store(true, Ordering::Relaxed);
+                        if verbose { device::upnp::DEBUG_UPNP_VERBOSE.store(true, Ordering::Relaxed); }
+                    }
                     "ui"        => { ui::DEBUG_UI.store(true, Ordering::Relaxed); }
                     "config"    => { config::DEBUG_CONFIG.store(true, Ordering::Relaxed); }
                     "all"       => {
@@ -116,6 +138,10 @@ fn main() -> glib::ExitCode {
                         device::upnp::DEBUG_UPNP.store(true, Ordering::Relaxed);
                         ui::DEBUG_UI.store(true, Ordering::Relaxed);
                         config::DEBUG_CONFIG.store(true, Ordering::Relaxed);
+                        if verbose {
+                            device::api::DEBUG_VERBOSE.store(true, Ordering::Relaxed);
+                            device::upnp::DEBUG_UPNP_VERBOSE.store(true, Ordering::Relaxed);
+                        }
                     }
                     other => {
                         eprintln!("rustywiim: unknown debug token {:?} (valid: api, state, device, discovery, upnp, ui, config, all)", other);

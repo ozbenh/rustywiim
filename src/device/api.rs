@@ -8,14 +8,24 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 pub static DEBUG: AtomicBool = AtomicBool::new(false);
+/// `--debug=api:verbose` (or `all:verbose`): include the full response body
+/// in `debug()`'s output. Without it, `debug()` logs just the base URL and
+/// command — enough to see call traffic/timing without a wall of JSON.
+/// `upnp.rs` has its own, independent `DEBUG_UPNP`/`DEBUG_UPNP_VERBOSE` pair
+/// for SOAP tracing — the two used to share this flag/format, but that made
+/// it impossible to turn one on without the other; `log_request_error()`
+/// below is the one piece still actually shared (it's the same walk-the-
+/// error-chain logic either way, just tagged per caller).
+pub static DEBUG_VERBOSE: AtomicBool = AtomicBool::new(false);
 
-// `pub(crate)`, not private: `upnp.rs` reuses these directly so its own
-// SOAP request/response tracing shows up under the same `--debug=api` flag
-// and `[API]` prefix as this module's HTTP calls, rather than a second,
-// differently-gated log format for what is still fundamentally "the API".
-pub(crate) fn debug(cmd: &str, resp: &str) {
-    if DEBUG.load(Ordering::Relaxed) {
-        println!("{} [API] {cmd} → {resp}", super::timestamp());
+pub(crate) fn debug(base: &str, cmd: &str, resp: &str) {
+    if !DEBUG.load(Ordering::Relaxed) {
+        return;
+    }
+    if DEBUG_VERBOSE.load(Ordering::Relaxed) {
+        println!("{} [API] {base} {cmd} → {resp}", super::timestamp());
+    } else {
+        println!("{} [API] {base} {cmd}", super::timestamp());
     }
 }
 
@@ -139,17 +149,22 @@ pub fn build_reqwest_client(tls: TlsMode, timeout: Duration) -> Client {
     client
 }
 
-/// Log a reqwest error for `context` (e.g. an API command or a discovery probe).
+/// Log a reqwest error for `context` (e.g. an API command or a discovery
+/// probe), tagged `[{tag}]` — shared by `api.rs` itself (`"API"`) and
+/// `upnp.rs`'s SOAP calls (`"upnp"`), since the walk-the-`source()`-chain
+/// logic is identical either way, only the tag differs now that the two
+/// modules have their own independent `--debug=api`/`--debug=upnp` flags.
 ///
-/// Always prints to stderr.  Walks the full `source()` chain so that the root
-/// cause (e.g. the specific TLS or certificate failure) is visible.
-pub fn log_request_error(context: &str, err: &reqwest::Error) {
+/// Always prints to stderr, regardless of any `--debug` flag.  Walks the
+/// full `source()` chain so that the root cause (e.g. the specific TLS or
+/// certificate failure) is visible.
+pub fn log_request_error(tag: &str, context: &str, err: &reqwest::Error) {
     use std::error::Error as StdError;
     let ts = super::timestamp();
-    eprintln!("{ts} [API] {context}: {err}");
+    eprintln!("{ts} [{tag}] {context}: {err}");
     let mut cause: Option<&dyn StdError> = err.source();
     while let Some(c) = cause {
-        eprintln!("{ts} [API]   caused by: {c}");
+        eprintln!("{ts} [{tag}]   caused by: {c}");
         cause = c.source();
     }
 }
@@ -805,7 +820,7 @@ impl WiimClient {
             let err = match self.http.get(&url).send().await {
                 Ok(resp) => {
                     let text = resp.text().await?;
-                    debug(command, &text);
+                    debug(&self.base, command, &text);
                     return Ok(text);
                 }
                 Err(e) => e,
@@ -813,7 +828,7 @@ impl WiimClient {
             // is_request() covers SendRequest errors (connection closed before
             // message completed).  These are transient; retry up to MAX_RETRIES.
             if !err.is_request() || attempt == MAX_RETRIES {
-                log_request_error(command, &err);
+                log_request_error("API", command, &err);
                 return Err(err.into());
             }
             // Attempt 1's failure is the routine, self-healing case this

@@ -561,6 +561,7 @@ async fn probe_api(ip: &str, mode: TlsMode) -> Option<(String, String)> {
         Ok(r)  => r.text().await.ok()?,
         Err(e) => {
             super::api::log_request_error(
+                "API",
                 &format!("probe {ip} [{}]", mode.description()),
                 &e,
             );

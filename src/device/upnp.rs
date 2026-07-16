@@ -27,14 +27,37 @@ use std::time::Duration;
 use super::api::{build_reqwest_client, PresetEntry, PresetFetchOutcome, PresetKind, TlsMode};
 
 pub static DEBUG_UPNP: AtomicBool = AtomicBool::new(false);
+/// `--debug=upnp:verbose` (or `all:verbose`): include the full SOAP
+/// envelope body in `soap_debug()`'s output. Without it, a SOAP call logs
+/// just the control URL and action — enough to see call traffic/timing
+/// without a wall of XML. Independent of `api.rs`'s own `DEBUG_VERBOSE` —
+/// the two used to share one flag/format (`api::debug()`), but that made it
+/// impossible to trace SOAP calls without also tracing every plain HTTP
+/// `httpapi.asp` command, or vice versa.
+pub static DEBUG_UPNP_VERBOSE: AtomicBool = AtomicBool::new(false);
 
 /// Higher-level tracing specific to this module (discovery, control-URL
-/// resolution) — gated on `--debug=upnp`, distinct from the raw
-/// request/response wire tracing `soap_call()` does via `api::debug()`
-/// under `--debug=api` (see that call site's comment for why).
+/// resolution) — gated on `--debug=upnp`, same flag `soap_debug()` below
+/// uses for the raw SOAP request/response wire tracing, just always at
+/// summary detail (these messages are already single-line, nothing to
+/// strip for non-verbose mode).
 fn dbg(msg: &str) {
     if DEBUG_UPNP.load(Ordering::Relaxed) {
         println!("{} [upnp] {msg}", super::timestamp());
+    }
+}
+
+/// Raw SOAP request/response tracing for `soap_call()` — this module's own
+/// counterpart to `api.rs`'s `debug()`, not a reuse of it (see
+/// `DEBUG_UPNP_VERBOSE`'s doc comment for why they're independent now).
+fn soap_debug(control_url: &str, action: &str, resp: &str) {
+    if !DEBUG_UPNP.load(Ordering::Relaxed) {
+        return;
+    }
+    if DEBUG_UPNP_VERBOSE.load(Ordering::Relaxed) {
+        println!("{} [upnp] {control_url} {action} → {resp}", super::timestamp());
+    } else {
+        println!("{} [upnp] {control_url} {action}", super::timestamp());
     }
 }
 
@@ -321,10 +344,12 @@ fn tls_for_scheme(scheme: &str) -> TlsMode {
     if scheme == "https" { TlsMode::HttpsAny } else { TlsMode::Http }
 }
 
-/// Same `[API]`/`--debug=api` request/response tracing as `api.rs`'s
-/// `cmd()` — reusing its `debug()`/`log_request_error()` directly rather
-/// than a second, upnp-specific log format, since this is still
-/// fundamentally an API call, just over SOAP instead of a plain GET.
+/// `[upnp]`/`--debug=upnp` request/response tracing via this module's own
+/// `soap_debug()` — used to reuse `api.rs`'s `debug()`/`--debug=api`
+/// directly (still fundamentally an API call, just over SOAP instead of a
+/// plain GET), but that made the two flags impossible to use
+/// independently; `log_request_error()` is the one piece still actually
+/// shared with `api.rs` (same logic, tagged `"upnp"` here).
 ///
 /// Retry loop mirrors `cmd()`'s exactly (`api.rs:711-738`): up to
 /// `MAX_RETRIES` retries with a 100ms backoff, only for
@@ -332,7 +357,7 @@ fn tls_for_scheme(scheme: &str) -> TlsMode {
 /// message completed" — a known pooled-keep-alive-connection race, not a
 /// real fault). Logging follows the
 /// same noise rule `cmd()` uses too: the first attempt's transient
-/// failure only logs under `--debug=api` (routine, self-healing — that's
+/// failure only logs under `--debug=upnp` (routine, self-healing — that's
 /// the entire point of retrying), but a first *retry* that also fails
 /// logs unconditionally (more likely a real problem).
 async fn soap_call(control_url: &str, service_type: &str, action: &str, args_xml: &str) -> anyhow::Result<String> {
@@ -364,16 +389,16 @@ async fn soap_call(control_url: &str, service_type: &str, action: &str, args_xml
                     anyhow::bail!("{action}: HTTP {}", resp.status());
                 }
                 let text = resp.text().await?;
-                super::api::debug(action, &text);
+                soap_debug(control_url, action, &text);
                 return Ok(text);
             }
             Err(e) => e,
         };
         if !err.is_request() || attempt == MAX_RETRIES {
-            super::api::log_request_error(action, &err);
+            super::api::log_request_error("upnp", action, &err);
             return Err(err.into());
         }
-        if attempt > 0 || super::api::DEBUG.load(Ordering::Relaxed) {
+        if attempt > 0 || DEBUG_UPNP.load(Ordering::Relaxed) {
             eprintln!(
                 "{} [upnp] {action}: transient send error (attempt {}/{}), retrying in 100ms: {err}",
                 super::timestamp(), attempt + 1, MAX_RETRIES,
