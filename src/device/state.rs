@@ -75,9 +75,13 @@ use gtk::glib;
 
 pub static DEBUG_STATE: AtomicBool = AtomicBool::new(false);
 
-fn dbg(msg: &str) {
+/// Takes the `DeviceState` itself (not a bare IP string) so the identifying
+/// prefix can change later (e.g. to a device name) without touching every
+/// call site — with several devices' windows open at once, a bare
+/// `[state] ...` line gives no way to tell which one it belongs to.
+fn dbg(ds: &DeviceState, msg: &str) {
     if DEBUG_STATE.load(Ordering::Relaxed) {
-        println!("[state] {msg}");
+        println!("[state] {}: {msg}", ds.ip());
     }
 }
 
@@ -521,11 +525,6 @@ pub struct RemoteInfo {
 
 struct Inner {
     client:          Option<WiimClient>,
-    /// IP the current `client` was built for.  Used to detect when a fresh
-    /// IP (e.g. from a DHCP lease change) actually differs from the one
-    /// already connected, so `DeviceManager::update_ip()` can skip a no-op
-    /// reconnect.
-    ip:              String,
     device_info:     Option<DeviceInfo>,
     capabilities:    Option<DeviceCapabilities>,
     /// Raw wire-shaped responses, cached purely as a diffing baseline for
@@ -729,7 +728,6 @@ impl Default for Inner {
     fn default() -> Self {
         Self {
             client:          None,
-            ip:              String::new(),
             device_info:     None,
             capabilities:    None,
             player_status:   None,
@@ -788,6 +786,17 @@ mod imp {
 
     pub struct DeviceState {
         pub(super) inner:         RefCell<Inner>,
+        /// IP the current `client` was built for — kept in its own `RefCell`
+        /// rather than a field on `Inner` specifically so reading it (`ip()`,
+        /// and every `dbg()` call, which prefixes its output with it) never
+        /// conflicts with an already-active `inner.borrow()`/`borrow_mut()`
+        /// elsewhere on the call stack; a same-RefCell double-borrow would
+        /// panic, but a *different* RefCell never contends with `inner` no
+        /// matter what's currently borrowed there. Used to detect when a
+        /// fresh IP (e.g. from a DHCP lease change) actually differs from
+        /// the one already connected, so `DeviceManager::update_ip()` can
+        /// skip a no-op reconnect.
+        pub(super) ip:            RefCell<String>,
         pub(super) rt:            std::cell::OnceCell<Arc<tokio::runtime::Runtime>>,
         pub(super) slow_poll_tx:  RefCell<Option<async_channel::Sender<SlowPollResult>>>,
         pub(super) poll_tx:       RefCell<Option<async_channel::Sender<PollData>>>,
@@ -839,6 +848,7 @@ mod imp {
         fn default() -> Self {
             Self {
                 inner:         RefCell::new(Inner::default()),
+                ip:            RefCell::new(String::new()),
                 rt:            std::cell::OnceCell::new(),
                 slow_poll_tx:  RefCell::new(None),
                 poll_tx:       RefCell::new(None),
@@ -868,7 +878,7 @@ mod imp {
             if let Some(h) = inner.slow_poll_handle.take() { h.abort(); }
             if let Some(h) = inner.simple_poll_handle.take() { h.abort(); }
             drop(inner);
-            dbg(&format!("DeviceState dropped: {}", id));
+            dbg(&self.obj(), &format!("DeviceState dropped: {}", id));
         }
 
         fn signals() -> &'static [Signal] {
@@ -977,22 +987,27 @@ impl DeviceState {
             let global = TlsMode::from_usize(TLS_MODE.load(Ordering::Relaxed));
             if global != TlsMode::Auto { global } else { tls }
         };
-        dbg(&format!(
-            "set_device: configuring {ip} ({}), connect_now={connect_now}",
-            tls.description(),
-        ));
+        *self.imp().ip.borrow_mut() = ip.to_string();
         {
             let mut inner = self.imp().inner.borrow_mut();
             *inner = Inner::default();
             inner.client           = Some(WiimClient::new(ip, tls));
-            inner.ip                = ip.to_string();
             if connect_now { inner.connection_state = ConnectionState::Connecting; }
             inner.access_override  = access_override;
             inner.mute_access_override = mute_access_override;
             inner.loop_mode_access_override = loop_mode_access_override;
         }
+        // Now that `self.imp().ip` above is actually set to the new value,
+        // dbg()'s own ds.ip() prefix reflects it correctly (it's a separate
+        // RefCell from `inner`, so setting it isn't ordering-sensitive
+        // relative to the block above — it's set first here only to match
+        // reading order).
+        dbg(self, &format!(
+            "set_device: configuring {ip} ({}), connect_now={connect_now}",
+            tls.description(),
+        ));
         self.recompute_access();
-        dbg(&format!("signal: device-changed ({})", if connect_now { "connecting" } else { "configured" }));
+        dbg(self, &format!("signal: device-changed ({})", if connect_now { "connecting" } else { "configured" }));
         self.emit_by_name::<()>("device-changed", &[]);
         if connect_now {
             self.fetch_device_info();
@@ -1075,7 +1090,7 @@ impl DeviceState {
                 ));
                 return;
             }
-            dbg(&format!(
+            dbg(&ds, &format!(
                 "device info: model=\"{}\" vendor={} fw={} project={} inputs={}",
                 caps.model,
                 caps.vendor.display_name(),
@@ -1109,7 +1124,7 @@ impl DeviceState {
                 inner.connection_state  = ConnectionState::Connected;
             }
             ds.recompute_access();
-            dbg("signal: device-changed (ready)");
+            dbg(&ds, "signal: device-changed (ready)");
             ds.emit_by_name::<()>("device-changed", &[]);
             // Kick off the slow-poll rotation on the very next 1s tick,
             // instead of waiting a full SLOW_POLL_INTERVAL, so presets/
@@ -1146,7 +1161,11 @@ impl DeviceState {
     /// loop mode: HTTP `setPlayerCmd:loopmode:5` confirmed silently ignored
     /// on at least the WiiM Mini).
     fn recompute_access(&self) {
-        let wants_upnp = {
+        // `became_upnp` is read back and logged *after* the borrow below
+        // ends — dbg() does its own fresh borrow of this same RefCell (to
+        // read the ip for its prefix), which would panic if called while
+        // still inside the `borrow_mut()` scope here.
+        let (wants_upnp, became_upnp) = {
             let mut inner = self.imp().inner.borrow_mut();
             let base = inner.capabilities.as_ref()
                 .map(|c| c.playback_access())
@@ -1163,16 +1182,15 @@ impl DeviceState {
             // connect (before and after capabilities are known), and would
             // otherwise print the same line twice whenever both resolve to
             // the same access method.
-            if DEBUG_STATE.load(Ordering::Relaxed)
-                && inner.access == AccessMethod::UpnpPolled
-                && prev_access != AccessMethod::UpnpPolled
-            {
-                dbg("access config: set to UpnpPolled");
-            }
-            inner.access == AccessMethod::UpnpPolled
+            let became_upnp = inner.access == AccessMethod::UpnpPolled && prev_access != AccessMethod::UpnpPolled;
+            let wants_upnp = inner.access == AccessMethod::UpnpPolled
                 || inner.mute_access == AccessMethod::UpnpPolled
-                || inner.loop_mode_access == AccessMethod::UpnpPolled
+                || inner.loop_mode_access == AccessMethod::UpnpPolled;
+            (wants_upnp, became_upnp)
         };
+        if became_upnp {
+            dbg(self, "access config: set to UpnpPolled");
+        }
         if wants_upnp {
             self.ensure_upnp_client();
         }
@@ -1186,18 +1204,18 @@ impl DeviceState {
     /// closest parallel) — a fresh one-shot channel per attempt, since
     /// discovery is rare enough not to need a long-lived processor task.
     fn ensure_upnp_client(&self) {
-        let ip = {
+        {
             let inner = self.imp().inner.borrow();
             if inner.upnp_client.is_some() || inner.upnp_discovery_in_flight {
                 return;
             }
-            inner.ip.clone()
-        };
+        }
+        let ip = self.ip();
         if ip.is_empty() {
             return;
         }
         self.imp().inner.borrow_mut().upnp_discovery_in_flight = true;
-        dbg("upnp: starting control-URL discovery");
+        dbg(self, "upnp: starting control-URL discovery");
 
         let (tx, rx) = async_channel::bounded(1);
         self.rt().spawn(async move {
@@ -1209,14 +1227,19 @@ impl DeviceState {
         glib::spawn_future_local(async move {
             let Ok(result) = rx.recv().await else { return };
             let Some(ds) = ds.upgrade() else { return };
-            let mut inner = ds.imp().inner.borrow_mut();
-            inner.upnp_discovery_in_flight = false;
-            match result {
-                Ok(client) => {
-                    dbg("upnp: discovery succeeded");
-                    inner.upnp_client = Some(client);
+            // `outcome` read back and logged *after* the borrow ends — see
+            // `recompute_access()`'s comment for why.
+            let outcome = {
+                let mut inner = ds.imp().inner.borrow_mut();
+                inner.upnp_discovery_in_flight = false;
+                match result {
+                    Ok(client) => { inner.upnp_client = Some(client); Ok(()) }
+                    Err(e) => Err(e),
                 }
-                Err(e) => dbg(&format!("upnp: discovery failed: {e}")),
+            };
+            match outcome {
+                Ok(()) => dbg(&ds, "upnp: discovery succeeded"),
+                Err(e) => dbg(&ds, &format!("upnp: discovery failed: {e}")),
             }
         });
     }
@@ -1490,7 +1513,7 @@ impl DeviceState {
             let device_id = inner.device_info.as_ref()
                 .map(|d| format!("{} ({})", d.device_name, d.ip_addr()))
                 .unwrap_or_else(|| "unknown".to_string());
-            dbg(&format!(
+            dbg(self, &format!(
                 "slow poll: starting new cycle (refcount={} device={device_id})",
                 self.ref_count(),
             ));
@@ -1579,7 +1602,7 @@ impl DeviceState {
             ConnectionState::Failed | ConnectionState::Disconnected,
         );
         if !can_reconnect { return; }
-        dbg("connection: told reachable externally (devlist health check); reconnecting");
+        dbg(self, "connection: told reachable externally (devlist health check); reconnecting");
         self.imp().inner.borrow_mut().connection_state = ConnectionState::Connecting;
         self.emit_by_name::<()>("device-changed", &[]);
         self.fetch_device_info();
@@ -1624,7 +1647,7 @@ impl DeviceState {
             (due, inner.client.clone())
         };
         if due && client.is_some() {
-            dbg("connection: no external health check registered; probing (silently, staying Failed)");
+            dbg(self, "connection: no external health check registered; probing (silently, staying Failed)");
             self.imp().inner.borrow_mut().reconnect_in_flight = true;
             self.fetch_device_info();
         }
@@ -1663,7 +1686,7 @@ impl DeviceState {
             if matches!(inner.connection_state, ConnectionState::Failed | ConnectionState::Disconnected) {
                 false
             } else {
-                dbg(&format!("connection: {:?} → Failed ({reason})", inner.connection_state));
+                dbg(self, &format!("connection: {:?} → Failed ({reason})", inner.connection_state));
                 inner.connection_state = ConnectionState::Failed;
                 inner.device_info      = None;
                 // Whichever poll triggered this transition already
@@ -1681,7 +1704,7 @@ impl DeviceState {
             }
         };
         if transitioned {
-            dbg("signal: device-changed (failed)");
+            dbg(self, "signal: device-changed (failed)");
             self.emit_by_name::<()>("device-changed", &[]);
         }
     }
@@ -1791,13 +1814,19 @@ impl DeviceState {
             SlowPollPhase::DeviceInfo => true,
         };
         if !enabled {
-            dbg(&format!("slow poll: phase {phase:?} skipped (not supported)"));
+            dbg(self, &format!("slow poll: phase {phase:?} skipped (not supported)"));
             return;
         }
-        dbg(&format!("slow poll: phase {phase:?}"));
+        dbg(self, &format!("slow poll: phase {phase:?}"));
         let cp = client.clone();
         let tx = slow_tx.clone();
         let dispatched_at = Instant::now();
+        // Captured by value (not `self`/`ds`) since this runs inside
+        // `rt().spawn()` on the shared tokio thread — that future must be
+        // `Send`, and `DeviceState` (a GObject) isn't, so `dbg()` (which
+        // needs `&DeviceState`) can't be called from in here at all. A
+        // plain ip string is cheap and Send-safe to capture instead.
+        let ip = self.ip();
         let handle = self.rt().spawn(async move {
             let result = run_slow_poll_phase(
                 cp, phase, preset_fp, upnp_client, preset_source, preset_probe_failures,
@@ -1807,8 +1836,8 @@ impl DeviceState {
             // not just "dispatched") so a phase that's unexpectedly slow
             // shows up rather than just being an unexplained delay.
             let elapsed = dispatched_at.elapsed();
-            if elapsed > Duration::from_secs(1) {
-                dbg(&format!("slow poll: phase {phase:?} took {elapsed:?} (slower than usual)"));
+            if elapsed > Duration::from_secs(1) && DEBUG_STATE.load(Ordering::Relaxed) {
+                println!("[state] {ip}: slow poll: phase {phase:?} took {elapsed:?} (slower than usual)");
             }
             let _ = tx.send(result).await;
         });
@@ -1836,7 +1865,7 @@ impl DeviceState {
             out
         };
         for (slot, url) in to_fetch {
-            dbg(&format!("preset art: fetching slot {slot} ({url})"));
+            dbg(self, &format!("preset art: fetching slot {slot} ({url})"));
             let cp = client.clone();
             let tx = poll_tx.clone();
             self.rt().spawn(async move {
@@ -1884,21 +1913,21 @@ impl DeviceState {
                     if inner.playback.art_url.as_deref() != Some(url.as_str()) {
                         false
                     } else {
-                        Self::replace_artwork(&mut inner, None); // leak-check the outgoing value first
+                        Self::replace_artwork(&ds, &mut inner, None); // leak-check the outgoing value first
                         if bytes.is_empty() {
-                            dbg("artwork fetch failed; clearing stale art");
+                            dbg(&ds, "artwork fetch failed; clearing stale art");
                         } else {
-                            dbg(&format!("artwork loaded: {} bytes", bytes.len()));
+                            dbg(&ds, &format!("artwork loaded: {} bytes", bytes.len()));
                             inner.playback.artwork = Some(Rc::new(bytes));
                         }
                         true
                     }
                 };
                 if applied {
-                    dbg("signal: playback-changed (artwork)");
+                    dbg(&ds, "signal: playback-changed (artwork)");
                     ds.emit_by_name::<()>("playback-changed", &[&playback_changed::ARTWORK]);
                 } else {
-                    dbg(&format!("artwork fetch result for stale/superseded url ignored: {url}"));
+                    dbg(&ds, &format!("artwork fetch result for stale/superseded url ignored: {url}"));
                 }
             }
         });
@@ -1911,11 +1940,11 @@ impl DeviceState {
     /// than the track it belongs to, which should never happen since every
     /// consumer is expected to re-fetch via `playback_state()` rather than
     /// cache the `Rc` itself.
-    fn replace_artwork(inner: &mut Inner, new: Option<Rc<Vec<u8>>>) {
+    fn replace_artwork(ds: &DeviceState, inner: &mut Inner, new: Option<Rc<Vec<u8>>>) {
         if let Some(old) = inner.playback.artwork.take() {
             let refs = Rc::strong_count(&old);
             if refs > 1 {
-                dbg(&format!(
+                dbg(ds, &format!(
                     "artwork Rc still has {refs} strong refs at replacement — possible leak"
                 ));
             }
@@ -1946,7 +1975,7 @@ impl DeviceState {
     /// `playback_changed::ALL` refresh is warranted (see the "`blank_mask`
     /// is overkill" note this replaced — a precise per-field bitmask isn't
     /// worth the bookkeeping for a reset this coarse).
-    fn blank_playback_baseline(inner: &mut Inner) -> bool {
+    fn blank_playback_baseline(ds: &DeviceState, inner: &mut Inner) -> bool {
         let mut changed = false;
         if !inner.playback.title.is_empty()  { inner.playback.title  = Rc::from(""); changed = true; }
         if !inner.playback.artist.is_empty() { inner.playback.artist = Rc::from(""); changed = true; }
@@ -1958,7 +1987,7 @@ impl DeviceState {
         }
         if inner.playback.art_url.is_some() || inner.playback.artwork.is_some() {
             inner.playback.art_url = None;
-            Self::replace_artwork(inner, None);
+            Self::replace_artwork(ds, inner, None);
             changed = true;
         }
         let disabled = playback::SourceCapabilities {
@@ -1988,9 +2017,9 @@ impl DeviceState {
     /// `enabled` (an input demonstrably in active use can't really be
     /// disabled) — the caller emits `inputs-changed` so the source menu drops
     /// the stale greyed-out styling on that entry.
-    fn apply_mode_change(inner: &mut Inner, new_mode: i32) -> bool {
+    fn apply_mode_change(ds: &DeviceState, inner: &mut Inner, new_mode: i32) -> bool {
         inner.current_mode = new_mode;
-        Self::blank_playback_baseline(inner);
+        Self::blank_playback_baseline(ds, inner);
         // Not (still) Bluetooth: nothing left to track for it either.
         if capabilities::mode_to_input_source(new_mode) != "bluetooth" {
             inner.playback.bt_connected   = false;
@@ -2018,10 +2047,10 @@ impl DeviceState {
     /// `input-changed` for a real/confirmed mode change or a timed-out switch
     /// that needs reverting; `inputs-changed` only when `apply_mode_change()`
     /// had to force a wrongly-disabled active input back to enabled.
-    fn handle_input_mode_poll(inner: &mut Inner, mode_changed: bool, new_mode: i32) -> (bool, bool) {
+    fn handle_input_mode_poll(ds: &DeviceState, inner: &mut Inner, mode_changed: bool, new_mode: i32) -> (bool, bool) {
         let mut inputs_changed = false;
         if mode_changed {
-            inputs_changed = Self::apply_mode_change(inner, new_mode);
+            inputs_changed = Self::apply_mode_change(ds, inner, new_mode);
         } else {
             let Some(sent) = inner.input_change_time else { return (false, false) };
             if !inner.input_changing || sent.elapsed() < INPUT_CHANGE_TIMEOUT {
@@ -2100,10 +2129,10 @@ impl DeviceState {
     /// `presets-changed` emission (see `process_preset_art_result()`).
     fn handle_slow_poll_presets(&self, presets: Option<(String, Vec<PresetEntry>)>) {
         let Some((new_fp, mut entries)) = presets else {
-            dbg("slow poll: presets unchanged");
+            dbg(self, "slow poll: presets unchanged");
             return;
         };
-        dbg(&format!("slow poll: presets updated: {} slots", entries.len()));
+        dbg(self, &format!("slow poll: presets updated: {} slots", entries.len()));
         {
             let mut inner = self.imp().inner.borrow_mut();
             let mut needs_fetch: Vec<(usize, String)> = Vec::new();
@@ -2133,7 +2162,7 @@ impl DeviceState {
                 }
             }
         }
-        dbg("signal: presets-changed");
+        dbg(self, "signal: presets-changed");
         self.emit_by_name::<()>("presets-changed", &[]);
     }
 
@@ -2155,7 +2184,7 @@ impl DeviceState {
                 }
             }
             ApiOutcome::Unsupported => {
-                dbg("slow poll: getSoundCardModeSupportList confirmed unsupported, giving up");
+                dbg(self, "slow poll: getSoundCardModeSupportList confirmed unsupported, giving up");
                 if let Some(caps) = inner.capabilities.as_mut() { caps.probes_outputs = false; }
                 false
             }
@@ -2172,7 +2201,7 @@ impl DeviceState {
         };
         drop(inner);
         if changed {
-            dbg("signal: outputs-changed");
+            dbg(self, "signal: outputs-changed");
             self.emit_by_name::<()>("outputs-changed", &[]);
         }
     }
@@ -2188,7 +2217,7 @@ impl DeviceState {
                     Some(out)
                 }
                 ApiOutcome::Unsupported => {
-                    dbg("slow poll: getNewAudioOutputHardwareMode confirmed unsupported, giving up");
+                    dbg(self, "slow poll: getNewAudioOutputHardwareMode confirmed unsupported, giving up");
                     if let Some(caps) = inner.capabilities.as_mut() { caps.probes_output_status = false; }
                     None
                 }
@@ -2212,16 +2241,16 @@ impl DeviceState {
             (changed, prev_hw)
         };
         if changed {
-            dbg(&format!(
+            dbg(self, &format!(
                 "slow poll: output changed: {} → {}",
                 prev_hw.as_deref().unwrap_or("none"), out.hardware,
             ));
         } else {
-            dbg(&format!("slow poll: output status unchanged: {}", out.hardware));
+            dbg(self, &format!("slow poll: output status unchanged: {}", out.hardware));
         }
         self.imp().inner.borrow_mut().output_status = Some(out);
         if changed {
-            dbg("signal: output-changed");
+            dbg(self, "signal: output-changed");
             self.emit_by_name::<()>("output-changed", &[]);
         }
     }
@@ -2267,7 +2296,7 @@ impl DeviceState {
             }
             return;
         };
-        dbg("slow poll: getStatusEx ok");
+        dbg(self, "slow poll: getStatusEx ok");
 
         let (prev_fw, prev_name, prev_netstat, prev_rssi, prev_remote) = {
             let inner = self.imp().inner.borrow();
@@ -2321,7 +2350,7 @@ impl DeviceState {
             inner.rssi    = new_rssi;
             inner.remote  = new_remote;
             if identity_changed {
-                dbg(&format!(
+                dbg(self, &format!(
                     "device identity changed: fw={} uuid={} name={}",
                     new_info.firmware, new_info.uuid, new_info.device_name,
                 ));
@@ -2333,7 +2362,7 @@ impl DeviceState {
             self.emit_by_name::<()>("device-changed", &[]);
         }
         if network_changed {
-            dbg(&format!(
+            dbg(self, &format!(
                 "signal: network changed: netstat={} rssi={}",
                 self.imp().inner.borrow().netstat.unwrap_or(0),
                 self.imp().inner.borrow().rssi.unwrap_or(0),
@@ -2341,7 +2370,7 @@ impl DeviceState {
             self.emit_by_name::<()>("network-changed", &[]);
         }
         if remote_changed {
-            dbg(&format!("signal: remote changed: {:?}", self.imp().inner.borrow().remote));
+            dbg(self, &format!("signal: remote changed: {:?}", self.imp().inner.borrow().remote));
             self.emit_by_name::<()>("remote-changed", &[]);
         }
     }
@@ -2369,7 +2398,7 @@ impl DeviceState {
                 let mut inner = self.imp().inner.borrow_mut();
                 if let Some(caps) = inner.capabilities.as_mut() {
                     if caps.probes_bt {
-                        dbg("getbtstatus: confirmed unsupported, won't ask again");
+                        dbg(self, "getbtstatus: confirmed unsupported, won't ask again");
                         caps.probes_bt = false;
                     }
                 }
@@ -2427,17 +2456,17 @@ impl DeviceState {
                     entry.art_bytes = bytes;
                 }
                 drop(inner);
-                dbg(&format!("preset art: slot {slot} loaded ({url})"));
-                dbg("signal: presets-changed");
+                dbg(self, &format!("preset art: slot {slot} loaded ({url})"));
+                dbg(self, "signal: presets-changed");
                 self.emit_by_name::<()>("presets-changed", &[]);
             }
             None => {
                 let attempts = attempts + 1;
                 if attempts >= PRESET_ART_MAX_ATTEMPTS {
-                    dbg(&format!("preset art: slot {slot} failed {attempts} times, giving up ({url})"));
+                    dbg(self, &format!("preset art: slot {slot} failed {attempts} times, giving up ({url})"));
                     inner.pending_preset_art.remove(&slot);
                 } else {
-                    dbg(&format!("preset art: slot {slot} failed (attempt {attempts}/{PRESET_ART_MAX_ATTEMPTS}), will retry ({url})"));
+                    dbg(self, &format!("preset art: slot {slot} failed (attempt {attempts}/{PRESET_ART_MAX_ATTEMPTS}), will retry ({url})"));
                     inner.pending_preset_art.insert(slot, (url, attempts));
                 }
             }
@@ -2532,13 +2561,13 @@ impl DeviceState {
             if other_changed               { playback_mask |= playback_changed::OTHER; }
 
             if mode_changed {
-                dbg(&format!(
+                dbg(self, &format!(
                     "input changed: mode {} → {} (status={})",
                     prev_mode, st.mode, st.status,
                 ));
             }
             if !timing_valid {
-                dbg(&format!(
+                dbg(self, &format!(
                     "timing: ignoring garbage reading (curpos={} > totlen={})",
                     st.curpos, st.totlen,
                 ));
@@ -2550,7 +2579,7 @@ impl DeviceState {
             {
                 let mut inner = self.imp().inner.borrow_mut();
                 (emit_input_changed, emit_inputs_changed) =
-                    Self::handle_input_mode_poll(&mut inner, mode_changed, st.mode);
+                    Self::handle_input_mode_poll(self, &mut inner, mode_changed, st.mode);
                 if mode_changed { playback_mask |= playback_changed::ALL; }
 
                 if let Some(bts) = &bt_status {
@@ -2579,14 +2608,14 @@ impl DeviceState {
                     // a disconnect→reconnect cycle.
                     if other_changed || !had_content {
                         let caps = playback::decode_transport_caps_http(st.mode, &st.vendor);
-                        dbg(&format!(
+                        dbg(self, &format!(
                             "transport caps (http): mode={} vendor={:?} -> {caps:?}",
                             st.mode, st.vendor,
                         ));
                         inner.playback.caps = caps;
                         playback_mask |= playback_changed::OTHER;
                     }
-                } else if Self::blank_playback_baseline(&mut inner) {
+                } else if Self::blank_playback_baseline(self, &mut inner) {
                     playback_mask |= playback_changed::ALL;
                 }
                 inner.has_content = has_content;
@@ -2596,11 +2625,11 @@ impl DeviceState {
 
             // 3. Side effects, after the borrow is dropped.
             if emit_input_changed {
-                dbg("signal: input-changed");
+                dbg(self, "signal: input-changed");
                 self.emit_by_name::<()>("input-changed", &[]);
             }
             if emit_inputs_changed {
-                dbg("signal: inputs-changed");
+                dbg(self, "signal: inputs-changed");
                 self.emit_by_name::<()>("inputs-changed", &[]);
             }
         }
@@ -2655,7 +2684,7 @@ impl DeviceState {
                     if url_changed {
                         inner.playback.art_url =
                             if art_url.is_empty() { None } else { Some(Rc::from(art_url.as_str())) };
-                        Self::replace_artwork(&mut inner, None);
+                        Self::replace_artwork(self, &mut inner, None);
                     }
                 }
                 inner.metadata = Some(m);
@@ -2667,10 +2696,10 @@ impl DeviceState {
                     // Current track has no artwork at all (was non-empty before,
                     // or this is the first metadata) — clear immediately rather
                     // than leaving the previous track's art on screen forever.
-                    dbg("art url cleared: current track has no artwork");
+                    dbg(self, "art url cleared: current track has no artwork");
                     playback_mask |= playback_changed::ARTWORK;
                 } else {
-                    dbg(&format!("art url changed: {art_url}"));
+                    dbg(self, &format!("art url changed: {art_url}"));
                     // No immediate ARTWORK signal here: artwork is already
                     // cleared, but we hold off telling the UI until fetch_art()
                     // resolves (success or failure — see start_art_loader) so a
@@ -2681,7 +2710,7 @@ impl DeviceState {
         }
 
         if playback_mask != 0 {
-            dbg(&format!("signal: playback-changed mask={:#x}", playback_mask));
+            dbg(self, &format!("signal: playback-changed mask={:#x}", playback_mask));
             self.emit_by_name::<()>("playback-changed", &[&playback_mask]);
         }
     }
@@ -2799,7 +2828,7 @@ impl DeviceState {
         }
 
         if mode_changed {
-            dbg(&format!("input changed (upnp): mode {prev_mode} → {}", info.play_type));
+            dbg(self, &format!("input changed (upnp): mode {prev_mode} → {}", info.play_type));
         }
 
         let mut art_url_for_fetch: Option<String> = None;
@@ -2811,7 +2840,7 @@ impl DeviceState {
         {
             let mut inner = self.imp().inner.borrow_mut();
             (emit_input_changed, emit_inputs_changed) =
-                Self::handle_input_mode_poll(&mut inner, mode_changed, info.play_type);
+                Self::handle_input_mode_poll(self, &mut inner, mode_changed, info.play_type);
 
             if let Some(bts) = &bt_status {
                 if Self::apply_bt_status(&mut inner, bts) { playback_mask |= playback_changed::ALL; }
@@ -2845,7 +2874,7 @@ impl DeviceState {
                     let caps = playback::decode_transport_caps_upnp(
                         &info.play_medium, &info.track_source, info.play_type, info.gui_behavior,
                     );
-                    dbg(&format!(
+                    dbg(self, &format!(
                         "transport caps (upnp): play_medium={:?} track_source={:?} gui_behavior={:?} -> {caps:?}",
                         info.play_medium, info.track_source, info.gui_behavior,
                     ));
@@ -2873,15 +2902,15 @@ impl DeviceState {
                     } else {
                         Some(Rc::from(art_url.as_str()))
                     };
-                    Self::replace_artwork(&mut inner, None);
+                    Self::replace_artwork(self, &mut inner, None);
                     if art_url.is_empty() {
-                        dbg("upnp art url cleared: current track has no artwork");
+                        dbg(self, "upnp art url cleared: current track has no artwork");
                         art_cleared = true;
                     } else {
                         art_url_for_fetch = Some(art_url);
                     }
                 }
-            } else if Self::blank_playback_baseline(&mut inner) {
+            } else if Self::blank_playback_baseline(self, &mut inner) {
                 playback_mask |= playback_changed::ALL;
             }
             inner.has_content = has_content;
@@ -2891,20 +2920,20 @@ impl DeviceState {
 
         // 3. Side effects, after the borrow is dropped.
         if emit_input_changed {
-            dbg("signal: input-changed");
+            dbg(self, "signal: input-changed");
             self.emit_by_name::<()>("input-changed", &[]);
         }
         if emit_inputs_changed {
-            dbg("signal: inputs-changed");
+            dbg(self, "signal: inputs-changed");
             self.emit_by_name::<()>("inputs-changed", &[]);
         }
         if art_cleared { playback_mask |= playback_changed::ARTWORK; }
         if let Some(url) = art_url_for_fetch {
-            dbg(&format!("upnp art url changed: {url}"));
+            dbg(self, &format!("upnp art url changed: {url}"));
             self.fetch_art(url, art_tx);
         }
         if playback_mask != 0 {
-            dbg(&format!("signal: playback-changed mask={:#x}", playback_mask));
+            dbg(self, &format!("signal: playback-changed mask={:#x}", playback_mask));
             self.emit_by_name::<()>("playback-changed", &[&playback_mask]);
         }
     }
@@ -3146,7 +3175,7 @@ impl DeviceState {
 
     /// IP the current connection is using (empty if never connected).
     pub fn ip(&self) -> String {
-        self.imp().inner.borrow().ip.clone()
+        self.imp().ip.borrow().clone()
     }
 
     /// This device's uuid, fixed at construction — unlike
@@ -3284,7 +3313,7 @@ impl DeviceState {
             inner.full_clients
         };
         if n == 1 {
-            dbg(&format!("{}: Simple → Full mode (full_clients={n})", self.ip()));
+            dbg(self, &format!("Simple → Full mode (full_clients={n})"));
         }
         FullModeGuard { ds: self.clone() }
     }
@@ -3297,7 +3326,7 @@ impl DeviceState {
             inner.full_clients
         };
         if n == 0 {
-            dbg(&format!("{}: Full → Simple mode (full_clients={n})", self.ip()));
+            dbg(self, &format!("Full → Simple mode (full_clients={n})"));
         }
     }
 
