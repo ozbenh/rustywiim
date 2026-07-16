@@ -1,15 +1,14 @@
-/// `wiim-gena-test <ip>` — Phase 0 of `GENA.md`'s plan: a standalone,
-/// permanent diagnostic tool that discovers a real device's `AVTransport`/
-/// `RenderingControl`/`PlayQueue` `eventSubURL`s from its `description.xml`,
-/// sends `SUBSCRIBE` for each, runs a `NOTIFY` listener on its own thread,
-/// prints every notification received, renews each subscription at
-/// `max(30, timeout - 60)` seconds (the `wiim` SDK's own rule), and cleanly
-/// `UNSUBSCRIBE`s everything on Ctrl-C. Deliberately self-contained rather
-/// than reusing `device/upnp.rs` — this is meant for ad hoc real-hardware
-/// probing (per `GENA.md`'s Phase 0 gate), not production plumbing, so it
-/// duplicates the small amount of `description.xml`/tag-extraction logic
-/// `upnp.rs` and `wiim-capture.rs` each already have their own copy of,
-/// rather than depending on either.
+/// `wiim-gena-test <ip>` — A standalone, permanent diagnostic tool that
+/// discovers a real device's `AVTransport`/ `RenderingControl`/`PlayQueue`
+/// `eventSubURL`s from its `description.xml`, sends `SUBSCRIBE` for each,
+/// runs a `NOTIFY` listener on its own thread, prints every notification
+/// received, renews each subscription at `max(30, timeout - 60)`
+/// seconds (the `wiim` SDK's own rule), and cleanly `UNSUBSCRIBE`s
+/// everything on Ctrl-C. Deliberately self-contained rather than reusing
+/// `device/upnp.rs` — this is meant for ad hoc real-hardware probing, not
+/// production plumbing, so it duplicates the small amount of
+/// `description.xml`/tag-extraction logic `upnp.rs` and `wiim-capture.rs`
+/// each already have their own copy of rather than depending on either.
 use rustywiim::device::api::{build_reqwest_client, TlsMode};
 use std::collections::HashMap;
 use std::net::UdpSocket;
@@ -262,8 +261,8 @@ async fn renewal_loop(
 
 /// Extracts `LastChange`'s doubly-nested content for display: the outer
 /// `<e:propertyset>` body is real XML, but `LastChange`'s own content is
-/// itself XML-escaped once more (see `GENA.md`'s NOTIFY body shape) — one
-/// unescape pass turns it back into readable tags for the printed log line.
+/// itself XML-escaped once more. One unescape pass turns it back into
+/// readable tags for the printed log line.
 fn unescape_xml_entities(s: &str) -> String {
     s.replace("&lt;", "<")
         .replace("&gt;", ">")

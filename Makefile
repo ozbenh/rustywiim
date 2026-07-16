@@ -1,4 +1,4 @@
-# Local packaging helpers — see RELEASEPROCESS.md for the full plan.
+# Local packaging helpers
 #
 # Both cargo-deb and cargo-generate-rpm are pure-Rust implementations (no
 # dpkg-deb/rpmbuild needed to actually build the package file), but

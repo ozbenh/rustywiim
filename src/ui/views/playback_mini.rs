@@ -15,7 +15,7 @@
 //! background, but it's driven by the same artwork data this view
 //! already receives — so the host hands in an optional reference at
 //! construction and the view feeds it, rather than the host needing its
-//! own subscription (see PLAYBACK_STACKS.md's Phase 2 addendum...
+//! own subscription.
 //! rather: the view updates it alongside its own FlipCover; a host with
 //! no blur background passes `None`).
 

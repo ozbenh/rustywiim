@@ -31,7 +31,7 @@
 # network/WiFi credentials, reboots/resets/updates firmware, triggers an
 # audible alarm, or needs real other hardware (Bluetooth, multiroom peers).
 #
-# Generated + hand-curated against docs/wiim-httpapi-catalog.md (2026-07-04).
+# Generated + hand-curated.
 # The Get-method block below is close to exhaustive for the categories judged
 # relevant to a WiiM/LinkPlay audio device (playback, presets, EQ, audio
 # hardware, multiroom, Bluetooth status, device diagnostics) — Alexa/TVS/
@@ -44,7 +44,6 @@
 # by hand from the catalog doc as needed, this is a starting point.
 
 # ── Confirmed-working commands missing from the OpenAPI spec ─────────────────
-# (src/device/api.rs / pywiim — see docs/wiim-httpapi-catalog.md)
 - command: getPlayerStatusEx
   summary: "Get the playback status (extended) — this app's primary status poll"
 
@@ -318,7 +317,7 @@
 # getAudioOutputVrms:{str} (str = an output name) isn't included: unlike
 # getOutputDigitalFilterType above, no AUDIO_OUTPUT_*_MODE-style token has been
 # confirmed to work for this specific command against a real device — add by
-# hand with a confirmed value once known (see docs/wiim-httpapi-catalog.md).
+# hand with a confirmed value once known
 
 # ── Physical Controls (LED/Button/Trigger) ────────────────────────────────
 - command: get_button_volume_step
