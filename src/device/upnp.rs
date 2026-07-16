@@ -608,15 +608,57 @@ fn parse_key_mapping_presets(envelope: &str, old_fp: &str) -> PresetFetchOutcome
     PresetFetchOutcome::Changed(fp, entries)
 }
 
+/// One DIDL-Lite `<item>`'s fields, parsed the same way regardless of which
+/// wire wrapper embedded it — `GetInfoEx`'s `TrackMetaData` element text
+/// (`parse_info_ex_response`, below) and GENA `AVTransport` NOTIFY's
+/// `CurrentTrackMetaData` attribute value (`gena::parse_av_transport_event`)
+/// carry the exact same DIDL-Lite item, confirmed live on both a WiiM Ultra
+/// and an Audio Pro Addon C5 (title/artist/album/`upnp:albumArtURI`/
+/// `song:bitrate`/`song:format_s`/`song:rate_hz` all present in a real
+/// NOTIFY's `CurrentTrackMetaData`, identical tag names to `GetInfoEx`'s).
+/// `didl` must already be real DIDL-Lite XML (tag boundaries are real
+/// `<tag>`s) — the caller's own unescape pass(es) to get there differ by
+/// embedding mechanism, but the leaf-field extraction from that point on is
+/// identical.
+pub(crate) struct DidlItem {
+    pub title:         String,
+    pub artist:        String,
+    pub album:         String,
+    pub album_art_uri: Option<String>,
+    /// `None` = tag absent, `Some("")` = present-but-empty — see
+    /// `InfoEx::actual_quality`'s doc comment.
+    pub actual_quality: Option<String>,
+    pub bitrate:        String,
+    pub format_s:       String,
+    pub rate_hz:        String,
+    pub protocol_info:  Option<String>,
+    pub gui_behavior:   Option<GuiBehavior>,
+}
+
+pub(crate) fn parse_didl_item(didl: &str) -> DidlItem {
+    DidlItem {
+        title:  extract_tag(didl, "dc:title").map(|s| unescape_xml_entities(&s)).unwrap_or_default(),
+        artist: extract_tag(didl, "upnp:artist").map(|s| unescape_xml_entities(&s)).unwrap_or_default(),
+        album:  extract_tag(didl, "upnp:album").map(|s| unescape_xml_entities(&s)).unwrap_or_default(),
+        album_art_uri:  extract_tag(didl, "upnp:albumArtURI"),
+        actual_quality: extract_tag(didl, "song:actualQuality"),
+        bitrate:        extract_tag(didl, "song:bitrate").unwrap_or_default(),
+        format_s:       extract_tag(didl, "song:format_s").unwrap_or_default(),
+        rate_hz:        extract_tag(didl, "song:rate_hz").unwrap_or_default(),
+        protocol_info:  extract_res_protocol_info(didl),
+        gui_behavior: extract_tag(didl, "song:guibehavior")
+            .map(|s| unescape_xml_entities(&s)) // double-escaped, same as title/artist/album above
+            .and_then(|s| parse_gui_behavior(&s)),
+    }
+}
+
 /// Parses a `GetInfoExResponse` SOAP envelope. `TrackMetaData` is XML text
 /// escaped *twice* on the wire: once by DIDL-Lite's own XML serialization
 /// (a literal `&` in a title becomes `&amp;`), then again because the whole
 /// DIDL-Lite document is embedded as escaped text inside the outer SOAP XML
 /// (`<` becomes `&lt;`, and the already-escaped `&amp;` becomes `&amp;amp;`).
-/// One `unescape_xml_entities` pass recovers real DIDL-Lite XML (tag
-/// boundaries become real `<tag>`s); a second pass on the extracted leaf
-/// text fields (title/artist/album) recovers real characters from any
-/// DIDL-level entity still present in their content.
+/// One `unescape_xml_entities` pass recovers real DIDL-Lite XML, handed to
+/// `parse_didl_item` for the rest.
 fn parse_info_ex_response(envelope: &str) -> anyhow::Result<InfoEx> {
     let transport_state = extract_tag(envelope, "CurrentTransportState").unwrap_or_default();
     let rel_time        = extract_tag(envelope, "RelTime").unwrap_or_default();
@@ -630,25 +672,14 @@ fn parse_info_ex_response(envelope: &str) -> anyhow::Result<InfoEx> {
 
     let track_metadata_raw = extract_tag(envelope, "TrackMetaData").unwrap_or_default();
     let didl = unescape_xml_entities(&track_metadata_raw);
-
-    let title  = extract_tag(&didl, "dc:title").map(|s| unescape_xml_entities(&s)).unwrap_or_default();
-    let artist = extract_tag(&didl, "upnp:artist").map(|s| unescape_xml_entities(&s)).unwrap_or_default();
-    let album  = extract_tag(&didl, "upnp:album").map(|s| unescape_xml_entities(&s)).unwrap_or_default();
-    let album_art_uri  = extract_tag(&didl, "upnp:albumArtURI");
-    // `None` = tag absent, `Some("")` = present-but-empty — see `InfoEx::actual_quality`'s doc comment.
-    let actual_quality = extract_tag(&didl, "song:actualQuality");
-    let bitrate        = extract_tag(&didl, "song:bitrate").unwrap_or_default();
-    let format_s       = extract_tag(&didl, "song:format_s").unwrap_or_default();
-    let rate_hz        = extract_tag(&didl, "song:rate_hz").unwrap_or_default();
-    let protocol_info  = extract_res_protocol_info(&didl);
-    let gui_behavior = extract_tag(&didl, "song:guibehavior")
-        .map(|s| unescape_xml_entities(&s)) // double-escaped, same as title/artist/album above
-        .and_then(|s| parse_gui_behavior(&s));
+    let item = parse_didl_item(&didl);
 
     Ok(InfoEx {
         transport_state, rel_time, track_duration, current_volume, current_mute,
-        loop_mode, play_type, play_medium, track_source, title, artist, album, album_art_uri,
-        actual_quality, bitrate, format_s, rate_hz, protocol_info, gui_behavior,
+        loop_mode, play_type, play_medium, track_source,
+        title: item.title, artist: item.artist, album: item.album, album_art_uri: item.album_art_uri,
+        actual_quality: item.actual_quality, bitrate: item.bitrate, format_s: item.format_s,
+        rate_hz: item.rate_hz, protocol_info: item.protocol_info, gui_behavior: item.gui_behavior,
     })
 }
 

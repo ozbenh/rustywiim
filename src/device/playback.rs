@@ -899,6 +899,18 @@ fn codec_label_from_protocol_info(pi: &str) -> Option<Rc<str>> {
 ///
 /// `AudioQuality` itself is built the same way `decode_quality_http` does,
 /// from `bitrate`/`rate_hz`/`format_s` (bit depth).
+/// LinkPlay firmware sometimes reports a literal placeholder string instead
+/// of leaving the album-art field empty when there's no real artwork —
+/// confirmed live on a WiiM Ultra's UPnP `GetInfoEx` (`AlbumArtURI` value
+/// `"un_known"`, on an HDMI input with nothing playing). Treated the same
+/// as "no artwork" by every `art_url` call site in `state.rs` (HTTP
+/// `getMetaInfo`, UPnP `GetInfoEx`, and GENA `AVTransport` NOTIFY all share
+/// this one check) rather than handed to `fetch_art()`, which would just
+/// produce a guaranteed-failing HTTP request for a nonsense host name.
+pub fn is_valid_art_url(url: &str) -> bool {
+    url.starts_with("http://") || url.starts_with("https://")
+}
+
 pub fn decode_quality_upnp(
     actual_quality: Option<&str>,
     bitrate: &str,
@@ -960,6 +972,16 @@ mod tests {
         assert_eq!(mode_from_play_medium_fallback("SOME_FUTURE_SERVICE"), 10);
         assert_eq!(mode_from_play_medium("SOME_FUTURE_SERVICE"), None);
         assert_eq!(mode_from_play_medium("TIDAL_CONNECT"), Some(10));
+    }
+
+    /// `"un_known"` is a real firmware placeholder confirmed live on a WiiM
+    /// Ultra's UPnP `GetInfoEx` — see `is_valid_art_url`'s doc comment.
+    #[test]
+    fn is_valid_art_url_rejects_firmware_placeholder_and_empty() {
+        assert!(!is_valid_art_url(""));
+        assert!(!is_valid_art_url("un_known"));
+        assert!(is_valid_art_url("http://cdn-albums.tunein.com/gn/2PKPNZ7WW2g.jpg"));
+        assert!(is_valid_art_url("https://i.scdn.co/image/ab67616d0000b273c8ef777dbf6677f99f96210d"));
     }
 
     #[test]

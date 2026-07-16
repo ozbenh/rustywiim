@@ -249,6 +249,18 @@ pub struct AvTransportEvent {
     pub title: Option<String>,
     pub artist: Option<String>,
     pub album: Option<String>,
+    /// All `None` together whenever this particular NOTIFY has no
+    /// `CurrentTrackMetaData` at all — confirmed live: a plain transport-
+    /// state-change NOTIFY (e.g. play→stop) carries only `TransportState`/
+    /// `CurrentTransportActions`, no song data — meaning "unchanged", not
+    /// "cleared". Never unpack a missing tag as an empty/absent value here.
+    pub album_art_uri: Option<String>,
+    pub actual_quality: Option<String>,
+    pub bitrate: Option<String>,
+    pub format_s: Option<String>,
+    pub rate_hz: Option<String>,
+    pub protocol_info: Option<String>,
+    pub gui_behavior: Option<super::upnp::GuiBehavior>,
     /// Shares its vocabulary with `GetInfoEx`'s `PlayMedium` (confirmed
     /// live: `PHONO`/`TIDAL_CONNECT`/`SONGLIST-NETWORK`/`SPOTIFY` all seen
     /// on both) — `playback::mode_from_play_medium()` maps it to a `mode`/
@@ -293,17 +305,30 @@ fn extract_val_attr(xml: &str, tag: &str) -> Option<String> {
 /// artist/album handling.
 pub fn parse_av_transport_event(last_change: &str) -> AvTransportEvent {
     let transport_state = extract_val_attr(last_change, "TransportState");
-    let (title, artist, album) = match extract_val_attr(last_change, "CurrentTrackMetaData") {
-        Some(didl) => (
-            extract_tag(&didl, "dc:title").map(|s| unescape_xml_entities(&s)),
-            extract_tag(&didl, "upnp:artist").map(|s| unescape_xml_entities(&s)),
-            extract_tag(&didl, "upnp:album").map(|s| unescape_xml_entities(&s)),
-        ),
-        None => (None, None, None),
-    };
+    // `extract_val_attr` already did the first unescape pass (recovering
+    // real DIDL-Lite tags) — `parse_didl_item` does the rest, identically to
+    // `GetInfoEx`'s own `TrackMetaData` (see its doc comment). Entirely
+    // `None` (not defaulted) when this NOTIFY has no song data at all — see
+    // `AvTransportEvent::album_art_uri`'s doc comment.
+    let item = extract_val_attr(last_change, "CurrentTrackMetaData")
+        .map(|didl| super::upnp::parse_didl_item(&didl));
     let playback_storage_medium = extract_val_attr(last_change, "PlaybackStorageMedium");
     let track_source = extract_val_attr(last_change, "TrackSource");
-    AvTransportEvent { transport_state, title, artist, album, playback_storage_medium, track_source }
+    AvTransportEvent {
+        transport_state,
+        title:  item.as_ref().map(|i| i.title.clone()),
+        artist: item.as_ref().map(|i| i.artist.clone()),
+        album:  item.as_ref().map(|i| i.album.clone()),
+        album_art_uri:  item.as_ref().and_then(|i| i.album_art_uri.clone()),
+        actual_quality: item.as_ref().and_then(|i| i.actual_quality.clone()),
+        bitrate:        item.as_ref().map(|i| i.bitrate.clone()),
+        format_s:       item.as_ref().map(|i| i.format_s.clone()),
+        rate_hz:        item.as_ref().map(|i| i.rate_hz.clone()),
+        protocol_info:  item.as_ref().and_then(|i| i.protocol_info.clone()),
+        gui_behavior:   item.as_ref().and_then(|i| i.gui_behavior.clone()),
+        playback_storage_medium,
+        track_source,
+    }
 }
 
 pub fn parse_rendering_control_event(last_change: &str) -> RenderingControlEvent {
@@ -916,6 +941,34 @@ mod tests {
         assert_eq!(ev.title, None);
         assert_eq!(ev.artist, None);
         assert_eq!(ev.album, None);
+        assert_eq!(ev.album_art_uri, None);
+        assert_eq!(ev.bitrate, None);
+    }
+
+    /// Real WiiM Ultra capture shape (TuneIn "ABC Jazz" station NOTIFY) —
+    /// confirms `parse_av_transport_event` pulls the same DIDL-Lite fields
+    /// `GetInfoEx`'s own `TrackMetaData` does (via the shared
+    /// `upnp::parse_didl_item` helper), not just title/artist/album.
+    #[test]
+    fn av_transport_event_parses_album_art_and_quality_fields() {
+        let last_change = r#"<Event xmlns="urn:schemas-upnp-org:metadata-1-0/AVT/">
+  <InstanceID val="0">
+    <CurrentTrackMetaData val="&lt;DIDL-Lite&gt;&lt;item&gt;&lt;dc:title&gt;Nice Work If You Can Get It&lt;/dc:title&gt;&lt;upnp:artist&gt;Jerry Bergonzi&lt;/upnp:artist&gt;&lt;upnp:albumArtURI&gt;http://cdn-albums.tunein.com/gn/2PKPNZ7WW2g.jpg&lt;/upnp:albumArtURI&gt;&lt;song:bitrate&gt;0&lt;/song:bitrate&gt;&lt;song:format_s&gt;32&lt;/song:format_s&gt;&lt;song:rate_hz&gt;44100&lt;/song:rate_hz&gt;&lt;/item&gt;&lt;/DIDL-Lite&gt;"/>
+  </InstanceID>
+</Event>"#;
+        let ev = parse_av_transport_event(last_change);
+        assert_eq!(ev.title.as_deref(), Some("Nice Work If You Can Get It"));
+        assert_eq!(ev.artist.as_deref(), Some("Jerry Bergonzi"));
+        // Radio station: no `upnp:album` tag at all — present item still
+        // resolves to `Some("")`, not `None` (see `AvTransportEvent`'s doc
+        // comment: `None` only means "no `CurrentTrackMetaData` at all").
+        assert_eq!(ev.album.as_deref(), Some(""));
+        assert_eq!(ev.album_art_uri.as_deref(), Some("http://cdn-albums.tunein.com/gn/2PKPNZ7WW2g.jpg"));
+        assert_eq!(ev.bitrate.as_deref(), Some("0"));
+        assert_eq!(ev.format_s.as_deref(), Some("32"));
+        assert_eq!(ev.rate_hz.as_deref(), Some("44100"));
+        assert_eq!(ev.actual_quality, None);
+        assert_eq!(ev.gui_behavior, None);
     }
 
     #[test]

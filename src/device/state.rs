@@ -62,6 +62,14 @@ const VOLUME_POLL_SETTLE: Duration = Duration::from_secs(1);
 /// after whichever poll happened most recently — long enough that a real
 /// device has almost certainly applied the command that prompted it.
 const POLL_SETTLE_DELAY: Duration = Duration::from_millis(400);
+/// While every GENA-covered service is confirmed `Healthy`, `dispatch_fast_poll()`
+/// skips this many consecutive 1s ticks (doing local position extrapolation
+/// instead — see `extrapolate_position_while_playing()`) before running an
+/// actual real poll again, purely as an ongoing consistency check (see
+/// `check_gena_health()`) — GENA itself is what's actually keeping playback
+/// state current in the meantime. Reset to 0 (full-rate polling resumes
+/// immediately) the instant any of the three drops out of `Healthy`.
+const GENA_HEALTHY_FAST_POLL_TICKS: u32 = 30;
 /// How long to wait for a `switch_input()` to actually take effect (a poll
 /// reporting the new mode) before giving up and reverting the UI to
 /// whatever the device is still really on. Input switches can take real
@@ -713,6 +721,29 @@ struct Inner {
     /// whichever poll happened most recently, rather than always waiting a
     /// fixed delay from "now".
     last_poll:        Option<Instant>,
+    /// Consecutive fast-poll ticks skipped in favor of local position
+    /// extrapolation (see `extrapolate_position_while_playing()`) — only
+    /// accumulates while every GENA-covered service is `Healthy`; reset to
+    /// `0` the instant a real poll dispatches for any reason, including
+    /// "not fully healthy anymore". Compared against
+    /// `GENA_HEALTHY_FAST_POLL_TICKS` in `dispatch_fast_poll()`.
+    fast_poll_skip_ticks: u32,
+    /// Whether at least one real fast poll has completed since this device
+    /// last connected. GENA can race to `Healthy` on all three services
+    /// within milliseconds of subscribing (well before the first real poll
+    /// would otherwise run) — and `apply_gena_notify()` deliberately never
+    /// populates `art_url`/`quality`/etc (NOTIFY doesn't reliably carry
+    /// them), so a device that reaches "fully healthy" before any real poll
+    /// has ever executed would otherwise have those fields stay empty for
+    /// up to `GENA_HEALTHY_FAST_POLL_TICKS` ticks. Gates `skip_this_tick` in
+    /// `dispatch_fast_poll()` so the very first tick after connecting always
+    /// does a real poll regardless of how fast GENA claims health.
+    ever_polled: bool,
+    /// Wall-clock instant `playback.position` was last known-good — set
+    /// both by a real poll's decode and by each extrapolation tick itself
+    /// (so consecutive extrapolations measure incrementally from the most
+    /// recent tick, not drifting relative to a stale original baseline).
+    position_synced_at: Option<Instant>,
     /// `true` while a slow-poll cycle is actively rotating through phases
     /// (one per tick); `false` while idle between cycles.
     slow_poll_active: bool,
@@ -796,6 +827,9 @@ impl Default for Inner {
             last_mute_cmd:    None,
             last_slow_poll:   None,
             last_poll:        None,
+            fast_poll_skip_ticks: 0,
+            ever_polled: false,
+            position_synced_at: None,
             slow_poll_active: false,
             slow_poll_phase:  SlowPollPhase::FIRST,
             fast_poll_handle: None,
@@ -829,6 +863,13 @@ mod imp {
         pub(super) rt:            std::cell::OnceCell<Arc<tokio::runtime::Runtime>>,
         pub(super) slow_poll_tx:  RefCell<Option<async_channel::Sender<SlowPollResult>>>,
         pub(super) poll_tx:       RefCell<Option<async_channel::Sender<PollData>>>,
+        /// Set once by `start_polling()`, alongside `poll_tx` — lets
+        /// `apply_gena_notify()` kick off an artwork fetch straight from a
+        /// NOTIFY's `upnp:albumArtURI` without threading `art_tx` through
+        /// the whole NOTIFY dispatch path. Kept outside `Inner` for the same
+        /// reason `poll_tx` is: a UUID-change reset (`*inner =
+        /// Inner::default()`) shouldn't drop it.
+        pub(super) art_tx:        RefCell<Option<async_channel::Sender<(String, Vec<u8>)>>>,
         /// Set via `set_offline_callback()` by any external caller that
         /// wants to own connectivity recovery for this `DeviceState`
         /// itself, rather than letting `maybe_self_reconnect()` handle it —
@@ -881,6 +922,7 @@ mod imp {
                 rt:            std::cell::OnceCell::new(),
                 slow_poll_tx:  RefCell::new(None),
                 poll_tx:       RefCell::new(None),
+                art_tx:        RefCell::new(None),
                 uuid:          std::cell::OnceCell::new(),
                 offline_cb:    RefCell::new(None),
             }
@@ -1379,6 +1421,7 @@ impl DeviceState {
         let (simple_tx, simple_rx) = async_channel::unbounded::<Option<DeviceInfo>>();
 
         *self.imp().slow_poll_tx.borrow_mut() = Some(slow_tx.clone());
+        *self.imp().art_tx.borrow_mut() = Some(art_tx.clone());
 
         self.start_unified_timer(poll_tx, slow_tx, simple_tx);
         self.start_poll_processor(poll_rx, art_tx);
@@ -1454,7 +1497,7 @@ impl DeviceState {
             let want_song_info = dispatched && inner.simple_mode_song_info;
             drop(inner);
             if want_song_info {
-                self.dispatch_fast_poll();
+                self.dispatch_fast_poll(false);
             }
             return glib::ControlFlow::Continue;
         }
@@ -1511,7 +1554,7 @@ impl DeviceState {
             self.rt().spawn(async move { let _ = cv.set_volume(vol).await; });
         }
 
-        self.dispatch_fast_poll();
+        self.dispatch_fast_poll(false);
         self.dispatch_slow_poll(
             &client, slow_tx, dispatch_phase, probe_outputs, probe_output_status,
             preset_source, preset_probe_failures, preset_fp, upnp_client,
@@ -1803,27 +1846,83 @@ impl DeviceState {
     /// deferred as unnecessary complexity for what's currently an opt-in
     /// diagnostic path, not the default.)
     ///
-    /// Takes no parameters — fetches its own `client`/`poll_tx` (a couple
-    /// of cheap `Option` clones off two `RefCell`s) rather than requiring
-    /// the caller to already have them in hand, so both regular call sites
-    /// can share this one function outright: `do_poll()`'s every-tick call
-    /// (which happens to have `client` in scope anyway, for the slow-poll/
-    /// preset-art dispatchers running the same tick, but doesn't need to
-    /// pass it here too) and `trigger_poll()`'s delayed one-shot after a
-    /// command (which doesn't have either in scope at all, running from
-    /// its own `glib::timeout_add_local_once` closure).
-    fn dispatch_fast_poll(&self) {
+    /// `force`: bypass the GENA-healthy skip window entirely and always do
+    /// a real poll this call — used by `trigger_poll()`'s one-shot after a
+    /// command or a GENA-detected event that needs confirming; without it,
+    /// that "poll now" request could itself land on a tick that the skip
+    /// logic below would otherwise have skipped, defeating the point of
+    /// triggering it at all. The regular 1s-tick callers pass `false`.
+    ///
+    /// Otherwise takes no parameters — fetches its own `client`/`poll_tx`
+    /// (a couple of cheap `Option` clones off two `RefCell`s) rather than
+    /// requiring the caller to already have them in hand, so both regular
+    /// call sites can share this one function outright: `do_poll()`'s
+    /// every-tick call (which happens to have `client` in scope anyway, for
+    /// the slow-poll/preset-art dispatchers running the same tick, but
+    /// doesn't need to pass it here too) and `trigger_poll()`'s delayed
+    /// one-shot after a command (which doesn't have either in scope at all,
+    /// running from its own `glib::timeout_add_local_once` closure).
+    fn dispatch_fast_poll(&self, force: bool) {
         let Some(poll_tx) = self.imp().poll_tx.borrow().clone() else { return };
-        let (wants_upnp, upnp_client, want_bt, client, inflight, has_meta_info, probe_bt) = {
-            let inner = self.imp().inner.borrow();
+        let (wants_upnp, upnp_client, want_bt, client, inflight, has_meta_info, probe_bt, skip_this_tick) = {
+            let mut inner = self.imp().inner.borrow_mut();
             let want_bt = capabilities::mode_to_input_source(inner.current_mode) == "bluetooth";
             let has_meta_info = inner.capabilities.as_ref()
                 .map_or(true, |c| c.family.endpoints.supports_get_meta_info);
             let probe_bt = inner.capabilities.as_ref().map_or(true, |c| c.probes_bt);
+
+            // See `GENA_HEALTHY_FAST_POLL_TICKS`'s doc comment. Re-evaluated
+            // fresh every tick (never a schedule fixed at the moment health
+            // became `Healthy`), so a service dropping out of `Healthy` is
+            // reflected on the very next tick, not after some stale
+            // countdown finishes.
+            let gena_fully_healthy = inner.gena_av.health == gena::GenaHealth::Healthy
+                && inner.gena_rc.health == gena::GenaHealth::Healthy
+                && inner.gena_pq.health == gena::GenaHealth::Healthy;
+            // GENA has no concept of Bluetooth sink connection state at all
+            // (none of its three services cover it) — `getbtstatus` only
+            // ever gets fetched as part of this same dispatch, so as long
+            // as the current input is Bluetooth and not yet confirmed
+            // connected, never skip: a phone could pair at any moment and
+            // this is the only way to notice it promptly. Once connected,
+            // normal cadence reduction resumes (a disconnect is expected to
+            // surface some other detectable state change).
+            let bt_pending = want_bt && !inner.playback.bt_connected;
+            // `ever_polled` guards against GENA racing to `Healthy` on every
+            // service before the first real poll for this connection has
+            // ever run — see its doc comment on `Inner`.
+            let skip_this_tick = !force && gena_fully_healthy && inner.ever_polled && !bt_pending
+                && inner.fast_poll_skip_ticks < GENA_HEALTHY_FAST_POLL_TICKS;
+            if skip_this_tick {
+                inner.fast_poll_skip_ticks += 1;
+                dbg(self, &format!(
+                    "fast poll: skipped ({}/{GENA_HEALTHY_FAST_POLL_TICKS}, GENA healthy, extrapolating position)",
+                    inner.fast_poll_skip_ticks,
+                ));
+            } else {
+                if force {
+                    dbg(self, "fast poll: dispatching (forced)");
+                } else if bt_pending {
+                    dbg(self, "fast poll: dispatching (Bluetooth pending connection, staying at full cadence)");
+                } else if gena_fully_healthy {
+                    dbg(self, if inner.ever_polled {
+                        "fast poll: dispatching (GENA healthy, periodic consistency check)"
+                    } else {
+                        "fast poll: dispatching (GENA healthy, but no real poll yet this connection)"
+                    });
+                }
+                inner.ever_polled = true;
+                inner.fast_poll_skip_ticks = 0;
+            }
+
             (inner.access == AccessMethod::UpnpPolled, inner.upnp_client.clone(), want_bt,
-             inner.client.clone(), inner.fast_poll_handle.is_some(), has_meta_info, probe_bt)
+             inner.client.clone(), inner.fast_poll_handle.is_some(), has_meta_info, probe_bt, skip_this_tick)
         };
         let Some(client) = client else { return };
+        if skip_this_tick {
+            self.extrapolate_position_while_playing();
+            return;
+        }
         // A poll not completing within a tick is itself a signal something
         // is wrong (a slow/hanging request, or the device having just gone
         // silent) — pile-driving more requests at it on top doesn't help,
@@ -1856,6 +1955,35 @@ impl DeviceState {
                 inner.fast_poll_handle = Some(handle);
             }
         }
+    }
+
+    /// Fills the gap `dispatch_fast_poll()`'s skipped ticks leave: advances
+    /// `playback.position` by plain wall-clock elapsed time since it was
+    /// last known-good, clamped to `duration`. A no-op unless actually
+    /// `Playing` — paused/stopped needs no position activity of any kind.
+    /// This is the one thing GENA never delivers on an ongoing basis —
+    /// `AVTransport`'s position/duration NOTIFY fields only ever arrive
+    /// once, at track start/seek, never a continuous tick, per the wire
+    /// protocol itself — so it has to come from wall-clock math instead,
+    /// same as the real vendor phone app's own behavior (no continuous
+    /// position poll of any kind observed in a real capture of its
+    /// traffic).
+    fn extrapolate_position_while_playing(&self) {
+        let mut inner = self.imp().inner.borrow_mut();
+        if inner.playback.status != playback::PlaybackStatus::Playing {
+            return;
+        }
+        let now = Instant::now();
+        let elapsed = inner.position_synced_at.map_or(Duration::ZERO, |t| now.duration_since(t));
+        let new_position = (inner.playback.position + elapsed).min(inner.playback.duration);
+        inner.position_synced_at = Some(now);
+        if new_position == inner.playback.position {
+            return;
+        }
+        inner.playback.position = new_position;
+        drop(inner);
+        dbg(self, "signal: playback-changed mask=TIME (extrapolated, GENA healthy)");
+        self.emit_by_name::<()>("playback-changed", &[&playback_changed::TIME]);
     }
 
     /// Slow poll — this tick's phase, if the rotation is active
@@ -1986,9 +2114,9 @@ impl DeviceState {
                     } else {
                         Self::replace_artwork(&ds, &mut inner, None); // leak-check the outgoing value first
                         if bytes.is_empty() {
-                            dbg(&ds, "artwork fetch failed; clearing stale art");
+                            dbg(&ds, &format!("artwork fetch failed ({url}); clearing stale art"));
                         } else {
-                            dbg(&ds, &format!("artwork loaded: {} bytes", bytes.len()));
+                            dbg(&ds, &format!("artwork loaded: {} bytes ({url})", bytes.len()));
                             inner.playback.artwork = Some(Rc::new(bytes));
                         }
                         true
@@ -2670,6 +2798,11 @@ impl DeviceState {
 
                 if timing_valid {
                     let (pos, dur) = playback::decode_timing_http(st.curpos, st.totlen, st.mode);
+                    // Always resynced here, whether or not it actually
+                    // changed this tick — this is the one real ground-truth
+                    // reading `extrapolate_position_while_playing()`'s
+                    // wall-clock math measures forward from.
+                    inner.position_synced_at = Some(Instant::now());
                     if pos != inner.playback.position || dur != inner.playback.duration {
                         inner.playback.position = pos;
                         inner.playback.duration = dur;
@@ -2744,7 +2877,8 @@ impl DeviceState {
         }
 
         if let Some(m) = meta {
-            let art_url = m.art_uri().to_string();
+            let art_url = m.art_uri();
+            let art_url = if playback::is_valid_art_url(art_url) { art_url.to_string() } else { String::new() };
             let mut art_cleared = false;
             let mut art_url_for_fetch: Option<String> = None;
             {
@@ -2929,6 +3063,9 @@ impl DeviceState {
 
             let decoded_pos = playback::decode_hms_duration(&info.rel_time);
             let decoded_dur = playback::decode_hms_duration(&info.track_duration);
+            // See `process_poll_http()`'s identical comment: always
+            // resynced here regardless of whether it changed this tick.
+            inner.position_synced_at = Some(Instant::now());
             if decoded_pos != inner.playback.position || decoded_dur != inner.playback.duration {
                 inner.playback.position = decoded_pos;
                 inner.playback.duration = decoded_dur;
@@ -3010,7 +3147,8 @@ impl DeviceState {
                     playback_mask |= playback_changed::OTHER;
                 }
 
-                let art_url = info.album_art_uri.clone().unwrap_or_default();
+                let art_url = info.album_art_uri.as_deref().filter(|u| playback::is_valid_art_url(u))
+                    .unwrap_or_default().to_string();
                 let cached = inner.playback.art_url.as_deref().unwrap_or("");
                 if art_url != cached || !had_content {
                     inner.playback.art_url = if art_url.is_empty() {
@@ -3162,7 +3300,13 @@ impl DeviceState {
                 self.rt().spawn(async move { let _ = client.set_mute(muted).await; });
             }
         }
-        self.trigger_poll();
+        // A confirming poll is only needed as a fallback: while
+        // RenderingControl is healthy, its own NOTIFY already confirms
+        // this command reliably (observed live), so triggering a real poll
+        // on top would just be redundant network traffic.
+        if self.imp().inner.borrow().gena_rc.health != gena::GenaHealth::Healthy {
+            self.trigger_poll();
+        }
     }
 
     pub fn do_set_volume(&self, vol: u32) {
@@ -3214,19 +3358,28 @@ impl DeviceState {
         self.rt().spawn(async move {
             if playing { let _ = client.pause().await; } else { let _ = client.play().await; }
         });
-        self.trigger_poll();
+        // See `do_set_mute()`'s identical comment: AVTransport's own NOTIFY
+        // already confirms play/pause reliably while healthy, so a real
+        // poll on top is only needed as a fallback.
+        if self.imp().inner.borrow().gena_av.health != gena::GenaHealth::Healthy {
+            self.trigger_poll();
+        }
     }
 
     pub fn do_prev(&self) {
         let Some(client) = self.imp().inner.borrow().client.clone() else { return };
         self.rt().spawn(async move { let _ = client.prev().await; });
-        self.trigger_poll();
+        if self.imp().inner.borrow().gena_av.health != gena::GenaHealth::Healthy {
+            self.trigger_poll();
+        }
     }
 
     pub fn do_next(&self) {
         let Some(client) = self.imp().inner.borrow().client.clone() else { return };
         self.rt().spawn(async move { let _ = client.next().await; });
-        self.trigger_poll();
+        if self.imp().inner.borrow().gena_av.health != gena::GenaHealth::Healthy {
+            self.trigger_poll();
+        }
     }
 
     /// Takes canonical `(shuffle, repeat)` — `ui/` never passes a raw wire
@@ -3256,7 +3409,11 @@ impl DeviceState {
                 self.rt().spawn(async move { let _ = client.set_loop_mode(mode).await; });
             }
         }
-        self.trigger_poll();
+        // See `do_set_mute()`'s identical comment: PlayQueue's own NOTIFY
+        // already confirms a loop-mode change reliably while healthy.
+        if self.imp().inner.borrow().gena_pq.health != gena::GenaHealth::Healthy {
+            self.trigger_poll();
+        }
     }
 
     /// Trigger a one-shot status/metadata poll after issuing a device
@@ -3275,7 +3432,7 @@ impl DeviceState {
         let ds = self.downgrade();
         glib::timeout_add_local_once(delay, move || {
             let Some(ds) = ds.upgrade() else { return };
-            ds.dispatch_fast_poll();
+            ds.dispatch_fast_poll(true);
         });
     }
 
@@ -3550,29 +3707,49 @@ impl DeviceState {
     /// `GenaServiceState::poll_mismatch()`.
     fn apply_gena_notify(&self, payload: &NotifyPayload) {
         let mut inner = self.imp().inner.borrow_mut();
+        // Don't trust anything from GENA until at least one real fast poll
+        // has established a baseline for this connection — see
+        // `Inner::ever_polled`'s doc comment. Without this, a NOTIFY racing
+        // ahead of the first-ever poll can mark a service `Healthy` before
+        // any of the fields it doesn't cover itself (`art_url` used to be
+        // one of these) have ever been populated at all.
+        if !inner.ever_polled {
+            dbg(self, &format!("gena: {} NOTIFY ignored — no real poll yet this connection", payload.service));
+            return;
+        }
         let mut emit_input_changed = false;
         let mut emit_inputs_changed = false;
         let mut needs_immediate_poll = false;
+        let mut art_url_for_fetch: Option<String> = None;
         let (mask, old_health, new_health): (u32, gena::GenaHealth, gena::GenaHealth) = match payload.service {
             "AVTransport" => {
                 let ev = parse_av_transport_event(&payload.last_change);
                 let mut mask = 0;
 
-                // `PlaybackStorageMedium` shares its vocabulary with
-                // `GetInfoEx`'s `PlayMedium` (confirmed live across several
-                // devices — see `mode_from_play_medium()`'s doc comment).
-                // A real mode/input switch means this NOTIFY (and whatever
-                // comes right after it) describes a whole new content
-                // epoch: blank the stale baseline immediately rather than
-                // waiting for the next poll to notice, exactly like a
-                // poll-detected mode change already does. `source_name`/
-                // `caps` still need a real poll to resolve correctly
-                // (`TrackSource`/`GuiBehavior` aren't reliably in the
-                // NOTIFY), so this always triggers one regardless of
-                // whether the medium was recognized — an unrecognized
-                // value additionally gets an unconditional warning so real
-                // values can be reported and added to the table over time.
+                // `PlaybackStorageMedium`/`TrackSource` share their
+                // vocabulary with `GetInfoEx`'s `PlayMedium`/`TrackSource`
+                // (confirmed live across several devices — see
+                // `mode_from_play_medium()`'s doc comment) — enough to
+                // recompute `source_name` immediately via the same
+                // `decode_source_name_upnp()` a poll would use, rather than
+                // leaving the *previous* source's label on screen (e.g.
+                // "line-in") until the next real poll catches up, which can
+                // now be a while given cadence reduction. `caps` still needs
+                // a real poll to resolve correctly (`GuiBehavior` isn't in
+                // the NOTIFY), so a mode/input switch always triggers one
+                // regardless of whether the medium was recognized — an
+                // unrecognized value additionally gets an unconditional
+                // warning so real values can be reported and added to the
+                // table over time.
                 if let Some(medium) = &ev.playback_storage_medium {
+                    let dev_id = inner.capabilities.as_ref().map(|c| c.device_id);
+                    let decoded_source_name = playback::decode_source_name_upnp(
+                        medium, ev.track_source.as_deref().unwrap_or(""), dev_id,
+                    );
+                    if decoded_source_name != inner.playback.source_name {
+                        inner.playback.source_name = decoded_source_name;
+                        mask |= playback_changed::OTHER;
+                    }
                     match playback::mode_from_play_medium(medium) {
                         Some(new_mode) if new_mode != inner.current_mode => {
                             let prev_mode = inner.current_mode;
@@ -3620,6 +3797,50 @@ impl DeviceState {
                     if v.as_str() != inner.playback.album.as_ref() {
                         inner.playback.album = Rc::from(v.as_str());
                         mask |= playback_changed::ALBUM;
+                    }
+                }
+                // Same DIDL-Lite item `GetInfoEx` parses (see
+                // `upnp::parse_didl_item`'s doc comment) — mirrors
+                // `process_poll_upnp()`'s identical art/quality handling.
+                // `bitrate`/`format_s`/`rate_hz` are always `Some` together
+                // (all sourced from the same `CurrentTrackMetaData`), so
+                // checking one is enough to know the others are populated.
+                if let Some(raw) = &ev.album_art_uri {
+                    // A present-but-not-URL-shaped value (e.g. a firmware
+                    // placeholder like `"un_known"` — see
+                    // `playback::is_valid_art_url`'s doc comment) is a real
+                    // "no artwork" signal, unlike the tag being absent
+                    // entirely (which the outer `if let Some` above already
+                    // treats as "unchanged, don't touch").
+                    let url = if playback::is_valid_art_url(raw) { raw.as_str() } else { "" };
+                    let cached = inner.playback.art_url.as_deref().unwrap_or("");
+                    if url != cached {
+                        inner.playback.art_url = if url.is_empty() {
+                            None
+                        } else {
+                            Some(Rc::from(url))
+                        };
+                        Self::replace_artwork(self, &mut inner, None);
+                        if url.is_empty() {
+                            mask |= playback_changed::ARTWORK;
+                        } else {
+                            art_url_for_fetch = Some(url.to_string());
+                        }
+                    }
+                }
+                if let Some(bitrate) = &ev.bitrate {
+                    let (decoded_quality, decoded_codec_label) = playback::decode_quality_upnp(
+                        ev.actual_quality.as_deref(),
+                        bitrate,
+                        ev.format_s.as_deref().unwrap_or(""),
+                        ev.rate_hz.as_deref().unwrap_or(""),
+                        ev.protocol_info.as_deref(),
+                        ev.playback_storage_medium.as_deref().unwrap_or(""),
+                    );
+                    if decoded_quality != inner.playback.quality || decoded_codec_label != inner.playback.codec_label {
+                        inner.playback.quality = decoded_quality;
+                        inner.playback.codec_label = decoded_codec_label;
+                        mask |= playback_changed::OTHER;
                     }
                 }
                 let old = inner.gena_av.notify_received();
@@ -3674,6 +3895,12 @@ impl DeviceState {
         if mask != 0 {
             dbg(self, &format!("signal: playback-changed mask={:#x} (from GENA {} NOTIFY)", mask, payload.service));
             self.emit_by_name::<()>("playback-changed", &[&mask]);
+        }
+        if let Some(url) = art_url_for_fetch {
+            if let Some(art_tx) = self.imp().art_tx.borrow().clone() {
+                dbg(self, &format!("gena: art url changed: {url}"));
+                self.fetch_art(url, &art_tx);
+            }
         }
         if needs_immediate_poll {
             self.trigger_poll();
