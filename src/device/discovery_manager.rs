@@ -44,7 +44,7 @@ use crate::device::state::{ConnectionState, DeviceState};
 /// that one line).
 fn dbg(msg: &str) {
     if DEBUG_DISCOVERY.load(std::sync::atomic::Ordering::Relaxed) {
-        println!("[disc-mgr] {msg}");
+        println!("{} [disc-mgr] {msg}", super::timestamp());
     }
 }
 

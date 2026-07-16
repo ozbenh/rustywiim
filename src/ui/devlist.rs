@@ -629,7 +629,7 @@ impl DiscoveryWindow {
                         if let Ok(Some(dev)) = rx.recv().await {
                             manager.add_manual(dev.name, dev.ip, dev.uuid, dev.tls_mode);
                         } else {
-                            eprintln!("[devlist-ui] Could not reach device at {ip}");
+                            eprintln!("{} [devlist-ui] Could not reach device at {ip}", crate::timestamp());
                         }
                     }));
                 }

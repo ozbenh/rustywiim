@@ -37,7 +37,7 @@ pub static DEBUG_DISCOVERY: AtomicBool = AtomicBool::new(false);
 
 fn dbg(msg: &str) {
     if DEBUG_DISCOVERY.load(Ordering::Relaxed) {
-        println!("[discovery] {msg}");
+        println!("{} [discovery] {msg}", super::timestamp());
     }
 }
 
@@ -395,13 +395,13 @@ async fn ssdp_listener(tx: async_channel::Sender<SsdpEvent>) {
     let notify_sock = match create_notify_socket() {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("[discovery] SSDP socket bind failed: {e}");
+            eprintln!("{} [discovery] SSDP socket bind failed: {e}", super::timestamp());
             return;
         }
     };
     // Ephemeral socket: sends M-SEARCH and receives unicast responses.
     let Ok(search_sock) = tokio::net::UdpSocket::bind("0.0.0.0:0").await else {
-        eprintln!("[discovery] M-SEARCH socket bind failed");
+        eprintln!("{} [discovery] M-SEARCH socket bind failed", super::timestamp());
         return;
     };
 

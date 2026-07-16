@@ -14,7 +14,7 @@ pub static DEBUG_DEVICE: AtomicBool = AtomicBool::new(false);
 
 fn dbg(msg: &str) {
     if DEBUG_DEVICE.load(Ordering::Relaxed) {
-        println!("[device] {msg}");
+        println!("{} [device] {msg}", super::timestamp());
     }
 }
 
@@ -1237,9 +1237,9 @@ async fn detect_inputs(client: &WiimClient, caps: &mut DeviceCapabilities) {
                     existing.enabled = e.is_enabled();
                 } else {
                     eprintln!(
-                        "[device] getAudioInputEnable reported {:?}, which isn't in the \
+                        "{} [device] getAudioInputEnable reported {:?}, which isn't in the \
                          detected input list for this device — adding it",
-                        e.name,
+                        super::timestamp(), e.name,
                     );
                     caps.inputs.push(InputEntry { id: e.name.clone(), enabled: e.is_enabled() });
                 }

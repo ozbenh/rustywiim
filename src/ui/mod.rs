@@ -37,7 +37,7 @@ pub static DEBUG_UI: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBo
 
 fn dbg_ui(msg: &str) {
     if DEBUG_UI.load(Ordering::Relaxed) {
-        println!("[ui] {msg}");
+        println!("{} [ui] {msg}", crate::timestamp());
     }
 }
 
@@ -120,7 +120,7 @@ pub fn set_direct_connect(ip: String, tls_mode: TlsMode) {
 
 fn dbg_state(msg: &str) {
     if DEBUG_STATE.load(Ordering::Relaxed) {
-        println!("[app] {msg}");
+        println!("{} [app] {msg}", crate::timestamp());
     }
 }
 

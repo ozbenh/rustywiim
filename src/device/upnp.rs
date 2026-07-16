@@ -34,7 +34,7 @@ pub static DEBUG_UPNP: AtomicBool = AtomicBool::new(false);
 /// under `--debug=api` (see that call site's comment for why).
 fn dbg(msg: &str) {
     if DEBUG_UPNP.load(Ordering::Relaxed) {
-        println!("[upnp] {msg}");
+        println!("{} [upnp] {msg}", super::timestamp());
     }
 }
 
@@ -375,8 +375,8 @@ async fn soap_call(control_url: &str, service_type: &str, action: &str, args_xml
         }
         if attempt > 0 || super::api::DEBUG.load(Ordering::Relaxed) {
             eprintln!(
-                "[upnp] {action}: transient send error (attempt {}/{}), retrying in 100ms: {err}",
-                attempt + 1, MAX_RETRIES,
+                "{} [upnp] {action}: transient send error (attempt {}/{}), retrying in 100ms: {err}",
+                super::timestamp(), attempt + 1, MAX_RETRIES,
             );
         }
     }

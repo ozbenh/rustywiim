@@ -26,7 +26,7 @@ pub static DEBUG_CONFIG: AtomicBool = AtomicBool::new(false);
 
 fn dbg(msg: &str) {
     if DEBUG_CONFIG.load(Ordering::Relaxed) {
-        println!("[config] {msg}");
+        println!("{} [config] {msg}", crate::timestamp());
     }
 }
 
@@ -344,7 +344,7 @@ impl Config {
             Ok(s) => s,
             Err(e) => {
                 if e.kind() != std::io::ErrorKind::NotFound {
-                    eprintln!("[config] failed to read {}: {e}", path.display());
+                    eprintln!("{} [config] failed to read {}: {e}", crate::timestamp(), path.display());
                 }
                 return Self::default();
             }
@@ -356,9 +356,9 @@ impl Config {
                 cfg
             }
             Err(e) => {
-                eprintln!("[config] failed to parse {}: {e}", path.display());
-                eprintln!("[config] file contents:\n{text}");
-                eprintln!("[config] using defaults (discovery window will open)");
+                eprintln!("{} [config] failed to parse {}: {e}", crate::timestamp(), path.display());
+                eprintln!("{} [config] file contents:\n{text}", crate::timestamp());
+                eprintln!("{} [config] using defaults (discovery window will open)", crate::timestamp());
                 Self::default()
             }
         }
@@ -375,7 +375,7 @@ impl Config {
         // site individually. An empty key can never legitimately refer to
         // a real device, so this can never discard real data.
         if self.devices.contains_key("") {
-            eprintln!("[config] dropping bogus empty-uuid device entry before saving");
+            eprintln!("{} [config] dropping bogus empty-uuid device entry before saving", crate::timestamp());
             let mut sanitized = self.clone();
             sanitized.devices.remove("");
             if let Ok(json) = serde_json::to_string_pretty(&sanitized) {

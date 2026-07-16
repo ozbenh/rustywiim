@@ -321,9 +321,9 @@ impl SettingsWindow {
         if DEBUG_UI.load(Ordering::Relaxed) || crate::device::state::DEBUG_STATE.load(Ordering::Relaxed) {
             let uuid = ds.as_ref().and_then(|d| d.device_info()).map(|i| i.uuid)
                 .unwrap_or_else(|| "global".to_string());
-            println!("[ui] SettingsWindow created (uuid={uuid})");
+            println!("{} [ui] SettingsWindow created (uuid={uuid})", crate::timestamp());
             window.connect_destroy(move |_| {
-                println!("[ui] SettingsWindow destroyed (uuid={uuid})");
+                println!("{} [ui] SettingsWindow destroyed (uuid={uuid})", crate::timestamp());
             });
         }
 

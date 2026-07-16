@@ -8,6 +8,15 @@ mod ui;
 
 use rustywiim::device;
 
+/// Wall-clock timestamp prefix (`HH:MM:SS.mmm`, local time) for this binary
+/// crate's own `--debug=*` log lines (`config.rs`, `ui/*.rs`) — the library
+/// crate (`rustywiim::device`) has its own copy (`device::timestamp()`,
+/// `pub(crate)` there), since that one isn't visible across the crate
+/// boundary; same one-line format either way.
+pub(crate) fn timestamp() -> String {
+    chrono::Local::now().format("%H:%M:%S%.3f").to_string()
+}
+
 /// Parses `--connect`'s `scheme://ip[:port]` into (ip-with-optional-port,
 /// TlsMode). Deliberately minimal — no path/query, just enough to point
 /// `device::api::api_base_url()` at an arbitrary host:port (e.g.

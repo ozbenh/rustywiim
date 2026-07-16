@@ -81,7 +81,7 @@ pub static DEBUG_STATE: AtomicBool = AtomicBool::new(false);
 /// `[state] ...` line gives no way to tell which one it belongs to.
 fn dbg(ds: &DeviceState, msg: &str) {
     if DEBUG_STATE.load(Ordering::Relaxed) {
-        println!("[state] {}: {msg}", ds.ip());
+        println!("{} [state] {}: {msg}", super::timestamp(), ds.ip());
     }
 }
 
@@ -227,12 +227,12 @@ const OUTPUT_STATUS_PROBE_FAIL_THRESHOLD: u32 = 3;
 /// skips the budget entirely and gives up on the spot, in the caller.
 fn record_probe_failure(failures: &mut u32, threshold: u32, command: &str) -> bool {
     *failures += 1;
-    eprintln!("[device] {command} failed ({failures}/{threshold})", failures = *failures);
+    eprintln!("{} [device] {command} failed ({failures}/{threshold})", super::timestamp(), failures = *failures);
     let gave_up = *failures >= threshold;
     if gave_up {
         eprintln!(
-            "[device] giving up on {command} for this device after {failures} consecutive failures",
-            failures = *failures,
+            "{} [device] giving up on {command} for this device after {failures} consecutive failures",
+            super::timestamp(), failures = *failures,
         );
     }
     gave_up
@@ -1048,7 +1048,7 @@ impl DeviceState {
                     Some(FetchOk { info, caps, renames })
                 }
                 None => {
-                    eprintln!("[state] fetch_device_info failed: getStatusEx unreachable");
+                    eprintln!("{} [state] fetch_device_info failed: getStatusEx unreachable", super::timestamp());
                     None
                 }
             };
@@ -1837,7 +1837,10 @@ impl DeviceState {
             // shows up rather than just being an unexplained delay.
             let elapsed = dispatched_at.elapsed();
             if elapsed > Duration::from_secs(1) && DEBUG_STATE.load(Ordering::Relaxed) {
-                println!("[state] {ip}: slow poll: phase {phase:?} took {elapsed:?} (slower than usual)");
+                println!(
+                    "{} [state] {ip}: slow poll: phase {phase:?} took {elapsed:?} (slower than usual)",
+                    super::timestamp(),
+                );
             }
             let _ = tx.send(result).await;
         });
@@ -2031,8 +2034,9 @@ impl DeviceState {
             if let Some(entry) = caps.inputs.iter_mut().find(|i| i.id == active_id) {
                 if !entry.enabled {
                     eprintln!(
-                        "[state] input {active_id:?} reported disabled but is \
+                        "{} [state] input {active_id:?} reported disabled but is \
                          actively in use; marking enabled",
+                        super::timestamp(),
                     );
                     entry.enabled = true;
                     return true;
@@ -2056,7 +2060,7 @@ impl DeviceState {
             if !inner.input_changing || sent.elapsed() < INPUT_CHANGE_TIMEOUT {
                 return (false, false);
             }
-            eprintln!("[state] timeout changing input");
+            eprintln!("{} [state] timeout changing input", super::timestamp());
         }
         inner.input_changing = false;
         (true, inputs_changed)

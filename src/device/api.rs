@@ -15,13 +15,13 @@ pub static DEBUG: AtomicBool = AtomicBool::new(false);
 // differently-gated log format for what is still fundamentally "the API".
 pub(crate) fn debug(cmd: &str, resp: &str) {
     if DEBUG.load(Ordering::Relaxed) {
-        println!("[API] {cmd} → {resp}");
+        println!("{} [API] {cmd} → {resp}", super::timestamp());
     }
 }
 
 pub(crate) fn debug_info(msg: &str) {
     if DEBUG.load(Ordering::Relaxed) {
-        println!("[API] {msg}");
+        println!("{} [API] {msg}", super::timestamp());
     }
 }
 
@@ -145,10 +145,11 @@ pub fn build_reqwest_client(tls: TlsMode, timeout: Duration) -> Client {
 /// cause (e.g. the specific TLS or certificate failure) is visible.
 pub fn log_request_error(context: &str, err: &reqwest::Error) {
     use std::error::Error as StdError;
-    eprintln!("[API] {context}: {err}");
+    let ts = super::timestamp();
+    eprintln!("{ts} [API] {context}: {err}");
     let mut cause: Option<&dyn StdError> = err.source();
     while let Some(c) = cause {
-        eprintln!("[API]   caused by: {c}");
+        eprintln!("{ts} [API]   caused by: {c}");
         cause = c.source();
     }
 }
@@ -821,8 +822,8 @@ impl WiimClient {
             // is more likely a real problem, so that always logs.
             if attempt > 0 || DEBUG.load(Ordering::Relaxed) {
                 eprintln!(
-                    "[API] {command}: transient send error (attempt {}/{}), retrying in 100ms: {err}",
-                    attempt + 1, MAX_RETRIES,
+                    "{} [API] {command}: transient send error (attempt {}/{}), retrying in 100ms: {err}",
+                    super::timestamp(), attempt + 1, MAX_RETRIES,
                 );
             }
         }

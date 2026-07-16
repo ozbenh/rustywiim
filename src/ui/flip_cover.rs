@@ -268,7 +268,7 @@ impl FlipCover {
     /// art URL) — repeated calls with the same key are a no-op.
     pub fn set_art(&self, tex: Option<&gtk::gdk::Texture>, key: &str) {
         if crate::ui::DEBUG_UI.load(std::sync::atomic::Ordering::Relaxed) {
-            println!("[ui] FlipCover::set_art key={key:?} some={}", tex.is_some());
+            println!("{} [ui] FlipCover::set_art key={key:?} some={}", crate::timestamp(), tex.is_some());
         }
         self.imp().set_content(
             tex.map(|t| (t.clone().upcast::<gtk::gdk::Paintable>(), None)),
@@ -283,7 +283,7 @@ impl FlipCover {
     /// source id) so switching sources fades between icons too.
     pub fn set_icon(&self, icon: &gtk::gdk::Paintable, size_px: f32, key: &str) {
         if crate::ui::DEBUG_UI.load(std::sync::atomic::Ordering::Relaxed) {
-            println!("[ui] FlipCover::set_icon key={key:?}");
+            println!("{} [ui] FlipCover::set_icon key={key:?}", crate::timestamp());
         }
         self.imp().set_content(Some((icon.clone(), Some(size_px))), false, key);
     }
@@ -292,7 +292,7 @@ impl FlipCover {
     /// transition — for device disconnect/reset, not a content change.
     pub fn clear(&self) {
         if crate::ui::DEBUG_UI.load(std::sync::atomic::Ordering::Relaxed) {
-            println!("[ui] FlipCover::clear");
+            println!("{} [ui] FlipCover::clear", crate::timestamp());
         }
         self.imp().clear();
     }
