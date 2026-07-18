@@ -116,10 +116,19 @@ window { background-color: #0a0a0a; }
    toplevel surface's actual rectangular bounds, independent of mini-outer's
    own rounding/clip below, so it's cleared here in full — mini-outer's
    background/radius are the only thing meant to be visible.
-   So we need to disable both. We can later implement our own drop shadow
  */
 window.mini-window { background-color: transparent; box-shadow: none; border-radius: 0; outline: none; }
-.mini-outer   { background-color: #111111; border-radius: 10px; }
+/* Fixed dead space for mini-outer's drop shadow (below) to fade into. Has to
+   be a margin on this otherwise-plain, shadowless wrapper rather than a
+   shadow/margin on the window node itself: a shadow living on the same node
+   as the margin — including the window node, whether ours or GTK/
+   libadwaita's own automatic one above — hits the same "meant to be
+   transparent but composites as a stale-opaque rectangle" surface tracking
+   bug that decorated(false) has. A margin with no shadow of its own is fine;
+   a shadow with no margin of its own (on mini-outer) is fine; only the two
+   together on one node, or on the window node, break compositing. */
+.mini-root    { margin: 20px; }
+.mini-outer   { background-color: #111111; border-radius: 10px; box-shadow: 0 2px 12px rgba(0, 0, 0, 0.5); }
 .mini-art     { min-width: 64px; min-height: 64px; }
 .mini-main-row { background-color: #111111; }
 .mini-title        { font-size: 13px; font-weight: 700; color: #ffffff; }

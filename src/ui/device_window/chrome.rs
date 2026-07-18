@@ -301,6 +301,11 @@ pub(super) fn build_mini_window(
 
     let mini_root = gtk::WindowHandle::new();
     mini_root.set_child(Some(&mini_outer));
+    // Reserves fixed dead space around mini_outer for the drop shadow below
+    // to fade into — see mini-root's CSS comment for why this has to be a
+    // plain margin on this shadowless wrapper rather than a shadow/margin on
+    // the window node itself or on mini_outer directly.
+    mini_root.add_css_class("mini-root");
 
     // Unlike an older version of this function, there is no dedicated
     // `gtk::ApplicationWindow` built here anymore — `mini_root` is packed
