@@ -108,7 +108,17 @@ window { background-color: #0a0a0a; }
 .devlist-art  { border-radius: 4px; min-width: 32px; min-height: 32px; }
 .preset-name  { font-size: 12px; color: #a0a0a0; }
 .preset-badge { font-size: 9px; font-weight: 700; color: #1a1a1a; background-color: #606060; border-radius: 50%; min-width: 16px; min-height: 16px; padding: 1px; }
-window.mini-window { background-color: transparent; }
+/* GTK's built-in theme, and libadwaita's own override of it, both put a
+   permanent drop shadow on every `window.csd` node regardless of
+   decorated(false); libadwaita's version also adds a 1px `outline` (a
+   property distinct from border/box-shadow/background) as a hairline
+   "definition" ring around the same node. All of it is drawn around the
+   toplevel surface's actual rectangular bounds, independent of mini-outer's
+   own rounding/clip below, so it's cleared here in full — mini-outer's
+   background/radius are the only thing meant to be visible.
+   So we need to disable both. We can later implement our own drop shadow
+ */
+window.mini-window { background-color: transparent; box-shadow: none; border-radius: 0; outline: none; }
 .mini-outer   { background-color: #111111; border-radius: 10px; }
 .mini-art     { min-width: 64px; min-height: 64px; }
 .mini-main-row { background-color: #111111; }
