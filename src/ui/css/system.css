@@ -2,6 +2,10 @@
 .track-title  { font-size: 20px; font-weight: 800; min-height: 26px; }
 .track-artist { font-size: 14px; font-weight: 600; opacity: 0.75; min-height: 18px; }
 .track-album  { font-size: 13px; opacity: 0.55; min-height: 17px; }
+/* Wide-right playback layout — see dark.css's identical rule for why font
+   size/min-height aren't set here (computed live in Rust instead). */
+.wide-right-text .track-title  { font-weight: 800; }
+.wide-right-text .track-artist { font-weight: 600; opacity: 0.75; }
 /* min-height reserves the line's space even when the label text is empty
    (status cleared on disconnect, quality absent for the current source), so
    the artwork above doesn't resize as these labels come and go. */
@@ -60,7 +64,9 @@
 .devlist-vol-pop trough { min-width: 3px; border-radius: 2px; }
 .devlist-vol-pop slider { min-width: 6px; min-height: 6px; margin: -1px; border-radius: 50%; border: none; box-shadow: none; }
 .devlist-vol-popover > contents { min-width: 0; padding: 0; }
-.seek-scale trough { min-height: 4px; border-radius: 2px; }
+/* See dark.css's identical rule for why margin/padding are zeroed here. */
+.seek-scale { margin: 0; padding: 0; }
+.seek-scale trough { min-height: 4px; border-radius: 2px; margin: 0; }
 .seek-scale slider { min-width: 0; min-height: 0; margin: 0; padding: 0; opacity: 0; }
 .preset-tile  { border-radius: 8px; padding: 4px; }
 .preset-art   { border-radius: 5px; min-width: 40px; min-height: 40px; }
@@ -142,6 +148,13 @@ menubutton.mini-restore-btn > button:hover { background-color: rgba(127, 127, 12
     margin: 20px;
 }
 .kiosk-device-btn:hover { background-color: alpha(@window_fg_color, 0.12); }
-/* Touch-friendly volume slider — see dark.css's identical rule for why
-   this is a pure CSS override, not a VolumeControl API change. */
-window.kiosk-window .vol-pop { min-height: 480px; }
+/* Touch-friendly volume slider sizing moved to Rust (views/volume.rs,
+   computed dynamically at popup time) — see dark.css's identical comment
+   for why a fixed CSS min-height here was actually a real bug. */
+/* Kiosk mode's bottom status bar — see dark.css's identical rule for why
+   `.ip-label` specifically (not `.dim-label`) and why remote_icon's own
+   size is set in Rust instead. */
+window.kiosk-window .device-info { font-size: 17px; margin-top: 6px; margin-bottom: 6px; }
+window.kiosk-window .ip-label { font-size: 18px; margin-top: 6px; margin-bottom: 6px; }
+window.kiosk-window .net-icon { -gtk-icon-size: 24px; margin-top: 6px; margin-bottom: 6px; }
+window.kiosk-window .remote-icon { margin-top: 6px; margin-bottom: 6px; }

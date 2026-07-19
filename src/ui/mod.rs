@@ -425,14 +425,34 @@ impl AppState {
         // uuid is empty (unresolved until getStatusEx) — DeviceManager::get()
         // and DeviceWindow::new_inner() already handle that case (a brand new,
         // not-yet-deduplicated DeviceState), same as for a manually-added device.
+        //
+        // `--connect --kiosk` together used to silently drop `--kiosk`: this
+        // branch returned unconditionally, so the "if start_in_kiosk" check
+        // further down never even ran. Building the DeviceState directly
+        // (mirroring what `device_manager.get()` call `DeviceWindow::new_inner()`
+        // itself makes from a `DeviceSpec`) and handing it to Kiosk mode via
+        // `enter_kiosk_with_device()` instead of `open_device_spec()` is what
+        // lets the two flags combine: Kiosk mode pre-bound to the `--connect`
+        // target rather than a plain `DeviceWindow`.
         if let Some((ip, tls_mode)) = DIRECT_CONNECT.get() {
-            dbg_state(&format!("activate: --connect direct to {ip} via {tls_mode:?}"));
-            Self::open_device_spec(self_rc, DeviceSpec {
-                ip: ip.clone(),
-                uuid: String::new(),
-                tls_mode: *tls_mode,
-                try_connect: true,
-            });
+            let start_in_kiosk = START_IN_KIOSK.load(Ordering::Relaxed);
+            dbg_state(&format!(
+                "activate: --connect direct to {ip} via {tls_mode:?}{}",
+                if start_in_kiosk { " (--kiosk)" } else { "" }
+            ));
+            if start_in_kiosk {
+                let ds = self_rc.device_manager.get(
+                    "", ip, *tls_mode, None, None, None, config::resolved_gena_enabled(""), true,
+                );
+                Self::enter_kiosk_with_device(self_rc, ds, ip.clone());
+            } else {
+                Self::open_device_spec(self_rc, DeviceSpec {
+                    ip: ip.clone(),
+                    uuid: String::new(),
+                    tls_mode: *tls_mode,
+                    try_connect: true,
+                });
+            }
             return;
         }
 
@@ -569,13 +589,60 @@ impl AppState {
     /// of its own. Presenting first guarantees at least one window stays
     /// visible throughout this transition, so that auto-quit never fires.
     pub(crate) fn enter_kiosk(self_rc: &Rc<Self>, bind_uuid: Option<String>) {
+        let kw = Self::enter_kiosk_window(self_rc);
+
+        // An explicit bind_uuid (entered from a device window) always wins;
+        // otherwise fall back to whatever device Kiosk mode last showed
+        // (Config::kiosk_last_uuid, if it's already a currently-tracked
+        // device), and failing that, the first Active device found.
+        let bind_uuid = bind_uuid.or_else(|| Self::resolve_kiosk_default(&self_rc.disc_mgr));
+        kw.bind_device(bind_uuid.as_deref());
+
+        // If nothing resolved *yet*, keep watching rather than settling for
+        // "nothing selected": discovery is asynchronous (SSDP responses
+        // arrive well after `disc_mgr.start()` returns — confirmed live, a
+        // fresh `--kiosk` launch reaches this point before any real device
+        // has actually responded, so the immediate resolution above finds
+        // nothing even for an already-known kiosk_last_uuid device that
+        // isn't otherwise pinned/previously-open). The first time a device
+        // becomes available — the persisted device reappearing, or failing
+        // that any Active device — bind it, unless the user has already
+        // picked something else by then (checked via `current_key()`).
+        if kw.current_key().is_empty() {
+            let weak_kw = Rc::downgrade(&kw);
+            self_rc.disc_mgr.connect_list_changed(move |mgr| {
+                let Some(kw) = weak_kw.upgrade() else { return };
+                if !kw.current_key().is_empty() { return; }
+                if let Some(uuid) = Self::resolve_kiosk_default(mgr) {
+                    kw.bind_device(Some(&uuid));
+                }
+            });
+        }
+    }
+
+    /// Same as `enter_kiosk`, but for `--connect`'s already-constructed
+    /// `DeviceState` — `--connect` deliberately bypasses discovery/SSDP
+    /// entirely (see `DIRECT_CONNECT`'s doc comment), so there's no
+    /// `DiscoveryManager` entry/uuid for `KioskWindow::bind_device()` to
+    /// resolve; `bind_direct()` skips that lookup and uses `ds` as-is.
+    /// No fallback-watching needed either, since the device is already
+    /// known synchronously — unlike the uuid path, nothing here depends on
+    /// discovery ever completing.
+    pub(crate) fn enter_kiosk_with_device(self_rc: &Rc<Self>, ds: DeviceState, label: String) {
+        let kw = Self::enter_kiosk_window(self_rc);
+        kw.bind_direct(ds, &label);
+    }
+
+    /// Shared by `enter_kiosk()`/`enter_kiosk_with_device()`: returns the
+    /// existing `KioskWindow` if already in Kiosk mode (retargeting is the
+    /// caller's job — a reasonable no-op path rather than clobbering the
+    /// prior-windows snapshot with an empty one), otherwise snapshots
+    /// currently-open windows, builds and presents a fresh `KioskWindow`,
+    /// and closes everything else — all before either caller binds a
+    /// device into it.
+    fn enter_kiosk_window(self_rc: &Rc<Self>) -> Rc<kiosk::KioskWindow> {
         if let Some(kw) = self_rc.kiosk_win.borrow().as_ref() {
-            // Already in Kiosk mode — retarget instead of re-entering
-            // (not currently reachable via any wired trigger, but a
-            // reasonable no-op rather than clobbering the prior-windows
-            // snapshot with an empty one).
-            kw.bind_device(bind_uuid.as_deref());
-            return;
+            return Rc::clone(kw);
         }
 
         *self_rc.kiosk_prior_devices.borrow_mut() = Some(
@@ -611,33 +678,7 @@ impl AppState {
         }
         ENTERING_KIOSK.store(false, Ordering::Relaxed);
 
-        // An explicit bind_uuid (entered from a device window) always wins;
-        // otherwise fall back to whatever device Kiosk mode last showed
-        // (Config::kiosk_last_uuid, if it's already a currently-tracked
-        // device), and failing that, the first Active device found.
-        let bind_uuid = bind_uuid.or_else(|| Self::resolve_kiosk_default(&self_rc.disc_mgr));
-        kw.bind_device(bind_uuid.as_deref());
-
-        // If nothing resolved *yet*, keep watching rather than settling for
-        // "nothing selected": discovery is asynchronous (SSDP responses
-        // arrive well after `disc_mgr.start()` returns — confirmed live, a
-        // fresh `--kiosk` launch reaches this point before any real device
-        // has actually responded, so the immediate resolution above finds
-        // nothing even for an already-known kiosk_last_uuid device that
-        // isn't otherwise pinned/previously-open). The first time a device
-        // becomes available — the persisted device reappearing, or failing
-        // that any Active device — bind it, unless the user has already
-        // picked something else by then (checked via `current_key()`).
-        if kw.current_key().is_empty() {
-            let weak_kw = Rc::downgrade(&kw);
-            self_rc.disc_mgr.connect_list_changed(move |mgr| {
-                let Some(kw) = weak_kw.upgrade() else { return };
-                if !kw.current_key().is_empty() { return; }
-                if let Some(uuid) = Self::resolve_kiosk_default(mgr) {
-                    kw.bind_device(Some(&uuid));
-                }
-            });
-        }
+        kw
     }
 
     /// See `enter_kiosk()`'s fallback-selection comment. Among Active

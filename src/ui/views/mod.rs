@@ -24,4 +24,5 @@ pub(crate) mod io;
 pub(crate) mod playback_full;
 pub(crate) mod playback_mini;
 pub(crate) mod presets;
+pub(crate) mod status_bar;
 pub(crate) mod volume;

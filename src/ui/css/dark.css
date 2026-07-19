@@ -3,6 +3,16 @@ window { background-color: #0a0a0a; }
 .track-title  { font-size: 20px; font-weight: 800; color: #ffffff; min-height: 26px; }
 .track-artist { font-size: 14px; font-weight: 600; color: #b0b0b0; min-height: 18px; }
 .track-album  { font-size: 13px; color: #707070; min-height: 17px; }
+/* Wide-right playback layout (artwork left, text right): font-weight/color
+   only — actual font-size is computed and applied live in Rust
+   (playback_full.rs's apply_wide_right_scale()), proportional to the
+   artwork's own real rendered size, since a fixed pixel size here would
+   look right on only one specific screen. No min-height either: unlike
+   the base .track-title/etc. rules above, this layout's artwork height
+   comes from a fixed-ratio AspectFrame, not from these labels' own size,
+   so there's nothing left for a height floor to protect against. */
+.wide-right-text .track-title  { font-weight: 800; }
+.wide-right-text .track-artist { font-weight: 600; }
 /* min-height reserves the line's space even when the label text is empty
    (status cleared on disconnect, quality absent for the current source), so
    the artwork above doesn't resize as these labels come and go. */
@@ -94,7 +104,12 @@ window { background-color: #0a0a0a; }
 .devlist-vol-pop trough highlight { background-color: @rustywiim_accent; }
 .devlist-vol-pop slider { min-width: 6px; min-height: 6px; margin: -1px; background-color: #808080; border-radius: 50%; border: none; box-shadow: none; }
 .devlist-vol-popover > contents { min-width: 0; padding: 0; }
-.seek-scale trough { min-height: 4px; border-radius: 2px; background-color: #2a2a2a; }
+/* Adwaita's base Scale style reserves its own inset around the trough
+   (room for the slider handle's grab area) — zeroed here so the wide-right
+   kiosk layout's seek bar can sit flush against the artwork's left edge
+   and the text column's right edge instead of a few px short on each side. */
+.seek-scale { margin: 0; padding: 0; }
+.seek-scale trough { min-height: 4px; border-radius: 2px; background-color: #2a2a2a; margin: 0; }
 .seek-scale trough highlight { background-color: @rustywiim_accent; }
 .seek-scale slider { min-width: 0; min-height: 0; margin: 0; padding: 0; opacity: 0; }
 /* Adwaita's own :disabled dimming would normally handle this, but our
@@ -194,11 +209,23 @@ window.mini-window .marquee-fade {
     margin: 20px;
 }
 .kiosk-device-btn:hover { background-color: rgba(255, 255, 255, 0.12); }
-/* Touch-friendly volume slider: the embedded PlaybackView's VolumeControl
-   builds the exact same `.vol-pop` popover/slider the main window uses —
-   this is a pure CSS override scoped by the ancestor window class, not a
-   VolumeControl API change, so the view itself stays completely unaware
-   of kiosk mode. A precise "window height minus a small margin" isn't
-   expressible in static CSS (no viewport units) — this fixed height is an
-   approximation, tune once this is actually used on a touchscreen. */
-window.kiosk-window .vol-pop { min-height: 480px; }
+/* Touch-friendly volume slider sizing used to be a fixed min-height here —
+   removed: a static value can exceed the space actually available above
+   the button on a given screen, and a minimal Wayland kiosk compositor may
+   not reposition/shrink an oversized popup to fit the way a full desktop
+   one would, so it just never appeared at all instead of merely rendering
+   smaller than intended (confirmed live on a Raspberry Pi kiosk
+   touchscreen). VolumeControl (views/volume.rs) now computes this
+   dynamically at popup time instead, from the real space available. */
+/* Kiosk mode's bottom status bar (StatusBarView), ~50% bigger than the
+   normal window's — `remote_icon`'s own pixel size is scaled separately in
+   Rust (see StatusBarView::new()'s `large` parameter doc comment; pure CSS
+   can't rescale a pre-rendered Paintable-backed Image the way -gtk-icon-size
+   can an icon-name one). `.ip-label`, not the broader `.dim-label` it's
+   paired with, so this doesn't also affect the seek bar's pos/dur labels
+   inside PlaybackView, which are `.dim-label` too but already get their own
+   scaling from apply_wide_right_scale()'s per-instance provider. */
+window.kiosk-window .device-info { font-size: 17px; margin-top: 6px; margin-bottom: 6px; }
+window.kiosk-window .ip-label { font-size: 18px; margin-top: 6px; margin-bottom: 6px; }
+window.kiosk-window .net-icon { -gtk-icon-size: 24px; margin-top: 6px; margin-bottom: 6px; }
+window.kiosk-window .remote-icon { margin-top: 6px; margin-bottom: 6px; }

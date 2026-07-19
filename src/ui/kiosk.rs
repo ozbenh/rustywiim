@@ -30,7 +30,7 @@ use crate::ui::icons::IconSet;
 use crate::ui::update_art_background_visibility;
 use crate::ui::views;
 use crate::ui::views::devlist::DeviceListView;
-use crate::ui::views::playback_full::PlaybackView;
+use crate::ui::views::playback_full::{PlaybackLayout, PlaybackView};
 
 /// The currently-shown device's view plus the `FullModeGuard` keeping its
 /// polling at full fidelity for as long as Kiosk mode is looking at it —
@@ -43,6 +43,12 @@ struct BoundDevice {
     key:        String,
     ds:         DeviceState,
     view:       PlaybackView,
+    /// Rebuilt alongside `view` on every `bind_device()` call rather than
+    /// rebound in place — `StatusBarView` follows the same "bound to one
+    /// `DeviceState` at construction, never rebound" contract every view
+    /// does (`views/mod.rs`). Shown unconditionally for this first cut
+    /// (no Settings toggle exists yet to make it optional).
+    _status_bar: crate::ui::views::status_bar::StatusBarView,
     _full_mode: FullModeGuard,
 }
 
@@ -230,7 +236,12 @@ impl KioskWindow {
         // the empty key the "no device" branch below uses.
         if let Some(old) = self.bound.borrow_mut().take() {
             self.manager.set_window_open(&old.key, false);
-            self.content_holder.remove(&old.view);
+        }
+        // Clear generically rather than removing old.view/old.status_bar
+        // individually, so any future addition here doesn't need its own
+        // matching removal line.
+        while let Some(child) = self.content_holder.first_child() {
+            self.content_holder.remove(&child);
         }
 
         let resolved = key.and_then(|k| self.manager.device_state_for(k).map(|ds| (k.to_string(), ds)));
@@ -251,9 +262,44 @@ impl KioskWindow {
                 (String::new(), ds, "Select device".to_string())
             }
         };
+        self.finish_bind(key, ds, label);
+    }
+
+    /// Binds directly to an already-constructed `DeviceState`, skipping
+    /// `manager.device_state_for()`'s `DiscoveryManager` lookup entirely —
+    /// for `--connect --kiosk` together, where the device comes from
+    /// `--connect`'s own direct-connection path (see `DIRECT_CONNECT`'s
+    /// doc comment: it deliberately bypasses discovery/SSDP, so there's no
+    /// tracked entry/uuid for `bind_device()`'s normal resolution to find).
+    /// Not persisted as `kiosk_last_uuid` — the uuid isn't known yet
+    /// either (unresolved until `getStatusEx` answers), and re-selecting
+    /// it from the popover later isn't meaningful the way a discovered
+    /// device's is.
+    pub(crate) fn bind_direct(&self, ds: DeviceState, label: &str) {
+        if let Some(old) = self.bound.borrow_mut().take() {
+            self.manager.set_window_open(&old.key, false);
+        }
+        while let Some(child) = self.content_holder.first_child() {
+            self.content_holder.remove(&child);
+        }
+        self.finish_bind(String::new(), ds, label.to_string());
+    }
+
+    /// Shared tail of `bind_device()`/`bind_direct()`: builds the fresh
+    /// `PlaybackView`/`StatusBarView` for `ds` and installs the new
+    /// `BoundDevice`. Caller has already released the old binding and
+    /// cleared `content_holder`.
+    fn finish_bind(&self, key: String, ds: DeviceState, label: String) {
         self.device_btn.set_label(&label);
 
-        let view = PlaybackView::new(&ds, &self.icons, Some(&self.art_bg));
+        // Known synchronously for every device switch (the window's
+        // already fullscreen and stable by then) — only the very first
+        // bind at startup might still see 0 here, if the window hasn't
+        // finished its initial fullscreen negotiation yet. See
+        // PlaybackView::new()'s own doc comment for what this avoids.
+        let (win_w, win_h) = (self.window.width(), self.window.height());
+        let size_hint = if win_w > 0 && win_h > 0 { Some((win_w, win_h)) } else { None };
+        let view = PlaybackView::new(&ds, &self.icons, Some(&self.art_bg), PlaybackLayout::WideRight, size_hint);
         // Fills content_holder (art_bg is the main overlay child driving
         // the window's own size, per new()'s comment) — still needs its
         // own explicit expansion to fill that stable holder.
@@ -263,11 +309,22 @@ impl KioskWindow {
         // what actually performs the initial render.
         view.set_active(true);
         self.content_holder.append(&view);
+
+        // Status bar (network/BLE-remote/device info), same as
+        // DeviceWindow's own — always shown for this first cut, no
+        // Settings toggle exists yet to make it optional. Deliberately no
+        // separator line above it here (unlike DeviceWindow's own bottom
+        // bar) — Kiosk mode's version looks better without one.
+        let status_bar = crate::ui::views::status_bar::StatusBarView::new(&ds, &self.icons, true);
+        status_bar.set_active(true);
+        self.content_holder.append(&status_bar);
+
         *self.bound.borrow_mut() = Some(BoundDevice {
             key,
             _full_mode: ds.acquire_full(),
             ds,
             view,
+            _status_bar: status_bar,
         });
     }
 

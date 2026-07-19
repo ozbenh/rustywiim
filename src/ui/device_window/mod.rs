@@ -16,7 +16,7 @@ use std::sync::atomic::Ordering;
 use adw::prelude::*;
 use glib::clone;
 use gtk::gio;
-use gtk::{Box as GtkBox, Label, Orientation};
+use gtk::{Box as GtkBox, Orientation};
 
 use crate::config;
 use crate::device::manager::DeviceManager;
@@ -48,11 +48,7 @@ struct DeviceWindowInner {
     io:             views::io::InputOutputView,
     playback:       views::playback_full::PlaybackView,
     presets:        views::presets::PresetsView,
-    dev_info_label: Label,
-    ip_label:       Label,
-    net_icon:       gtk::Image,
-    remote_icon:    gtk::Image,
-    remote_label:   Label,
+    status_bar:     views::status_bar::StatusBarView,
     /// Shown (spinning) only while `ConnectionState::Connecting` — see
     /// `reset_device_ui()`. Overlaid on the header bar, not packed into
     /// it — see `build_header()`'s doc comment for why.
@@ -365,7 +361,9 @@ impl DeviceWindow {
         let art_bg = art_background::ArtBackground::new();
         art_bg.set_hexpand(true);
         art_bg.set_vexpand(true);
-        let playback = views::playback_full::PlaybackView::new(&ds, &icons, Some(&art_bg));
+        let playback = views::playback_full::PlaybackView::new(
+            &ds, &icons, Some(&art_bg), views::playback_full::PlaybackLayout::Classic, None,
+        );
         let (mini, _mini_root) = build_mini_window(&ds, &icons);
 
         // ── Paned split + sidebar logic ───────────────────────────────────────────
@@ -388,13 +386,12 @@ impl DeviceWindow {
         let settle_timer:      Rc<RefCell<Option<glib::SourceId>>> = Rc::new(RefCell::new(None));
         let config_save_timer: Rc<RefCell<Option<glib::SourceId>>> = Rc::new(RefCell::new(None));
 
-        let (bottom_bar, dev_info_label, ip_label, net_icon, remote_icon, remote_label) =
-            build_bottom_bar(&icons);
+        let status_bar = views::status_bar::StatusBarView::new(&ds, &icons, false);
 
         let outer = GtkBox::new(Orientation::Vertical, 0);
         outer.append(&paned);
         outer.append(&gtk::Separator::new(Orientation::Horizontal));
-        outer.append(&bottom_bar);
+        outer.append(&status_bar);
 
         let full_toolbar = adw::ToolbarView::new();
         full_toolbar.add_top_bar(&header);
@@ -468,11 +465,7 @@ impl DeviceWindow {
             io,
             playback,
             presets,
-            dev_info_label,
-            ip_label,
-            net_icon,
-            remote_icon,
-            remote_label,
+            status_bar,
             connecting_spinner,
             spinner_shown_at: std::cell::Cell::new(None),
             spinner_hide_timer: RefCell::new(None),
@@ -544,6 +537,7 @@ impl DeviceWindow {
         // view's own full catch-up refresh).
         inner.presets.set_active(true);
         inner.io.set_active(true);
+        inner.status_bar.set_active(true);
         inner.playback.set_active(!*inner.mini_mode.borrow());
         inner.mini.view.set_active(*inner.mini_mode.borrow());
 
@@ -594,14 +588,13 @@ impl DeviceWindow {
 }
 
 /// Connect the `DeviceState` signals the *window itself* consumes —
-/// `device-changed` (title/bottom bar/window state via `populate_all()`),
-/// `network-changed`, `remote-changed`, and the window-side half of
-/// `input-changed`. The views connect their own.
+/// `device-changed` (title/window state via `populate_all()`). `network-
+/// changed`/`remote-changed` are `StatusBarView`'s own subscriptions now;
+/// the other views connect their own too.
 fn wire_device_signals(inner: &Rc<DeviceWindowInner>) {
     let ds = inner.ds.clone();
-    // ── DeviceState signal connections ────────────────────────────────────────
-    // Use Rc::downgrade so the closures don't keep DeviceWindowInner alive
-    // after the window is closed — broken upgrade() calls become no-ops.
+    // Use Rc::downgrade so the closure doesn't keep DeviceWindowInner alive
+    // after the window is closed — a broken upgrade() call becomes a no-op.
     ds.connect_device_changed({
         let i = Rc::downgrade(&inner);
         move |ds| {
@@ -612,16 +605,6 @@ fn wire_device_signals(inner: &Rc<DeviceWindowInner>) {
             ));
             i.populate_all();
         }
-    });
-
-    ds.connect_network_changed({
-        let i = Rc::downgrade(&inner);
-        move |_| { if let Some(i) = i.upgrade() { i.update_network_icon(); } }
-    });
-
-    ds.connect_remote_changed({
-        let i = Rc::downgrade(&inner);
-        move |_| { if let Some(i) = i.upgrade() { i.update_remote_display(); } }
     });
 }
 

@@ -1,9 +1,9 @@
 //! Window-level display updates for `DeviceWindowInner`: the
 //! connecting spinner, the offline/"Disconnected" chrome state, the
-//! device-changed populate path (title, bottom bar, per-device window
-//! state), network/BLE-remote indicators, keyboard transport shortcuts,
-//! and the sidebar slide animation. The playback/preset/input-output
-//! content itself is `ui/views/`' business, not this file's.
+//! device-changed populate path (title, per-device window state),
+//! keyboard transport shortcuts, and the sidebar slide animation. The
+//! playback/preset/input-output/status-bar content itself is `ui/views/`'
+//! business, not this file's.
 
 use std::rc::Rc;
 
@@ -71,12 +71,12 @@ impl DeviceWindowInner {
 
     // ── Reset ─────────────────────────────────────────────────────────────────
 
-    /// Shows the "no live `device_info`" state in the window chrome:
-    /// title (cached-name fallback), connecting spinner, and bottom-bar
-    /// labels. The playback panels render their own offline state
-    /// (`render_offline()` in each playback view, keyed off
-    /// `connection_state()` the same way) on their own `device-changed`
-    /// subscriptions or on activation, whichever comes first.
+    /// Shows the "no live `device_info`" state in the window chrome: title
+    /// (cached-name fallback) and connecting spinner. The playback panels
+    /// and `StatusBarView` render their own offline state (keyed off
+    /// `connection_state()`/`device_info()` the same way) on their own
+    /// `device-changed` subscriptions or on activation, whichever comes
+    /// first.
     ///
     /// `Connecting` shows the corner spinner rather than any text — it's
     /// normally brief (a few hundred ms on a real LAN), and text that
@@ -104,20 +104,16 @@ impl DeviceWindowInner {
         }
 
         crate::ui::dbg_ui(&format!("reset_device_ui: state={state:?}"));
-        self.dev_info_label.set_label("");
-        self.ip_label.set_visible(false);
     }
 
-    /// Populate the window-level UI (title, chrome, bottom bar) from
+    /// Populate the window-level UI (title, per-device window state) from
     /// whatever the DeviceState currently has cached. Called on initial
     /// window creation and on every `device-changed` signal. Safe to call
     /// redundantly — all underlying setters are idempotent. The playback
-    /// displays, input/output dropdowns, presets, and volume clusters
-    /// need nothing here — each view subscribes to `device-changed`
-    /// itself.
+    /// displays, input/output dropdowns, presets, volume clusters, and
+    /// status bar need nothing here — each view subscribes to
+    /// `device-changed` itself.
     pub(super) fn populate_all(self: &Rc<Self>) {
-        self.update_network_icon();
-        self.update_remote_display();
         if self.ds.device_info().is_some() {
             self.apply_device_info();
         } else {
@@ -130,74 +126,8 @@ impl DeviceWindowInner {
         }
     }
 
-    // ── Network ───────────────────────────────────────────────────────────────
-
-    pub(super) fn update_network_icon(&self) {
-        match self.ds.netstat() {
-            Some(0) => {
-                self.net_icon.set_icon_name(Some("network-wired-symbolic"));
-                self.net_icon.set_tooltip_text(None);
-                self.net_icon.set_visible(true);
-            }
-            Some(2) => {
-                let rssi = self.ds.rssi().unwrap_or(0);
-                self.net_icon.set_icon_name(Some(wifi_icon_for_rssi(rssi)));
-                let ssid = self.ds.device_info().map(|i| i.ssid_decoded()).unwrap_or_default();
-                let tooltip = if ssid.is_empty() {
-                    format!("Signal: {rssi} dBm")
-                } else {
-                    format!("Network: {ssid}\nSignal: {rssi} dBm")
-                };
-                self.net_icon.set_tooltip_text(Some(&tooltip));
-                self.net_icon.set_visible(true);
-            }
-            _ => { self.net_icon.set_visible(false); }
-        }
-    }
-
-    /// BLE remote presence/battery, bottom-left of the main window. Visible
-    /// whenever `getStatusEx` has ever answered the question at all
-    /// (`remote_info().connected.is_some()`) — including "known but
-    /// currently disconnected" — and hidden only when we truly don't know
-    /// (field absent from every response so far, e.g. no BLE remote
-    /// hardware exists on this model). Hovering shows battery/signal detail,
-    /// or "disconnected" when not currently connected.
-    pub(super) fn update_remote_display(&self) {
-        let info = self.ds.remote_info();
-        let Some(connected) = info.connected else {
-            self.remote_icon.set_visible(false);
-            self.remote_label.set_visible(false);
-            return;
-        };
-
-        let battery_text = if connected {
-            info.battery.map(|pct| format!("{pct}%")).unwrap_or_default()
-        } else {
-            String::new()
-        };
-        let tooltip = if connected {
-            format!(
-                "Battery: {}\nSignal: {}",
-                info.battery.map(|pct| format!("{pct}%")).unwrap_or_else(|| "unknown".to_string()),
-                info.rssi.map(|r| format!("{r} dBm")).unwrap_or_else(|| "unknown".to_string()),
-            )
-        } else {
-            "disconnected".to_string()
-        };
-
-        self.remote_label.set_label(&battery_text);
-        self.remote_icon.set_tooltip_text(Some(&tooltip));
-        self.remote_label.set_tooltip_text(Some(&tooltip));
-
-        self.remote_icon.set_visible(true);
-        self.remote_icon.queue_resize();
-        self.remote_label.set_visible(!battery_text.is_empty());
-        self.remote_label.queue_resize();
-    }
-
     pub(super) fn apply_device_info(self: &Rc<Self>) {
         let info = match self.ds.device_info() { Some(i) => i, None => return };
-        let caps = match self.ds.capabilities() { Some(c) => c, None => return };
 
         crate::ui::dbg_ui(&format!(
             "apply_device_info: showing real state for {:?}", info.device_name,
@@ -218,26 +148,6 @@ impl DeviceWindowInner {
         // later disconnect should fall back to this, not that stale value
         // (e.g. the device having since been renamed in the WiiM app).
         *self.cached_name.borrow_mut() = info.device_name.clone();
-
-        self.dev_info_label.set_label(&format!(
-            "{} · {} · FW {}",
-            caps.vendor.display_name(), caps.model, info.firmware,
-        ));
-
-        // Unlike dev_info_label (always visible, only its text ever
-        // changes), ip_label starts invisible and is shown/hidden here on
-        // every device-changed. queue_resize() forces a full fresh layout
-        // pass on the reveal rather than risking a stale allocation/clip
-        // from before the label was visible — belt-and-suspenders against
-        // the top-row clipping seen on this label but not on dev_info_label.
-        let ip = info.ip_addr();
-        if !ip.is_empty() {
-            self.ip_label.set_label(ip);
-            self.ip_label.set_visible(true);
-            self.ip_label.queue_resize();
-        } else {
-            self.ip_label.set_visible(false);
-        }
 
         self.apply_device_window_state(&info.uuid);
     }
@@ -348,16 +258,6 @@ pub(super) fn animate_panel_to(i: &Rc<DeviceWindowInner>, target_pos: i32) {
     });
     anim.play();
     *i.panel_anim.borrow_mut() = Some(anim);
-}
-
-pub(super) fn wifi_icon_for_rssi(rssi: i32) -> &'static str {
-    match rssi {
-        i32::MIN..=-85 | 0 => "network-wireless-offline-symbolic",
-        -84..=-75           => "network-wireless-signal-weak-symbolic",
-        -74..=-65           => "network-wireless-signal-ok-symbolic",
-        -64..=-55           => "network-wireless-signal-good-symbolic",
-        _                   => "network-wireless-signal-excellent-symbolic",
-    }
 }
 
 /// The sidebar paned's collapse/snap/settle logic and its header toggle

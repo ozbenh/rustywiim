@@ -118,18 +118,141 @@ glib::wrapper! {
         @extends adw::Bin, gtk::Widget;
 }
 
+/// Which container arrangement `PlaybackView` assembles its (otherwise
+/// identical, already-built) widgets into — chosen once at construction,
+/// not switchable at runtime yet.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PlaybackLayout {
+    /// Today's existing arrangement: artwork full-width above title/
+    /// artist/album/status/quality, then a seek row (with volume at its
+    /// right end) and the transport row underneath.
+    Classic,
+    /// Artwork on the left (bigger), title/artist/album/status/quality on
+    /// the right with the transport + volume row underneath them (no seek
+    /// bar in that row) — the seek bar instead spans the full width below
+    /// both. Used by Kiosk mode's fullscreen display, where the classic
+    /// vertical arrangement wastes horizontal space.
+    WideRight,
+}
+
+/// `WideRight`'s artwork is a square capped by two independent limits, so
+/// it never grows so tall it eats the whole screen on a narrow-but-tall
+/// layout, nor so wide it crowds out the text column on a wide-but-short
+/// one. Plain percentages, not pre-divided fractions, so they're easy to
+/// tune directly.
+const WIDE_RIGHT_ART_MAX_HEIGHT_PCT: f64 = 60.0;
+const WIDE_RIGHT_ART_MAX_WIDTH_PCT: f64 = 33.0;
+
+/// The artwork's side length (it's always square) for a screen of
+/// `screen_w` × `screen_h` pixels: the smaller of `WIDE_RIGHT_ART_MAX_HEIGHT_PCT`%
+/// of the screen's height and `WIDE_RIGHT_ART_MAX_WIDTH_PCT`% of its width —
+/// whichever axis is more constraining wins, so the artwork always fits
+/// within *both* bounds at once. Computed from the real screen/window size
+/// rather than negotiated from surrounding widgets (see this function's
+/// call site for why: FlipCover has no intrinsic size, so nothing else in
+/// this layout previously accounted for the artwork's *vertical* budget at
+/// all, which on some screens left it — and the whole title/controls block
+/// sharing its height — noticeably undersized).
+fn compute_wide_right_art_side(screen_w: i32, screen_h: i32) -> i32 {
+    let from_height = screen_h as f64 * WIDE_RIGHT_ART_MAX_HEIGHT_PCT / 100.0;
+    let from_width  = screen_w as f64 * WIDE_RIGHT_ART_MAX_WIDTH_PCT / 100.0;
+    let side = from_height.min(from_width).round() as i32;
+    if crate::ui::DEBUG_UI.load(std::sync::atomic::Ordering::Relaxed) {
+        let limiting = if from_height <= from_width { "height" } else { "width" };
+        println!(
+            "{} [ui] wide-right art size: screen={screen_w}x{screen_h} \
+             from_height={from_height:.1} ({WIDE_RIGHT_ART_MAX_HEIGHT_PCT}% of height) \
+             from_width={from_width:.1} ({WIDE_RIGHT_ART_MAX_WIDTH_PCT}% of width) \
+             limiting={limiting} side={side}",
+            crate::timestamp(),
+        );
+    }
+    side
+}
+
+/// Recompute and apply the `WideRight` layout's typography/control sizing
+/// from `h` — the artwork's real pixel size (square, so its measured width
+/// and height are equal; the caller passes width specifically, see the
+/// call site's own comment for why) — writing scoped CSS (`class`, unique
+/// per `PlaybackView` instance so different windows never clobber each
+/// other's provider rules) into `provider` and setting the two group
+/// spacings directly (plain widget properties, not something CSS
+/// controls). All ratios below are fractions of `h`, chosen so
+/// title+artist+album (with their gaps) come to roughly 2/3 of it —
+/// matching text_col_grid's own 2:1 row split — and the controls band
+/// (the other 1/3) gets a button size that scales the same way, rather
+/// than the fixed pixel sizes `.transport-btn`/`.play-btn`/`.loop-btn`
+/// normally use, which only look right on one specific screen size.
+fn apply_wide_right_scale(
+    class: &str, provider: &gtk::CssProvider,
+    title_group: &GtkBox, status_group: &GtkBox,
+    h: i32,
+) {
+    let h = h as f64;
+    // Two rounds of "20% smaller" on top of the original pass
+    // (0.22/0.12/0.10/0.09/0.055/0.03), tuned against live testing on
+    // both a 4K desktop and a Raspberry Pi touchscreen.
+    let title_px  = (h * 0.1408).round() as i32;
+    let artist_px = (h * 0.0768).round() as i32;
+    let album_px  = (h * 0.064).round() as i32;
+    let text_gap  = (h * 0.0576).round() as i32;
+    title_group.set_spacing(text_gap);
+
+    let status_px = (h * 0.0352).round() as i32;
+    let status_gap = (h * 0.0192).round() as i32;
+    status_group.set_spacing(status_gap.max(2));
+
+    // The controls band is the bottom 1/3 of the column; the visible card
+    // itself only takes 2/3 of that (bottom-justified — see band_row's own
+    // comment), minus ".controls-card"'s own ~12px padding on each side.
+    let card_h = ((h / 3.0) * (2.0 / 3.0) - 24.0).max(24.0);
+    let transport_btn = (card_h * 0.55).round() as i32;
+    let play_btn      = (card_h * 0.68).round() as i32;
+    let loop_btn       = transport_btn;
+    let transport_icon = (transport_btn as f64 * 0.45).round() as i32;
+    let play_icon      = (play_btn as f64 * 0.45).round() as i32;
+
+    provider.load_from_string(&format!(
+        ".{class} .track-title {{ font-size: {title_px}px; }}\n\
+         .{class} .track-artist {{ font-size: {artist_px}px; }}\n\
+         .{class} .track-album {{ font-size: {album_px}px; }}\n\
+         .{class} .status-badge {{ font-size: {status_px}px; }}\n\
+         .{class} .quality-label {{ font-size: {status_px}px; }}\n\
+         .{class} .dim-label {{ font-size: {status_px}px; }}\n\
+         .{class} .vol-level {{ font-size: {status_px}px; }}\n\
+         .{class} .transport-btn {{ min-width: {transport_btn}px; min-height: {transport_btn}px; -gtk-icon-size: {transport_icon}px; }}\n\
+         .{class} .loop-btn {{ min-width: {loop_btn}px; min-height: {loop_btn}px; -gtk-icon-size: {transport_icon}px; }}\n\
+         .{class} .play-btn {{ min-width: {play_btn}px; min-height: {play_btn}px; -gtk-icon-size: {play_icon}px; }}\n\
+         .{class} .vol-btn {{ min-height: {transport_btn}px; }}\n"
+    ));
+}
+
 impl PlaybackView {
     /// Build the full playback display bound to `ds`. `art_bg` is the
     /// host's blurred background to feed artwork to (`None` for a host
-    /// without one). Starts **inactive** — the owner's first
+    /// without one). `host_size_hint` (`WideRight` only, ignored
+    /// otherwise) is the hosting window's own *current* (width, height),
+    /// if already known — letting `WideRight`'s proportional sizing apply
+    /// correct values synchronously, before this view is ever painted,
+    /// instead of waiting a frame for the tick-callback fallback (see that
+    /// code's own comment): the flash that fallback alone produces is
+    /// barely noticeable once at startup, but happens on *every* Kiosk
+    /// device switch without this, since the window's real size is
+    /// already known by then. Starts **inactive** — the owner's first
     /// `set_active(true)` performs the initial render.
-    pub(crate) fn new(ds: &DeviceState, icons: &Rc<IconSet>, art_bg: Option<&ArtBackground>) -> Self {
+    pub(crate) fn new(
+        ds: &DeviceState, icons: &Rc<IconSet>, art_bg: Option<&ArtBackground>, layout: PlaybackLayout,
+        host_size_hint: Option<(i32, i32)>,
+    ) -> Self {
         let obj: Self = glib::Object::new();
-        obj.build(ds, icons, art_bg);
+        obj.build(ds, icons, art_bg, layout, host_size_hint);
         obj
     }
 
-    fn build(&self, ds: &DeviceState, icons: &Rc<IconSet>, art_bg: Option<&ArtBackground>) {
+    fn build(
+        &self, ds: &DeviceState, icons: &Rc<IconSet>, art_bg: Option<&ArtBackground>, layout: PlaybackLayout,
+        host_size_hint: Option<(i32, i32)>,
+    ) {
         let imp = self.imp();
         imp.ds.set(ds.clone()).unwrap();
         let _ = imp.icons.set(Rc::clone(icons));
@@ -204,14 +327,6 @@ impl PlaybackView {
         transport.append(&btn_next);
         transport.append(&repeat);
 
-        // Vol button sits at the right edge of the seek row, aligned with the bar's right end.
-        let seek_row = GtkBox::builder().orientation(Orientation::Horizontal).spacing(8).build();
-        seek_row.append(&pos);
-        seek_row.append(&seek);
-        seek_row.append(&dur);
-        volume.set_margin_start(4);
-        seek_row.append(&volume);
-
         // Overlay adds a radial vignette frame over the artwork that fades into the panel background.
         let art_overlay = gtk::Overlay::new();
         art_overlay.set_vexpand(true);
@@ -223,34 +338,287 @@ impl PlaybackView {
             .build();
         art_overlay.add_overlay(&art_frame);
 
-        // Seek row + transport grouped into one card under RustyWiiM Modern
-        // (see modern.css); inert everywhere else, same as "panel-card".
-        // Artwork/title/artist/album/status/quality stay uncarded, floating
-        // directly on the blurred background when that theme is active.
-        let controls_card = GtkBox::builder()
-            .orientation(Orientation::Vertical).spacing(8)
-            .css_classes(["controls-card"])
-            .build();
-        controls_card.append(&seek_row);
-        controls_card.append(&transport);
+        match layout {
+            PlaybackLayout::Classic => {
+                // Vol button sits at the right edge of the seek row, aligned with the bar's right end.
+                let seek_row = GtkBox::builder().orientation(Orientation::Horizontal).spacing(8).build();
+                seek_row.append(&pos);
+                seek_row.append(&seek);
+                seek_row.append(&dur);
+                volume.set_margin_start(4);
+                seek_row.append(&volume);
 
-        let right_pane = GtkBox::builder()
-            .orientation(Orientation::Vertical).spacing(8).hexpand(true)
-            .margin_top(8).margin_bottom(8).margin_start(12).margin_end(16)
-            .build();
-        right_pane.append(&art_overlay);
-        right_pane.append(&title.stack);
-        right_pane.append(&artist.stack);
-        right_pane.append(&album.stack);
-        right_pane.append(&status);
-        // Sits below the status label rather than in the transport row (see
-        // `bt_pair`'s own comment) — invisible by default, `GtkBox` doesn't
-        // reserve space for a hidden child either way.
-        right_pane.append(&bt_pair);
-        right_pane.append(&quality);
-        right_pane.append(&controls_card);
+                // Seek row + transport grouped into one card under RustyWiiM
+                // Modern (see modern.css); inert everywhere else, same as
+                // "panel-card". Artwork/title/artist/album/status/quality
+                // stay uncarded, floating directly on the blurred
+                // background when that theme is active.
+                let controls_card = GtkBox::builder()
+                    .orientation(Orientation::Vertical).spacing(8)
+                    .css_classes(["controls-card"])
+                    .build();
+                controls_card.append(&seek_row);
+                controls_card.append(&transport);
 
-        self.set_child(Some(&right_pane));
+                let right_pane = GtkBox::builder()
+                    .orientation(Orientation::Vertical).spacing(8).hexpand(true)
+                    .margin_top(8).margin_bottom(8).margin_start(12).margin_end(16)
+                    .build();
+                right_pane.append(&art_overlay);
+                right_pane.append(&title.stack);
+                right_pane.append(&artist.stack);
+                right_pane.append(&album.stack);
+                right_pane.append(&status);
+                // Sits below the status label rather than in the transport
+                // row (see `bt_pair`'s own comment) — invisible by default,
+                // `GtkBox` doesn't reserve space for a hidden child either way.
+                right_pane.append(&bt_pair);
+                right_pane.append(&quality);
+                right_pane.append(&controls_card);
+
+                self.set_child(Some(&right_pane));
+            }
+            PlaybackLayout::WideRight => {
+                // Volume sits next to the transport row instead of the seek
+                // row here — the seek row (below, full width) has no volume
+                // in this layout.
+                volume.set_margin_start(12);
+                transport.append(&volume);
+                // Same semi-transparent card styling the classic layout's
+                // seek+transport group gets under RustyWiiM Modern (see
+                // modern.css's ".controls-card" — inert under System/Dark);
+                // here it wraps just the transport+volume row, since the
+                // seek bar lives in its own full-width row below instead.
+                transport.add_css_class("controls-card");
+                // Left-aligned like the rest of this column, not centered
+                // (the shared construction above centers it for the
+                // classic layout, where it sits under a centered artwork).
+                transport.set_halign(Align::Start);
+
+                // Left-aligned, not centered under the artwork — the
+                // "wide-right-text" class (see dark.css/system.css) scales
+                // up title/artist/album to read at a distance.
+                title.set_center_when_fits(false);
+                artist.set_center_when_fits(false);
+                album.set_center_when_fits(false);
+                status.set_halign(Align::Start);
+                bt_pair.set_halign(Align::Start);
+                quality.set_halign(Align::Start);
+
+                // Title/artist/album — pinned to the top of the column,
+                // which (art_overlay and text_col are both explicitly
+                // sized to the same height below) is also the artwork's
+                // own top edge. Spacing is set dynamically below, once
+                // the real screen size is known.
+                let title_group = GtkBox::builder()
+                    .orientation(Orientation::Vertical)
+                    .valign(Align::Start)
+                    .build();
+                title_group.append(&title.stack);
+                title_group.append(&artist.stack);
+                title_group.append(&album.stack);
+
+                // Status + bitrate, beside the controls box rather than
+                // above it — frees up the column for a bigger title block.
+                let status_group = GtkBox::builder()
+                    .orientation(Orientation::Vertical)
+                    .valign(Align::Center)
+                    .build();
+                status_group.append(&status);
+                status_group.append(&bt_pair);
+                status_group.append(&quality);
+
+                // Controls card first (left), status/quality after it —
+                // both pinned to the bottom of their band via the grid
+                // below (valign(End) here just keeps them together as a
+                // unit; the actual "sits at the very bottom" comes from
+                // the band's own cell in text_col_grid).
+                let band_row = GtkBox::builder()
+                    .orientation(Orientation::Horizontal)
+                    .valign(Align::End)
+                    .build();
+                band_row.append(&transport);
+                band_row.append(&status_group);
+
+                // Splits the column into an exact 2:1 ratio — title block
+                // vs. the controls band — regardless of how tall the text
+                // actually renders, via a homogeneous 3-row grid (title
+                // spans 2 rows, the band spans 1).
+                let text_col_grid = gtk::Grid::builder()
+                    .row_homogeneous(true).hexpand(true).vexpand(true)
+                    .build();
+                text_col_grid.attach(&title_group, 0, 0, 1, 2);
+                text_col_grid.attach(&band_row, 0, 2, 1, 1);
+
+                let text_col = GtkBox::builder()
+                    .orientation(Orientation::Vertical)
+                    .hexpand(true).valign(Align::Start)
+                    .css_classes(["wide-right-text"])
+                    .build();
+                text_col.append(&text_col_grid);
+
+                // The artwork is a fixed square, sized directly from the
+                // real screen dimensions (see compute_wide_right_art_side()
+                // for the algorithm) rather than negotiated from
+                // surrounding widgets. FlipCover has no intrinsic size of
+                // its own (its measure() always returns "no preference"),
+                // so without an explicit size it just stretches to fill
+                // whatever a container gives it — and nothing in an
+                // earlier version of this layout accounted for the
+                // *vertical* budget at all (only the row's width), which
+                // on a Raspberry Pi 5's screen produced a noticeably
+                // undersized artwork with roughly half the screen left
+                // empty below the seek bar. `set_valign(Start)` on both
+                // (not the default Fill) so neither stretches past its own
+                // size_request even if this row ends up taller than
+                // expected for some other reason.
+                art_overlay.set_hexpand(false);
+                art_overlay.set_vexpand(false);
+                art_overlay.set_valign(Align::Start);
+                // Gap to text_col set below as a fraction of the artwork's
+                // side, once known — a fixed px gap looked fine on one
+                // screen and wrong on another (confirmed live: noticeably
+                // too wide on a Raspberry Pi 5 next to a small screen's
+                // smaller artwork), same lesson as the font/button sizing.
+                let top_row = GtkBox::builder()
+                    .orientation(Orientation::Horizontal)
+                    .build();
+                top_row.append(&art_overlay);
+                top_row.append(&text_col);
+
+                // Seek scale full width; position/duration sit on their own
+                // row underneath it (flush left/right — a plain Box, not a
+                // CenterBox: CenterBox reserves *equal* space on both sides
+                // for a (here nonexistent) truly-centered middle widget,
+                // sized off the larger of the two, which both misaligned
+                // the shorter label and could inflate this row's own
+                // natural width past the actual screen edge — a plain Box
+                // with pos taking the hexpand and dur simply left at its
+                // own natural width has no such reservation).
+                seek.set_hexpand(true);
+                let time_row = GtkBox::builder().orientation(Orientation::Horizontal).build();
+                pos.set_hexpand(true);
+                pos.set_halign(Align::Start);
+                dur.set_halign(Align::End);
+                time_row.append(&pos);
+                time_row.append(&dur);
+                let seek_row = GtkBox::builder().orientation(Orientation::Vertical).spacing(2).build();
+                seek_row.append(&seek);
+                seek_row.append(&time_row);
+
+                let content_block = GtkBox::builder()
+                    .orientation(Orientation::Vertical).hexpand(true)
+                    .valign(Align::Start)
+                    .build();
+                content_block.append(&top_row);
+                content_block.append(&seek_row);
+
+                // Pushes content_block down by 1/10 of the available
+                // height, proportionally rather than by a fixed pixel
+                // guess: a 10-row homogeneous grid forces every row to the
+                // same height (including the empty row 0, once given more
+                // height than its own natural content needs — see
+                // vexpand/hexpand below), so row 0 alone is always exactly
+                // 1/10 of whatever height this view ends up with. A plain
+                // margin_top couldn't do that without knowing the window's
+                // actual size, which isn't available in static CSS either.
+                let top_spacer = GtkBox::new(Orientation::Vertical, 0);
+                let vgrid = gtk::Grid::builder()
+                    .row_homogeneous(true).hexpand(true).vexpand(true)
+                    .build();
+                vgrid.attach(&top_spacer, 0, 0, 1, 1);
+                vgrid.attach(&content_block, 0, 1, 1, 9);
+
+                // Margins set below as fractions of the artwork's side too.
+                let outer = GtkBox::builder()
+                    .orientation(Orientation::Vertical).hexpand(true).vexpand(true)
+                    .build();
+                outer.append(&vgrid);
+
+                self.set_child(Some(&outer));
+
+                // ── Proportional typography/control sizing ─────────────
+                // Scoped to `outer` (not just `text_col`) so the same
+                // rules also reach `pos`/`dur` (`.dim-label`), which live
+                // in `seek_row` — a sibling of `top_row`/`text_col`, not a
+                // descendant of it.
+                let class = format!("wr-scale-{:x}", outer.as_ptr() as usize);
+                outer.add_css_class(&class);
+                let provider = gtk::CssProvider::new();
+                if let Some(display) = gtk::gdk::Display::default() {
+                    gtk::style_context_add_provider_for_display(
+                        &display, &provider, gtk::STYLE_PROVIDER_PRIORITY_USER,
+                    );
+                }
+
+                // Applies compute_wide_right_art_side()'s result for a
+                // given screen size: sizes the artwork/text column and
+                // re-derives font/button sizing off that same side length.
+                // A plain closure (not a one-shot function) since it's
+                // called either synchronously below (host_size_hint
+                // already known — true for every Kiosk device switch) or
+                // from the tick-callback fallback further down (only the
+                // very first bind at startup, before the window's real
+                // size is known yet).
+                let apply_for_screen = glib::clone!(
+                    #[strong] art_overlay, #[strong] text_col,
+                    #[strong] title_group, #[strong] status_group,
+                    #[strong] band_row, #[strong] top_row, #[strong] content_block, #[strong] outer,
+                    #[strong] class, #[strong] provider,
+                    move |screen_w: i32, screen_h: i32| {
+                        let side = compute_wide_right_art_side(screen_w, screen_h);
+                        art_overlay.set_size_request(side, side);
+                        text_col.set_size_request(-1, side);
+                        apply_wide_right_scale(&class, &provider, &title_group, &status_group, side);
+
+                        // All structural gaps/margins below are fractions
+                        // of `side` too, for the same reason the font/
+                        // button sizing is: a fixed px gap that looks right
+                        // on one screen (this was tuned against a 4K
+                        // desktop) is visibly too wide on a much smaller
+                        // one — confirmed live on a Raspberry Pi 5, whose
+                        // much-smaller artwork left a fixed 40px gap to
+                        // text_col looking disproportionately large.
+                        let s = side as f64;
+                        band_row.set_spacing((s * 0.09).round() as i32);
+                        top_row.set_spacing((s * 0.10).round() as i32);
+                        content_block.set_spacing((s * 0.18).round() as i32);
+                        let margin_h = (s * 0.12).round() as i32;
+                        let margin_v = (s * 0.06).round() as i32;
+                        outer.set_margin_start(margin_h);
+                        outer.set_margin_end(margin_h);
+                        outer.set_margin_top(margin_v);
+                        outer.set_margin_bottom(margin_v);
+                    }
+                );
+                match host_size_hint {
+                    Some((w, h)) if w > 0 && h > 0 => apply_for_screen(w, h),
+                    _ => {
+                        // Cold-start fallback: the window hasn't finished
+                        // its initial fullscreen negotiation yet, so its
+                        // real size isn't known synchronously. Polls the
+                        // eventual root *window's* size each frame — not
+                        // anything this view itself renders, unlike an
+                        // earlier version that measured the artwork's own
+                        // allocated size and fed that back into this same
+                        // computation, which could and did compound into
+                        // runaway growth — so there's no feedback path
+                        // back into this code, and one correct reading is
+                        // enough: applies once, then stops.
+                        self.add_tick_callback(glib::clone!(
+                            #[strong] apply_for_screen,
+                            move |widget, _clock| {
+                                let Some(root) = widget.root() else { return glib::ControlFlow::Continue };
+                                let (w, h) = (root.width(), root.height());
+                                if w <= 0 || h <= 0 { return glib::ControlFlow::Continue; }
+                                apply_for_screen(w, h);
+                                glib::ControlFlow::Break
+                            }
+                        ));
+                    }
+                }
+            }
+        }
 
         // ── Actions (device-directed, wired internally) ───────────────────
         btn_play.connect_clicked({

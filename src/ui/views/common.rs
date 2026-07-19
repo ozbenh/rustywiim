@@ -60,6 +60,14 @@ impl SwipeText {
         };
         self.stack.set_visible_child_full(name, transition);
     }
+
+    /// Override both faces' center-when-fits behavior after construction —
+    /// for layouts that need left-aligned text regardless of the default
+    /// passed to `new()`.
+    pub(crate) fn set_center_when_fits(&self, center: bool) {
+        self.a.set_center_when_fits(center);
+        self.b.set_center_when_fits(center);
+    }
 }
 
 // ── String helpers ────────────────────────────────────────────────────────────

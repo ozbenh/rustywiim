@@ -115,6 +115,7 @@ impl VolumeControl {
             .label("—")
             .width_chars(3)
             .xalign(1.0)
+            .css_classes(["vol-level"])
             .build();
         if mini { level.add_css_class("mini-vol-label"); }
         let btn_box = GtkBox::builder()
@@ -171,9 +172,34 @@ impl VolumeControl {
 
         vol_btn.connect_clicked({
             let popover = popover.clone();
-            move |_| {
-                if popover.is_visible() { popover.popdown(); }
-                else { popover.popup(); }
+            let scale = scale.clone();
+            move |btn| {
+                if popover.is_visible() { popover.popdown(); return; }
+                // Sized from the actual space available above the button
+                // rather than a fixed guess — a fixed min-height (Kiosk
+                // mode's own touch-friendly sizing used to be exactly
+                // that, in CSS) can exceed what's really available on a
+                // given screen, and a Wayland kiosk compositor may not
+                // reposition/shrink an oversized popup to fit the way a
+                // full desktop compositor would — confirmed live, that
+                // made the popover fail to appear at all rather than
+                // merely render smaller than intended.
+                if let Some(root) = btn.root() {
+                    let origin = gtk::graphene::Point::new(0.0, 0.0);
+                    if let Some(p) = btn.compute_point(&root, &origin) {
+                        let y = p.y() as f64;
+                        // gtk::Popover's default position is above the
+                        // parent, so the button's own y-offset from the
+                        // window's top is exactly the vertical budget —
+                        // minus room for the mute button/margins/popover
+                        // chrome that also sit below the scale itself.
+                        let is_kiosk = root.has_css_class("kiosk-window");
+                        let desired: f64 = if is_kiosk { 420.0 } else if mini { 140.0 } else { 170.0 };
+                        let available = (y - 90.0).max(60.0);
+                        scale.set_height_request(desired.min(available).round() as i32);
+                    }
+                }
+                popover.popup();
             }
         });
 
