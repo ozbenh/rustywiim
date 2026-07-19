@@ -2,11 +2,38 @@
 
 [![GitHub release](https://img.shields.io/github/v/release/ozbenh/rustywiim)](https://github.com/ozbenh/rustywiim/releases)
 
-A Linux GTK4 front-end for WiiM media players written in Rust. It should also work with other LinkPlay based players, tested with iEAST AudioCast and an AudioPro C5 for now, see below how to send me data to help support other devices if you own them.
+A Linux GTK4 front-end for WiiM media players written in Rust. It should also work with other LinkPlay based players
 
 Copyright (c) 2026 Benjamin Herrenschmidt
 
 Licensed under the [MIT License](LICENSE).
+
+So far tested with:
+
+ * WiiM Ultra
+ * WiiM Mini
+ * WiiM Amp
+ * WiiM Amp Ultra
+ * iEAST AudioCast
+ * AudioPro C5
+ 
+On the following distributions:
+
+ * Fedora 44 (x86_64)
+ * Ubuntu 24.04 (x86_64)
+ * Raspberry PiOS (trixie) (Pi5)
+ 
+See below how to send me data to help support other devices if you own them.
+
+It supports a standard window view and a mini-window view
+
+Additionally (not in a relase yet), there is a work-in-progress "kiosk" mode for fullscreen use, I use it on a Raspberry Pi with a little touch screen).
+
+The app has fairly basic functionality for now: Display song info, artwork (with some animations), basic navigation buttons, volume/mute control, presets and input/outputs selection. I have done plenty of API reverse engineering and am hoping to enrich the amount of control options over time, but for now it's focused on making what is there robust and useful.
+
+
+It supports the system theme (including forcing light or dark) and two custom themes: Dark and Modern. Dark is a fairly classic dark backgroud with white controls and Modern uses "blurred artwork" as background and control into semi transparent boxes.
+
 
 This started as an exercise in using AI to program in Rust which I am not familiar with, so trying to both build experience with driving AI and learn a bit of Rust...
 
@@ -17,6 +44,19 @@ Now, though, as the project slowly evolves (matures ?), I'm getting more involve
 ## Pre-built packages ##
 
 See [Releases page](https://github.com/ozbenh/rustywiim/releases)
+
+## Key shortcuts ##
+
+| Key   | Action                                      |
+|:------|:--------------------------------------------|
+|M      | Switch mini mode on/off |
+|K      | Switch kiosk mode on/off |
+|L      | Switch beteen layouts (normal and kiosk) |
+|<-     | Previous song |
+|->     | Next song |
+|Space  | Play/Pause |
+|Ctrl-W | Close window |
+|Ctrl-Q | Quit application |
 
 ## Build instructions ##
 
@@ -55,6 +95,7 @@ For now just this one:
 | `--connect=<url>`     | Connect directly to `scheme://ip[:port]` (e.g. `http://127.0.0.1:8080` for `wiim-simulator`), opening a device window for it immediately instead of discovery |
 | `--no-config`         | Don't load or save the config file — every run behaves like a fresh install |
 | `--config-file=<path>`| Use an alternate config file path instead of the default (for testing) |
+| `--kiosk[:layout=x]`  | Start in Kiosk mode (optionally specify layout 1 or 2 |
 
 ## Helping with your device ##
 
