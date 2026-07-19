@@ -229,7 +229,7 @@ fn apply_wide_right_scale(
          .{class} .quality-label {{ font-size: {status_px}px; }}\n\
          .{class} .dim-label {{ font-size: {status_px}px; }}\n\
          .{class} .vol-level {{ font-size: {status_px}px; }}\n\
-         .{class} .transport-btn {{ min-width: {transport_btn}px; min-height: {transport_btn}px; -gtk-icon-size: {transport_icon}px; }}\n\
+         .{class} .transport-btn:not(.vol-mute-btn) {{ min-width: {transport_btn}px; min-height: {transport_btn}px; -gtk-icon-size: {transport_icon}px; }}\n\
          .{class} .loop-btn {{ min-width: {loop_btn}px; min-height: {loop_btn}px; -gtk-icon-size: {transport_icon}px; }}\n\
          .{class} .play-btn {{ min-width: {play_btn}px; min-height: {play_btn}px; -gtk-icon-size: {play_icon}px; }}\n\
          .{class} .vol-btn {{ min-height: {transport_btn}px; }}\n"

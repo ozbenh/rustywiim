@@ -124,20 +124,31 @@ pub fn set_direct_connect(ip: String, tls_mode: TlsMode) {
 }
 
 /// `--kiosk`: when set, `AppState::activate()` starts directly in Kiosk
-/// mode (unbound — no `--connect`-style pre-selected device yet), skipping
-/// the normal device-list-first-or-restore-per-device-windows startup
-/// sequence entirely. Set (via `set_start_in_kiosk`) before `activate()`
-/// runs, same as `DIRECT_CONNECT` — in practice, during `main.rs`'s
-/// `connect_handle_local_options`. `--connect` currently takes priority if
-/// both are given (its own check in `activate()` returns before this one
-/// is ever reached) — combining them to start Kiosk mode pre-bound to the
-/// `--connect` target isn't supported yet, since that mode bypasses
-/// `DiscoveryManager` tracking entirely and `KioskWindow::bind_device()`
-/// resolves devices through it.
+/// mode, skipping the normal device-list-first-or-restore-per-device-
+/// windows startup sequence entirely. Set (via `set_start_in_kiosk`)
+/// before `activate()` runs, same as `DIRECT_CONNECT` — in practice,
+/// during `main.rs`'s `connect_handle_local_options`. Combined with
+/// `--connect`, Kiosk mode starts pre-bound to that device instead of
+/// unbound (`activate()`'s own `DIRECT_CONNECT` branch handles this).
 static START_IN_KIOSK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 pub fn set_start_in_kiosk(v: bool) {
     START_IN_KIOSK.store(v, Ordering::Relaxed);
+}
+
+/// `--kiosk:layout=1|2`: which playback layout Kiosk mode starts in
+/// (still changeable at runtime with "L"). A lightweight mirror of
+/// `views::playback_full::PlaybackLayout` rather than that type itself —
+/// `views` is private to `ui`, so `main.rs` (a sibling of `ui`, not a
+/// descendant) can't name it directly; `enter_kiosk_window()` converts
+/// this into the real type right before constructing `KioskWindow`.
+#[derive(Clone, Copy)]
+pub enum KioskLayoutOverride { Classic, WideRight }
+
+static KIOSK_LAYOUT_OVERRIDE: std::sync::OnceLock<KioskLayoutOverride> = std::sync::OnceLock::new();
+
+pub fn set_kiosk_layout_override(v: KioskLayoutOverride) {
+    let _ = KIOSK_LAYOUT_OVERRIDE.set(v);
 }
 
 // ── AppState ──────────────────────────────────────────────────────────────────
@@ -655,7 +666,11 @@ impl AppState {
             let state = Rc::clone(self_rc);
             Rc::new(move || Self::exit_kiosk(&state)) as Rc<dyn Fn()>
         };
-        let kw = kiosk::KioskWindow::new(&self_rc.app, &self_rc.disc_mgr, &icons, exit_fn);
+        let initial_layout = match KIOSK_LAYOUT_OVERRIDE.get() {
+            Some(KioskLayoutOverride::Classic) => views::playback_full::PlaybackLayout::Classic,
+            Some(KioskLayoutOverride::WideRight) | None => views::playback_full::PlaybackLayout::WideRight,
+        };
+        let kw = kiosk::KioskWindow::new(&self_rc.app, &self_rc.disc_mgr, &icons, exit_fn, initial_layout);
         kw.present();
         *self_rc.kiosk_win.borrow_mut() = Some(Rc::clone(&kw));
 

@@ -105,8 +105,17 @@ fn main() -> glib::ExitCode {
         glib::OptionArg::None,
         "Start directly in Kiosk mode (a single fullscreen window), unbound — \
          select a device from its device-list popover. Combined with --connect, \
-         --connect currently takes priority (opens that device's normal window instead)",
+         Kiosk mode starts pre-bound to that device instead of unbound",
         None,
+    );
+    app.add_main_option(
+        "kiosk:layout",
+        glib::Char(0),
+        glib::OptionFlags::NONE,
+        glib::OptionArg::String,
+        "Kiosk mode's initial playback layout: 1 (Classic) or 2 (WideRight, the \
+         default). Implies --kiosk itself; can still be changed at runtime with \"L\"",
+        Some("1|2"),
     );
 
     app.connect_handle_local_options(|_, opts| {
@@ -179,6 +188,18 @@ fn main() -> glib::ExitCode {
         }
         if opts.lookup::<bool>("kiosk").ok().flatten().unwrap_or(false) {
             ui::set_start_in_kiosk(true);
+        }
+        if let Ok(Some(layout)) = opts.lookup::<String>("kiosk:layout") {
+            match layout.as_str() {
+                // Implies --kiosk itself, same as --debug=api:verbose
+                // implies --debug=api — a bare --kiosk:layout=1 without
+                // also spelling out --kiosk read as a real bug the first
+                // time this was tried live (it just started the normal,
+                // non-kiosk UI instead).
+                "1" => { ui::set_kiosk_layout_override(ui::KioskLayoutOverride::Classic); ui::set_start_in_kiosk(true); }
+                "2" => { ui::set_kiosk_layout_override(ui::KioskLayoutOverride::WideRight); ui::set_start_in_kiosk(true); }
+                _   => eprintln!("--kiosk:layout: expected 1 or 2, got {layout:?} — ignoring"),
+            }
         }
         // `OptionArg::Filename` options surface as a GVariant bytestring
         // ("ay"), not a UTF-8 string ("s") — looking this up as `String`

@@ -70,17 +70,19 @@ pub(crate) struct KioskWindow {
     popover:       gtk::Popover,
     bound:         RefCell<Option<BoundDevice>>,
     /// Toggled by "L" (`toggle_layout()`) — persists across device
-    /// switches within a session (not saved to config; always starts at
-    /// the default on a fresh launch).
+    /// switches within a session (not saved to config); seeded from
+    /// `new()`'s `initial_layout` (`--kiosk:layout`, default `WideRight`)
+    /// on a fresh launch.
     layout:        Cell<PlaybackLayout>,
 }
 
 impl KioskWindow {
     pub(crate) fn new(
-        app:        &adw::Application,
-        manager:    &DiscoveryManager,
-        icons:      &Rc<IconSet>,
-        exit_kiosk: Rc<dyn Fn()>,
+        app:            &adw::Application,
+        manager:        &DiscoveryManager,
+        icons:          &Rc<IconSet>,
+        exit_kiosk:     Rc<dyn Fn()>,
+        initial_layout: PlaybackLayout,
     ) -> Rc<Self> {
         // resizable(false) is deliberately *not* set here, unlike the mini
         // window — that flag exists there specifically to keep GNOME/Mutter
@@ -160,7 +162,7 @@ impl KioskWindow {
             device_btn: device_btn.clone(),
             popover: popover.clone(),
             bound: RefCell::new(None),
-            layout: Cell::new(PlaybackLayout::WideRight),
+            layout: Cell::new(initial_layout),
         });
 
         device_btn.connect_clicked(clone!(#[weak] popover, move |_| {
@@ -338,8 +340,31 @@ impl KioskWindow {
         // small/fixed already, close enough to this bar's own defaults
         // that no adjustment is needed there.
         if layout == PlaybackLayout::WideRight {
-            if let Some((w, h)) = size_hint {
-                status_bar.set_edge_margin(wide_right_margin_h(compute_wide_right_art_side(w, h)));
+            match size_hint {
+                Some((w, h)) => {
+                    status_bar.set_edge_margin(wide_right_margin_h(compute_wide_right_art_side(w, h)));
+                }
+                // Same cold-start gap PlaybackView itself guards against
+                // (see its own tick-callback fallback's comment): on a
+                // slower/different compositor the window may not have
+                // reported a real size yet at this exact point, so
+                // size_hint comes back None here and — unlike
+                // PlaybackView, which keeps retrying on its own — this
+                // call would otherwise just be skipped forever, leaving
+                // the mismatch permanently uncorrected. Confirmed live: hit
+                // every time on a Raspberry Pi 5, never on a desktop fast
+                // enough to already have a real window size by this point.
+                None => {
+                    let weak_bar = status_bar.downgrade();
+                    let window = self.window.clone();
+                    self.window.add_tick_callback(move |_, _| {
+                        let Some(bar) = weak_bar.upgrade() else { return glib::ControlFlow::Break };
+                        let (w, h) = (window.width(), window.height());
+                        if w <= 0 || h <= 0 { return glib::ControlFlow::Continue; }
+                        bar.set_edge_margin(wide_right_margin_h(compute_wide_right_art_side(w, h)));
+                        glib::ControlFlow::Break
+                    });
+                }
             }
         }
         status_bar.set_active(true);

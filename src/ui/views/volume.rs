@@ -149,7 +149,17 @@ impl VolumeControl {
             .css_classes(if mini {
                 &["mini-transport-btn"][..]
             } else {
-                &["transport-btn", "circular"][..]
+                // "vol-mute-btn" alongside "transport-btn" (base look
+                // unchanged) so Kiosk mode's per-instance transport-button
+                // scaling (playback_full.rs's apply_wide_right_scale(),
+                // which targets .transport-btn) can specifically exclude
+                // this one — it lives inside the volume popover, which
+                // (via popover.set_parent(&vol_btn)) is a real widget-tree
+                // descendant of the same .controls-card the *other*
+                // transport buttons sit in, so it isn't naturally excluded
+                // by being outside that card the way it might look like
+                // it should be.
+                &["transport-btn", "circular", "vol-mute-btn"][..]
             })
             .tooltip_text("Mute")
             .halign(Align::Center)
@@ -195,7 +205,12 @@ impl VolumeControl {
                         // chrome that also sit below the scale itself.
                         let is_kiosk = root.has_css_class("kiosk-window");
                         let desired: f64 = if is_kiosk { 420.0 } else if mini { 140.0 } else { 170.0 };
-                        let available = (y - 90.0).max(60.0);
+                        // 130px, not a tighter estimate: better to end up
+                        // a bit smaller than intended than to guess too
+                        // generously and have the popover fail to fit at
+                        // all again (see this closure's own opening
+                        // comment for why that's the worse failure mode).
+                        let available = (y - 130.0).max(60.0);
                         scale.set_height_request(desired.min(available).round() as i32);
                     }
                 }
