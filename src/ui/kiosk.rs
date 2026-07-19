@@ -6,21 +6,15 @@
 //! Not a GObject — a plain chrome struct like `DiscoveryWindow`, since
 //! this owns window lifecycle/CSS/keyboard wiring, not a self-contained
 //! bindable widget. Shows exactly one device's basic `PlaybackView` at a
-//! time, deliberately minimal for a first cut (no side panel, no
-//! `ArtBackground`); a transparent top-right button showing the bound
-//! device's name opens a popover containing a `DeviceListView` to switch
-//! devices.
+//! time, deliberately minimal for a first cut (no side panel); a
+//! transparent top-right button showing the bound device's name opens a
+//! popover containing a `DeviceListView` to switch devices.
 //!
 //! Keyboard shortcuts are owned entirely by this window, not shared with
 //! `DeviceWindow`'s own controller — "K" exits kiosk mode here; there is
 //! deliberately no "M" (kiosk has no mini mode). The common transport/
 //! volume keys delegate to `views::common::handle_transport_key()`, the
 //! same helper `DeviceWindow` uses, rather than being reimplemented here.
-//!
-//! Not yet wired into `AppState` (no enter/exit kiosk mode, no menu/key/
-//! `--kiosk` triggers) — that's the next step; `#![allow(dead_code)]`
-//! below is temporary until it lands.
-#![allow(dead_code)]
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -28,17 +22,23 @@ use std::rc::Rc;
 use adw::prelude::*;
 use glib::clone;
 
+use crate::config;
 use crate::device::discovery_manager::DiscoveryManager;
 use crate::device::state::{DeviceState, FullModeGuard};
+use crate::ui::art_background::ArtBackground;
 use crate::ui::icons::IconSet;
+use crate::ui::update_art_background_visibility;
 use crate::ui::views;
 use crate::ui::views::devlist::DeviceListView;
 use crate::ui::views::playback_full::PlaybackView;
 
-/// The currently-bound device's view plus the `FullModeGuard` keeping its
+/// The currently-shown device's view plus the `FullModeGuard` keeping its
 /// polling at full fidelity for as long as Kiosk mode is looking at it —
 /// dropping this (on unbind/rebind, or the whole window closing) releases
-/// it, same as a `DeviceWindow` does for its own `DeviceState`.
+/// it, same as a `DeviceWindow` does for its own `DeviceState`. `key` is
+/// empty when nothing is really selected (see `bind_device()`'s "no
+/// device" branch) — `DiscoveryManager::set_window_open()` no-ops on an
+/// empty key, so that case needs no special-casing elsewhere.
 struct BoundDevice {
     key:        String,
     ds:         DeviceState,
@@ -47,14 +47,20 @@ struct BoundDevice {
 }
 
 pub(crate) struct KioskWindow {
-    window:     adw::ApplicationWindow,
-    manager:    DiscoveryManager,
-    icons:      Rc<IconSet>,
-    overlay:    gtk::Overlay,
-    placeholder: gtk::Widget,
-    device_btn: gtk::Button,
-    popover:    gtk::Popover,
-    bound:      RefCell<Option<BoundDevice>>,
+    window:        adw::ApplicationWindow,
+    manager:       DiscoveryManager,
+    icons:         Rc<IconSet>,
+    art_bg:        ArtBackground,
+    /// Holds the current `PlaybackView` (real or stub), swapped in place by
+    /// `bind_device()`. A stable overlay child added *before* `device_btn`
+    /// (see `new()`), rather than adding/removing the view directly on the
+    /// overlay each time — that would make each new view the *last*-added
+    /// overlay child and so stack on top of `device_btn`, covering it,
+    /// since `gtk::Overlay` z-orders purely by add order.
+    content_holder: gtk::Box,
+    device_btn:    gtk::Button,
+    popover:       gtk::Popover,
+    bound:         RefCell<Option<BoundDevice>>,
 }
 
 impl KioskWindow {
@@ -64,47 +70,81 @@ impl KioskWindow {
         icons:      &Rc<IconSet>,
         exit_kiosk: Rc<dyn Fn()>,
     ) -> Rc<Self> {
+        // resizable(false) is deliberately *not* set here, unlike the mini
+        // window — that flag exists there specifically to keep GNOME/Mutter
+        // from offering its edge-tiling/snap-to-maximize gesture on an
+        // undecorated panel; a fullscreen window has no edges to tile from
+        // in the first place, and resizable(false) risks the compositor
+        // refusing the resize a fullscreen request inherently requires.
         let window = adw::ApplicationWindow::builder()
             .application(app)
             .title("RustyWiiM")
             .decorated(false)
-            .resizable(false)
             .css_classes(["kiosk-window"])
             .build();
 
-        let placeholder = gtk::Label::builder()
-            .label("No device selected")
-            .css_classes(["dim-label"])
-            .halign(gtk::Align::Center)
-            .valign(gtk::Align::Center)
-            .build()
-            .upcast::<gtk::Widget>();
+        // ArtBackground is the overlay's main (measured) child — same
+        // shape as DeviceWindow's own window_overlay — with hexpand/vexpand
+        // set explicitly, since it's what actually drives the whole
+        // window's size; PlaybackView (added as an overlay child below,
+        // swapped by bind_device()) doesn't request expansion as a bare
+        // widget on its own the way DeviceWindow's ArtBackground does.
+        // Starts visible (its own default) rather than explicitly hidden —
+        // unlike the mini window's own ArtBackground, this one is also the
+        // overlay's main/measured child, and an invisible widget reports
+        // zero size, which would undo the fullscreen-sizing fix above.
+        // `update_art_background_visibility()` below corrects the initial
+        // visibility for the current theme, same as DeviceWindow's own.
+        let art_bg = ArtBackground::new();
+        art_bg.set_hexpand(true);
+        art_bg.set_vexpand(true);
 
         let overlay = gtk::Overlay::new();
-        overlay.set_child(Some(&placeholder));
+        overlay.set_child(Some(&art_bg));
 
-        let device_btn = gtk::Button::builder()
-            .label("Select device")
-            .css_classes(["kiosk-device-btn"])
-            .halign(gtk::Align::End)
-            .valign(gtk::Align::Start)
+        // Stable overlay child (never removed/re-added) holding whichever
+        // PlaybackView is current — see the struct field's doc comment for
+        // why this indirection exists instead of swapping directly on the
+        // overlay.
+        let content_holder = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .hexpand(true)
+            .vexpand(true)
             .build();
-        overlay.add_overlay(&device_btn);
+        overlay.add_overlay(&content_holder);
+
+        // Everything that floats over the content, added after
+        // content_holder so it always stacks on top (gtk::Overlay z-orders
+        // purely by add order) — just the device-name button for now, more
+        // to come here later (e.g. a settings icon).
+        let device_btn = Self::build_floating_buttons(&overlay);
 
         let device_list = DeviceListView::new(manager, icons);
+        // A gtk::Popover sizes itself to its content's *natural* size, not
+        // "whatever space is available" the way a window's content does —
+        // DeviceListView's internal ScrolledWindow relies on the latter
+        // (fine inside DiscoveryWindow, which has its own explicit default
+        // size), so without an explicit size here the popover collapses to
+        // a barely-visible sliver.
+        device_list.set_size_request(360, 480);
         let popover = gtk::Popover::new();
         popover.add_css_class("kiosk-devlist-popover");
         popover.set_child(Some(&device_list));
         popover.set_parent(&device_btn);
 
         window.set_content(Some(&overlay));
+        // Sets art_bg's initial visibility for the current theme — this
+        // window is now a real toplevel of the GtkApplication (via
+        // .application(app) above), so the generic list_toplevels() walk
+        // reaches it like any other window.
+        update_art_background_visibility();
 
         let this = Rc::new(Self {
             window: window.clone(),
             manager: manager.clone(),
             icons: Rc::clone(icons),
-            overlay,
-            placeholder,
+            art_bg,
+            content_holder,
             device_btn: device_btn.clone(),
             popover: popover.clone(),
             bound: RefCell::new(None),
@@ -151,42 +191,80 @@ impl KioskWindow {
         this
     }
 
+    /// Builds the buttons that float over the content (added to `overlay`
+    /// after `content_holder`, so they always stack on top of whichever
+    /// `PlaybackView` is currently showing) — just the device-name button
+    /// for this first cut; more are expected here later (e.g. a settings
+    /// icon), all added from this one place rather than scattered through
+    /// `new()`. Returns the device button specifically, since `new()` still
+    /// needs it to wire up the popover/click handling.
+    fn build_floating_buttons(overlay: &gtk::Overlay) -> gtk::Button {
+        let device_btn = gtk::Button::builder()
+            .label("Select device")
+            .css_classes(["kiosk-device-btn"])
+            .halign(gtk::Align::End)
+            .valign(gtk::Align::Start)
+            .build();
+        overlay.add_overlay(&device_btn);
+        device_btn
+    }
+
     /// Resolves `key` (a `device_key()` result — see `DiscoveryManager`)
-    /// through `manager.device_state_for()`, tears down whatever device was
-    /// previously bound (dropping its `PlaybackView` and `FullModeGuard`
+    /// through `manager.device_state_for()`, tears down whatever was
+    /// previously shown (dropping its `PlaybackView` and `FullModeGuard`
     /// together — `views/*`'s `dispose()` handles the view's own handler
-    /// cleanup), and builds a fresh `PlaybackView` for the new one. `None`
-    /// shows the "no device selected" placeholder instead.
+    /// cleanup), and builds a fresh `PlaybackView` for the new one.
+    ///
+    /// `None` (or a `key` that no longer resolves to a tracked device)
+    /// builds a `PlaybackView` against a standalone, never-connecting
+    /// `DeviceState` instead of a bespoke "no device" placeholder — the
+    /// same "no device spec" pattern `DeviceWindow::new_inner()` already
+    /// uses, which naturally renders the disconnected/greyed-out state
+    /// `PlaybackView` already supports, rather than adding a distinct
+    /// "no device at all" mode to it.
     pub(crate) fn bind_device(&self, key: Option<&str>) {
-        // Release whichever device was bound before, regardless of what
+        // Release whichever device was shown before, regardless of what
         // (if anything) replaces it — mirrors DeviceWindow's own
         // set_window_open bookkeeping so DiscoveryManager's prune logic
-        // doesn't think a stale device is still "open" here.
+        // doesn't think a stale device is still "open" here. No-ops for
+        // the empty key the "no device" branch below uses.
         if let Some(old) = self.bound.borrow_mut().take() {
             self.manager.set_window_open(&old.key, false);
+            self.content_holder.remove(&old.view);
         }
 
-        let Some(key) = key else {
-            self.overlay.set_child(Some(&self.placeholder));
-            self.device_btn.set_label("Select device");
-            return;
+        let resolved = key.and_then(|k| self.manager.device_state_for(k).map(|ds| (k.to_string(), ds)));
+        let (key, ds, label) = match resolved {
+            Some((key, ds)) => {
+                self.manager.set_window_open(&key, true);
+                let label = self.manager.entry_for(&key).map(|e| e.name).unwrap_or_else(|| key.clone());
+                // Remembered so a future unbound entry (discovery window's
+                // menu, or a fresh `--kiosk` launch) can restore this
+                // device instead of starting with nothing selected — see
+                // `AppState::enter_kiosk()`.
+                config::update(|cfg| cfg.kiosk_last_uuid = Some(key.clone()));
+                (key, ds, label)
+            }
+            None => {
+                let ds = DeviceState::new(self.manager.rt(), String::new());
+                ds.start_polling();
+                (String::new(), ds, "Select device".to_string())
+            }
         };
-        let Some(ds) = self.manager.device_state_for(key) else {
-            self.overlay.set_child(Some(&self.placeholder));
-            self.device_btn.set_label("Select device");
-            return;
-        };
-        self.manager.set_window_open(key, true);
-        let name = self.manager.entry_for(key).map(|e| e.name).unwrap_or_else(|| key.to_string());
-        self.device_btn.set_label(&name);
+        self.device_btn.set_label(&label);
 
-        let view = PlaybackView::new(&ds, &self.icons, None);
+        let view = PlaybackView::new(&ds, &self.icons, Some(&self.art_bg));
+        // Fills content_holder (art_bg is the main overlay child driving
+        // the window's own size, per new()'s comment) — still needs its
+        // own explicit expansion to fill that stable holder.
+        view.set_hexpand(true);
+        view.set_vexpand(true);
         // Views start inactive (views/mod.rs's shared contract) — this is
         // what actually performs the initial render.
         view.set_active(true);
-        self.overlay.set_child(Some(&view));
+        self.content_holder.append(&view);
         *self.bound.borrow_mut() = Some(BoundDevice {
-            key: key.to_string(),
+            key,
             _full_mode: ds.acquire_full(),
             ds,
             view,
@@ -194,8 +272,15 @@ impl KioskWindow {
     }
 
     pub(crate) fn present(&self) {
-        self.window.present();
+        // fullscreen() before present(), not after: requesting it before
+        // the window is first mapped lets it be negotiated as part of the
+        // initial surface configure, avoiding the same class of GTK/
+        // Wayland async-property-timing race already hit once before in
+        // this codebase (see CLAUDE.md's `begin_resize()`/`resizable(true)`
+        // gotcha) — calling it after present() risked the window briefly
+        // (or indefinitely) staying at its small unfullscreened default size.
         self.window.fullscreen();
+        self.window.present();
     }
 
     pub(crate) fn close(&self) {
@@ -203,6 +288,14 @@ impl KioskWindow {
             self.manager.set_window_open(&old.key, false);
         }
         self.window.close();
+    }
+
+    /// The currently-shown device's key, or empty if nothing real is
+    /// selected (the "no device" stub) — see `AppState::enter_kiosk()`'s
+    /// reactive auto-pick, which uses this to avoid overriding a device
+    /// the user has already picked by the time one becomes available.
+    pub(crate) fn current_key(&self) -> String {
+        self.bound.borrow().as_ref().map(|b| b.key.clone()).unwrap_or_default()
     }
 }
 

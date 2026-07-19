@@ -21,7 +21,7 @@ use gtk::{Box as GtkBox, Label, Orientation};
 use crate::config;
 use crate::device::manager::DeviceManager;
 use crate::device::state::{DeviceState, FullModeGuard};
-use crate::ui::{art_background, dbg_ui, icons, theme::update_art_background_visibility, views, wire_window_actions, DeviceSpec, QUITTING};
+use crate::ui::{art_background, dbg_ui, icons, theme::update_art_background_visibility, views, wire_window_actions, DeviceSpec, ENTERING_KIOSK, QUITTING};
 
 use chrome::*;
 
@@ -42,6 +42,9 @@ struct DeviceWindowInner {
     /// this back down. See `DeviceState::acquire_full()`.
     _full_mode:       FullModeGuard,
     show_devices_fn:  Rc<dyn Fn()>,
+    /// Enters Kiosk mode bound to this window's own device — see
+    /// `win.kiosk`'s registration in `wire_window_lifecycle()`.
+    enter_kiosk_fn:   Rc<dyn Fn()>,
     io:             views::io::InputOutputView,
     playback:       views::playback_full::PlaybackView,
     presets:        views::presets::PresetsView,
@@ -255,14 +258,15 @@ impl DeviceWindowInner {
             })
         });
         dbg_ui(&format!(
-            "DeviceWindow cleanup uuid={uuid} last_window={last_window} quitting={}",
-            QUITTING.load(Ordering::Relaxed)
+            "DeviceWindow cleanup uuid={uuid} last_window={last_window} quitting={} entering_kiosk={}",
+            QUITTING.load(Ordering::Relaxed), ENTERING_KIOSK.load(Ordering::Relaxed)
         ));
-        if !uuid.is_empty() && !QUITTING.load(Ordering::Relaxed) && !last_window {
+        if !uuid.is_empty() && !QUITTING.load(Ordering::Relaxed)
+            && !ENTERING_KIOSK.load(Ordering::Relaxed) && !last_window {
             dbg_ui(&format!("DeviceWindow cleanup uuid={uuid} persisting window_open=false"));
             config::update(|cfg| cfg.device_mut(&uuid).window_open = false);
         } else if !uuid.is_empty() {
-            dbg_ui(&format!("DeviceWindow cleanup uuid={uuid} preserving window_open (last_window or quitting)"));
+            dbg_ui(&format!("DeviceWindow cleanup uuid={uuid} preserving window_open (last_window, quitting, or entering kiosk)"));
         }
     }
 }
@@ -299,16 +303,18 @@ impl DeviceWindow {
         app:            &adw::Application,
         device_manager: DeviceManager,
         show_devices_fn: Rc<dyn Fn()>,
+        enter_kiosk_fn: Rc<dyn Fn()>,
         open_settings:  Rc<dyn Fn(Option<DeviceState>)>,
         spec:           DeviceSpec,
     ) -> Self {
-        Self::new_inner(app, device_manager, show_devices_fn, open_settings, Some(spec))
+        Self::new_inner(app, device_manager, show_devices_fn, enter_kiosk_fn, open_settings, Some(spec))
     }
 
     fn new_inner(
         app:             &adw::Application,
         device_manager:  DeviceManager,
         show_devices_fn: Rc<dyn Fn()>,
+        enter_kiosk_fn:  Rc<dyn Fn()>,
         open_settings:   Rc<dyn Fn(Option<DeviceState>)>,
         device_spec:     Option<DeviceSpec>,
     ) -> Self {
@@ -458,6 +464,7 @@ impl DeviceWindow {
             ds: ds.clone(),
             _full_mode: full_mode,
             show_devices_fn,
+            enter_kiosk_fn,
             io,
             playback,
             presets,
@@ -703,6 +710,15 @@ fn wire_window_lifecycle(
         });
     }
     window.add_action(&devices_action);
+
+    let kiosk_action = gio::SimpleAction::new("kiosk", None);
+    {
+        let i = Rc::downgrade(&inner);
+        kiosk_action.connect_activate(move |_, _| {
+            if let Some(i) = i.upgrade() { (i.enter_kiosk_fn)(); }
+        });
+    }
+    window.add_action(&kiosk_action);
 
     wire_window_actions(&window, Some(ds.clone()), open_settings);
 

@@ -278,6 +278,13 @@ pub struct Config {
     /// `resolved_gena_enabled()`. Defaults on.
     #[serde(default = "default_gena_enabled")]
     pub gena_enabled: bool,
+    /// The device Kiosk mode was last bound to — updated every time
+    /// `KioskWindow::bind_device()` successfully binds a real device.
+    /// Consulted when entering Kiosk mode unbound (from the discovery
+    /// window's menu, or a fresh `--kiosk` launch) so it can restore this
+    /// device instead of starting with nothing selected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kiosk_last_uuid: Option<String>,
 }
 
 impl Default for Config {
@@ -296,6 +303,7 @@ impl Default for Config {
             mini_stale_pixel_workaround: false,
             devlist_song_info: default_devlist_song_info(),
             gena_enabled: default_gena_enabled(),
+            kiosk_last_uuid: None,
         }
     }
 }

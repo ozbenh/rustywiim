@@ -14,6 +14,7 @@ pub(crate) fn build_menu_button(include_devices: bool) -> gtk::MenuButton {
     }
 
     let main_section = gio::Menu::new();
+    main_section.append(Some("Enter Kiosk Mode"), Some("win.kiosk"));
     main_section.append(Some("Settings…"), Some("win.settings"));
     main_section.append(Some("About RustyWiiM"), Some("win.about"));
     menu.append_section(None, &main_section);

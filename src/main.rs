@@ -98,6 +98,16 @@ fn main() -> glib::ExitCode {
         "Use an alternate config file path instead of the default (for testing)",
         Some("PATH"),
     );
+    app.add_main_option(
+        "kiosk",
+        glib::Char(0),
+        glib::OptionFlags::NONE,
+        glib::OptionArg::None,
+        "Start directly in Kiosk mode (a single fullscreen window), unbound — \
+         select a device from its device-list popover. Combined with --connect, \
+         --connect currently takes priority (opens that device's normal window instead)",
+        None,
+    );
 
     app.connect_handle_local_options(|_, opts| {
         if let Ok(Some(list)) = opts.lookup::<String>("debug") {
@@ -166,6 +176,9 @@ fn main() -> glib::ExitCode {
         }
         if opts.lookup::<bool>("no-config").ok().flatten().unwrap_or(false) {
             config::set_no_config(true);
+        }
+        if opts.lookup::<bool>("kiosk").ok().flatten().unwrap_or(false) {
+            ui::set_start_in_kiosk(true);
         }
         // `OptionArg::Filename` options surface as a GVariant bytestring
         // ("ay"), not a UTF-8 string ("s") — looking this up as `String`

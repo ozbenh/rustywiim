@@ -49,6 +49,14 @@ fn dbg_ui(msg: &str) {
 /// explicitly closed should not.
 static QUITTING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// Set while `AppState::enter_kiosk()` is closing every device/discovery
+/// window to make room for the single Kiosk window — same purpose as
+/// `QUITTING` (see its doc comment), just for a different transition:
+/// these windows are expected to reopen once Kiosk mode exits, so
+/// `DeviceWindowInner::cleanup()` must not persist `window_open = false`
+/// for them either.
+static ENTERING_KIOSK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 // ── Shared window actions ─────────────────────────────────────────────────────
 
 /// Register `win.about` and `win.settings` on any ApplicationWindow.
@@ -115,6 +123,23 @@ pub fn set_direct_connect(ip: String, tls_mode: TlsMode) {
     let _ = DIRECT_CONNECT.set((ip, tls_mode));
 }
 
+/// `--kiosk`: when set, `AppState::activate()` starts directly in Kiosk
+/// mode (unbound — no `--connect`-style pre-selected device yet), skipping
+/// the normal device-list-first-or-restore-per-device-windows startup
+/// sequence entirely. Set (via `set_start_in_kiosk`) before `activate()`
+/// runs, same as `DIRECT_CONNECT` — in practice, during `main.rs`'s
+/// `connect_handle_local_options`. `--connect` currently takes priority if
+/// both are given (its own check in `activate()` returns before this one
+/// is ever reached) — combining them to start Kiosk mode pre-bound to the
+/// `--connect` target isn't supported yet, since that mode bypasses
+/// `DiscoveryManager` tracking entirely and `KioskWindow::bind_device()`
+/// resolves devices through it.
+static START_IN_KIOSK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn set_start_in_kiosk(v: bool) {
+    START_IN_KIOSK.store(v, Ordering::Relaxed);
+}
+
 // ── AppState ──────────────────────────────────────────────────────────────────
 // Owns all top-level window state.  Every signal-handler closure captures
 // either a strong Rc<AppState> or a Weak clone for the close-request handlers.
@@ -132,6 +157,14 @@ pub(crate) struct AppState {
     registry:       RefCell<Vec<DeviceWindow>>,
     settings_reg:   RefCell<Vec<settings::SettingsWindow>>,
     disc_win:       RefCell<Option<devlist::DiscoveryWindow>>,
+    kiosk_win:      RefCell<Option<Rc<kiosk::KioskWindow>>>,
+    /// Uuids of device windows that were open when Kiosk mode was last
+    /// entered, reopened on exit — `None` when not currently in Kiosk mode
+    /// (as distinct from `Some(vec![])`, entered with nothing open).
+    /// Deliberately pure in-session runtime state, not persisted to
+    /// `config.json` — see `enter_kiosk()`'s doc comment for why.
+    kiosk_prior_devices:        RefCell<Option<Vec<String>>>,
+    kiosk_prior_discovery_open: std::cell::Cell<bool>,
 }
 
 impl AppState {
@@ -190,6 +223,9 @@ impl AppState {
             registry:       RefCell::new(Vec::new()),
             settings_reg:   RefCell::new(Vec::new()),
             disc_win:       RefCell::new(None),
+            kiosk_win:      RefCell::new(None),
+            kiosk_prior_devices:        RefCell::new(None),
+            kiosk_prior_discovery_open: std::cell::Cell::new(false),
         })
     }
 
@@ -250,10 +286,15 @@ impl AppState {
                 Rc::new(move |ds| Self::open_settings(&state, ds))
                     as Rc<dyn Fn(Option<DeviceState>)>
             };
+            let enter_kiosk_fn = {
+                let state = Rc::clone(self_rc);
+                Rc::new(move || Self::enter_kiosk(&state, None)) as Rc<dyn Fn()>
+            };
             *dw = Some(devlist::DiscoveryWindow::new(
                 &self_rc.app,
                 &self_rc.disc_mgr,
                 open_device_fn,
+                enter_kiosk_fn,
                 open_settings_fn,
             ));
         }
@@ -294,6 +335,11 @@ impl AppState {
             let state = Rc::clone(self_rc);
             Rc::new(move || Self::show_devices(&state)) as Rc<dyn Fn()>
         };
+        let enter_kiosk_fn = {
+            let state = Rc::clone(self_rc);
+            let uuid = log_uuid.clone();
+            Rc::new(move || Self::enter_kiosk(&state, Some(uuid.clone()))) as Rc<dyn Fn()>
+        };
         let open_settings_fn = {
             let state = Rc::clone(self_rc);
             Rc::new(move |ds| Self::open_settings(&state, ds)) as Rc<dyn Fn(Option<DeviceState>)>
@@ -302,6 +348,7 @@ impl AppState {
             &self_rc.app,
             self_rc.device_manager.clone(),
             show_fn,
+            enter_kiosk_fn,
             open_settings_fn,
             spec,
         );
@@ -400,6 +447,14 @@ impl AppState {
         // `Disconnected`/`Connecting…` bug for presence; not resurrecting
         // that shape for IP changes either).
 
+        // `--kiosk`: skip showing the normal device-list/per-device windows
+        // below entirely (Kiosk mode starts unbound regardless of what was
+        // open last session) — but discovery itself still needs to run
+        // (unlike `--connect`'s early return above), since Kiosk mode's own
+        // device-list popover needs real tracked devices to show. Entering
+        // Kiosk mode itself happens after `disc_mgr.start()` further down.
+        let start_in_kiosk = START_IN_KIOSK.load(Ordering::Relaxed);
+
         // Show the device list (if it should appear at all) *before*
         // starting discovery/restoring per-device windows below, so it
         // ends up at the bottom of the window stack instead of on top of
@@ -414,7 +469,7 @@ impl AppState {
             cfg.discovery_open,
             cfg.devices.values().any(|d| d.window_open),
         ));
-        if discovery_open || !has_pending_windows {
+        if !start_in_kiosk && (discovery_open || !has_pending_windows) {
             dbg_state("activate: showing device list");
             Self::show_devices(self_rc);
         }
@@ -422,7 +477,8 @@ impl AppState {
         // Restore windows from config on startup.  initial-load fires once,
         // synchronously inside start(), so open_device() here is safe — no
         // risk of raising already-open windows on subsequent list changes.
-        {
+        // Skipped entirely under `--kiosk` — see above.
+        if !start_in_kiosk {
             let s = Rc::downgrade(self_rc);
             self_rc.disc_mgr.connect_initial_load(move |mgr| {
                 let Some(self_rc) = s.upgrade() else { return };
@@ -485,6 +541,160 @@ impl AppState {
         });
 
         self_rc.disc_mgr.start();
+
+        if start_in_kiosk {
+            dbg_state("activate: --kiosk, entering Kiosk mode unbound");
+            Self::enter_kiosk(self_rc, None);
+        }
+    }
+
+    /// Enters Kiosk mode, bound to `bind_uuid` if given (unbound —
+    /// showing the device-list popover with nothing selected — when
+    /// `None`, e.g. entered from the discovery window's own menu).
+    ///
+    /// Snapshots which device windows are currently open (uuids only —
+    /// deliberately pure in-session runtime state, not persisted to
+    /// `config.json`: `DeviceConfig::window_open`'s own
+    /// quit/last-window-preservation logic in `DeviceWindowInner::cleanup()`
+    /// is the wrong mechanism here, since it only reliably preserves
+    /// whichever window happens to close *last* — an earlier-closed window
+    /// in a multi-window session would have its flag cleared to `false`
+    /// before this function finishes closing everything else) and whether
+    /// the discovery window was open, to reopen both in `exit_kiosk()`.
+    ///
+    /// Presents the (possibly already-existing) `KioskWindow` *before*
+    /// closing anything else — load-bearing ordering: `main.rs`'s
+    /// `connect_window_removed` auto-quits the instant zero windows are
+    /// visible, unconditionally, with no `QUITTING`/`ENTERING_KIOSK` guard
+    /// of its own. Presenting first guarantees at least one window stays
+    /// visible throughout this transition, so that auto-quit never fires.
+    pub(crate) fn enter_kiosk(self_rc: &Rc<Self>, bind_uuid: Option<String>) {
+        if let Some(kw) = self_rc.kiosk_win.borrow().as_ref() {
+            // Already in Kiosk mode — retarget instead of re-entering
+            // (not currently reachable via any wired trigger, but a
+            // reasonable no-op rather than clobbering the prior-windows
+            // snapshot with an empty one).
+            kw.bind_device(bind_uuid.as_deref());
+            return;
+        }
+
+        *self_rc.kiosk_prior_devices.borrow_mut() = Some(
+            self_rc.registry.borrow().iter().filter_map(|w| w.uuid()).collect()
+        );
+        self_rc.kiosk_prior_discovery_open.set(self_rc.disc_win.borrow().is_some());
+
+        let icons = Rc::new(icons::IconSet::load());
+        let exit_fn = {
+            let state = Rc::clone(self_rc);
+            Rc::new(move || Self::exit_kiosk(&state)) as Rc<dyn Fn()>
+        };
+        let kw = kiosk::KioskWindow::new(&self_rc.app, &self_rc.disc_mgr, &icons, exit_fn);
+        kw.present();
+        *self_rc.kiosk_win.borrow_mut() = Some(Rc::clone(&kw));
+
+        ENTERING_KIOSK.store(true, Ordering::Relaxed);
+        // Collect first so connect_destroy (which mutates registry) doesn't
+        // invalidate the iterator — same pattern install_quit_action() uses.
+        let wins: Vec<_> = self_rc.registry.borrow().iter().map(|dw| dw.window.clone()).collect();
+        for win in wins {
+            gtk::prelude::WidgetExt::realize(&win);
+            win.close();
+        }
+        // Hidden, not destroyed — DiscoveryWindow's own close-request
+        // handler already does exactly that when another window (the
+        // just-presented KioskWindow) is visible, so `disc_win` stays
+        // populated and `exit_kiosk()` can just re-present the same cached
+        // instance via `show_devices()`, same as any other re-present.
+        if let Some(dw) = self_rc.disc_win.borrow().as_ref() {
+            gtk::prelude::WidgetExt::realize(&dw.window);
+            dw.window.close();
+        }
+        ENTERING_KIOSK.store(false, Ordering::Relaxed);
+
+        // An explicit bind_uuid (entered from a device window) always wins;
+        // otherwise fall back to whatever device Kiosk mode last showed
+        // (Config::kiosk_last_uuid, if it's already a currently-tracked
+        // device), and failing that, the first Active device found.
+        let bind_uuid = bind_uuid.or_else(|| Self::resolve_kiosk_default(&self_rc.disc_mgr));
+        kw.bind_device(bind_uuid.as_deref());
+
+        // If nothing resolved *yet*, keep watching rather than settling for
+        // "nothing selected": discovery is asynchronous (SSDP responses
+        // arrive well after `disc_mgr.start()` returns — confirmed live, a
+        // fresh `--kiosk` launch reaches this point before any real device
+        // has actually responded, so the immediate resolution above finds
+        // nothing even for an already-known kiosk_last_uuid device that
+        // isn't otherwise pinned/previously-open). The first time a device
+        // becomes available — the persisted device reappearing, or failing
+        // that any Active device — bind it, unless the user has already
+        // picked something else by then (checked via `current_key()`).
+        if kw.current_key().is_empty() {
+            let weak_kw = Rc::downgrade(&kw);
+            self_rc.disc_mgr.connect_list_changed(move |mgr| {
+                let Some(kw) = weak_kw.upgrade() else { return };
+                if !kw.current_key().is_empty() { return; }
+                if let Some(uuid) = Self::resolve_kiosk_default(mgr) {
+                    kw.bind_device(Some(&uuid));
+                }
+            });
+        }
+    }
+
+    /// See `enter_kiosk()`'s fallback-selection comment. Among Active
+    /// devices, prefers one that's actually playing right now over just
+    /// any responding device.
+    fn resolve_kiosk_default(mgr: &DiscoveryManager) -> Option<String> {
+        let last = config::with(|cfg| cfg.kiosk_last_uuid.clone());
+        if let Some(uuid) = last {
+            if mgr.entry_for(&uuid).is_some() {
+                return Some(uuid);
+            }
+        }
+        let active: Vec<_> = mgr.entries().into_iter()
+            .filter(|e| e.presence == DevicePresence::Active)
+            .collect();
+        active.iter()
+            .find(|e| mgr.device_state_for(&e.uuid)
+                .is_some_and(|ds| ds.playback_state().status == crate::device::playback::PlaybackStatus::Playing))
+            .or_else(|| active.first())
+            .map(|e| e.uuid.clone())
+    }
+
+    /// Exits Kiosk mode: reopens whatever `enter_kiosk()` snapshotted as
+    /// open before it, then closes the `KioskWindow` — nothing more (no
+    /// special-casing for whatever device was actively bound *inside*
+    /// Kiosk mode at the moment of exit). If nothing was open before (e.g.
+    /// a `--kiosk`-launched process with no prior windows at all), nothing
+    /// gets reopened, and `main.rs`'s own unconditional
+    /// `connect_window_removed` auto-quit then ends the process once the
+    /// `KioskWindow` closes — accepted behavior, not a bug: a `--kiosk`
+    /// launch may simply have nothing to return to.
+    ///
+    /// **Ordering is load-bearing here too, same as `enter_kiosk()`
+    /// (gremlin 9): reopen everything else *before* closing `KioskWindow`**,
+    /// not after — closing it first, even briefly, is exactly the "zero
+    /// windows visible" moment that same unconditional auto-quit handler
+    /// fires on, killing the whole app instead of returning to normal mode
+    /// (confirmed live: plain K-to-enter, K-to-exit from a normal desktop
+    /// session quit the app before this was fixed).
+    pub(crate) fn exit_kiosk(self_rc: &Rc<Self>) {
+        if self_rc.kiosk_win.borrow().is_none() { return; }
+
+        let prior_devices = self_rc.kiosk_prior_devices.borrow_mut().take().unwrap_or_default();
+        let discovery_was_open = self_rc.kiosk_prior_discovery_open.replace(false);
+
+        for uuid in prior_devices {
+            if let Some(entry) = self_rc.disc_mgr.entry_for(&uuid) {
+                Self::open_device(self_rc, &entry);
+            }
+        }
+        if discovery_was_open {
+            Self::show_devices(self_rc);
+        }
+
+        if let Some(kw) = self_rc.kiosk_win.borrow_mut().take() {
+            kw.close();
+        }
     }
 
     /// Replace the app.quit action (set up in main.rs) with one that

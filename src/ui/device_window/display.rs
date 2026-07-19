@@ -273,12 +273,19 @@ pub(super) fn handle_transport_key(
     if state.intersects(gtk::gdk::ModifierType::CONTROL_MASK | gtk::gdk::ModifierType::ALT_MASK) {
         return glib::Propagation::Proceed;
     }
-    // "M" (mini-toggle) is this window's own key, not shared with any other
-    // host (Kiosk mode has no mini mode at all) — handled here before
-    // falling through to the transport/volume keys every host shares.
+    // "M" (mini-toggle) and "K" (enter Kiosk mode bound to this device) are
+    // this window's own keys, not shared with any other host — `KioskWindow`
+    // has its own separate key controller with its own meanings for both
+    // letters (K exits kiosk there instead; there's no M at all, kiosk has
+    // no mini mode) — handled here before falling through to the transport/
+    // volume keys every host shares.
     if let gtk::gdk::Key::m | gtk::gdk::Key::M = keyval {
         if *i.mini_mode.borrow() { i.exit_mini_mode(); } else { i.enter_mini_mode(); }
         schedule_config_save(i);
+        return glib::Propagation::Stop;
+    }
+    if let gtk::gdk::Key::k | gtk::gdk::Key::K = keyval {
+        (i.enter_kiosk_fn)();
         return glib::Propagation::Stop;
     }
     // The transport shortcuts follow their button's sensitivity (kept

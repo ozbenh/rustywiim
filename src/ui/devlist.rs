@@ -19,7 +19,7 @@ use crate::ui::icons::IconSet;
 use super::views::devlist::DeviceListView;
 
 pub struct DiscoveryWindow {
-    window: adw::ApplicationWindow,
+    pub window: adw::ApplicationWindow,
 }
 
 impl DiscoveryWindow {
@@ -27,6 +27,7 @@ impl DiscoveryWindow {
         app:           &adw::Application,
         manager:       &DiscoveryManager,
         open_device:   Rc<dyn Fn(&ManagedEntry)>,
+        enter_kiosk:   Rc<dyn Fn()>,
         open_settings: Rc<dyn Fn(Option<DeviceState>)>,
     ) -> Self {
         let (init_w, init_h) = config::with(|cfg| (
@@ -132,6 +133,13 @@ impl DiscoveryWindow {
             let close_act = gtk::gio::SimpleAction::new("close", None);
             close_act.connect_activate(clone!(#[strong] window, move |_, _| { window.close(); }));
             window.add_action(&close_act);
+        }
+
+        // win.kiosk — enters Kiosk mode unbound (no device pre-selected).
+        {
+            let kiosk_act = gtk::gio::SimpleAction::new("kiosk", None);
+            kiosk_act.connect_activate(move |_, _| { enter_kiosk(); });
+            window.add_action(&kiosk_act);
         }
 
         // Hide when other windows are visible; quit (propagate) when last.
