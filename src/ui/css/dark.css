@@ -214,6 +214,23 @@ window.mini-window .marquee-fade {
     margin: 20px;
 }
 .kiosk-device-btn:hover { background-color: rgba(255, 255, 255, 0.12); }
+/* Same look as .kiosk-device-btn (top-left instead of top-right — the
+   sidebar toggle), but margin-start deliberately excluded from the
+   shorthand below: it's set live from Rust (kiosk.rs's own
+   sidebar_paned "notify::position" handler, tracking the panel's edge
+   as it opens/closes) rather than fixed, and a CSS-set value here would
+   just win over that (CSS provider priority beats a widget's own
+   property setter) the same way this codebase has hit before. */
+.kiosk-sidebar-btn {
+    background-color: transparent;
+    border: 1px solid rgba(255, 255, 255, 0.25);
+    border-radius: 8px;
+    color: rgba(255, 255, 255, 0.65);
+    padding: 6px 14px;
+    margin-top: 20px;
+    margin-bottom: 20px;
+}
+.kiosk-sidebar-btn:hover { background-color: rgba(255, 255, 255, 0.12); }
 /* Touch-friendly volume slider sizing used to be a fixed min-height here —
    removed: a static value can exceed the space actually available above
    the button on a given screen, and a minimal Wayland kiosk compositor may

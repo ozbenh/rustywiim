@@ -5,10 +5,13 @@
 //!
 //! Not a GObject — a plain chrome struct like `DiscoveryWindow`, since
 //! this owns window lifecycle/CSS/keyboard wiring, not a self-contained
-//! bindable widget. Shows exactly one device's basic `PlaybackView` at a
-//! time, deliberately minimal for a first cut (no side panel); a
-//! transparent top-right button showing the bound device's name opens a
-//! popover containing a `DeviceListView` to switch devices.
+//! bindable widget. Shows exactly one device's `PlaybackView`, plus a
+//! collapsible side panel (presets/IO) split off it via `sidebar_paned` —
+//! same shape as `DeviceWindow`'s own, just with its own floating toggle
+//! button (top-left, symmetric to the device-name button) instead of a
+//! header-bar one, since Kiosk mode has no header bar. A transparent
+//! top-right button showing the bound device's name opens a popover
+//! containing a `DeviceListView` to switch devices.
 //!
 //! Keyboard shortcuts are owned entirely by this window, not shared with
 //! `DeviceWindow`'s own controller — "K" exits kiosk mode here; there is
@@ -51,6 +54,12 @@ struct BoundDevice {
     /// does (`views/mod.rs`). Shown unconditionally for this first cut
     /// (no Settings toggle exists yet to make it optional).
     _status_bar: crate::ui::views::status_bar::StatusBarView,
+    /// Same "rebuilt per bind" story as `_status_bar` — parented into
+    /// `sidebar_paned`'s start slot by `finish_bind()`; kept here only so
+    /// they're not otherwise unreferenced (nothing outside `finish_bind()`
+    /// needs to reach them directly yet).
+    _presets: crate::ui::views::presets::PresetsView,
+    _io:      crate::ui::views::io::InputOutputView,
     _full_mode: FullModeGuard,
 }
 
@@ -68,6 +77,19 @@ pub(crate) struct KioskWindow {
     content_holder: gtk::Box,
     device_btn:    gtk::Button,
     popover:       gtk::Popover,
+    /// Splits the side panel (presets/IO, start child) from the playback
+    /// content (end child) — same shape as `DeviceWindow`'s own `paned`.
+    /// Persistent across device switches (unlike its two children, which
+    /// `finish_bind()` replaces each time): its own `position` is exactly
+    /// the "is the panel open, and how wide" state, so nothing else needs
+    /// to track that separately.
+    sidebar_paned: gtk::Paned,
+    /// In-flight sidebar-toggle slide animation, if any — mirrors
+    /// `DeviceWindowInner::panel_anim`. Skipped (not just dropped) before
+    /// starting a new one, same reason that file's own comment gives: a
+    /// dropped `TimedAnimation` doesn't stop driving its callback target
+    /// on its own.
+    panel_anim:    RefCell<Option<adw::TimedAnimation>>,
     bound:         RefCell<Option<BoundDevice>>,
     /// Toggled by "L" (`toggle_layout()`) — persists across device
     /// switches within a session (not saved to config); seeded from
@@ -75,6 +97,11 @@ pub(crate) struct KioskWindow {
     /// on a fresh launch.
     layout:        Cell<PlaybackLayout>,
 }
+
+/// Default width the side panel opens to — a plain constant for now
+/// (matching `DeviceWindow`'s own 200px-ish default), not yet configurable
+/// or persisted between launches.
+const SIDEBAR_OPEN_WIDTH: i32 = 280;
 
 impl KioskWindow {
     pub(crate) fn new(
@@ -127,11 +154,42 @@ impl KioskWindow {
             .build();
         overlay.add_overlay(&content_holder);
 
+        // Splits the side panel from the playback content, same shape as
+        // DeviceWindow's own paned — persistent across device switches
+        // (see the struct field's own doc comment), unlike its two
+        // children, which finish_bind() replaces each time. Starts closed
+        // (position 0); shrink_start_child(true) is what lets it actually
+        // reach 0 at all (a Paned otherwise won't shrink a child below its
+        // own minimum size).
+        let sidebar_paned = gtk::Paned::new(gtk::Orientation::Horizontal);
+        sidebar_paned.set_hexpand(true);
+        sidebar_paned.set_vexpand(true);
+        sidebar_paned.set_resize_start_child(false);
+        sidebar_paned.set_shrink_start_child(true);
+        sidebar_paned.set_resize_end_child(true);
+        sidebar_paned.set_shrink_end_child(false);
+        sidebar_paned.set_position(0);
+        content_holder.append(&sidebar_paned);
+
         // Everything that floats over the content, added after
         // content_holder so it always stacks on top (gtk::Overlay z-orders
-        // purely by add order) — just the device-name button for now, more
-        // to come here later (e.g. a settings icon).
-        let device_btn = Self::build_floating_buttons(&overlay);
+        // purely by add order) — the device-name button and the sidebar
+        // toggle, symmetric to it on the opposite corner.
+        let (device_btn, sidebar_btn) = Self::build_floating_buttons(&overlay);
+
+        // Tracks the panel's own right edge while open, snapping back to
+        // the base (CSS-set) margin while closed — see sidebar_btn's own
+        // field doc comment. `.kiosk-sidebar-btn` deliberately doesn't set
+        // margin-start itself, so this always wins without a CSS priority
+        // fight (see that class's own comment in dark.css/system.css).
+        sidebar_paned.connect_notify_local(Some("position"), clone!(
+            #[weak] sidebar_btn,
+            move |paned, _| {
+                let pos = paned.position();
+                if pos > 8 { sidebar_btn.set_margin_start(pos + 12); }
+                else       { sidebar_btn.set_margin_start(20); }
+            }
+        ));
 
         let device_list = DeviceListView::new(manager, icons);
         // A gtk::Popover sizes itself to its content's *natural* size, not
@@ -161,6 +219,8 @@ impl KioskWindow {
             content_holder,
             device_btn: device_btn.clone(),
             popover: popover.clone(),
+            sidebar_paned,
+            panel_anim: RefCell::new(None),
             bound: RefCell::new(None),
             layout: Cell::new(initial_layout),
         });
@@ -168,6 +228,13 @@ impl KioskWindow {
         device_btn.connect_clicked(clone!(#[weak] popover, move |_| {
             if popover.is_visible() { popover.popdown(); } else { popover.popup(); }
         }));
+        sidebar_btn.connect_clicked({
+            let weak = Rc::downgrade(&this);
+            move |_| {
+                let Some(this) = weak.upgrade() else { return };
+                this.toggle_sidebar();
+            }
+        });
         device_list.connect_device_selected({
             let weak = Rc::downgrade(&this);
             move |_, key| {
@@ -213,12 +280,10 @@ impl KioskWindow {
 
     /// Builds the buttons that float over the content (added to `overlay`
     /// after `content_holder`, so they always stack on top of whichever
-    /// `PlaybackView` is currently showing) — just the device-name button
-    /// for this first cut; more are expected here later (e.g. a settings
-    /// icon), all added from this one place rather than scattered through
-    /// `new()`. Returns the device button specifically, since `new()` still
-    /// needs it to wire up the popover/click handling.
-    fn build_floating_buttons(overlay: &gtk::Overlay) -> gtk::Button {
+    /// `PlaybackView` is currently showing), all added from this one place
+    /// rather than scattered through `new()`. Returns them specifically
+    /// since `new()` still needs both to wire up their click handling.
+    fn build_floating_buttons(overlay: &gtk::Overlay) -> (gtk::Button, gtk::Button) {
         let device_btn = gtk::Button::builder()
             .label("Select device")
             .css_classes(["kiosk-device-btn"])
@@ -226,7 +291,23 @@ impl KioskWindow {
             .valign(gtk::Align::Start)
             .build();
         overlay.add_overlay(&device_btn);
-        device_btn
+
+        // Symmetric to device_btn on the opposite corner — margin-start
+        // set explicitly (matching the CSS class's own base value) since
+        // .kiosk-sidebar-btn deliberately doesn't set it, leaving it fully
+        // Rust-controlled (see sidebar_paned's "notify::position" handler
+        // in new(), which moves it live once the panel's open).
+        let sidebar_btn = gtk::Button::builder()
+            .icon_name("sidebar-show-symbolic")
+            .tooltip_text("Toggle presets panel")
+            .css_classes(["kiosk-sidebar-btn"])
+            .halign(gtk::Align::Start)
+            .valign(gtk::Align::Start)
+            .margin_start(20)
+            .build();
+        overlay.add_overlay(&sidebar_btn);
+
+        (device_btn, sidebar_btn)
     }
 
     /// Resolves `key` (a `device_key()` result — see `DiscoveryManager`)
@@ -314,26 +395,61 @@ impl KioskWindow {
         let (win_w, win_h) = (self.window.width(), self.window.height());
         let size_hint = if win_w > 0 && win_h > 0 { Some((win_w, win_h)) } else { None };
         let layout = self.layout.get();
-        // Kiosk's window IS the whole available area (no sidebar to
-        // account for, unlike DeviceWindow's own version of this
-        // closure) — just its own current size, every time it's asked.
+        // Available width for the playback pane specifically, not the
+        // whole window's — sidebar_paned.position() is exactly the side
+        // panel's current width (0 when closed), same fix as
+        // DeviceWindowInner::toggle_layout()'s own version of this closure,
+        // and for the same reason: feeding the *whole* window's width into
+        // this view's own size_request would let it force a minimum wide
+        // enough to block the panel from ever opening past a small width.
         let size_source: Rc<dyn Fn() -> Option<(i32, i32)>> = {
             let window = self.window.clone();
+            let sidebar_paned = self.sidebar_paned.clone();
             Rc::new(move || {
-                let (w, h) = (window.width(), window.height());
-                if w > 0 && h > 0 { Some((w, h)) } else { None }
+                let (win_w, win_h) = (window.width(), window.height());
+                if win_w <= 0 || win_h <= 0 { return None; }
+                const HANDLE_W: i32 = 12;
+                let avail_w = (win_w - sidebar_paned.position() - HANDLE_W).max(1);
+                Some((avail_w, win_h))
             })
         };
         let view = PlaybackView::new(&ds, &self.icons, Some(&self.art_bg), layout, size_source);
-        // Fills content_holder (art_bg is the main overlay child driving
-        // the window's own size, per new()'s comment) — still needs its
-        // own explicit expansion to fill that stable holder.
+        // Fills sidebar_paned's end slot (art_bg is the main overlay child
+        // driving the window's own size, per new()'s comment) — still
+        // needs its own explicit expansion to fill that slot.
         view.set_hexpand(true);
         view.set_vexpand(true);
         // Views start inactive (views/mod.rs's shared contract) — this is
         // what actually performs the initial render.
         view.set_active(true);
-        self.content_holder.append(&view);
+        self.sidebar_paned.set_end_child(Some(&view));
+
+        // Side panel (presets/IO) — same widget shapes DeviceWindow's own
+        // left_pane uses, rebuilt fresh each bind exactly like view/
+        // status_bar are. "panel-card" is Modern-theme-only styling (see
+        // modern.css), inert everywhere else.
+        let presets = views::presets::PresetsView::new(&ds, &self.icons);
+        let io = views::io::InputOutputView::new(&ds, &self.icons);
+        presets.set_active(true);
+        io.set_active(true);
+        // margin_top matches sidebar_btn's own (see .kiosk-sidebar-btn) so
+        // the panel's top edge lines up with the toggle button's, instead
+        // of starting right at the very top of the window.
+        let left_pane = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .css_classes(["panel-card"])
+            .margin_top(20)
+            .build();
+        left_pane.append(&presets);
+        left_pane.append(&io);
+        self.sidebar_paned.set_start_child(Some(&left_pane));
+
+        // sidebar_paned itself is persistent (see its own field doc
+        // comment) — content_holder was just cleared by the caller, so it
+        // needs re-adding, but its `position` (open/closed + width) is a
+        // plain property on the same long-lived object, untouched by
+        // being briefly unparented, so there's nothing to restore here.
+        self.content_holder.append(&self.sidebar_paned);
 
         // Status bar (network/BLE-remote/device info), same as
         // DeviceWindow's own — always shown for this first cut, no
@@ -386,6 +502,8 @@ impl KioskWindow {
             ds,
             view,
             _status_bar: status_bar,
+            _presets: presets,
+            _io: io,
         });
     }
 
@@ -409,6 +527,47 @@ impl KioskWindow {
             self.content_holder.remove(&child);
         }
         self.finish_bind(key, ds, label);
+    }
+
+    /// The side-panel toggle button. Reading `sidebar_paned.position()` as
+    /// the source of truth for "is it open" (rather than a separate bool)
+    /// means a direct drag of the divider (still possible — nothing
+    /// disables it) and a button click both leave the state in exactly
+    /// one place. Icon stays fixed (`sidebar-show-symbolic`) regardless of
+    /// open/closed state for now — `sidebar-hide-symbolic` isn't in every
+    /// icon theme and rendered as a broken/missing-icon glyph when tried.
+    fn toggle_sidebar(self: &Rc<Self>) {
+        let open = self.sidebar_paned.position() > 8;
+        let target = if open { 0 } else { SIDEBAR_OPEN_WIDTH };
+
+        // Same animation DeviceWindow's own animate_panel_to() uses —
+        // skip (not just drop) any still-running one first, since a
+        // dropped TimedAnimation doesn't stop driving its callback target
+        // on its own.
+        if let Some(a) = self.panel_anim.borrow_mut().take() { a.skip(); }
+
+        let from = self.sidebar_paned.position();
+        let animate = from != target
+            && config::with(|cfg| cfg.animations)
+            && gtk::Settings::default().is_some_and(|s| s.is_gtk_enable_animations());
+        if !animate {
+            self.sidebar_paned.set_position(target);
+            return;
+        }
+
+        let paned = self.sidebar_paned.clone();
+        let anim_target = adw::CallbackAnimationTarget::new(move |v| {
+            paned.set_position(v.round() as i32);
+        });
+        let anim = adw::TimedAnimation::new(&self.sidebar_paned, from as f64, target as f64, 200, anim_target);
+        anim.set_easing(adw::Easing::EaseInOutCubic);
+        let weak = Rc::downgrade(self);
+        anim.connect_done(move |_| {
+            let Some(this) = weak.upgrade() else { return };
+            *this.panel_anim.borrow_mut() = None;
+        });
+        anim.play();
+        *self.panel_anim.borrow_mut() = Some(anim);
     }
 
     pub(crate) fn present(&self) {
