@@ -16,7 +16,7 @@
 //! volume keys delegate to `views::common::handle_transport_key()`, the
 //! same helper `DeviceWindow` uses, rather than being reimplemented here.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use adw::prelude::*;
@@ -30,7 +30,9 @@ use crate::ui::icons::IconSet;
 use crate::ui::update_art_background_visibility;
 use crate::ui::views;
 use crate::ui::views::devlist::DeviceListView;
-use crate::ui::views::playback_full::{PlaybackLayout, PlaybackView};
+use crate::ui::views::playback_full::{
+    compute_wide_right_art_side, wide_right_margin_h, PlaybackLayout, PlaybackView,
+};
 
 /// The currently-shown device's view plus the `FullModeGuard` keeping its
 /// polling at full fidelity for as long as Kiosk mode is looking at it —
@@ -67,6 +69,10 @@ pub(crate) struct KioskWindow {
     device_btn:    gtk::Button,
     popover:       gtk::Popover,
     bound:         RefCell<Option<BoundDevice>>,
+    /// Toggled by "L" (`toggle_layout()`) — persists across device
+    /// switches within a session (not saved to config; always starts at
+    /// the default on a fresh launch).
+    layout:        Cell<PlaybackLayout>,
 }
 
 impl KioskWindow {
@@ -154,6 +160,7 @@ impl KioskWindow {
             device_btn: device_btn.clone(),
             popover: popover.clone(),
             bound: RefCell::new(None),
+            layout: Cell::new(PlaybackLayout::WideRight),
         });
 
         device_btn.connect_clicked(clone!(#[weak] popover, move |_| {
@@ -168,10 +175,11 @@ impl KioskWindow {
             }
         });
 
-        // Keyboard: "K" exits kiosk mode (this window's own key, not shared
-        // with DeviceWindow's controller — no "M" here at all, kiosk has no
-        // mini mode). Everything else delegates to the shared transport-key
-        // helper against whatever's currently bound.
+        // Keyboard: "K" exits kiosk mode, "L" swaps between the Classic and
+        // WideRight playback layouts (neither shared with DeviceWindow's
+        // own controller — no "M" here at all, kiosk has no mini mode).
+        // Everything else delegates to the shared transport-key helper
+        // against whatever's currently bound.
         let key_ctrl = gtk::EventControllerKey::new();
         key_ctrl.set_propagation_phase(gtk::PropagationPhase::Capture);
         key_ctrl.connect_key_pressed({
@@ -183,6 +191,10 @@ impl KioskWindow {
                 }
                 if let gtk::gdk::Key::k | gtk::gdk::Key::K = keyval {
                     exit_kiosk();
+                    return glib::Propagation::Stop;
+                }
+                if let gtk::gdk::Key::l | gtk::gdk::Key::L = keyval {
+                    this.toggle_layout();
                     return glib::Propagation::Stop;
                 }
                 let Some((ds, view)) = this.bound.borrow().as_ref().map(|b| (b.ds.clone(), b.view.clone())) else {
@@ -299,7 +311,8 @@ impl KioskWindow {
         // PlaybackView::new()'s own doc comment for what this avoids.
         let (win_w, win_h) = (self.window.width(), self.window.height());
         let size_hint = if win_w > 0 && win_h > 0 { Some((win_w, win_h)) } else { None };
-        let view = PlaybackView::new(&ds, &self.icons, Some(&self.art_bg), PlaybackLayout::WideRight, size_hint);
+        let layout = self.layout.get();
+        let view = PlaybackView::new(&ds, &self.icons, Some(&self.art_bg), layout, size_hint);
         // Fills content_holder (art_bg is the main overlay child driving
         // the window's own size, per new()'s comment) — still needs its
         // own explicit expansion to fill that stable holder.
@@ -316,6 +329,19 @@ impl KioskWindow {
         // separator line above it here (unlike DeviceWindow's own bottom
         // bar) — Kiosk mode's version looks better without one.
         let status_bar = crate::ui::views::status_bar::StatusBarView::new(&ds, &self.icons, true);
+        // Lines this bar's left/right content up with PlaybackView's own
+        // edges above it — there's no separator between them to visually
+        // excuse a mismatch anymore, and PlaybackView's own margin is
+        // itself a fraction of the artwork's size (see wide_right_margin_h()),
+        // not a fixed value, so this has to be (re)computed the same way
+        // rather than hardcoded to match it. Classic's own margins are
+        // small/fixed already, close enough to this bar's own defaults
+        // that no adjustment is needed there.
+        if layout == PlaybackLayout::WideRight {
+            if let Some((w, h)) = size_hint {
+                status_bar.set_edge_margin(wide_right_margin_h(compute_wide_right_art_side(w, h)));
+            }
+        }
         status_bar.set_active(true);
         self.content_holder.append(&status_bar);
 
@@ -326,6 +352,28 @@ impl KioskWindow {
             view,
             _status_bar: status_bar,
         });
+    }
+
+    /// "L" — swaps between the Classic and WideRight playback layouts and
+    /// rebuilds the view for whatever's currently bound (a no-op on the
+    /// binding itself if nothing is: the new layout still takes effect on
+    /// the next `bind_device()`/`bind_direct()` either way, since both
+    /// read `self.layout` fresh). Reuses the same `key`/`ds` `finish_bind()`
+    /// already has, rather than going through `bind_device()`'s
+    /// `DiscoveryManager` resolution again — this isn't a device switch.
+    pub(crate) fn toggle_layout(&self) {
+        self.layout.set(match self.layout.get() {
+            PlaybackLayout::Classic => PlaybackLayout::WideRight,
+            PlaybackLayout::WideRight => PlaybackLayout::Classic,
+        });
+        let Some((key, ds)) = self.bound.borrow().as_ref().map(|b| (b.key.clone(), b.ds.clone())) else {
+            return;
+        };
+        let label = self.device_btn.label().map(|s| s.to_string()).unwrap_or_default();
+        while let Some(child) = self.content_holder.first_child() {
+            self.content_holder.remove(&child);
+        }
+        self.finish_bind(key, ds, label);
     }
 
     pub(crate) fn present(&self) {

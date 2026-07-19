@@ -31,6 +31,7 @@ pub mod imp {
         pub(super) net_icon:     OnceCell<gtk::Image>,
         pub(super) remote_icon:  OnceCell<gtk::Image>,
         pub(super) remote_label: OnceCell<gtk::Label>,
+        pub(super) bar:          OnceCell<gtk::CenterBox>,
     }
 
     #[glib::object_subclass]
@@ -151,6 +152,7 @@ impl StatusBarView {
         imp.net_icon.set(net_icon).unwrap();
         imp.remote_icon.set(remote_icon).unwrap();
         imp.remote_label.set(remote_label).unwrap();
+        imp.bar.set(bar).unwrap();
 
         let id = ds.connect_device_changed({
             let weak = self.downgrade();
@@ -187,6 +189,17 @@ impl StatusBarView {
     pub(crate) fn set_active(&self, active: bool) {
         let was = self.imp().active.replace(active);
         if active && !was { self.refresh(); }
+    }
+
+    /// Aligns this bar's left/right content with whatever margin the host
+    /// is using elsewhere — Kiosk mode's `WideRight` layout, since this is
+    /// a separate widget sitting below it rather than part of its own
+    /// tree, would otherwise use its own small fixed margins that don't
+    /// line up with the playback view's edges above it.
+    pub(crate) fn set_edge_margin(&self, margin: i32) {
+        let bar = self.imp().bar.get().unwrap();
+        bar.set_margin_start(margin);
+        bar.set_margin_end(margin);
     }
 
     /// Full render from the `DeviceState` cache — live or offline.

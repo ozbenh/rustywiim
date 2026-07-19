@@ -153,7 +153,7 @@ const WIDE_RIGHT_ART_MAX_WIDTH_PCT: f64 = 33.0;
 /// this layout previously accounted for the artwork's *vertical* budget at
 /// all, which on some screens left it — and the whole title/controls block
 /// sharing its height — noticeably undersized).
-fn compute_wide_right_art_side(screen_w: i32, screen_h: i32) -> i32 {
+pub(crate) fn compute_wide_right_art_side(screen_w: i32, screen_h: i32) -> i32 {
     let from_height = screen_h as f64 * WIDE_RIGHT_ART_MAX_HEIGHT_PCT / 100.0;
     let from_width  = screen_w as f64 * WIDE_RIGHT_ART_MAX_WIDTH_PCT / 100.0;
     let side = from_height.min(from_width).round() as i32;
@@ -168,6 +168,15 @@ fn compute_wide_right_art_side(screen_w: i32, screen_h: i32) -> i32 {
         );
     }
     side
+}
+
+/// Left/right margin for the wide-right layout's content, as a fraction of
+/// the artwork's own side length — exposed so `KioskWindow` can align
+/// `StatusBarView`'s edges (a separate widget, not part of this layout's
+/// own tree) to match, now that there's no separator line between them to
+/// visually excuse a mismatch.
+pub(crate) fn wide_right_margin_h(art_side: i32) -> i32 {
+    (art_side as f64 * 0.12).round() as i32
 }
 
 /// Recompute and apply the `WideRight` layout's typography/control sizing
@@ -583,7 +592,7 @@ impl PlaybackView {
                         band_row.set_spacing((s * 0.09).round() as i32);
                         top_row.set_spacing((s * 0.10).round() as i32);
                         content_block.set_spacing((s * 0.18).round() as i32);
-                        let margin_h = (s * 0.12).round() as i32;
+                        let margin_h = wide_right_margin_h(side);
                         let margin_v = (s * 0.06).round() as i32;
                         outer.set_margin_start(margin_h);
                         outer.set_margin_end(margin_h);
