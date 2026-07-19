@@ -194,12 +194,17 @@ window.mini-window .marquee-fade {
         #111111 0%, rgba(17,17,17,0) 15%,
         rgba(17,17,17,0) 85%, #111111 100%);
 }
+/* Kiosk mode's window background is already covered by this file's own
+   unconditional `window { background-color: #0a0a0a; }` at the top —
+   unlike system.css, which has no such fallback and needed one added
+   explicitly (see that file's identical comment for the bug this fixes:
+   ArtBackground, the only other thing painting behind the content, is
+   deliberately hidden outside RustyWiiM Modern, and without a real
+   background underneath, the window rendered black or fully transparent
+   depending on the machine). */
 /* Kiosk mode's device-name button, top-right overlay: text + outline only,
    no fill, so it reads as a floating label rather than a normal button
-   until hovered. Always fullscreen (window.csd.fullscreen already clears
-   GTK's own shadow/outline/radius for us, same mechanism the mini window
-   needed to clear by hand for its non-fullscreen rounded shape), so no
-   transparency/background handling is needed on window.kiosk-window itself. */
+   until hovered. */
 .kiosk-device-btn {
     background-color: transparent;
     border: 1px solid rgba(255, 255, 255, 0.25);

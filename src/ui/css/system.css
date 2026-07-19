@@ -134,11 +134,34 @@ menubutton.mini-restore-btn > button:hover { background-color: rgba(127, 127, 12
         @window_bg_color 0%, alpha(@window_bg_color, 0) 15%,
         alpha(@window_bg_color, 0) 85%, @window_bg_color 100%);
 }
+/* Kiosk mode's window background — this stylesheet otherwise has no plain
+   `window { background-color }` fallback at all (unlike dark.css's own,
+   which covers RustyWiiM/Modern already), relying entirely on Adwaita's
+   own default background for a normal decorated window. Confirmed live
+   that this doesn't get painted for KioskWindow specifically (undecorated
+   + fullscreen, no CSD chrome to carry it): under System/Light/Dark theme
+   the window rendered fully black on one machine and fully transparent
+   (showing the desktop through it) on another, since ArtBackground — the
+   *only* thing otherwise painting behind the content — is deliberately
+   hidden outside RustyWiiM Modern (`update_art_background_visibility()`).
+   An explicit fallback here means the window always has a real opaque
+   background regardless of theme or ArtBackground's own visibility.
+   `color` paired explicitly alongside it, not left to inherit — reported
+   live that under System Light specifically, none of the window's text
+   was visible in Kiosk mode even after the background fix above (normal
+   DeviceWindow was fine under the same theme). Every text-rendering piece
+   here (plain CSS labels *and* ScrollFadeLabel, which reads its own color
+   via `widget.color()` at render time) resolves through inherited
+   `color`, and DeviceWindow's content sits inside an `adw::ToolbarView`,
+   which KioskWindow's bare `gtk::Overlay` content doesn't have — a
+   plausible, not confirmed, explanation for why that inheritance would
+   resolve differently there specifically. This fix (setting `color`
+   explicitly rather than relying on inheritance at all) sidesteps the
+   question of the exact mechanism either way. */
+window.kiosk-window { background-color: @window_bg_color; color: @window_fg_color; }
 /* Kiosk mode's device-name button, top-right overlay: text + outline only,
    no fill, so it reads as a floating label rather than a normal button
-   until hovered. Always fullscreen (window.csd.fullscreen already clears
-   GTK's own shadow/outline/radius for us), so no transparency/background
-   handling is needed on window.kiosk-window itself. */
+   until hovered. */
 .kiosk-device-btn {
     background-color: transparent;
     border: 1px solid alpha(@window_fg_color, 0.25);
