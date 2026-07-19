@@ -19,6 +19,7 @@
 //!   unparents any `set_parent()`-attached popovers.
 
 pub(crate) mod common;
+pub(crate) mod devlist;
 pub(crate) mod io;
 pub(crate) mod playback_full;
 pub(crate) mod playback_mini;
