@@ -314,7 +314,17 @@ impl KioskWindow {
         let (win_w, win_h) = (self.window.width(), self.window.height());
         let size_hint = if win_w > 0 && win_h > 0 { Some((win_w, win_h)) } else { None };
         let layout = self.layout.get();
-        let view = PlaybackView::new(&ds, &self.icons, Some(&self.art_bg), layout, size_hint);
+        // Kiosk's window IS the whole available area (no sidebar to
+        // account for, unlike DeviceWindow's own version of this
+        // closure) — just its own current size, every time it's asked.
+        let size_source: Rc<dyn Fn() -> Option<(i32, i32)>> = {
+            let window = self.window.clone();
+            Rc::new(move || {
+                let (w, h) = (window.width(), window.height());
+                if w > 0 && h > 0 { Some((w, h)) } else { None }
+            })
+        };
+        let view = PlaybackView::new(&ds, &self.icons, Some(&self.art_bg), layout, size_source);
         // Fills content_holder (art_bg is the main overlay child driving
         // the window's own size, per new()'s comment) — still needs its
         // own explicit expansion to fill that stable holder.

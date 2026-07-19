@@ -194,7 +194,7 @@ pub(crate) fn wide_right_margin_h(art_side: i32) -> i32 {
 /// normally use, which only look right on one specific screen size.
 fn apply_wide_right_scale(
     class: &str, provider: &gtk::CssProvider,
-    title_group: &GtkBox, status_group: &GtkBox,
+    title_group: &GtkBox, status_group: &GtkBox, volume: &VolumeControl,
     h: i32,
 ) {
     let h = h as f64;
@@ -220,6 +220,11 @@ fn apply_wide_right_scale(
     let loop_btn       = transport_btn;
     let transport_icon = (transport_btn as f64 * 0.45).round() as i32;
     let play_icon      = (play_btn as f64 * 0.45).round() as i32;
+    // The volume button's own icon is a `pixel_size`-set child Image, not
+    // an icon-name button `-gtk-icon-size` (below) could reach — confirmed
+    // live, it otherwise stays fixed at its small default while the other
+    // transport icons scale up around it, reading as noticeably tinier.
+    volume.set_icon_pixel_size(transport_icon);
 
     provider.load_from_string(&format!(
         ".{class} .track-title {{ font-size: {title_px}px; }}\n\
@@ -239,28 +244,41 @@ fn apply_wide_right_scale(
 impl PlaybackView {
     /// Build the full playback display bound to `ds`. `art_bg` is the
     /// host's blurred background to feed artwork to (`None` for a host
-    /// without one). `host_size_hint` (`WideRight` only, ignored
-    /// otherwise) is the hosting window's own *current* (width, height),
-    /// if already known — letting `WideRight`'s proportional sizing apply
-    /// correct values synchronously, before this view is ever painted,
-    /// instead of waiting a frame for the tick-callback fallback (see that
-    /// code's own comment): the flash that fallback alone produces is
-    /// barely noticeable once at startup, but happens on *every* Kiosk
-    /// device switch without this, since the window's real size is
-    /// already known by then. Starts **inactive** — the owner's first
-    /// `set_active(true)` performs the initial render.
+    /// without one). `size_source` (`WideRight` only, ignored otherwise)
+    /// returns the *available* (width, height) `WideRight` should size
+    /// itself against, or `None` if not known yet — called once
+    /// synchronously at build time (letting sizing apply correct values
+    /// before this view is ever painted, avoiding a flash the first
+    /// caller — see below — didn't need) and then every frame afterward
+    /// via a tick callback, reapplying only when the result actually
+    /// changes, so a resizable host stays correctly sized as it's resized
+    /// rather than freezing at whatever it was when built.
+    ///
+    /// Deliberately a callback, not a plain `Option<(i32, i32)>` snapshot:
+    /// the "available size" isn't always just the window's own — Kiosk
+    /// mode's window IS the whole available area, but embedded in a
+    /// `DeviceWindow`'s `Paned`, the space actually available to this view
+    /// is the window's width *minus whatever the sidebar/divider
+    /// currently take*, which changes independently of anything this view
+    /// does. Reading the window's *whole* width there once caused a real
+    /// bug: this view's own size_request (set from that too-large number)
+    /// became large enough that the `Paned` itself refused to let the
+    /// sidebar open past a small width, treating this view's artificially
+    /// inflated minimum as a hard floor on how much the sidebar could take
+    /// instead. Each host's own closure reports only what's genuinely
+    /// available to *this view specifically*.
     pub(crate) fn new(
         ds: &DeviceState, icons: &Rc<IconSet>, art_bg: Option<&ArtBackground>, layout: PlaybackLayout,
-        host_size_hint: Option<(i32, i32)>,
+        size_source: Rc<dyn Fn() -> Option<(i32, i32)>>,
     ) -> Self {
         let obj: Self = glib::Object::new();
-        obj.build(ds, icons, art_bg, layout, host_size_hint);
+        obj.build(ds, icons, art_bg, layout, size_source);
         obj
     }
 
     fn build(
         &self, ds: &DeviceState, icons: &Rc<IconSet>, art_bg: Option<&ArtBackground>, layout: PlaybackLayout,
-        host_size_hint: Option<(i32, i32)>,
+        size_source: Rc<dyn Fn() -> Option<(i32, i32)>>,
     ) {
         let imp = self.imp();
         imp.ds.set(ds.clone()).unwrap();
@@ -599,14 +617,14 @@ impl PlaybackView {
                 // size is known yet).
                 let apply_for_screen = glib::clone!(
                     #[strong] art_overlay, #[strong] text_col,
-                    #[strong] title_group, #[strong] status_group,
+                    #[strong] title_group, #[strong] status_group, #[strong] volume,
                     #[strong] band_row, #[strong] top_row, #[strong] content_block, #[strong] outer,
                     #[strong] class, #[strong] provider,
                     move |screen_w: i32, screen_h: i32| {
                         let side = compute_wide_right_art_side(screen_w, screen_h);
                         art_overlay.set_size_request(side, side);
                         text_col.set_size_request(-1, side);
-                        apply_wide_right_scale(&class, &provider, &title_group, &status_group, side);
+                        apply_wide_right_scale(&class, &provider, &title_group, &status_group, &volume, side);
 
                         // All structural gaps/margins below are fractions
                         // of `side` too, for the same reason the font/
@@ -628,29 +646,33 @@ impl PlaybackView {
                         outer.set_margin_bottom(margin_v);
                     }
                 );
-                let initial = host_size_hint.filter(|(w, h)| *w > 0 && *h > 0);
+                let initial = size_source().filter(|(w, h)| *w > 0 && *h > 0);
                 if let Some((w, h)) = initial {
                     apply_for_screen(w, h);
                 }
-                // Keeps tracking the *window's* size for as long as this
-                // view lives (GTK stops calling a tick callback on its own
-                // once the widget it's attached to is destroyed — nothing
-                // to disconnect by hand here) rather than applying once
-                // and stopping: this is what makes a resizable host (a
-                // plain DeviceWindow, unlike Kiosk mode's fixed fullscreen
-                // one) keep the artwork/text/controls sized correctly as
-                // the user drags it, not just at the moment it was built.
-                // Reads the root *window's* size, never anything this view
-                // itself renders — an earlier version measured the
-                // artwork's own allocated size instead, which fed back
-                // into this same computation and compounded into runaway
-                // growth every frame.
+                // Keeps tracking `size_source()`'s result for as long as
+                // this view lives (GTK stops calling a tick callback on
+                // its own once the widget it's attached to is destroyed —
+                // nothing to disconnect by hand here) rather than applying
+                // once and stopping: this is what makes a resizable host
+                // (a plain DeviceWindow, unlike Kiosk mode's fixed
+                // fullscreen one) keep the artwork/text/controls sized
+                // correctly as the user drags it, not just at the moment
+                // it was built. `size_source()` itself must never be
+                // influenced by anything this code sets (see `new()`'s own
+                // comment on why it's a callback, not a snapshot) — an
+                // earlier version measured this view's own allocated
+                // height directly, which fed back into this same
+                // computation and compounded into runaway growth every
+                // frame; both hosts' current closures read something
+                // external instead (the window's size, and — for
+                // DeviceWindow specifically — the Paned's own divider
+                // position, set only by user drag/config restore).
                 let last_size = std::cell::Cell::new(initial.unwrap_or((0, 0)));
                 self.add_tick_callback(glib::clone!(
                     #[strong] apply_for_screen,
-                    move |widget, _clock| {
-                        let Some(root) = widget.root() else { return glib::ControlFlow::Continue };
-                        let (w, h) = (root.width(), root.height());
+                    move |_widget, _clock| {
+                        let Some((w, h)) = size_source() else { return glib::ControlFlow::Continue };
                         if w <= 0 || h <= 0 { return glib::ControlFlow::Continue; }
                         if (w, h) != last_size.get() {
                             last_size.set((w, h));

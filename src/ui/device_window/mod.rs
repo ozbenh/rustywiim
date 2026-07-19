@@ -281,10 +281,13 @@ impl DeviceWindowInner {
     /// `KioskWindow::toggle_layout()` uses: `views/mod.rs`'s "bound once,
     /// never rebound" contract is about a view's `DeviceState`, not its
     /// layout. Unlike Kiosk mode (always fullscreen), this window is
-    /// resizable, so `size_hint` reflects whatever its *current* size
-    /// actually is — WideRight's own sizing then keeps tracking that
-    /// live via the tick callback `PlaybackView::build()` already
-    /// installs, the same as it would after any other resize.
+    /// resizable and shares its width with the sidebar via `self.paned` —
+    /// `size_source` (see `PlaybackView::new()`'s own doc comment) accounts
+    /// for that, reporting only the width actually left over for the
+    /// playback pane, not the whole window's — and keeps doing so live via
+    /// the tick callback `PlaybackView::build()` installs, so dragging the
+    /// sidebar (or the window itself) keeps this correctly sized rather
+    /// than freezing at whatever it was when last (re)built.
     pub(super) fn toggle_layout(&self) {
         use views::playback_full::PlaybackLayout;
         let new_layout = match self.layout.get() {
@@ -293,10 +296,24 @@ impl DeviceWindowInner {
         };
         self.layout.set(new_layout);
 
-        let (w, h) = (self.window.width(), self.window.height());
-        let size_hint = if w > 0 && h > 0 { Some((w, h)) } else { None };
+        let size_source: Rc<dyn Fn() -> Option<(i32, i32)>> = {
+            let window = self.window.clone();
+            let paned = self.paned.clone();
+            let left_pane = self.left_pane.clone();
+            Rc::new(move || {
+                let (win_w, win_h) = (window.width(), window.height());
+                if win_w <= 0 || win_h <= 0 { return None; }
+                // A rough estimate for the Paned's own drag-handle width —
+                // not pixel-exact, just enough that the computed available
+                // width doesn't slightly overshoot what's really left.
+                const HANDLE_W: i32 = 12;
+                let sidebar_w = if left_pane.is_visible() { paned.position() } else { 0 };
+                let avail_w = (win_w - sidebar_w - HANDLE_W).max(1);
+                Some((avail_w, win_h))
+            })
+        };
         let new_view = views::playback_full::PlaybackView::new(
-            &self.ds, &self.icons, Some(&self.art_bg), new_layout, size_hint,
+            &self.ds, &self.icons, Some(&self.art_bg), new_layout, size_source,
         );
         new_view.set_active(!*self.mini_mode.borrow());
         self.paned.set_end_child(Some(&new_view));
@@ -398,8 +415,12 @@ impl DeviceWindow {
         let art_bg = art_background::ArtBackground::new();
         art_bg.set_hexpand(true);
         art_bg.set_vexpand(true);
+        // Unused by Classic (always the initial layout — see
+        // toggle_layout() for the one that actually needs to account for
+        // the sidebar's width).
         let playback = views::playback_full::PlaybackView::new(
-            &ds, &icons, Some(&art_bg), views::playback_full::PlaybackLayout::Classic, None,
+            &ds, &icons, Some(&art_bg), views::playback_full::PlaybackLayout::Classic,
+            Rc::new(|| None),
         );
         let (mini, _mini_root) = build_mini_window(&ds, &icons);
 

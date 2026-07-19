@@ -225,7 +225,22 @@ window.mini-window .marquee-fade {
    paired with, so this doesn't also affect the seek bar's pos/dur labels
    inside PlaybackView, which are `.dim-label` too but already get their own
    scaling from apply_wide_right_scale()'s per-instance provider. */
-window.kiosk-window .device-info { font-size: 17px; margin-top: 6px; margin-bottom: 6px; }
+/* padding-top (not just margin-top): confirmed live on a Raspberry Pi 5
+   that adding more margin-top actually made clipping of the text's own
+   top row of pixels worse, not better — margin sits outside the label's
+   own paint/clip box, so it just repositions where that (apparently
+   already exactly-as-tall-as-its-text, no slack) box sits rather than
+   giving the text itself any more room; padding is inside that box. */
+/* font-size 18px, not 17: confirmed live (zoomed screenshot) that flat
+   horizontal top strokes specifically (F, 5) were getting thinned/
+   partially clipped on a Raspberry Pi 5, while pointed/curved glyph tops
+   (W, L, dots) weren't — margin/padding adjustments (see the removed
+   comment this replaces) didn't help, which points to a rasterization/
+   hinting rounding artifact tied to this exact font-size at that
+   display's scale factor, not a box-too-small layout issue. Nudging the
+   value is a guess at dodging whatever rounding boundary 17px landed on
+   there, not a confirmed root-cause fix. */
+window.kiosk-window .device-info { font-size: 18px; padding-top: 2px; margin-top: 4px; margin-bottom: 6px; }
 window.kiosk-window .ip-label { font-size: 18px; margin-top: 6px; margin-bottom: 6px; }
 window.kiosk-window .net-icon { -gtk-icon-size: 24px; margin-top: 6px; margin-bottom: 6px; }
 window.kiosk-window .remote-icon { margin-top: 6px; margin-bottom: 6px; }

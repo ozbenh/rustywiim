@@ -278,6 +278,18 @@ impl VolumeControl {
         if active && !was { self.sync_display(); }
     }
 
+    /// Rescales the volume button's own icon — the one piece of it CSS
+    /// can't reach (it's an explicit child `gtk::Image` with `pixel_size`
+    /// set directly, not an icon-name button `-gtk-icon-size` could
+    /// rescale, same reason `StatusBarView`'s `remote_icon` needed its own
+    /// `large` parameter instead). Kiosk mode's WideRight layout calls
+    /// this from `apply_wide_right_scale()` so it tracks the other
+    /// transport buttons' size instead of staying fixed — confirmed live,
+    /// it otherwise reads as noticeably tinier than them.
+    pub(crate) fn set_icon_pixel_size(&self, px: i32) {
+        self.imp().icon_img.get().unwrap().set_pixel_size(px);
+    }
+
     /// Nudge the volume by `delta` (clamped to 0..=100) — used by the
     /// Up/Down keyboard shortcuts. Routes through the same path as a
     /// manual slider drag so it gets the same optimistic UI update,
