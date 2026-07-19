@@ -6,7 +6,9 @@
 use adw::prelude::*;
 
 use crate::device::playback::{AudioQuality, PlaybackStatus, RepeatMode};
+use crate::device::state::DeviceState;
 use crate::ui::scroll_fade_label::ScrollFadeLabel;
+use super::volume::VolumeControl;
 
 /// Two `ScrollFadeLabel`s in a `gtk::Stack`, slid between on text change
 /// instead of a hard swap. `set_text()` matches `ScrollFadeLabel`'s own
@@ -198,4 +200,49 @@ pub(crate) fn flash_button(btn: &gtk::Button) {
     glib::timeout_add_local_once(std::time::Duration::from_millis(200), move || {
         btn.remove_css_class("key-flash");
     });
+}
+
+/// The transport/volume keyboard shortcuts (prev/next/play-pause/volume
+/// up-down) shared by every host of a playback view — factored out of
+/// `device_window/display.rs`'s `handle_transport_key()` so a host doesn't
+/// have to reimplement this against `DeviceState` itself. Host-specific
+/// keys (the main/mini window's "M" toggle, Kiosk mode's "K") stay in each
+/// host's own key controller, which calls this for everything else.
+/// `Proceed` (not `Stop`) when a button isn't sensitive or the key isn't
+/// one of these — behaves as if the shortcut didn't exist rather than
+/// swallowing the key.
+pub(crate) fn handle_transport_key(
+    ds:       &DeviceState,
+    volume:   &VolumeControl,
+    prev_btn: &gtk::Button,
+    next_btn: &gtk::Button,
+    play_btn: &gtk::Button,
+    keyval:   gtk::gdk::Key,
+) -> glib::Propagation {
+    match keyval {
+        gtk::gdk::Key::Left if prev_btn.is_sensitive() => {
+            ds.do_prev();
+            flash_button(prev_btn);
+            glib::Propagation::Stop
+        }
+        gtk::gdk::Key::Right if next_btn.is_sensitive() => {
+            ds.do_next();
+            flash_button(next_btn);
+            glib::Propagation::Stop
+        }
+        gtk::gdk::Key::space if play_btn.is_sensitive() => {
+            ds.do_play_pause();
+            flash_button(play_btn);
+            glib::Propagation::Stop
+        }
+        gtk::gdk::Key::Up => {
+            volume.step(5);
+            glib::Propagation::Stop
+        }
+        gtk::gdk::Key::Down => {
+            volume.step(-5);
+            glib::Propagation::Stop
+        }
+        _ => glib::Propagation::Proceed,
+    }
 }

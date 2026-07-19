@@ -128,3 +128,18 @@ menubutton.mini-restore-btn > button:hover { background-color: rgba(127, 127, 12
         @window_bg_color 0%, alpha(@window_bg_color, 0) 15%,
         alpha(@window_bg_color, 0) 85%, @window_bg_color 100%);
 }
+/* Kiosk mode's device-name button, top-right overlay: text + outline only,
+   no fill, so it reads as a floating label rather than a normal button
+   until hovered. Always fullscreen (window.csd.fullscreen already clears
+   GTK's own shadow/outline/radius for us), so no transparency/background
+   handling is needed on window.kiosk-window itself. */
+.kiosk-device-btn {
+    background-color: transparent;
+    border: 1px solid alpha(@window_fg_color, 0.35);
+    border-radius: 8px;
+    padding: 6px 14px;
+}
+.kiosk-device-btn:hover { background-color: alpha(@window_fg_color, 0.12); }
+/* Touch-friendly volume slider — see dark.css's identical rule for why
+   this is a pure CSS override, not a VolumeControl API change. */
+window.kiosk-window .vol-pop { min-height: 480px; }

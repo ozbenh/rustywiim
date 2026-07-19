@@ -179,3 +179,25 @@ window.mini-window .marquee-fade {
         #111111 0%, rgba(17,17,17,0) 15%,
         rgba(17,17,17,0) 85%, #111111 100%);
 }
+/* Kiosk mode's device-name button, top-right overlay: text + outline only,
+   no fill, so it reads as a floating label rather than a normal button
+   until hovered. Always fullscreen (window.csd.fullscreen already clears
+   GTK's own shadow/outline/radius for us, same mechanism the mini window
+   needed to clear by hand for its non-fullscreen rounded shape), so no
+   transparency/background handling is needed on window.kiosk-window itself. */
+.kiosk-device-btn {
+    background-color: transparent;
+    border: 1px solid rgba(255, 255, 255, 0.35);
+    border-radius: 8px;
+    color: #ffffff;
+    padding: 6px 14px;
+}
+.kiosk-device-btn:hover { background-color: rgba(255, 255, 255, 0.12); }
+/* Touch-friendly volume slider: the embedded PlaybackView's VolumeControl
+   builds the exact same `.vol-pop` popover/slider the main window uses —
+   this is a pure CSS override scoped by the ancestor window class, not a
+   VolumeControl API change, so the view itself stays completely unaware
+   of kiosk mode. A precise "window height minus a small margin" isn't
+   expressible in static CSS (no viewport units) — this fixed height is an
+   approximation, tune once this is actually used on a touchscreen. */
+window.kiosk-window .vol-pop { min-height: 480px; }

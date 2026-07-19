@@ -2,6 +2,7 @@ mod art_background;
 pub mod devlist;
 mod flip_cover;
 mod icons;
+mod kiosk;
 pub(crate) mod menu;
 mod scroll_fade_label;
 mod device_window;

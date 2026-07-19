@@ -12,7 +12,6 @@ use adw::prelude::*;
 use crate::config;
 use crate::ui::*;
 use super::*;
-use crate::ui::views::common::flash_button;
 use super::geometry::schedule_config_save;
 
 // ── impl DeviceWindowInner ────────────────────────────────────────────────────
@@ -274,42 +273,18 @@ pub(super) fn handle_transport_key(
     if state.intersects(gtk::gdk::ModifierType::CONTROL_MASK | gtk::gdk::ModifierType::ALT_MASK) {
         return glib::Propagation::Proceed;
     }
+    // "M" (mini-toggle) is this window's own key, not shared with any other
+    // host (Kiosk mode has no mini mode at all) — handled here before
+    // falling through to the transport/volume keys every host shares.
+    if let gtk::gdk::Key::m | gtk::gdk::Key::M = keyval {
+        if *i.mini_mode.borrow() { i.exit_mini_mode(); } else { i.enter_mini_mode(); }
+        schedule_config_save(i);
+        return glib::Propagation::Stop;
+    }
     // The transport shortcuts follow their button's sensitivity (kept
     // current from `ps.caps.can_*` by the active playback view) — a
     // disabled action shouldn't fire just because it came in via keyboard.
-    // `Proceed`, not `Stop`: with no action to perform, behave as if the
-    // shortcut didn't exist rather than swallowing the key.
-    match keyval {
-        gtk::gdk::Key::Left if prev_btn.is_sensitive() => {
-            i.ds.do_prev();
-            flash_button(prev_btn);
-            glib::Propagation::Stop
-        }
-        gtk::gdk::Key::Right if next_btn.is_sensitive() => {
-            i.ds.do_next();
-            flash_button(next_btn);
-            glib::Propagation::Stop
-        }
-        gtk::gdk::Key::space if play_btn.is_sensitive() => {
-            i.ds.do_play_pause();
-            flash_button(play_btn);
-            glib::Propagation::Stop
-        }
-        gtk::gdk::Key::Up => {
-            i.active_volume().step(5);
-            glib::Propagation::Stop
-        }
-        gtk::gdk::Key::Down => {
-            i.active_volume().step(-5);
-            glib::Propagation::Stop
-        }
-        gtk::gdk::Key::m | gtk::gdk::Key::M => {
-            if *i.mini_mode.borrow() { i.exit_mini_mode(); } else { i.enter_mini_mode(); }
-            schedule_config_save(i);
-            glib::Propagation::Stop
-        }
-        _ => glib::Propagation::Proceed,
-    }
+    views::common::handle_transport_key(&i.ds, &i.active_volume(), prev_btn, next_btn, play_btn, keyval)
 }
 
 /// Slide the paned's divider to `target_pos` (0 = fully closed) instead of
