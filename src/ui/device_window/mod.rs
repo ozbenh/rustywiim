@@ -46,7 +46,17 @@ struct DeviceWindowInner {
     /// `win.kiosk`'s registration in `wire_window_lifecycle()`.
     enter_kiosk_fn:   Rc<dyn Fn()>,
     io:             views::io::InputOutputView,
-    playback:       views::playback_full::PlaybackView,
+    /// Rebuilt in place by `toggle_layout()` ("L") rather than rebound —
+    /// `views/mod.rs`'s "bound once, never rebound" contract is about a
+    /// view's `DeviceState`, not its layout, so a fresh `PlaybackView`
+    /// against the same `ds` is how this changes, same mechanism
+    /// `KioskWindow::toggle_layout()` uses.
+    playback:       RefCell<views::playback_full::PlaybackView>,
+    /// Kept so `toggle_layout()` can hand the rebuilt view the same
+    /// artwork-background reference the original was built with.
+    art_bg:         art_background::ArtBackground,
+    icons:          Rc<icons::IconSet>,
+    layout:         Cell<views::playback_full::PlaybackLayout>,
     presets:        views::presets::PresetsView,
     status_bar:     views::status_bar::StatusBarView,
     /// Shown (spinning) only while `ConnectionState::Connecting` — see
@@ -265,6 +275,33 @@ impl DeviceWindowInner {
             dbg_ui(&format!("DeviceWindow cleanup uuid={uuid} preserving window_open (last_window, quitting, or entering kiosk)"));
         }
     }
+
+    /// "L" — swaps between the Classic and WideRight playback layouts and
+    /// rebuilds the view against the same `DeviceState`, same mechanism
+    /// `KioskWindow::toggle_layout()` uses: `views/mod.rs`'s "bound once,
+    /// never rebound" contract is about a view's `DeviceState`, not its
+    /// layout. Unlike Kiosk mode (always fullscreen), this window is
+    /// resizable, so `size_hint` reflects whatever its *current* size
+    /// actually is — WideRight's own sizing then keeps tracking that
+    /// live via the tick callback `PlaybackView::build()` already
+    /// installs, the same as it would after any other resize.
+    pub(super) fn toggle_layout(&self) {
+        use views::playback_full::PlaybackLayout;
+        let new_layout = match self.layout.get() {
+            PlaybackLayout::Classic => PlaybackLayout::WideRight,
+            PlaybackLayout::WideRight => PlaybackLayout::Classic,
+        };
+        self.layout.set(new_layout);
+
+        let (w, h) = (self.window.width(), self.window.height());
+        let size_hint = if w > 0 && h > 0 { Some((w, h)) } else { None };
+        let new_view = views::playback_full::PlaybackView::new(
+            &self.ds, &self.icons, Some(&self.art_bg), new_layout, size_hint,
+        );
+        new_view.set_active(!*self.mini_mode.borrow());
+        self.paned.set_end_child(Some(&new_view));
+        self.playback.replace(new_view).set_active(false);
+    }
 }
 
 // ── DeviceWindow ──────────────────────────────────────────────────────────────
@@ -463,7 +500,10 @@ impl DeviceWindow {
             show_devices_fn,
             enter_kiosk_fn,
             io,
-            playback,
+            playback: RefCell::new(playback),
+            art_bg: art_bg.clone(),
+            icons: Rc::clone(&icons),
+            layout: Cell::new(views::playback_full::PlaybackLayout::Classic),
             presets,
             status_bar,
             connecting_spinner,
@@ -538,7 +578,7 @@ impl DeviceWindow {
         inner.presets.set_active(true);
         inner.io.set_active(true);
         inner.status_bar.set_active(true);
-        inner.playback.set_active(!*inner.mini_mode.borrow());
+        inner.playback.borrow().set_active(!*inner.mini_mode.borrow());
         inner.mini.view.set_active(*inner.mini_mode.borrow());
 
         geometry::wire_maximize_tracking(&inner);

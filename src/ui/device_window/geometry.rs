@@ -301,7 +301,7 @@ impl DeviceWindowInner {
         // Activation runs the incoming view's own full catch-up refresh
         // (live or offline); the outgoing one stops reacting to signals
         // while hidden.
-        self.playback.set_active(false);
+        self.playback.borrow().set_active(false);
         self.mini.view.set_active(true);
 
         // Mini mode is never maximized (resizable(false) below relies on
@@ -388,7 +388,7 @@ impl DeviceWindowInner {
         self.window.present();
         // Activation runs the incoming view's own full catch-up refresh
         // (live or offline).
-        self.playback.set_active(true);
+        self.playback.borrow().set_active(true);
     }
 } // impl DeviceWindowInner
 

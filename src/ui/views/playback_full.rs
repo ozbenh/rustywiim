@@ -349,25 +349,53 @@ impl PlaybackView {
 
         match layout {
             PlaybackLayout::Classic => {
-                // Vol button sits at the right edge of the seek row, aligned with the bar's right end.
-                let seek_row = GtkBox::builder().orientation(Orientation::Horizontal).spacing(8).build();
-                seek_row.append(&pos);
-                seek_row.append(&seek);
-                seek_row.append(&dur);
-                volume.set_margin_start(4);
-                seek_row.append(&volume);
+                // Position/duration sit on their own row underneath the
+                // scale (flush left/right) instead of beside it — a plain
+                // Box, not a CenterBox, for the same reason WideRight's own
+                // version isn't one (see that layout's identical comment):
+                // CenterBox reserves symmetric space for both sides based
+                // on the *larger* label, which both misaligns the shorter
+                // one and can inflate the row's own natural width. Volume
+                // moves to the transport row (matching WideRight) now that
+                // it no longer shares the seek row with pos/dur — freed up,
+                // the scale gets the row's full width instead.
+                seek.set_hexpand(true);
+                let time_row = GtkBox::builder().orientation(Orientation::Horizontal).build();
+                pos.set_hexpand(true);
+                pos.set_halign(Align::Start);
+                dur.set_halign(Align::End);
+                time_row.append(&pos);
+                time_row.append(&dur);
+                // spacing(2), same tight grouping as WideRight's seek+time
+                // row — the scale and its labels read as one unit, not two
+                // separately-spaced rows.
+                let seek_block = GtkBox::builder().orientation(Orientation::Vertical).spacing(2).build();
+                seek_block.append(&seek);
+                seek_block.append(&time_row);
 
-                // Seek row + transport grouped into one card under RustyWiiM
-                // Modern (see modern.css); inert everywhere else, same as
-                // "panel-card". Artwork/title/artist/album/status/quality
-                // stay uncarded, floating directly on the blurred
-                // background when that theme is active.
+                // Experiment: volume pinned to the right edge of the card
+                // instead of clustered with the rest of the transport
+                // buttons — transport stays centred on its own (a
+                // CenterBox's center widget), volume sits in the end slot.
+                let controls_row = gtk::CenterBox::new();
+                controls_row.set_center_widget(Some(&transport));
+                controls_row.set_end_widget(Some(&volume));
+
+                // Seek block + transport grouped into one card under
+                // RustyWiiM Modern (see modern.css); inert everywhere else,
+                // same as "panel-card". Artwork/title/artist/album/status/
+                // quality stay uncarded, floating directly on the blurred
+                // background when that theme is active. spacing(8),
+                // unchanged from before this row was split in two — so
+                // transport's own gap from the seek bar (now the bottom of
+                // seek_block, not the scale row directly) doesn't grow
+                // just because time_row was inserted above it.
                 let controls_card = GtkBox::builder()
                     .orientation(Orientation::Vertical).spacing(8)
                     .css_classes(["controls-card"])
                     .build();
-                controls_card.append(&seek_row);
-                controls_card.append(&transport);
+                controls_card.append(&seek_block);
+                controls_card.append(&controls_row);
 
                 let right_pane = GtkBox::builder()
                     .orientation(Orientation::Vertical).spacing(8).hexpand(true)
@@ -600,32 +628,37 @@ impl PlaybackView {
                         outer.set_margin_bottom(margin_v);
                     }
                 );
-                match host_size_hint {
-                    Some((w, h)) if w > 0 && h > 0 => apply_for_screen(w, h),
-                    _ => {
-                        // Cold-start fallback: the window hasn't finished
-                        // its initial fullscreen negotiation yet, so its
-                        // real size isn't known synchronously. Polls the
-                        // eventual root *window's* size each frame — not
-                        // anything this view itself renders, unlike an
-                        // earlier version that measured the artwork's own
-                        // allocated size and fed that back into this same
-                        // computation, which could and did compound into
-                        // runaway growth — so there's no feedback path
-                        // back into this code, and one correct reading is
-                        // enough: applies once, then stops.
-                        self.add_tick_callback(glib::clone!(
-                            #[strong] apply_for_screen,
-                            move |widget, _clock| {
-                                let Some(root) = widget.root() else { return glib::ControlFlow::Continue };
-                                let (w, h) = (root.width(), root.height());
-                                if w <= 0 || h <= 0 { return glib::ControlFlow::Continue; }
-                                apply_for_screen(w, h);
-                                glib::ControlFlow::Break
-                            }
-                        ));
-                    }
+                let initial = host_size_hint.filter(|(w, h)| *w > 0 && *h > 0);
+                if let Some((w, h)) = initial {
+                    apply_for_screen(w, h);
                 }
+                // Keeps tracking the *window's* size for as long as this
+                // view lives (GTK stops calling a tick callback on its own
+                // once the widget it's attached to is destroyed — nothing
+                // to disconnect by hand here) rather than applying once
+                // and stopping: this is what makes a resizable host (a
+                // plain DeviceWindow, unlike Kiosk mode's fixed fullscreen
+                // one) keep the artwork/text/controls sized correctly as
+                // the user drags it, not just at the moment it was built.
+                // Reads the root *window's* size, never anything this view
+                // itself renders — an earlier version measured the
+                // artwork's own allocated size instead, which fed back
+                // into this same computation and compounded into runaway
+                // growth every frame.
+                let last_size = std::cell::Cell::new(initial.unwrap_or((0, 0)));
+                self.add_tick_callback(glib::clone!(
+                    #[strong] apply_for_screen,
+                    move |widget, _clock| {
+                        let Some(root) = widget.root() else { return glib::ControlFlow::Continue };
+                        let (w, h) = (root.width(), root.height());
+                        if w <= 0 || h <= 0 { return glib::ControlFlow::Continue; }
+                        if (w, h) != last_size.get() {
+                            last_size.set((w, h));
+                            apply_for_screen(w, h);
+                        }
+                        glib::ControlFlow::Continue
+                    }
+                ));
             }
         }
 
