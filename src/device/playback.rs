@@ -412,8 +412,9 @@ fn is_physical_input_mode(mode: i32) -> bool {
 /// on an Audio Pro Addon C5, see `capabilities.rs`'s
 /// `FAMILY_AUDIO_PRO_ADDON_C5` doc comment) and GENA's `AVTransport`
 /// NOTIFY's `PlaybackStorageMedium` share this vocabulary (confirmed live:
-/// `"PHONO"`/`"TIDAL_CONNECT"`/`"SONGLIST-NETWORK"` all match values
-/// already in this table or `decode_source_name_upnp()`'s own table below).
+/// `"PHONO"`/`"TIDAL_CONNECT"`/`"SONGLIST-NETWORK"`/`"QOBUZ_CONNECT"` all
+/// match values already in this table or `decode_source_name_upnp()`'s own
+/// table below).
 /// `None` for anything not in the confirmed list — the caller decides what
 /// to do with an unrecognized value (`mode_from_play_medium_fallback()`
 /// below still wants *some* number regardless; `DeviceState`'s GENA NOTIFY
@@ -438,6 +439,14 @@ pub fn mode_from_play_medium(play_medium: &str) -> Option<i32> {
         "HDMI"       => Some(49),
         "PHONO"      => Some(54),
         "SPOTIFY"    => Some(31), // confirmed live, 2026-07-13 — matches HTTP's own `31 => "Spotify"`
+        // Confirmed live, 2026-07-19 (`captures/test-sources/
+        // WiiM_Ultra_20260719_111807.QobuzConnect.json`): `PlayType` and
+        // this same session's `getPlayerStatusEx` `mode` both `36`, the
+        // same value already in `decode_source_name_http`'s table (`36 =>
+        // "Qobuz"`) and consumed by `decode_transport_caps_http()` — same
+        // reasoning as `SPOTIFY` above for using its own specific value
+        // instead of the generic `10` placeholder.
+        "QOBUZ_CONNECT" => Some(36),
         // Both confirmed live, 2026-07-18, matching this device's own
         // `getPlayerStatusEx` `mode` for the same session — see
         // `decode_source_name_upnp()`'s own handling of these two values.
