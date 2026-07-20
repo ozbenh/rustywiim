@@ -30,7 +30,7 @@ pub mod imp {
     use crate::ui::art_background::ArtBackground;
     use crate::ui::flip_cover::FlipCover;
     use crate::ui::icons::IconSet;
-    use crate::ui::views::common::{ServiceLabel, SwipeText};
+    use crate::ui::views::common::{QualityBadge, ServiceLabel, SwipeText};
     use crate::ui::views::volume::VolumeControl;
 
     #[derive(Default)]
@@ -47,7 +47,7 @@ pub mod imp {
         pub(super) artist:   OnceCell<SwipeText>,
         pub(super) status:   OnceCell<gtk::Label>,
         pub(super) service:  OnceCell<ServiceLabel>,
-        pub(super) quality:  OnceCell<gtk::Label>,
+        pub(super) quality:  OnceCell<QualityBadge>,
         pub(super) bt_pair:  OnceCell<gtk::Button>,
         pub(super) btn_prev: OnceCell<gtk::Button>,
         pub(super) btn_play: OnceCell<gtk::Button>,
@@ -90,7 +90,7 @@ use crate::ui::flip_cover::FlipCover;
 use crate::ui::icons::IconSet;
 use super::common::{
     build_bt_pair_button, format_bt_status_line, format_status_icon_only, is_unknown,
-    ServiceLabel, SwipeText,
+    QualityBadge, ServiceLabel, SwipeText,
 };
 use super::volume::VolumeControl;
 
@@ -163,21 +163,18 @@ impl MiniPlaybackView {
         // Started at 14px, matching `build_bt_pair_button`'s own
         // icon-alongside-small-text precedent rather than the much bigger
         // default meant for the full/WideRight layouts' own larger text;
-        // bumped 20% by request.
-        service.set_icon_pixel_size(17);
-        // "service-name-pill" — same rounded-rect badge as the service
-        // label's own text fallback (`ServiceLabel::new()`), not just
-        // plain text next to it.
-        let quality = Label::builder()
-            .label("").css_classes(["mini-status-label", "service-name-pill"]).visible(false)
-            // Extra gap from the service label/icon on top of `info_row`'s
-            // own spacing — reads as a separate badge, not glued to it.
-            .margin_start(6)
-            // See `ServiceLabel::new()`'s identical comment — without
-            // this the pill stretches to `info_row`'s own height instead
-            // of hugging the text.
-            .valign(Align::Center)
-            .build();
+        // bumped 20%, then another 10%, by request.
+        service.set_icon_pixel_size(19);
+        // Same icon-vs-text-pill badge as the full/WideRight layouts'
+        // own `quality_badge` — shown as the Hi-Res Audio mark instead of
+        // text when the current tier has one.
+        let quality = QualityBadge::new("mini-status-label");
+        // 20% smaller than `service`'s own 19px — see `QualityBadge::new()`'s
+        // comment for why the quality badge reads smaller everywhere.
+        quality.set_icon_pixel_size(15);
+        // Extra gap from the service label/icon on top of `info_row`'s
+        // own spacing — reads as a separate badge, not glued to it.
+        quality.widget.set_margin_start(6);
 
         let btn_prev = Button::builder()
             .icon_name("media-skip-backward-symbolic")
@@ -222,7 +219,7 @@ impl MiniPlaybackView {
             .build();
         info_row.append(&status);
         info_row.append(&service.widget);
-        info_row.append(&quality);
+        info_row.append(&quality.widget);
 
         let transport = GtkBox::builder()
             .orientation(Orientation::Horizontal).hexpand(true)
@@ -385,7 +382,7 @@ impl MiniPlaybackView {
         imp.artist.get().unwrap().set_text("");
         imp.status.get().unwrap().set_label("");
         imp.service.get().unwrap().set(None, imp.icons.get().unwrap());
-        imp.quality.get().unwrap().set_visible(false);
+        imp.quality.get().unwrap().widget.set_visible(false);
         imp.artwork.get().unwrap().clear();
         if let Some(Some(bg)) = imp.art_bg.get() { bg.clear(); }
         imp.bt_pair.get().unwrap().set_visible(false);
@@ -424,11 +421,7 @@ impl MiniPlaybackView {
             // title instead (below).
             let service_name = if ps.is_physical_input { None } else { ps.source_name.as_deref() };
             imp.service.get().unwrap().set(service_name, imp.icons.get().unwrap());
-            let quality_label = imp.quality.get().unwrap();
-            match ps.codec_label.as_deref() {
-                Some(q) => { quality_label.set_label(q); quality_label.set_visible(true); }
-                None => quality_label.set_visible(false),
-            }
+            imp.quality.get().unwrap().set(ps.codec_label.as_deref(), imp.icons.get().unwrap());
             // Hidden while already pairing (nothing to "restart") as well
             // as while connected.
             imp.bt_pair.get().unwrap().set_visible(is_bluetooth && !ps.bt_connected && !ps.bt_pairing);

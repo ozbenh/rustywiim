@@ -25,5 +25,11 @@
     <file alias="rustywiim-svc-iheartradio.svg">icons/svc-iheartradio.svg</file>
     <file alias="rustywiim-svc-tunein.svg">icons/svc-tunein.svg</file>
     <file alias="rustywiim-svc-amazon.svg">icons/svc-amazon.svg</file>
+    <!-- Quality-tier badge icons — same icon-vs-text-pill pattern as the
+         service brand marks above, but keyed by the translated quality
+         label instead of the service name (see IconSet::quality_paintable()).
+         Unlike the brand marks, this is the real certification logo's own
+         colors (gold/bronze gradient), not a baked flat fill. -->
+    <file alias="rustywiim-hires-audio-logo.svg">icons/hires-audio-logo.svg</file>
   </gresource>
 </gresources>

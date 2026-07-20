@@ -126,14 +126,10 @@ pub(crate) fn format_bt_status_line(connected: bool, device_name: Option<&str>, 
     }
 }
 
-/// "FLAC · 1571 kbps / 48.0 kHz / 24-bit" style string. The codec/quality
-/// badge prefix is only ever present when the UPnP backend supplied it (see
-/// `device::playback::decode_quality_upnp`) — presentation only, all the
-/// numeric parsing already happened in `decode_quality_http`/`decode_quality_upnp`.
-/// "1571 kbps / 48.0 kHz / 24-bit" — bitrate/sample-rate/bit-depth only.
-/// No longer takes a codec-label prefix (`"FLAC · ..."`) — that's now the
-/// separate `translate_quality_badge()`-driven badge next to the service
-/// label/icon instead of glued onto this string.
+/// "1571 kbps | 48.0 kHz | 24-bit" — bitrate/sample-rate/bit-depth only.
+/// No codec-label prefix (`"FLAC · ..."`) — that's the separate
+/// `translate_quality_badge()`-driven badge next to the service label/icon
+/// instead of glued onto this string.
 pub(crate) fn format_quality_line(q: &AudioQuality) -> String {
     let mut parts = Vec::new();
     if let Some(kbps) = q.bit_rate_kbps {
@@ -145,7 +141,7 @@ pub(crate) fn format_quality_line(q: &AudioQuality) -> String {
     if let Some(bd) = q.bit_depth {
         parts.push(format!("{bd}-bit"));
     }
-    parts.join(" / ")
+    parts.join(" | ")
 }
 
 pub(crate) fn vol_icon(muted: bool, vol: f64) -> &'static str {
@@ -277,6 +273,72 @@ impl ServiceLabel {
                 self.icon.set_visible(false);
                 self.label.set_visible(true);
                 self.label.set_label(name);
+            }
+        }
+    }
+}
+
+/// Displays `translate_quality_badge()`'s translated quality-tier string
+/// (e.g. "Hi-Res"/"CD"/"MQA") next to `ServiceLabel` — same icon-vs-text
+/// pattern as that widget (`IconSet::quality_paintable()` instead of
+/// `service_paintable()`), for tiers with a recognizable certification/
+/// brand mark (currently just Qobuz's "Hi-Res" tier) rather than every
+/// tier getting its own icon.
+#[derive(Clone, Debug)]
+pub(crate) struct QualityBadge {
+    pub widget: gtk::Box,
+    icon:  gtk::Image,
+    label: gtk::Label,
+}
+
+impl QualityBadge {
+    pub(crate) fn new(css_class: &str) -> Self {
+        // 36 (ServiceLabel's own default) minus ~20% — reads as a smaller,
+        // secondary accent next to the service brand mark rather than
+        // competing with it at equal size.
+        let icon = gtk::Image::builder()
+            .pixel_size(29).visible(false).css_classes([css_class])
+            .build();
+        let label = gtk::Label::builder()
+            .css_classes([css_class, "service-name-pill"])
+            .valign(gtk::Align::Center)
+            .build();
+        let widget = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal).spacing(6)
+            .halign(gtk::Align::Start).valign(gtk::Align::Center)
+            .visible(false)
+            .build();
+        widget.append(&icon);
+        widget.append(&label);
+        Self { widget, icon, label }
+    }
+
+    /// See `ServiceLabel::set_icon_pixel_size()` — same reason
+    /// (`apply_wide_right_scale()` keeps this proportional to the
+    /// dynamically scaled `.service-name` text next to it).
+    pub(crate) fn set_icon_pixel_size(&self, px: i32) {
+        self.icon.set_pixel_size(px);
+    }
+
+    /// `text` is `translate_quality_badge()`'s already-translated display
+    /// string, e.g. "Hi-Res" — `None`/empty hides the whole element.
+    pub(crate) fn set(&self, text: Option<&str>, icons: &IconSet) {
+        let text = text.unwrap_or("");
+        if text.is_empty() {
+            self.widget.set_visible(false);
+            return;
+        }
+        self.widget.set_visible(true);
+        match icons.quality_paintable(text) {
+            Some(paintable) => {
+                self.icon.set_paintable(Some(paintable));
+                self.icon.set_visible(true);
+                self.label.set_visible(false);
+            }
+            None => {
+                self.icon.set_visible(false);
+                self.label.set_visible(true);
+                self.label.set_label(text);
             }
         }
     }

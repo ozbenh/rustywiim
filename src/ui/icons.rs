@@ -16,8 +16,9 @@
 /// itself: "desired icon size, in application pixels" / "the window scale
 /// this will be displayed on" — not "render at any size forever"). Confirmed
 /// live: with `size` hardcoded to 64, the main window's 128px no-art
-/// fallback (`icon_size` in `ui/playback.rs`) was visibly pixelated — a 2×
-/// upscale of that 64px raster, worst on the jack icon's fine line detail.
+/// fallback (`views/playback_full.rs`'s `update_artwork()`) was visibly
+/// pixelated — a 2× upscale of that 64px raster, worst on the jack icon's
+/// fine line detail.
 /// `LOOKUP_SIZE` below is the largest logical size any caller actually
 /// displays one of these at — every smaller use (devlist row, mini window,
 /// remote icon) downscales from it instead, which stays sharp.
@@ -28,11 +29,20 @@ use gtk::gdk;
 use gtk::prelude::*;
 use std::collections::HashMap;
 
-/// Must stay in sync with `ui/playback.rs`'s `icon_size` for the main
-/// window's no-art `FlipCover` fallback (currently 128.0) — see this
-/// module's doc comment for why that's the size that has to drive the
-/// shared lookup resolution.
-const LOOKUP_SIZE:  i32 = 128;
+/// Must stay ≥ the largest logical `pixel_size`/`icon_size` any caller
+/// actually requests — currently that's `views/playback_full.rs`'s main
+/// window no-art `FlipCover` fallback (128.0, fixed) and, since Kiosk's
+/// WideRight layout scales the service/quality badge icons proportionally
+/// to screen size (`apply_wide_right_scale()`'s `service_icon_px`), a
+/// value that grows with the display — confirmed live on a 4K screen
+/// (~1267px WideRight artwork side) reaching ~149px, already past the old
+/// 128. Bumped to 256 for headroom above that, not just to match it
+/// exactly — see this module's doc comment for why undershooting this
+/// constant means a highlighted rasterized-then-upscaled icon (this was
+/// confirmed live for the Hi-Res Audio quality badge specifically: its
+/// gradient/photographic detail shows upscaling blur far more readily
+/// than the flat single-color brand marks do).
+const LOOKUP_SIZE:  i32 = 256;
 const LOOKUP_SCALE: i32 = 2;
 
 fn theme_icon(theme: &gtk::IconTheme, name: &str) -> gdk::Paintable {
@@ -75,6 +85,14 @@ pub struct IconSet {
     /// not a gap to paper over — every caller (`ServiceLabel` in
     /// `ui/views/common.rs`) falls back to the plain text name.
     services: HashMap<String, gdk::Paintable>,
+
+    /// `translate_quality_badge()`'s translated display string (e.g.
+    /// `"Hi-Res"`), lowercased, → paintable — same shape/rationale as
+    /// `services` above (no fallback field; `QualityBadge` in
+    /// `ui/views/common.rs` falls back to the plain text pill). Currently
+    /// just Qobuz's "Hi-Res" tier (codes `7`/`27`); add more entries here
+    /// as other badge icons show up.
+    qualities: HashMap<String, gdk::Paintable>,
 }
 
 impl IconSet {
@@ -136,6 +154,11 @@ impl IconSet {
             ("TuneIn",        "rustywiim-svc-tunein"),
             ("Amazon Music",  "rustywiim-svc-amazon"),
         ];
+        // Keyed by `translate_quality_badge()`'s translated display string
+        // (case-insensitively, same as `service_names` above).
+        let quality_names: &[(&'static str, &str)] = &[
+            ("Hi-Res", "rustywiim-hires-audio-logo"),
+        ];
 
         let sources: HashMap<&'static str, gdk::Paintable> = source_names.iter()
             .map(|&(id, name)| (id, theme_icon(&theme, name)))
@@ -152,12 +175,15 @@ impl IconSet {
         let services: HashMap<String, gdk::Paintable> = service_names.iter()
             .map(|&(id, name)| (id.to_lowercase(), theme_icon(&theme, name)))
             .collect();
+        let qualities: HashMap<String, gdk::Paintable> = quality_names.iter()
+            .map(|&(id, name)| (id.to_lowercase(), theme_icon(&theme, name)))
+            .collect();
 
         let source_fallback = theme_icon(&theme, "audio-card-symbolic");
         let output_fallback = theme_icon(&theme, "rustywiim-audio-output");
         let remote           = theme_icon(&theme, "rustywiim-remote");
 
-        Self { sources, source_fallback, outputs, output_fallback, remote, services }
+        Self { sources, source_fallback, outputs, output_fallback, remote, services, qualities }
     }
 
     // ── Accessors ─────────────────────────────────────────────────────────────
@@ -189,5 +215,14 @@ impl IconSet {
     /// expected to fall back to the service's text name.
     pub fn service_paintable(&self, name: &str) -> Option<&gdk::Paintable> {
         self.services.get(&name.to_lowercase())
+    }
+
+    /// Paintable for a translated quality-badge label (e.g. `"Hi-Res"` —
+    /// `translate_quality_badge()`'s output, not a raw wire code) —
+    /// case-insensitive, same shape as `service_paintable()`. `None` when
+    /// no matching icon is registered; callers fall back to the plain text
+    /// pill.
+    pub fn quality_paintable(&self, label: &str) -> Option<&gdk::Paintable> {
+        self.qualities.get(&label.to_lowercase())
     }
 }

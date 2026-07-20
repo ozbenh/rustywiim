@@ -494,6 +494,15 @@ pub fn mode_from_play_medium(play_medium: &str) -> Option<i32> {
         // to the exact same artwork, for no actual source change at all.
         "TIDAL_CONNECT" => Some(32),
         "SONGLIST-NETWORK" => Some(10),
+        // Confirmed via three real captures (`WiiM_Amp_20260706_135152`,
+        // `WiiM_Amp_20260707_173909`, `WiiM_Amp_Ultra_20260707_173928` —
+        // all Pandora sessions): `GetInfoEx`'s own `PlayType` is `10`
+        // every time `PlayMedium` is `STATION-NETWORK`, the same generic
+        // bucket `SONGLIST-NETWORK` already uses — this was previously
+        // missing from this table entirely (fell through to `None`,
+        // "unrecognized"), unlike `SONGLIST-NETWORK`'s own on-demand
+        // counterpart.
+        "STATION-NETWORK" => Some(10),
         _ => None, // unrecognized — not a confirmed value, let the caller decide
     }
 }
@@ -1097,6 +1106,9 @@ mod tests {
         // the real bug the old value caused.
         assert_eq!(mode_from_play_medium_fallback("TIDAL_CONNECT"), 32);
         assert_eq!(mode_from_play_medium_fallback("SONGLIST-NETWORK"), 10);
+        // Confirmed via three real Pandora captures — see
+        // `mode_from_play_medium()`'s own comment for the specific files.
+        assert_eq!(mode_from_play_medium_fallback("STATION-NETWORK"), 10);
         assert_eq!(mode_from_play_medium_fallback("SOME_FUTURE_SERVICE"), 10);
         assert_eq!(mode_from_play_medium("SOME_FUTURE_SERVICE"), None);
         assert_eq!(mode_from_play_medium("TIDAL_CONNECT"), Some(32));

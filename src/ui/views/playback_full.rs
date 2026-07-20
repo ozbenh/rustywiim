@@ -31,7 +31,7 @@ pub mod imp {
     use crate::ui::art_background::ArtBackground;
     use crate::ui::flip_cover::FlipCover;
     use crate::ui::icons::IconSet;
-    use crate::ui::views::common::{ServiceLabel, SwipeText};
+    use crate::ui::views::common::{QualityBadge, ServiceLabel, SwipeText};
     use crate::ui::views::volume::VolumeControl;
 
     #[derive(Default)]
@@ -52,7 +52,7 @@ pub mod imp {
         /// The new `translate_quality_badge()`-driven badge, next to
         /// `service` — distinct from `quality` below, which keeps the
         /// existing bitrate/depth/sample-rate text.
-        pub(super) quality_badge: OnceCell<gtk::Label>,
+        pub(super) quality_badge: OnceCell<QualityBadge>,
         pub(super) quality:  OnceCell<gtk::Label>,
         pub(super) pos:      OnceCell<gtk::Label>,
         pub(super) dur:      OnceCell<gtk::Label>,
@@ -115,7 +115,7 @@ use crate::ui::flip_cover::FlipCover;
 use crate::ui::icons::IconSet;
 use super::common::{
     apply_repeat_ui, apply_shuffle_ui, build_bt_pair_button, format_bt_status_line,
-    format_quality_line, format_status_only, is_unknown, ServiceLabel, SwipeText,
+    format_quality_line, format_status_only, is_unknown, QualityBadge, ServiceLabel, SwipeText,
 };
 use super::volume::VolumeControl;
 
@@ -201,10 +201,19 @@ pub(crate) fn wide_right_margin_h(art_side: i32) -> i32 {
 fn apply_wide_right_scale(
     class: &str, provider: &gtk::CssProvider,
     title_group: &GtkBox, status_group: &GtkBox, service_group: &GtkBox, volume: &VolumeControl,
-    service: &ServiceLabel,
+    service: &ServiceLabel, quality_badge: &QualityBadge,
     h: i32,
 ) {
     let h = h as f64;
+    // Two independent nudges by request, on top of everything else this
+    // function already scales proportionally: the service/quality/bitrate
+    // "ensemble" (service name + its icon, the quality badge, and the
+    // bitrate/samplerate/bit-depth line) 5% smaller, and the transport/
+    // volume controls 5% bigger — applied as flat multipliers on top of
+    // each element's own existing formula rather than baked into the base
+    // ratios, so they stay easy to re-tune independently later.
+    const SERVICE_ENSEMBLE_SCALE: f64 = 0.80;
+    const CONTROLS_SCALE: f64 = 1.20;
     // Two rounds of "20% smaller" on top of the original pass
     // (0.22/0.12/0.10/0.09/0.055/0.03), tuned against live testing on
     // both a 4K desktop and a Raspberry Pi touchscreen.
@@ -220,8 +229,12 @@ fn apply_wide_right_scale(
     // ratio Classic's fixed values use (36px icon : 12px `.service-name`
     // base font-size), then reduced a further 10% (3.0 -> 2.7) — the icon
     // specifically (not the text) still read too big.
-    let service_px = (album_px as f64 * 0.68).round() as i32;
-    service.set_icon_pixel_size((service_px as f64 * 2.7).round() as i32);
+    let service_px = (album_px as f64 * 0.68 * SERVICE_ENSEMBLE_SCALE).round() as i32;
+    let service_icon_px = (service_px as f64 * 2.7).round() as i32;
+    service.set_icon_pixel_size(service_icon_px);
+    // 20% smaller than the service icon — see `QualityBadge::new()`'s
+    // comment for why the quality badge reads smaller everywhere.
+    quality_badge.set_icon_pixel_size((service_icon_px as f64 * 0.8).round() as i32);
     let text_gap  = (h * 0.0576).round() as i32;
     title_group.set_spacing(text_gap);
 
@@ -236,6 +249,11 @@ fn apply_wide_right_scale(
     // hard floor human eyes need regardless of screen size, unlike pure
     // layout spacing.
     let status_px = (h * 0.0352).round().max(18.0) as i32;
+    // The bitrate/samplerate/bit-depth string specifically, 20% smaller
+    // than `status_px` (which `.dim-label`/`.vol-level` still use as-is) —
+    // by request, reads as secondary detail rather than matching the
+    // pos/dur/status row it sits under.
+    let quality_line_px = (status_px as f64 * 0.8 * SERVICE_ENSEMBLE_SCALE).round().max(14.0) as i32;
     let status_gap = (h * 0.0192).round() as i32;
     status_group.set_spacing(status_gap.max(2));
     // Spacing between service/quality-badge/bitrate-string — was a fixed
@@ -263,7 +281,7 @@ fn apply_wide_right_scale(
     // of `h` too, so it shrinks/grows together with everything else
     // instead of eating a growing/shrinking share of it.
     let card_padding = (h * 0.01).round().max(4.0);
-    let card_h = ((h / 3.0) * (2.0 / 3.0) - 2.0 * card_padding).max(24.0);
+    let card_h = (((h / 3.0) * (2.0 / 3.0) - 2.0 * card_padding) * CONTROLS_SCALE).max(24.0);
     let transport_btn = (card_h * 0.55).round() as i32;
     let play_btn      = (card_h * 0.68).round() as i32;
     let loop_btn       = transport_btn;
@@ -307,7 +325,7 @@ fn apply_wide_right_scale(
          .{class} .track-artist {{ font-size: {artist_px}px; }}\n\
          .{class} .track-album {{ font-size: {album_px}px; }}\n\
          .{class} .service-name {{ font-size: {service_px}px; }}\n\
-         .{class} .quality-label {{ font-size: {status_px}px; }}\n\
+         .{class} .quality-label {{ font-size: {quality_line_px}px; }}\n\
          .{class} .dim-label {{ font-size: {status_px}px; }}\n\
          .{class} .vol-level {{ font-size: {status_px}px; }}\n\
          .{class} .seek-scale trough {{ min-height: {seek_h}px; border-radius: {half}px; }}\n\
@@ -392,22 +410,14 @@ impl PlaybackView {
         // Next to `service`, same rounded-rect badge as its own text
         // fallback (`ServiceLabel::new()`'s "service-name-pill") and same
         // font-size class, so the two read as one matched pair.
-        let quality_badge = Label::builder()
-            .css_classes(["service-name", "service-name-pill"]).visible(false)
-            // Extra gap from the service label/icon on top of the
-            // group box's own spacing — reads as a separate badge, not
-            // glued to it.
-            .margin_start(6)
-            // Without this, the label's box defaults to `Fill` within its
-            // parent row and stretches to match the row's own height (set
-            // by its tallest sibling, e.g. the service icon) — the pill's
-            // border/background then paints around that *stretched*
-            // allocation, not the text's natural size, however tight the
-            // CSS padding/min-height is. `Center` keeps its own box at
-            // natural content size, with any extra row height as outside
-            // margin instead of inside the border.
-            .valign(Align::Center)
-            .build();
+        // Same rounded-rect badge as `service`'s own text fallback and
+        // same font-size class, so the two read as one matched pair —
+        // shown as the Hi-Res Audio certification mark instead of text
+        // when the current tier has one (`QualityBadge::set()`).
+        let quality_badge = QualityBadge::new("service-name");
+        // Extra gap from the service label/icon on top of the group box's
+        // own spacing — reads as a separate badge, not glued to it.
+        quality_badge.widget.set_margin_start(6);
         // Always visible (never `.set_visible(false)`) so its line-height is
         // permanently reserved in the layout — otherwise the artwork above it
         // resizes whenever quality info appears/disappears (e.g. no bitrate
@@ -527,7 +537,7 @@ impl PlaybackView {
                     .halign(Align::Start).valign(Align::Center)
                     .build();
                 service_group.append(&service.widget);
-                service_group.append(&quality_badge);
+                service_group.append(&quality_badge.widget);
                 let controls_overlay = gtk::Overlay::new();
                 controls_overlay.set_child(Some(&controls_row));
                 controls_overlay.add_overlay(&service_group);
@@ -637,14 +647,14 @@ impl PlaybackView {
                 // other gap in this layout — cancel out `quality_badge`/
                 // `quality`'s own fixed construction-time margins (used by
                 // Classic instead) so the box's spacing is the only gap.
-                quality_badge.set_margin_start(0);
+                quality_badge.widget.set_margin_start(0);
                 quality.set_margin_start(0);
                 let service_group = GtkBox::builder()
                     .orientation(Orientation::Horizontal)
                     .halign(Align::Start)
                     .build();
                 service_group.append(&service.widget);
-                service_group.append(&quality_badge);
+                service_group.append(&quality_badge.widget);
                 service_group.append(&quality);
                 let controls_col = GtkBox::builder()
                     .orientation(Orientation::Vertical)
@@ -793,7 +803,7 @@ impl PlaybackView {
                 let apply_for_screen = glib::clone!(
                     #[strong] art_overlay, #[strong] text_col,
                     #[strong] title_group, #[strong] status_group, #[strong] service_group, #[strong] volume,
-                    #[strong] service,
+                    #[strong] service, #[strong] quality_badge,
                     #[strong] band_row, #[strong] controls_col, #[strong] top_row,
                     #[strong] content_block, #[strong] outer,
                     #[strong] class, #[strong] provider,
@@ -802,7 +812,8 @@ impl PlaybackView {
                         art_overlay.set_size_request(side, side);
                         text_col.set_size_request(-1, side);
                         apply_wide_right_scale(
-                            &class, &provider, &title_group, &status_group, &service_group, &volume, &service, side,
+                            &class, &provider, &title_group, &status_group, &service_group, &volume,
+                            &service, &quality_badge, side,
                         );
 
                         // All structural gaps/margins below are fractions
@@ -1026,7 +1037,7 @@ impl PlaybackView {
         imp.album.get().unwrap().set_text("");
         imp.status.get().unwrap().set_label("");
         imp.service.get().unwrap().set(None, imp.icons.get().unwrap());
-        imp.quality_badge.get().unwrap().set_visible(false);
+        imp.quality_badge.get().unwrap().widget.set_visible(false);
         imp.quality.get().unwrap().set_label("");
         imp.artwork.get().unwrap().clear();
         if let Some(Some(bg)) = imp.art_bg.get() { bg.clear(); }
@@ -1113,10 +1124,7 @@ impl PlaybackView {
                 let service_name = if ps.is_physical_input { None } else { ps.source_name.as_deref() };
                 imp.service.get().unwrap().set(service_name, imp.icons.get().unwrap());
                 let quality_badge = imp.quality_badge.get().unwrap();
-                match ps.codec_label.as_deref() {
-                    Some(q) => { quality_badge.set_label(q); quality_badge.set_visible(true); }
-                    None => quality_badge.set_visible(false),
-                }
+                quality_badge.set(ps.codec_label.as_deref(), imp.icons.get().unwrap());
                 // Hidden while already pairing (nothing to "restart") as
                 // well as while connected.
                 imp.bt_pair.get().unwrap().set_visible(is_bluetooth && !ps.bt_connected && !ps.bt_pairing);
