@@ -8,6 +8,37 @@ Copyright (c) 2026 Benjamin Herrenschmidt
 
 Licensed under the [MIT License](LICENSE).
 
+**[Screenshots](#screenshots)**
+
+### Normal mode (Windowed application)
+
+<a href="pics/main-dark.png"><img src="pics/thumbs/main-dark.png" width="150" alt="Main window, dark theme"></a>
+<a href="pics/mini-dark.png"><img src="pics/thumbs/mini-dark.png" width="150" alt="Mini window, dark theme"></a>
+<a href="pics/main-modern.png"><img src="pics/thumbs/main-modern.png" width="150" alt="Main window, modern theme"></a>
+<a href="pics/mini-modern.png"><img src="pics/thumbs/mini-modern.png" width="150" alt="Mini window, modern theme"></a>
+<a href="pics/devlist.png"><img src="pics/thumbs/devlist.png" width="150" alt="Device list window"></a>
+<a href="pics/settings.png"><img src="pics/thumbs/settings.png" width="150" alt="Settings dialog"></a>
+
+### Kiosk mode (fullscreen) [Experimental]
+
+<a href="pics/kiosk-dark.png"><img src="pics/thumbs/kiosk-dark.png" width="150" alt="Kiosk mode, dark theme"></a>
+<a href="pics/kiosk-modern.png"><img src="pics/thumbs/kiosk-modern.png" width="150" alt="Kiosk mode, modern theme"></a>
+<a href="pics/kiosk-modern-devlist.png"><img src="pics/thumbs/kiosk-modern-devlist.png" width="150" alt="Kiosk mode, modern theme, device list"></a>
+
+## Introduction
+
+The application supports a standard window view and a mini-window view in a normal desktop environment. Additionally there is an experimental "kiosk" mode for fullscreen use (I use it on a Raspberry Pi with a touch screen).
+
+The app has fairly basic functionality for now: Display song info, artwork (with some animations), basic navigation buttons, volume/mute control, presets and input/outputs selection, BT pairing as a sink, that's about it for now. I have done plenty of API reverse engineering and am hoping to enrich the amount of control options over time, but for now it's focused on making what is there robust and useful.
+
+It supports the system theme (including forcing light or dark) and two custom themes: Dark and Modern. Dark is a fairly classic dark backgroud with white controls and Modern uses "blurred artwork" as background and control into semi transparent boxes. Modern is the default.
+
+This started as an exercise in using AI to program in Rust which I am not familiar with, so trying to both build experience with driving AI and learn a bit of Rust...
+
+The former is a hit, the latter, less so, at least initially as the AI did too well :-)
+
+Now, though, as the project slowly evolves (matures ?), I'm getting more involved with the code, and while a lot is still written by AI, it's under much more precise directions, ie the amount of "slop" is hopefully decreasing. As a result I am slowly learning Rust, ah !
+
 So far tested with:
 
  * WiiM Ultra
@@ -16,7 +47,7 @@ So far tested with:
  * WiiM Amp Ultra
  * iEAST AudioCast
  * AudioPro C5
- 
+
 On the following distributions:
 
  * Fedora 44 (x86_64)
@@ -24,22 +55,6 @@ On the following distributions:
  * Raspberry PiOS (trixie) (Pi5)
  
 See below how to send me data to help support other devices if you own them.
-
-It supports a standard window view and a mini-window view
-
-Additionally (not in a relase yet), there is a work-in-progress "kiosk" mode for fullscreen use, I use it on a Raspberry Pi with a little touch screen).
-
-The app has fairly basic functionality for now: Display song info, artwork (with some animations), basic navigation buttons, volume/mute control, presets and input/outputs selection. I have done plenty of API reverse engineering and am hoping to enrich the amount of control options over time, but for now it's focused on making what is there robust and useful.
-
-
-It supports the system theme (including forcing light or dark) and two custom themes: Dark and Modern. Dark is a fairly classic dark backgroud with white controls and Modern uses "blurred artwork" as background and control into semi transparent boxes.
-
-
-This started as an exercise in using AI to program in Rust which I am not familiar with, so trying to both build experience with driving AI and learn a bit of Rust...
-
-The former is a hit, the latter, less so, at least initially as the AI did too well :-)
-
-Now, though, as the project slowly evolves (matures ?), I'm getting more involved with the code, and while a lot is still written by AI, it's under much more precise directions, ie the amount of "slop" is hopefully decreasing. As a result I am slowly learning Rust, ah !
 
 ## Pre-built packages ##
 
@@ -52,8 +67,11 @@ See [Releases page](https://github.com/ozbenh/rustywiim/releases)
 |M      | Switch mini mode on/off |
 |K      | Switch kiosk mode on/off |
 |L      | Switch beteen layouts (normal and kiosk) |
-|<-     | Previous song |
-|->     | Next song |
+|T      | Rotate through the various themes |
+|<kbd>←</kbd>| Previous song |a
+|<kbd>→</kbd>| Next song |
+|<kbd>↑</kbd>| Volume up |
+|<kbd>↓</kbd>| Volume down |
 |Space  | Play/Pause |
 |Ctrl-W | Close window |
 |Ctrl-Q | Quit application |
@@ -88,9 +106,9 @@ or
 ## Options ##
 For now just this one:
 
-| Option              | Description                                                                                                                                                              |
-|:--------------------|:-------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `--debug=<options>`   | Comma-separated list of debug/tracing options: `api` (dump API calls), `state` (state change messages), `device` (device capabilities detection), `discovery` (the discovery machinery), `upnp` (the UPnP protocol layer), `ui` (parts of the GUI code), `config` (config file management), `all` (all of the above) |
+| Option                      | Description                                                                                                                                                              |
+|:----------------------------|:-------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `--debug=<options>`   | Comma-separated list of debug/tracing options: `api` (dump API calls), `state` (state change messages), `device` (device capabilities detection), `discovery` (the discovery machinery), `upnp` (the UPnP protocol layer), `gena` (the UPnP notificationsm)`ui` (parts of the GUI code), `config` (config file management), `all` (all of the above). Add `:verbose` for extra logging (notably for getting the full API responses) |
 | `--tls=<mode>`        | Override TLS mode: `wiim` (default), `audio-pro`, `any`, `http`                                                                                                         |
 | `--connect=<url>`     | Connect directly to `scheme://ip[:port]` (e.g. `http://127.0.0.1:8080` for `wiim-simulator`), opening a device window for it immediately instead of discovery |
 | `--no-config`         | Don't load or save the config file — every run behaves like a fresh install |
@@ -111,9 +129,28 @@ You can pretty-print this file using `target/debug/wiim-capdump`. I would apprec
 
 ## Known issues ##
 
-* There's an occasional row of stale pixels at the top of the scrolling song title in the miniaturized window. This happens with older gtk versions such as the one in Ubuntu 24.04 and is related to bugs in the gtk4 renderer. I have tried various workarounds but so far without great success. I'll investigate replacing some of this code with direct cairo rendering, see if that helps.
+* Kiosk mode doesn't have access to the settings dialog, and so on a touch screen (in absence of keyboard), there is no way to change themes. You can run in normal mode, change theme, then re-run in kiosk mode, or manually change the theme in `~/.config/rustywiim/config.json`. This will be fixed eventually (and I might add a command line argument to select the theme at launch)
+* Kiosk mode doesn't save much state unlike normal mode
+* Kiosk mode doesn't have a way to manually add a device by IP address yet
 
 ## Changelog ##
+  * 0.10.0 - 2026-07-20
+    * A new experimental full screen "Kiosk" mode (single window)
+    * Raspberry Pi .deb builds (for trixie/RPiOS)
+    * Fix issues with setting loop-mode on some devices (such as WiiM mini) by
+      switching to using UPnP instead of the HTTP API.
+    * Add GENA support (enabled by default). Now, if it works (so far all
+      devices seem to support it), rustywiim will "subscribe" to UPnP notifications
+      from devices rather than polling them every second. It significantly reduce
+      network activity (and pressure on the Linkplay rather weak http server). One
+      flip side is that the "current" song position is now interpolated rather than
+      obtained from the device and might be less precise than it used to be.
+    * A bunch of cosmetic UI tweaks and improvements, including streaming service
+      icons (when available), quality badges, etc...
+    * Fix a number of bugs/issues around seeking inside a song (clicking on the song
+      progress bar). It would previously quickly overwhelm the device, and had a
+      tendency to "jump around".
+    * Add/Test support for Arylic S10+ and AudioCast Pro
 
   * 0.9.0 - 2026-07-15
     * Add AudioPro C5 support (old and new firmwares)
@@ -295,9 +332,21 @@ You can pretty-print this file using `target/debug/wiim-capdump`. I would apprec
 
 ## Screenshots ##
 
-![Screenshot](pics/screenshot1.png)
-![Screenshot](pics/screenshot2.png)
-![Screenshot](pics/screenshot3.png)
-![Screenshot](pics/screenshot4.png)
-![Screenshot](pics/screenshot5.png)
-![Screenshot](pics/screenshot6.png)
+**Main window, dark theme**
+![Screenshot](pics/main-dark.png)
+**Mini window, dark theme**
+![Screenshot](pics/mini-dark.png)
+**Main window, modern theme**
+![Screenshot](pics/main-modern.png)
+**Mini window, modern theme**
+![Screenshot](pics/mini-modern.png)
+**Kiosk mode (Raspberry Pi5 + 1024x600 touchscreen), dark theme**
+![Screenshot](pics/kiosk-dark.png)
+**Kiosk mode (Raspberry Pi5 + 1024x600 touchscreen), modern theme**
+![Screenshot](pics/kiosk-modern.png)
+**Kiosk mode (Raspberry Pi5 + 1024x600 touchscreen), modern theme with devices list**
+![Screenshot](pics/kiosk-modern-devlist.png)
+**Device list window**
+![Screenshot](pics/devlist.png)
+**Settings dialog**
+![Screenshot](pics/settings.png)
