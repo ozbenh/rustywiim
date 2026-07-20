@@ -32,6 +32,14 @@ pub mod imp {
         pub(super) remote_icon:  OnceCell<gtk::Image>,
         pub(super) remote_label: OnceCell<gtk::Label>,
         pub(super) bar:          OnceCell<gtk::CenterBox>,
+        /// Unique per-instance CSS class + provider for `set_scale()` —
+        /// same technique `playback_full.rs`'s `apply_wide_right_scale()`
+        /// uses, so this bar's fonts/icon sizes can be screen-proportional
+        /// too instead of the fixed `window.kiosk-window`-scoped values
+        /// (dark.css/system.css) that used to be the only sizing Kiosk
+        /// mode got.
+        pub(super) scale_class:    OnceCell<String>,
+        pub(super) scale_provider: OnceCell<gtk::CssProvider>,
     }
 
     #[glib::object_subclass]
@@ -189,6 +197,64 @@ impl StatusBarView {
     pub(crate) fn set_active(&self, active: bool) {
         let was = self.imp().active.replace(active);
         if active && !was { self.refresh(); }
+    }
+
+    /// Kiosk mode only: scales this bar's fonts/icon sizes proportionally
+    /// to `side` (the same WideRight artwork side length already driving
+    /// `apply_wide_right_scale()`/`set_edge_margin()` — pass
+    /// `compute_wide_right_art_side(w, h)`'s result, same as those). This
+    /// is the fix for the bar itself: it used to be a *fixed* size
+    /// (`window.kiosk-window`-scoped `device-info`/`ip-label`/`net-icon`
+    /// CSS at 18px/18px/24px, `remote_icon`'s hardcoded 42px for `large`)
+    /// regardless of actual screen size — confirmed live to look right on
+    /// one screen (whatever it was eyeballed against) and disproportionately
+    /// big on a much smaller one (a Raspberry Pi's touchscreen vs. a 4K
+    /// monitor). Factors below are chosen to land close to those old fixed
+    /// values at roughly the screen size they were tuned against, then
+    /// scale down from there — floors are for baseline legibility only
+    /// (same reasoning as `apply_wide_right_scale()`'s own `status_px`
+    /// floor), not because these should stop shrinking on a small screen;
+    /// shrinking on a small screen is the actual fix. Not independently
+    /// re-tuned against a real screen. Lazily creates its own scoped
+    /// `gtk::CssProvider` on first call (same technique
+    /// `apply_wide_right_scale()` uses), reused on every subsequent resize.
+    pub(crate) fn set_scale(&self, side: i32) {
+        let imp = self.imp();
+        let needs_provider = imp.scale_provider.get().is_none();
+        let class = imp.scale_class.get_or_init(|| {
+            let class = format!("statusbar-scale-{:x}", self.as_ptr() as usize);
+            self.add_css_class(&class);
+            class
+        }).clone();
+        let provider = imp.scale_provider.get_or_init(gtk::CssProvider::new);
+        if needs_provider {
+            if let Some(display) = gtk::gdk::Display::default() {
+                gtk::style_context_add_provider_for_display(
+                    &display, provider, gtk::STYLE_PROVIDER_PRIORITY_USER,
+                );
+            }
+        }
+
+        // One knob (BASE_FACTOR) for the whole bar — net_icon/remote_icon
+        // are fixed ratios off `dev_px`, not independently-tuned factors
+        // of their own, so a future "make it all a bit bigger/smaller"
+        // adjustment only ever touches this one number instead of three
+        // that have to be moved in lockstep.
+        const BASE_FACTOR: f64 = 0.0156;
+        const NET_RATIO:    f64 = 1.34;  // net_px / dev_px
+        const REMOTE_RATIO: f64 = 2.33;  // remote_px / dev_px
+        let s = side as f64;
+        let dev_px    = (s * BASE_FACTOR).round().max(11.0) as i32;
+        let net_px    = (s * BASE_FACTOR * NET_RATIO).round().max(13.0) as i32;
+        let remote_px = (s * BASE_FACTOR * REMOTE_RATIO).round().max(18.0) as i32;
+
+        imp.remote_icon.get().unwrap().set_pixel_size(remote_px);
+
+        provider.load_from_string(&format!(
+            ".{class} .device-info {{ font-size: {dev_px}px; }}\n\
+             .{class} .ip-label {{ font-size: {dev_px}px; }}\n\
+             .{class} .net-icon {{ -gtk-icon-size: {net_px}px; }}\n"
+        ));
     }
 
     /// Aligns this bar's left/right content with whatever margin the host

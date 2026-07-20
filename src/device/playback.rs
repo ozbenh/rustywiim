@@ -12,7 +12,9 @@
 ///   Presentation (turning canonical values into display strings/icons)
 ///   stays in `ui/playback.rs`.
 
+use std::collections::HashSet;
 use std::rc::Rc;
+use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
 
 use super::capabilities::{self, DeviceId};
@@ -38,6 +40,18 @@ pub struct PlaybackState {
     /// (`DeviceState::current_mode()`), since it has to match capability-
     /// derived source IDs, not a display string.
     pub source_name: Option<Rc<str>>,
+    /// Whether the current input is a fixed physical passthrough (line-in/
+    /// optical/coax/HDMI/phono/RCA) rather than an app/streaming source —
+    /// see `is_physical_input_mode()`'s doc comment. Set from
+    /// `apply_mode_change()`, the one place `current_mode` changes. `ui/`
+    /// reads this instead of calling `is_physical_input_mode()` on a raw
+    /// mode number itself — for a physical input, `source_name` already
+    /// holds the input's own display name ("Optical In", "Bluetooth", ...)
+    /// via `decode_source_name_http`/`decode_source_name_upnp`'s
+    /// physical-input arms, since there's no separate "service" for it;
+    /// this flag is what lets a view show that name as the title instead
+    /// of as a service badge, since there's no real song info either way.
+    pub is_physical_input: bool,
     pub title:       Rc<str>,
     pub artist:      Rc<str>,
     pub album:       Rc<str>,
@@ -84,6 +98,7 @@ impl Default for PlaybackState {
         Self {
             status:      PlaybackStatus::Stopped,
             source_name: None,
+            is_physical_input: false,
             title:       Rc::from(""),
             artist:      Rc::from(""),
             album:       Rc::from(""),
@@ -401,8 +416,11 @@ fn decode_next_prev_http(mode: i32, vendor: &str) -> (bool, bool) {
 
 /// `mode`/`play_type` values that are fixed physical audio-passthrough
 /// inputs — no application/service behind them at all, so shuffle/repeat/
-/// seek are meaningless by construction.
-fn is_physical_input_mode(mode: i32) -> bool {
+/// seek are meaningless by construction, and so is a "service name": there's
+/// no song info, only whatever's physically plugged in. `state.rs` uses
+/// this to drive `PlaybackState::is_physical_input`, the canonical signal
+/// `ui/` reads instead of a raw mode number (see that field's doc comment).
+pub(crate) fn is_physical_input_mode(mode: i32) -> bool {
     matches!(mode, 40 | 60 | 43 | 44 | 49 | 54)
 }
 
@@ -584,7 +602,14 @@ pub fn decode_quality_http(bit_rate: &str, sample_rate: &str, bit_depth: &str) -
     }
     let bit_rate_kbps   = if has_br { br.parse::<f64>().ok() } else { None };
     let sample_rate_khz = if has_sr { sr.parse::<f64>().ok().map(|v| v / 1000.0) } else { None };
-    let bit_depth_val   = if !bd.is_empty() && bd != "0" { bd.parse::<u32>().ok() } else { None };
+    // Occasionally reported as 32 — no WiiM hardware actually does more
+    // than 24-bit, and the WiiM app itself caps its own display at 24;
+    // clamp rather than show a bogus, unachievable value.
+    let bit_depth_val = if !bd.is_empty() && bd != "0" {
+        bd.parse::<u32>().ok().map(|d| d.min(24))
+    } else {
+        None
+    };
     Some(AudioQuality { bit_rate_kbps, sample_rate_khz, bit_depth: bit_depth_val })
 }
 
@@ -863,19 +888,83 @@ fn decode_next_prev_upnp(
     (true, true)
 }
 
-/// Translates a non-empty `song:actualQuality` into the WiiM app's own
-/// display vocabulary. Only two mappings are confirmed from real captures —
-/// `HI_RES_LOSSLESS` → "FLAC", `LOSSLESS` → "HIGH" (both are real TIDAL
-/// `audioQuality` enum values; the app's choice to relabel rather than show
-/// them verbatim is an observed fact, not one we understand the reasoning
-/// for). Anything else (TIDAL's own `HIGH`/`LOW` lossy tiers, or any other
-/// service's vocabulary — unconfirmed, no captures yet) is shown verbatim
-/// rather than guessed at.
-fn translate_actual_quality(q: &str) -> Rc<str> {
-    match q {
-        "HI_RES_LOSSLESS" => Rc::from("FLAC"),
-        "LOSSLESS"        => Rc::from("HIGH"),
-        other             => Rc::from(other),
+/// Already-warned-about raw `actualQuality` values (see
+/// `translate_quality_badge()`'s doc comment) — printed once per distinct
+/// value per process run, not once per poll tick.
+static WARNED_UNKNOWN_QUALITY: LazyLock<Mutex<HashSet<String>>> =
+    LazyLock::new(|| Mutex::new(HashSet::new()));
+
+/// Translates a non-empty `song:actualQuality` into a display badge.
+/// Takes `service_name` too (`PlaybackState::source_name`) even though no
+/// current mapping actually branches on it — every value confirmed so far
+/// happens to be unambiguous across services, so this is one flat match
+/// rather than a per-service one, but a future conflict (two services
+/// reusing the same raw code for different tiers) would need to match on
+/// `service_name` too, so the parameter is already part of the signature.
+///
+/// Confirmed mappings, grouped by the service whose own `actualQuality`
+/// vocabulary each value belongs to (the raw values themselves don't say
+/// so — each service picked its own scheme independently):
+/// - **TIDAL**: `LOSSLESS`/`HI_RES`/`HI_RES_LOSSLESS` are all TIDAL
+///   concepts. → `"HIGH"`/`"MQA"`/`"FLAC"` respectively, matching the WiiM
+///   app's own relabeling. `LOSSLESS`→`"HIGH"` and `HI_RES_LOSSLESS`→
+///   `"FLAC"` are confirmed directly from real captures, not guessed: two
+///   captures independently named for what the WiiM app itself displayed
+///   at capture time (`WiiM_Ultra_20260706_075156.TidalConnect-HIGH.json`,
+///   `..._110556.TidalBuiltIn-HIGH.json`) both carry the raw wire value
+///   `LOSSLESS`, proving the app really does show "HIGH" for that value
+///   (an earlier version of this function dropped this specific mapping,
+///   mistaking it for an unconfirmed guess — it wasn't). `HI_RES`→`"MQA"`
+///   is TIDAL's now-deprecated MQA tier name, not independently capture-
+///   confirmed but a known, documented TIDAL API value. TIDAL's remaining
+///   documented tier (`LOW`, and the raw `HIGH` wire value itself, its
+///   lossy AAC tier — not to be confused with the *display* label "HIGH"
+///   above) has no captures showing what the app displays for it, so it's
+///   genuinely unconfirmed — left as verbatim passthrough.
+/// - **Qobuz**: `"6"`/`"7"`/`"27"` are Qobuz's own numeric `actualQuality`
+///   enum → `"CD"`/`"Hi-Res"`/`"Hi-Res"` (`"27"` is a second, equivalent
+///   Hi-Res tier code, not a typo for `"7"`).
+/// - **Amazon Music**: `"UHD"`/`"HD"` → `"Ultra HD"`/`"HD"` (`"HD"` maps to
+///   itself — listed explicitly so it reads as a confirmed value, not an
+///   arbitrary passthrough).
+///
+/// Any other non-numeric string is also shown verbatim — an unrecognized
+/// value that's at least human-readable is more useful displayed than
+/// hidden. A purely-numeric string that reaches here, though, is some
+/// other service's *internal* tier code with no confirmed translation
+/// (the way Qobuz's own `"6"`/`"7"`/`"27"` would look before being
+/// mapped) — showing a bare, context-free digit to the user is worse than
+/// showing nothing, so this returns `None` (no badge at all) and logs a
+/// warning once per distinct value, so a real one can get its own mapping
+/// added once seen.
+pub fn translate_quality_badge(label: &str, service_name: Option<&str>) -> Option<Rc<str>> {
+    match (service_name, label) {
+        // Qobuz.
+        (_, "6")  => Some(Rc::from("CD")),
+        (_, "7")  => Some(Rc::from("Hi-Res")),
+        (_, "27") => Some(Rc::from("Hi-Res")),
+        // Amazon Music.
+        (_, "UHD") => Some(Rc::from("Ultra HD")),
+        (_, "HD")  => Some(Rc::from("HD")),
+        // TIDAL — see this function's doc comment for the capture
+        // evidence confirming `LOSSLESS`/`HI_RES_LOSSLESS`; `HI_RES` is a
+        // known documented value, not independently capture-confirmed.
+        (_, "LOSSLESS")        => Some(Rc::from("HIGH")),
+        (_, "HI_RES")          => Some(Rc::from("MQA")),
+        (_, "HI_RES_LOSSLESS") => Some(Rc::from("FLAC")),
+        (_, other) => {
+            if !other.is_empty() && other.chars().all(|c| c.is_ascii_digit()) {
+                if WARNED_UNKNOWN_QUALITY.lock().unwrap().insert(other.to_string()) {
+                    eprintln!(
+                        "{} [playback] unrecognized numeric actualQuality {other:?} (service={service_name:?}) — no display mapping, dropping",
+                        super::timestamp(),
+                    );
+                }
+                None
+            } else {
+                Some(Rc::from(other))
+            }
+        }
     }
 }
 
@@ -905,7 +994,7 @@ fn codec_label_from_protocol_info(pi: &str) -> Option<Rc<str>> {
 
 /// Implements the confirmed codec-badge rule:
 /// - `actual_quality` present and non-empty → `codec_label` is the
-///   translated display string (see `translate_actual_quality`).
+///   translated display string (see `translate_quality_badge`).
 /// - Present but empty (`Some("")`) → `codec_label` falls back to a literal
 ///   format name parsed from `protocol_info`, **but only for
 ///   `play_medium == "SONGLIST-LOCAL"`** (local/USB playback) — see below.
@@ -952,10 +1041,11 @@ pub fn decode_quality_upnp(
     rate_hz: &str,
     protocol_info: Option<&str>,
     play_medium: &str,
+    service_name: Option<&str>,
 ) -> (Option<AudioQuality>, Option<Rc<str>>) {
     let quality = decode_quality_http(bitrate, rate_hz, format_s);
     let codec_label = match actual_quality {
-        Some(q) if !q.is_empty() => Some(translate_actual_quality(q)),
+        Some(q) if !q.is_empty() => translate_quality_badge(q, service_name),
         Some(_) if play_medium == "SONGLIST-LOCAL" => {
             protocol_info.and_then(codec_label_from_protocol_info)
         }
@@ -1023,23 +1113,83 @@ mod tests {
     }
 
     #[test]
-    fn quality_badge_rule_hi_res_lossless_becomes_flac() {
+    fn quality_badge_rule_tidal_hi_res_lossless_becomes_flac_lossless_becomes_high() {
+        // Both confirmed directly from real captures — see
+        // `translate_quality_badge`'s doc comment for the evidence.
         let (quality, label) = decode_quality_upnp(
             Some("HI_RES_LOSSLESS"), "1571", "24", "48000", Some("http-get:*:*:*"), "TIDAL_CONNECT",
+            Some("TIDAL Connect"),
         );
         assert_eq!(label.as_deref(), Some("FLAC"));
         let q = quality.unwrap();
         assert_eq!(q.bit_rate_kbps, Some(1571.0));
         assert_eq!(q.bit_depth, Some(24));
         assert_eq!(q.sample_rate_khz, Some(48.0));
+
+        let (_, label) = decode_quality_upnp(
+            Some("LOSSLESS"), "546", "16", "44100", Some("http-get:*:*:*"), "TIDAL_CONNECT",
+            Some("TIDAL Connect"),
+        );
+        assert_eq!(label.as_deref(), Some("HIGH"));
+    }
+
+    /// TIDAL's remaining two documented tiers (`LOW`, and the raw `HIGH`
+    /// wire value itself — its lossy AAC tier, not to be confused with the
+    /// WiiM app's *display* label "HIGH" for `LOSSLESS` above) have no
+    /// captures showing what the app displays for them — verbatim
+    /// passthrough, not a guessed mapping.
+    #[test]
+    fn quality_badge_rule_tidal_unconfirmed_tiers_shown_verbatim() {
+        assert_eq!(translate_quality_badge("LOW", Some("TIDAL Connect")).as_deref(), Some("LOW"));
+        assert_eq!(translate_quality_badge("HIGH", Some("TIDAL Connect")).as_deref(), Some("HIGH"));
+    }
+
+    /// TIDAL's now-deprecated MQA tier — a known, documented TIDAL API
+    /// value, not independently capture-confirmed like `LOSSLESS`/
+    /// `HI_RES_LOSSLESS` above.
+    #[test]
+    fn quality_badge_rule_tidal_hi_res_becomes_mqa() {
+        assert_eq!(translate_quality_badge("HI_RES", Some("TIDAL Connect")).as_deref(), Some("MQA"));
     }
 
     #[test]
-    fn quality_badge_rule_lossless_becomes_high() {
-        let (_, label) = decode_quality_upnp(
-            Some("LOSSLESS"), "546", "16", "44100", Some("http-get:*:*:*"), "TIDAL_CONNECT",
+    fn quality_badge_rule_qobuz_tiers_translated() {
+        assert_eq!(translate_quality_badge("6", Some("Qobuz")).as_deref(), Some("CD"));
+        assert_eq!(translate_quality_badge("7", Some("Qobuz")).as_deref(), Some("Hi-Res"));
+        // "27" is a second, equivalent Hi-Res tier code, not a typo for "7".
+        assert_eq!(translate_quality_badge("27", Some("Qobuz")).as_deref(), Some("Hi-Res"));
+    }
+
+    #[test]
+    fn quality_badge_rule_amazon_music_tiers_translated() {
+        assert_eq!(
+            translate_quality_badge("UHD", Some("Amazon Music")).as_deref(),
+            Some("Ultra HD"),
         );
-        assert_eq!(label.as_deref(), Some("HIGH"));
+        assert_eq!(
+            translate_quality_badge("HD", Some("Amazon Music")).as_deref(),
+            Some("HD"),
+        );
+    }
+
+    /// An unrecognized *numeric* code (some other service's own internal
+    /// tier value with no confirmed mapping — the same shape Qobuz's `"6"`/
+    /// `"7"` would have before being mapped) has no meaningful display as a
+    /// bare digit, so it's dropped (`None`), not shown verbatim like a
+    /// human-readable unrecognized string would be.
+    #[test]
+    fn quality_badge_rule_unrecognized_numeric_code_is_dropped() {
+        assert_eq!(translate_quality_badge("42", Some("SomeNewService")), None);
+    }
+
+    /// An unrecognized *non-numeric* string, in contrast, is shown as-is —
+    /// still more useful than nothing.
+    #[test]
+    fn quality_badge_rule_unrecognized_text_shown_verbatim() {
+        assert_eq!(
+            translate_quality_badge("SOME_FUTURE_TIER", Some("SomeNewService")).as_deref(),
+            Some("SOME_FUTURE_TIER"),
+        );
     }
 
     #[test]
@@ -1047,7 +1197,7 @@ mod tests {
         let (_, label) = decode_quality_upnp(
             Some(""), "320", "16", "48000",
             Some("http-get:*:audio/mpeg:DLNA.ORG_PN=MP3;DLNA.ORG_OP=01;"),
-            "SONGLIST-LOCAL",
+            "SONGLIST-LOCAL", None,
         );
         assert_eq!(label.as_deref(), Some("mp3"));
     }
@@ -1064,7 +1214,7 @@ mod tests {
         let (_, label) = decode_quality_upnp(
             Some(""), "0", "16", "44100",
             Some("http-get:*:audio/mpeg:DLNA.ORG_PN=MP3;DLNA.ORG_OP=01;"),
-            "RADIO-NETWORK",
+            "RADIO-NETWORK", None,
         );
         assert_eq!(label, None);
     }
@@ -1077,9 +1227,19 @@ mod tests {
         let (_, label) = decode_quality_upnp(
             None, "0", "32", "44100",
             Some("http-get:*:audio/mpeg:DLNA.ORG_PN=MP3;DLNA.ORG_OP=01;"),
-            "RADIO-NETWORK",
+            "RADIO-NETWORK", None,
         );
         assert_eq!(label, None);
+    }
+
+    /// Real-world glitch: bit depth occasionally reported as 32 even though
+    /// no WiiM hardware does more than 24-bit (and the WiiM app itself caps
+    /// its own display there) — must be clamped, not shown as a bogus,
+    /// unachievable 32-bit value.
+    #[test]
+    fn decode_quality_http_clamps_bit_depth_to_24() {
+        let q = decode_quality_http("1000", "44100", "32").unwrap();
+        assert_eq!(q.bit_depth, Some(24));
     }
 
     #[test]

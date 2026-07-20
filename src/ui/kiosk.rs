@@ -98,10 +98,13 @@ pub(crate) struct KioskWindow {
     layout:        Cell<PlaybackLayout>,
 }
 
-/// Default width the side panel opens to — a plain constant for now
-/// (matching `DeviceWindow`'s own 200px-ish default), not yet configurable
-/// or persisted between launches.
+/// Fallback width if the sidebar's start child is somehow unset when
+/// opened (shouldn't happen in practice — `toggle_sidebar()` measures the
+/// real content instead, see its own comment).
 const SIDEBAR_OPEN_WIDTH: i32 = 280;
+/// Extra room to the left of the sidebar's own content once opened, so it
+/// doesn't sit flush against the divider.
+const SIDEBAR_OPEN_MARGIN: i32 = 24;
 
 impl KioskWindow {
     pub(crate) fn new(
@@ -457,40 +460,48 @@ impl KioskWindow {
         // separator line above it here (unlike DeviceWindow's own bottom
         // bar) — Kiosk mode's version looks better without one.
         let status_bar = crate::ui::views::status_bar::StatusBarView::new(&ds, &self.icons, true);
-        // Lines this bar's left/right content up with PlaybackView's own
-        // edges above it — there's no separator between them to visually
-        // excuse a mismatch anymore, and PlaybackView's own margin is
-        // itself a fraction of the artwork's size (see wide_right_margin_h()),
-        // not a fixed value, so this has to be (re)computed the same way
-        // rather than hardcoded to match it. Classic's own margins are
-        // small/fixed already, close enough to this bar's own defaults
-        // that no adjustment is needed there.
-        if layout == PlaybackLayout::WideRight {
-            match size_hint {
-                Some((w, h)) => {
-                    status_bar.set_edge_margin(wide_right_margin_h(compute_wide_right_art_side(w, h)));
+        // `set_scale()` uses the same `compute_wide_right_art_side()`
+        // reference regardless of which layout is actually showing above
+        // it — it's just this bar's own screen-size-to-font/icon-size
+        // ratio, not something tied to WideRight's own artwork, so Classic
+        // (which has no proportional scaling of its own yet) still wants
+        // this bar itself sized correctly. `set_edge_margin()` stays
+        // WideRight-only: it lines this bar's edges up with PlaybackView's
+        // own margin, which is only a fraction-of-artwork-size value in
+        // that layout — Classic's own margins are small/fixed already,
+        // close enough to this bar's own defaults that no adjustment is
+        // needed there.
+        match size_hint {
+            Some((w, h)) => {
+                let side = compute_wide_right_art_side(w, h);
+                if layout == PlaybackLayout::WideRight {
+                    status_bar.set_edge_margin(wide_right_margin_h(side));
                 }
-                // Same cold-start gap PlaybackView itself guards against
-                // (see its own tick-callback fallback's comment): on a
-                // slower/different compositor the window may not have
-                // reported a real size yet at this exact point, so
-                // size_hint comes back None here and — unlike
-                // PlaybackView, which keeps retrying on its own — this
-                // call would otherwise just be skipped forever, leaving
-                // the mismatch permanently uncorrected. Confirmed live: hit
-                // every time on a Raspberry Pi 5, never on a desktop fast
-                // enough to already have a real window size by this point.
-                None => {
-                    let weak_bar = status_bar.downgrade();
-                    let window = self.window.clone();
-                    self.window.add_tick_callback(move |_, _| {
-                        let Some(bar) = weak_bar.upgrade() else { return glib::ControlFlow::Break };
-                        let (w, h) = (window.width(), window.height());
-                        if w <= 0 || h <= 0 { return glib::ControlFlow::Continue; }
-                        bar.set_edge_margin(wide_right_margin_h(compute_wide_right_art_side(w, h)));
-                        glib::ControlFlow::Break
-                    });
-                }
+                status_bar.set_scale(side);
+            }
+            // Same cold-start gap PlaybackView itself guards against (see
+            // its own tick-callback fallback's comment): on a slower/
+            // different compositor the window may not have reported a
+            // real size yet at this exact point, so size_hint comes back
+            // None here and — unlike PlaybackView, which keeps retrying on
+            // its own — this call would otherwise just be skipped forever,
+            // leaving the mismatch permanently uncorrected. Confirmed
+            // live: hit every time on a Raspberry Pi 5, never on a desktop
+            // fast enough to already have a real window size by this point.
+            None => {
+                let weak_bar = status_bar.downgrade();
+                let window = self.window.clone();
+                self.window.add_tick_callback(move |_, _| {
+                    let Some(bar) = weak_bar.upgrade() else { return glib::ControlFlow::Break };
+                    let (w, h) = (window.width(), window.height());
+                    if w <= 0 || h <= 0 { return glib::ControlFlow::Continue; }
+                    let side = compute_wide_right_art_side(w, h);
+                    if layout == PlaybackLayout::WideRight {
+                        bar.set_edge_margin(wide_right_margin_h(side));
+                    }
+                    bar.set_scale(side);
+                    glib::ControlFlow::Break
+                });
             }
         }
         status_bar.set_active(true);
@@ -538,7 +549,19 @@ impl KioskWindow {
     /// icon theme and rendered as a broken/missing-icon glyph when tried.
     fn toggle_sidebar(self: &Rc<Self>) {
         let open = self.sidebar_paned.position() > 8;
-        let target = if open { 0 } else { SIDEBAR_OPEN_WIDTH };
+        let target = if open {
+            0
+        } else {
+            // The real content's own natural width (PresetsView/
+            // InputOutputView, whatever `left_pane` holds right now) plus
+            // a margin — not a fixed guess. A static width clipped the
+            // panel's content on some screen/content combinations; this
+            // guarantees it's fully visible regardless of screen size.
+            let natural = self.sidebar_paned.start_child()
+                .map(|w| w.measure(gtk::Orientation::Horizontal, -1).1)
+                .unwrap_or(SIDEBAR_OPEN_WIDTH);
+            natural + SIDEBAR_OPEN_MARGIN
+        };
 
         // Same animation DeviceWindow's own animate_panel_to() uses —
         // skip (not just drop) any still-running one first, since a

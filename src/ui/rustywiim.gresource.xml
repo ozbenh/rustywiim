@@ -9,5 +9,21 @@
     <file alias="rustywiim-hdmi-inout.svg">icons/hdmi-inout.svg</file>
     <file alias="rustywiim-audio-output.svg">icons/audio-output.svg</file>
     <file alias="rustywiim-remote.svg">icons/wiim-remote.svg</file>
+    <!-- Streaming-service brand marks — plain custom icons (fixed opaque
+         white fill baked into each SVG), not "-symbolic": a symbolic-
+         suffixed custom icon looked up manually and applied via a plain
+         `gtk::Image::set_paintable()` rendered blank in testing (unlike
+         `gtk::Image::set_from_icon_name()`, which manages its own
+         style-context-driven recoloring). See svc-spotify.svg's own
+         comment for sourcing/attribution. -->
+    <file alias="rustywiim-svc-spotify.svg">icons/svc-spotify.svg</file>
+    <file alias="rustywiim-svc-tidal.svg">icons/svc-tidal.svg</file>
+    <file alias="rustywiim-svc-qobuz.svg">icons/svc-qobuz.svg</file>
+    <file alias="rustywiim-svc-deezer.svg">icons/svc-deezer.svg</file>
+    <file alias="rustywiim-svc-pandora.svg">icons/svc-pandora.svg</file>
+    <file alias="rustywiim-svc-napster.svg">icons/svc-napster.svg</file>
+    <file alias="rustywiim-svc-iheartradio.svg">icons/svc-iheartradio.svg</file>
+    <file alias="rustywiim-svc-tunein.svg">icons/svc-tunein.svg</file>
+    <file alias="rustywiim-svc-amazon.svg">icons/svc-amazon.svg</file>
   </gresource>
 </gresources>

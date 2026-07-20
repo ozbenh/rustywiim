@@ -142,6 +142,15 @@ pub struct InfoEx {
     /// entire codec-badge rule (see `playback::decode_quality_upnp`) — don't
     /// collapse it to a plain `String`/`.unwrap_or_default()`.
     pub actual_quality:  Option<String>,
+    /// `<song:quality>` — a separate, distinct tag from `actual_quality`
+    /// above (confirmed both present in the same DIDL-Lite item on real
+    /// captures, e.g. a WiiM Amp's `getMetaInfo`-adjacent UPnP data: `<song:quality>0</song:quality>`
+    /// right before `<song:actualQuality>...`). Parsed and carried through
+    /// but not consumed by `decode_quality_upnp` yet — no confirmed meaning
+    /// for it so far (every capture seen has it as a static `"0"`), kept in
+    /// case a real service turns out to use it for something
+    /// `actual_quality` doesn't already cover.
+    pub quality:         Option<String>,
     pub bitrate:         String,
     /// Bit depth (DIDL-Lite's `song:format_s`).
     pub format_s:        String,
@@ -649,6 +658,8 @@ pub(crate) struct DidlItem {
     /// `None` = tag absent, `Some("")` = present-but-empty — see
     /// `InfoEx::actual_quality`'s doc comment.
     pub actual_quality: Option<String>,
+    /// See `InfoEx::quality`'s doc comment.
+    pub quality:        Option<String>,
     pub bitrate:        String,
     pub format_s:       String,
     pub rate_hz:        String,
@@ -663,6 +674,7 @@ pub(crate) fn parse_didl_item(didl: &str) -> DidlItem {
         album:  extract_tag(didl, "upnp:album").map(|s| unescape_xml_entities(&s)).unwrap_or_default(),
         album_art_uri:  extract_tag(didl, "upnp:albumArtURI"),
         actual_quality: extract_tag(didl, "song:actualQuality"),
+        quality:        extract_tag(didl, "song:quality"),
         bitrate:        extract_tag(didl, "song:bitrate").unwrap_or_default(),
         format_s:       extract_tag(didl, "song:format_s").unwrap_or_default(),
         rate_hz:        extract_tag(didl, "song:rate_hz").unwrap_or_default(),
@@ -699,8 +711,9 @@ fn parse_info_ex_response(envelope: &str) -> anyhow::Result<InfoEx> {
         transport_state, rel_time, track_duration, current_volume, current_mute,
         loop_mode, play_type, play_medium, track_source,
         title: item.title, artist: item.artist, album: item.album, album_art_uri: item.album_art_uri,
-        actual_quality: item.actual_quality, bitrate: item.bitrate, format_s: item.format_s,
-        rate_hz: item.rate_hz, protocol_info: item.protocol_info, gui_behavior: item.gui_behavior,
+        actual_quality: item.actual_quality, quality: item.quality, bitrate: item.bitrate,
+        format_s: item.format_s, rate_hz: item.rate_hz, protocol_info: item.protocol_info,
+        gui_behavior: item.gui_behavior,
     })
 }
 
@@ -883,6 +896,17 @@ mod tests {
         assert_eq!(info.protocol_info.as_deref(), Some("http-get:*:audio/mpeg:DLNA.ORG_PN=MP3;DLNA.ORG_OP=01;"));
         assert_eq!(info.play_medium, "SONGLIST-LOCAL");
         assert_eq!(info.track_source, "UPnPServer");
+    }
+
+    /// `song:quality` is a distinct tag from `song:actualQuality`, confirmed
+    /// present on real captures (this one, and separately on a WiiM Amp) —
+    /// parsed and carried through (`InfoEx::quality`) even though nothing
+    /// consumes it yet.
+    #[test]
+    fn iheast_audiocast_case_has_distinct_song_quality_tag() {
+        let cap = load_capture("iEAST_AudioCast_20260709_054053.muted.json");
+        let info = parse_info_ex_response(&get_info_ex_body(&cap)).unwrap();
+        assert_eq!(info.quality.as_deref(), Some("0"));
     }
 
     #[test]

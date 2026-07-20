@@ -30,7 +30,7 @@ pub mod imp {
     use crate::ui::art_background::ArtBackground;
     use crate::ui::flip_cover::FlipCover;
     use crate::ui::icons::IconSet;
-    use crate::ui::views::common::SwipeText;
+    use crate::ui::views::common::{ServiceLabel, SwipeText};
     use crate::ui::views::volume::VolumeControl;
 
     #[derive(Default)]
@@ -46,6 +46,8 @@ pub mod imp {
         pub(super) title:    OnceCell<SwipeText>,
         pub(super) artist:   OnceCell<SwipeText>,
         pub(super) status:   OnceCell<gtk::Label>,
+        pub(super) service:  OnceCell<ServiceLabel>,
+        pub(super) quality:  OnceCell<gtk::Label>,
         pub(super) bt_pair:  OnceCell<gtk::Button>,
         pub(super) btn_prev: OnceCell<gtk::Button>,
         pub(super) btn_play: OnceCell<gtk::Button>,
@@ -87,7 +89,8 @@ use crate::ui::art_background::ArtBackground;
 use crate::ui::flip_cover::FlipCover;
 use crate::ui::icons::IconSet;
 use super::common::{
-    build_bt_pair_button, format_bt_status_line, format_status_line, is_unknown, SwipeText,
+    build_bt_pair_button, format_bt_status_line, format_status_icon_only, is_unknown,
+    ServiceLabel, SwipeText,
 };
 use super::volume::VolumeControl;
 
@@ -145,10 +148,35 @@ impl MiniPlaybackView {
         artist_overlay.set_child(Some(&artist.stack));
         artist_overlay.add_overlay(&bt_pair);
 
+        // Icon-only normally (see `apply_mask()`'s `PC::OTHER` handling) —
+        // service/quality get their own badges next to it instead of being
+        // appended to this text, same split as the full/WideRight layouts.
+        // Still shows the full Bluetooth connection text verbatim in that
+        // one case (`format_bt_status_line()`), which can run long, hence
+        // still keeping `ellipsize` here.
         let status = Label::builder()
             .label("").css_classes(["mini-status-label"])
-            .halign(Align::Start).hexpand(true)
+            .halign(Align::Start)
             .ellipsize(gtk::pango::EllipsizeMode::End)
+            .build();
+        let service = ServiceLabel::new("mini-status-label");
+        // Started at 14px, matching `build_bt_pair_button`'s own
+        // icon-alongside-small-text precedent rather than the much bigger
+        // default meant for the full/WideRight layouts' own larger text;
+        // bumped 20% by request.
+        service.set_icon_pixel_size(17);
+        // "service-name-pill" — same rounded-rect badge as the service
+        // label's own text fallback (`ServiceLabel::new()`), not just
+        // plain text next to it.
+        let quality = Label::builder()
+            .label("").css_classes(["mini-status-label", "service-name-pill"]).visible(false)
+            // Extra gap from the service label/icon on top of `info_row`'s
+            // own spacing — reads as a separate badge, not glued to it.
+            .margin_start(6)
+            // See `ServiceLabel::new()`'s identical comment — without
+            // this the pill stretches to `info_row`'s own height instead
+            // of hugging the text.
+            .valign(Align::Center)
             .build();
 
         let btn_prev = Button::builder()
@@ -174,10 +202,10 @@ impl MiniPlaybackView {
         vol_end.append(&volume);
 
         // Card wraps only the actual playback controls (prev/play/next +
-        // volume) — the status label sits outside it. The status label's own
-        // hexpand(true) already pushes this group to the row's trailing edge
-        // (the only hexpand child in the transport row, so it absorbs all
-        // the leftover width).
+        // volume) — the status/service/quality group sits outside it, in
+        // `info_row` below, whose own `hexpand(true)` pushes this card to
+        // the row's trailing edge (the only hexpand child in the transport
+        // row, so it absorbs all the leftover width).
         let controls_card = GtkBox::builder()
             .orientation(Orientation::Horizontal).spacing(6)
             .css_classes(["mini-transport-card"])
@@ -185,10 +213,21 @@ impl MiniPlaybackView {
         controls_card.append(&transport_center);
         controls_card.append(&vol_end);
 
+        // Status icon + service + quality badges, grouped tightly on the
+        // left — see `status`'s own construction comment above for why
+        // service/quality moved out to their own badges here too.
+        let info_row = GtkBox::builder()
+            .orientation(Orientation::Horizontal).spacing(6)
+            .halign(Align::Start).hexpand(true)
+            .build();
+        info_row.append(&status);
+        info_row.append(&service.widget);
+        info_row.append(&quality);
+
         let transport = GtkBox::builder()
             .orientation(Orientation::Horizontal).hexpand(true)
             .build();
-        transport.append(&status);
+        transport.append(&info_row);
         transport.append(&controls_card);
 
         let info_box = GtkBox::builder()
@@ -254,6 +293,8 @@ impl MiniPlaybackView {
         let _ = imp.title.set(title);
         let _ = imp.artist.set(artist);
         imp.status.set(status).unwrap();
+        imp.service.set(service).unwrap();
+        imp.quality.set(quality).unwrap();
         imp.bt_pair.set(bt_pair).unwrap();
         imp.btn_prev.set(btn_prev).unwrap();
         imp.btn_play.set(btn_play).unwrap();
@@ -343,6 +384,8 @@ impl MiniPlaybackView {
         imp.title.get().unwrap().set_text(title);
         imp.artist.get().unwrap().set_text("");
         imp.status.get().unwrap().set_label("");
+        imp.service.get().unwrap().set(None, imp.icons.get().unwrap());
+        imp.quality.get().unwrap().set_visible(false);
         imp.artwork.get().unwrap().clear();
         if let Some(Some(bg)) = imp.art_bg.get() { bg.clear(); }
         imp.bt_pair.get().unwrap().set_visible(false);
@@ -373,8 +416,19 @@ impl MiniPlaybackView {
             imp.status.get().unwrap().set_label(&if is_bluetooth {
                 format_bt_status_line(ps.bt_connected, ps.bt_device_name.as_deref(), ps.bt_pairing)
             } else {
-                format_status_line(&ps.status, ps.source_name.as_deref())
+                format_status_icon_only(&ps.status).to_string()
             });
+            // No service badge for a physical input — same reasoning as
+            // the full/WideRight layouts (see their identical comment):
+            // there's no app/stream behind it, and its name goes in the
+            // title instead (below).
+            let service_name = if ps.is_physical_input { None } else { ps.source_name.as_deref() };
+            imp.service.get().unwrap().set(service_name, imp.icons.get().unwrap());
+            let quality_label = imp.quality.get().unwrap();
+            match ps.codec_label.as_deref() {
+                Some(q) => { quality_label.set_label(q); quality_label.set_visible(true); }
+                None => quality_label.set_visible(false),
+            }
             // Hidden while already pairing (nothing to "restart") as well
             // as while connected.
             imp.bt_pair.get().unwrap().set_visible(is_bluetooth && !ps.bt_connected && !ps.bt_pairing);
@@ -383,7 +437,7 @@ impl MiniPlaybackView {
             imp.btn_next.get().unwrap().set_sensitive(ps.caps.can_next);
         }
 
-        if mask & (PC::TITLE | PC::ARTIST | PC::ALBUM) != 0 {
+        if mask & (PC::TITLE | PC::ARTIST | PC::ALBUM | PC::OTHER) != 0 {
             // The artist line combines artist + album; recompute if either changed.
             if mask & (PC::ARTIST | PC::ALBUM) != 0 {
                 let artist = if is_unknown(&ps.artist) { "" } else { ps.artist.as_ref() };
@@ -396,8 +450,19 @@ impl MiniPlaybackView {
                 };
                 imp.artist.get().unwrap().set_text(&artist_line);
             }
-            if mask & PC::TITLE != 0 {
-                imp.title.get().unwrap().set_text(if is_unknown(&ps.title) { "" } else { &ps.title });
+            // Also re-evaluated on a bare `OTHER` (a mode/input switch with
+            // no real title change) — see the full/WideRight layouts'
+            // identical comment on why a physical input's title comes from
+            // `source_name` instead of `ps.title`.
+            if mask & (PC::TITLE | PC::OTHER) != 0 {
+                let title_text = if ps.is_physical_input {
+                    ps.source_name.as_deref().unwrap_or("")
+                } else if is_unknown(&ps.title) {
+                    ""
+                } else {
+                    &ps.title
+                };
+                imp.title.get().unwrap().set_text(title_text);
             }
         }
 

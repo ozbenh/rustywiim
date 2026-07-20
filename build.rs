@@ -62,6 +62,15 @@ fn main() {
     println!("cargo:rerun-if-changed=src/ui/icons/hdmi-inout.svg");
     println!("cargo:rerun-if-changed=src/ui/icons/audio-output.svg");
     println!("cargo:rerun-if-changed=src/ui/icons/wiim-remote.svg");
+    println!("cargo:rerun-if-changed=src/ui/icons/svc-spotify.svg");
+    println!("cargo:rerun-if-changed=src/ui/icons/svc-tidal.svg");
+    println!("cargo:rerun-if-changed=src/ui/icons/svc-qobuz.svg");
+    println!("cargo:rerun-if-changed=src/ui/icons/svc-deezer.svg");
+    println!("cargo:rerun-if-changed=src/ui/icons/svc-pandora.svg");
+    println!("cargo:rerun-if-changed=src/ui/icons/svc-napster.svg");
+    println!("cargo:rerun-if-changed=src/ui/icons/svc-iheartradio.svg");
+    println!("cargo:rerun-if-changed=src/ui/icons/svc-tunein.svg");
+    println!("cargo:rerun-if-changed=src/ui/icons/svc-amazon.svg");
     let out_dir = std::env::var("OUT_DIR").unwrap();
     let status = Command::new("glib-compile-resources")
         .args([

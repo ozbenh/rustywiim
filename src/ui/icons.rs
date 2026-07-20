@@ -62,6 +62,19 @@ pub struct IconSet {
 
     /// BLE remote icon, shown in the main window's bottom status bar.
     remote: gdk::Paintable,
+
+    /// Streaming-service name → paintable, keyed by the lowercased
+    /// display string (e.g. `"spotify"`, `"tidal connect"`) — see
+    /// `service_names` in `load()`; `service_paintable()` lowercases its
+    /// own query the same way, for a case-insensitive match against a raw
+    /// wire vendor string too, not just the fully-normalized display
+    /// form. Only covers services with a bundled brand-mark SVG; anything
+    /// else (Amazon Music, Radio Paradise, ...) simply isn't a key here.
+    /// No fallback field, unlike `sources`/`outputs` above: `None` here
+    /// is a real, meaningful answer ("no icon for this one, show text"),
+    /// not a gap to paper over — every caller (`ServiceLabel` in
+    /// `ui/views/common.rs`) falls back to the plain text name.
+    services: HashMap<String, gdk::Paintable>,
 }
 
 impl IconSet {
@@ -100,6 +113,29 @@ impl IconSet {
             ("usb-out",       "drive-harddisk-usb-symbolic"),
             ("speaker-out",   "audio-speakers-symbolic"),
         ];
+        // Keyed by the display strings `device::playback::vendor_display()`/
+        // `decode_source_name_http()`/`decode_source_name_upnp()` actually
+        // produce (`PlaybackState::source_name`) — case-insensitively (both
+        // these keys and `service_paintable()`'s query are lowercased), so
+        // a raw not-yet-normalized vendor string matches too, not just the
+        // fully-normalized display form. `"TIDAL Connect"` and `"TIDAL"`
+        // (the Connect-specific and plain-radio source names — see
+        // `mode_from_play_medium()`/`vendor_display()`) share one icon.
+        // Services with no bundled SVG yet (Radio Paradise, vTuner, ...)
+        // are simply absent — see `service_paintable()`'s doc comment for
+        // the text-fallback path.
+        let service_names: &[(&'static str, &str)] = &[
+            ("Spotify",       "rustywiim-svc-spotify"),
+            ("TIDAL Connect", "rustywiim-svc-tidal"),
+            ("TIDAL",         "rustywiim-svc-tidal"),
+            ("Qobuz",         "rustywiim-svc-qobuz"),
+            ("Deezer",        "rustywiim-svc-deezer"),
+            ("Pandora",       "rustywiim-svc-pandora"),
+            ("Napster",       "rustywiim-svc-napster"),
+            ("iHeartRadio",   "rustywiim-svc-iheartradio"),
+            ("TuneIn",        "rustywiim-svc-tunein"),
+            ("Amazon Music",  "rustywiim-svc-amazon"),
+        ];
 
         let sources: HashMap<&'static str, gdk::Paintable> = source_names.iter()
             .map(|&(id, name)| (id, theme_icon(&theme, name)))
@@ -107,12 +143,21 @@ impl IconSet {
         let outputs: HashMap<&'static str, gdk::Paintable> = output_names.iter()
             .map(|&(id, name)| (id, theme_icon(&theme, name)))
             .collect();
+        // Lowercased keys — `service_paintable()` also lowercases its
+        // query, so a lookup against a raw not-yet-normalized vendor
+        // string (e.g. `"newtunein"`, the wire spelling `vendor_display()`
+        // itself already translates to `"TuneIn"` before this is normally
+        // reached) still matches case-insensitively rather than requiring
+        // the exact display-string casing.
+        let services: HashMap<String, gdk::Paintable> = service_names.iter()
+            .map(|&(id, name)| (id.to_lowercase(), theme_icon(&theme, name)))
+            .collect();
 
         let source_fallback = theme_icon(&theme, "audio-card-symbolic");
         let output_fallback = theme_icon(&theme, "rustywiim-audio-output");
         let remote           = theme_icon(&theme, "rustywiim-remote");
 
-        Self { sources, source_fallback, outputs, output_fallback, remote }
+        Self { sources, source_fallback, outputs, output_fallback, remote, services }
     }
 
     // ── Accessors ─────────────────────────────────────────────────────────────
@@ -134,5 +179,15 @@ impl IconSet {
     /// The BLE remote icon (`icons/wiim-remote.svg`).
     pub fn remote_paintable(&self) -> &gdk::Paintable {
         &self.remote
+    }
+
+    /// Paintable for a streaming service — case-insensitive match against
+    /// its display name (e.g. `"Spotify"`, `"TIDAL Connect"` —
+    /// `PlaybackState::source_name` as-is) or a raw not-yet-normalized
+    /// vendor string. `None` (not a fallback icon) when no matching SVG
+    /// is registered — see `services`'s own doc comment; callers are
+    /// expected to fall back to the service's text name.
+    pub fn service_paintable(&self, name: &str) -> Option<&gdk::Paintable> {
+        self.services.get(&name.to_lowercase())
     }
 }

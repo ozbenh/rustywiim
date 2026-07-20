@@ -2407,6 +2407,7 @@ impl DeviceState {
     /// the stale greyed-out styling on that entry.
     fn apply_mode_change(ds: &DeviceState, inner: &mut Inner, new_mode: i32) -> bool {
         inner.current_mode = new_mode;
+        inner.playback.is_physical_input = playback::is_physical_input_mode(new_mode);
         // A mode/input switch means whatever we were seeking within isn't
         // current anymore — see `Inner::seek_pending`'s doc comment on this
         // guardrail.
@@ -3485,6 +3486,7 @@ impl DeviceState {
                     &info.bitrate, &info.format_s, &info.rate_hz,
                     info.protocol_info.as_deref(),
                     &info.play_medium,
+                    inner.playback.source_name.as_deref(),
                 );
                 if decoded_quality != inner.playback.quality || decoded_codec_label != inner.playback.codec_label {
                     inner.playback.quality     = decoded_quality;
@@ -4384,6 +4386,7 @@ impl DeviceState {
                         ev.rate_hz.as_deref().unwrap_or(""),
                         ev.protocol_info.as_deref(),
                         ev.playback_storage_medium.as_deref().unwrap_or(""),
+                        inner.playback.source_name.as_deref(),
                     );
                     if decoded_quality != inner.playback.quality || decoded_codec_label != inner.playback.codec_label {
                         inner.playback.quality = decoded_quality;

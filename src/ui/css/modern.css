@@ -86,7 +86,7 @@ window.player-window headerbar {
 .track-artist, .track-album {
     text-shadow: 0 1px 3px rgba(0, 0, 0, 0.75);
 }
-.status-badge, .quality-label, .device-info, .dim-label {
+.quality-label, .device-info, .dim-label {
     text-shadow: 0 0 2px rgba(0, 0, 0, 0.9);
 }
 
@@ -124,23 +124,6 @@ window.player-window headerbar {
    the other (visibility-lifecycle) half of the fix. */
 .ip-label {
     font-size: 11px;
-}
-
-/* Paned divider: invisible until hovered, rather than a constant
-   translucent bar — cheaper and less visually noisy than a dedicated grip
-   widget; revisit with one only if this proves hard to find in practice.
-   box-shadow/border/background-image: none clears Adwaita's own default
-   separator line, which persisted as a thin vertical line even with
-   background-color alone overridden. */
-paned > separator {
-    background-color: transparent;
-    background-image: none;
-    box-shadow: none;
-    border: none;
-    transition: background-color 150ms ease;
-}
-paned > separator:hover {
-    background-color: rgba(255, 255, 255, 0.3);
 }
 
 /* Mini window with config.mini_modern set — see the marker-class

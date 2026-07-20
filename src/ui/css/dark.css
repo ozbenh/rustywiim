@@ -1,8 +1,11 @@
 
 window { background-color: #0a0a0a; }
-.track-title  { font-size: 20px; font-weight: 800; color: #ffffff; min-height: 26px; }
-.track-artist { font-size: 14px; font-weight: 600; color: #b0b0b0; min-height: 18px; }
-.track-album  { font-size: 13px; color: #707070; min-height: 17px; }
+/* +10% (font-size and min-height, proportionally) in normal mode, by
+   request — WideRight/Kiosk is unaffected, it computes its own sizes
+   live in Rust (apply_wide_right_scale()) regardless of these values. */
+.track-title  { font-size: 22px; font-weight: 800; color: #ffffff; min-height: 29px; }
+.track-artist { font-size: 15px; font-weight: 600; color: #b0b0b0; min-height: 20px; }
+.track-album  { font-size: 14px; color: #707070; min-height: 19px; }
 /* Wide-right playback layout (artwork left, text right): font-weight/color
    only — actual font-size is computed and applied live in Rust
    (playback_full.rs's apply_wide_right_scale()), proportional to the
@@ -16,8 +19,27 @@ window { background-color: #0a0a0a; }
 /* min-height reserves the line's space even when the label text is empty
    (status cleared on disconnect, quality absent for the current source), so
    the artwork above doesn't resize as these labels come and go. */
-.status-badge { font-size: 12px; font-weight: 600; color: @rustywiim_accent; min-height: 16px; }
 .quality-label { font-size: 12px; color: #686868; min-height: 16px; }
+/* Active streaming service name (Classic: top-left corner of the artwork;
+   WideRight: above the controls) — fairly light, less prominent than the
+   title/artist/album block above it but readable at a glance. */
+.service-name { font-size: 12px; color: #999999; min-height: 16px; }
+/* Text-fallback badge (no brand-mark SVG for this service — see
+   `IconSet::service_paintable()`): rounded-rect outline, same look as
+   Kiosk mode's `.kiosk-device-btn`, so it reads clearly against the
+   artwork it's overlaid on rather than as bare floating text. The icon
+   case gets no such backdrop — it's a plain mark, not a text label. */
+.service-name-pill {
+    background-color: rgba(0, 0, 0, 0.35);
+    border: 1px solid rgba(255, 255, 255, 0.25);
+    border-radius: 6px;
+    padding: 0 6px;
+    /* Overrides ".service-name"'s own min-height (16px) — that reserves
+       space for an always-visible, sometimes-empty label; this badge is
+       only ever shown with real text (toggled via set_visible instead),
+       so it should hug the text's own line height, not add extra. */
+    min-height: 0;
+}
 /* dim-label inherits from Adwaita opacity of 0.55, make it brighter */
 .dim-label    { font-size: 12px; color: #eeeeee; }
 .section-label { font-size: 12px; font-weight: 700; color: #505050; letter-spacing: 1px; }
@@ -266,3 +288,20 @@ window.kiosk-window .device-info { font-size: 18px; padding-top: 2px; margin-top
 window.kiosk-window .ip-label { font-size: 18px; margin-top: 6px; margin-bottom: 6px; }
 window.kiosk-window .net-icon { -gtk-icon-size: 24px; margin-top: 6px; margin-bottom: 6px; }
 window.kiosk-window .remote-icon { margin-top: 6px; margin-bottom: 6px; }
+
+/* Paned divider: invisible until hovered, rather than a constant
+   translucent bar — most visible in Kiosk mode, where the collapsed
+   sidebar's handle sits flush against the window's left edge and reads as
+   a stray 1px vertical line. box-shadow/border/background-image: none
+   clears Adwaita's own default separator line, which persisted as a thin
+   vertical line even with background-color alone overridden. */
+paned > separator {
+    background-color: transparent;
+    background-image: none;
+    box-shadow: none;
+    border: none;
+    transition: background-color 150ms ease;
+}
+paned > separator:hover {
+    background-color: rgba(255, 255, 255, 0.3);
+}

@@ -256,6 +256,9 @@ pub struct AvTransportEvent {
     /// "cleared". Never unpack a missing tag as an empty/absent value here.
     pub album_art_uri: Option<String>,
     pub actual_quality: Option<String>,
+    /// See `upnp::InfoEx::quality`'s doc comment — same tag, not consumed
+    /// yet, carried through in case it turns out useful.
+    pub quality: Option<String>,
     pub bitrate: Option<String>,
     pub format_s: Option<String>,
     pub rate_hz: Option<String>,
@@ -331,6 +334,7 @@ pub fn parse_av_transport_event(last_change: &str) -> AvTransportEvent {
         album:  item.as_ref().map(|i| i.album.clone()),
         album_art_uri:  item.as_ref().and_then(|i| i.album_art_uri.clone()),
         actual_quality: item.as_ref().and_then(|i| i.actual_quality.clone()),
+        quality:        item.as_ref().and_then(|i| i.quality.clone()),
         bitrate:        item.as_ref().map(|i| i.bitrate.clone()),
         format_s:       item.as_ref().map(|i| i.format_s.clone()),
         rate_hz:        item.as_ref().map(|i| i.rate_hz.clone()),

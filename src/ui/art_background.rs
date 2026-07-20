@@ -123,8 +123,8 @@ pub mod imp {
                 snapshot.pop(); // apply blur
                 // Darkening wash for text/control legibility, matching
                 // brightness(.6)/opacity(.6) in the web original this look
-                // is based on.
-                snapshot.append_color(&gdk::RGBA::new(0.0, 0.0, 0.0, 0.45), &bounds);
+                // is based on. 0.45 -> 0.5 (~10% darker), by request.
+                snapshot.append_color(&gdk::RGBA::new(0.0, 0.0, 0.0, 0.5), &bounds);
             }
             None => {
                 // No-art fallback: a diagonal three-stop gradient, dark and

@@ -31,7 +31,7 @@ pub mod imp {
     use crate::ui::art_background::ArtBackground;
     use crate::ui::flip_cover::FlipCover;
     use crate::ui::icons::IconSet;
-    use crate::ui::views::common::SwipeText;
+    use crate::ui::views::common::{ServiceLabel, SwipeText};
     use crate::ui::views::volume::VolumeControl;
 
     #[derive(Default)]
@@ -48,6 +48,11 @@ pub mod imp {
         pub(super) artist:   OnceCell<SwipeText>,
         pub(super) album:    OnceCell<SwipeText>,
         pub(super) status:   OnceCell<gtk::Label>,
+        pub(super) service:  OnceCell<ServiceLabel>,
+        /// The new `translate_quality_badge()`-driven badge, next to
+        /// `service` — distinct from `quality` below, which keeps the
+        /// existing bitrate/depth/sample-rate text.
+        pub(super) quality_badge: OnceCell<gtk::Label>,
         pub(super) quality:  OnceCell<gtk::Label>,
         pub(super) pos:      OnceCell<gtk::Label>,
         pub(super) dur:      OnceCell<gtk::Label>,
@@ -101,6 +106,7 @@ use adw::subclass::prelude::*;
 use gtk::glib;
 use gtk::{Align, Box as GtkBox, Button, Label, Orientation, Scale};
 
+use crate::config;
 use crate::device::capabilities;
 use crate::device::playback::PlaybackStatus;
 use crate::device::state::{playback_changed, ConnectionState, DeviceState};
@@ -109,7 +115,7 @@ use crate::ui::flip_cover::FlipCover;
 use crate::ui::icons::IconSet;
 use super::common::{
     apply_repeat_ui, apply_shuffle_ui, build_bt_pair_button, format_bt_status_line,
-    format_quality_line, format_status_line, is_unknown, SwipeText,
+    format_quality_line, format_status_only, is_unknown, ServiceLabel, SwipeText,
 };
 use super::volume::VolumeControl;
 
@@ -194,27 +200,70 @@ pub(crate) fn wide_right_margin_h(art_side: i32) -> i32 {
 /// normally use, which only look right on one specific screen size.
 fn apply_wide_right_scale(
     class: &str, provider: &gtk::CssProvider,
-    title_group: &GtkBox, status_group: &GtkBox, volume: &VolumeControl,
+    title_group: &GtkBox, status_group: &GtkBox, service_group: &GtkBox, volume: &VolumeControl,
+    service: &ServiceLabel,
     h: i32,
 ) {
     let h = h as f64;
     // Two rounds of "20% smaller" on top of the original pass
     // (0.22/0.12/0.10/0.09/0.055/0.03), tuned against live testing on
     // both a 4K desktop and a Raspberry Pi touchscreen.
-    let title_px  = (h * 0.1408).round() as i32;
+    // Title reduced a further ~15% (0.1408 -> 0.12) by request — still
+    // clearly bigger than artist below.
+    let title_px  = (h * 0.12).round() as i32;
     let artist_px = (h * 0.0768).round() as i32;
     let album_px  = (h * 0.064).round() as i32;
+    // "Slightly smaller than the album name" per the design ask, then
+    // reduced another ~20% (0.85 -> 0.68) — the whole badge read too big
+    // in Kiosk mode. The icon's `pixel_size` (a widget property, not
+    // CSS-reachable) is kept proportional to this text at the same 3:1
+    // ratio Classic's fixed values use (36px icon : 12px `.service-name`
+    // base font-size), then reduced a further 10% (3.0 -> 2.7) — the icon
+    // specifically (not the text) still read too big.
+    let service_px = (album_px as f64 * 0.68).round() as i32;
+    service.set_icon_pixel_size((service_px as f64 * 2.7).round() as i32);
     let text_gap  = (h * 0.0576).round() as i32;
     title_group.set_spacing(text_gap);
 
-    let status_px = (h * 0.0352).round() as i32;
+    // Floor added — confirmed live: pure `h * 0.0352` (no floor, like
+    // everything else in this function) reads right on a 4K screen but is
+    // genuinely too small to read on a Raspberry Pi's smaller `h`. Reuses
+    // 18px, the same "small but legible in Kiosk mode" baseline already
+    // established by the old fixed `window.kiosk-window .ip-label`/
+    // `.device-info` CSS values (dark.css/system.css) rather than
+    // inventing a new number. Only kicks in below h≈511 — a real, if
+    // deliberate, deviation from pure proportionality: legibility has a
+    // hard floor human eyes need regardless of screen size, unlike pure
+    // layout spacing.
+    let status_px = (h * 0.0352).round().max(18.0) as i32;
     let status_gap = (h * 0.0192).round() as i32;
     status_group.set_spacing(status_gap.max(2));
+    // Spacing between service/quality-badge/bitrate-string — was a fixed
+    // 16px (plus a redundant matching margin on top of it, doubling to
+    // 32px), not proportional like everything else here, so it looked
+    // wrong at any screen size other than whatever it happened to be
+    // eyeballed against. A fraction of `h` instead, same as `text_gap`/
+    // `status_gap` above — not independently re-tuned against a real
+    // screen, so the exact factor may still need adjusting once seen live.
+    let service_gap = (h * 0.045).round() as i32;
+    service_group.set_spacing(service_gap.max(4));
 
     // The controls band is the bottom 1/3 of the column; the visible card
     // itself only takes 2/3 of that (bottom-justified — see band_row's own
-    // comment), minus ".controls-card"'s own ~12px padding on each side.
-    let card_h = ((h / 3.0) * (2.0 / 3.0) - 24.0).max(24.0);
+    // comment), minus ".controls-card"'s own padding on each side. That
+    // padding used to be a *fixed* 12px (modern.css) subtracted as a flat
+    // 24 here — the exact same class of bug `seek_h`/`service_gap` above
+    // were fixed for, just not yet caught here: subtracting a constant
+    // from a value that itself scales with screen size shrinks the small-
+    // screen result disproportionately more than the large-screen one, so
+    // the buttons (and the whole band around them) read comparatively
+    // bigger on a small screen and smaller on a large one — confirmed
+    // live as exactly the "text bigger there, bottom bar bigger there"
+    // mismatch between a 4K monitor and a small Pi screen. Now a fraction
+    // of `h` too, so it shrinks/grows together with everything else
+    // instead of eating a growing/shrinking share of it.
+    let card_padding = (h * 0.01).round().max(4.0);
+    let card_h = ((h / 3.0) * (2.0 / 3.0) - 2.0 * card_padding).max(24.0);
     let transport_btn = (card_h * 0.55).round() as i32;
     let play_btn      = (card_h * 0.68).round() as i32;
     let loop_btn       = transport_btn;
@@ -226,18 +275,48 @@ fn apply_wide_right_scale(
     // transport icons scale up around it, reading as noticeably tinier.
     volume.set_icon_pixel_size(transport_icon);
 
+    // The seek bar's own trough thickness — `.seek-scale trough`'s base
+    // rule (dark.css/system.css) hardcodes `min-height: 4px`, the one
+    // piece of this layout that was never brought under this function's
+    // scoped scaling at all (unlike everything else here) — same class of
+    // bug `service_gap` above just got fixed for, just never touched
+    // until now. A floor only, deliberately no ceiling — a hard cap would
+    // break the linear relationship with `status_px` above (which has
+    // none), so their *ratio* would stop being constant across screen
+    // sizes, the exact "proportions don't match between screens" problem
+    // this is meant to fix. Factor kept low (already-thin at typical
+    // sizes) rather than matching `status_gap`-class values, since the
+    // trough was reported as a bit too prominent even at the old flat
+    // 4px. Not independently re-tuned against a real screen.
+    let seek_h = (h * 0.006).round().max(2.0) as i32;
+
+    // ".controls-card" only has any real padding/background under
+    // RustyWiiM Modern (modern.css) — under System/Dark it's an inert
+    // class name (dark.css/system.css never style it at all), so
+    // injecting a padding override unconditionally would introduce
+    // padding that never existed there before. Only override it where
+    // there's an existing fixed value to correct in the first place.
+    let card_padding_rule = if matches!(config::with(|cfg| cfg.theme), config::ThemeMode::RustyWiiMModern) {
+        format!(".{class} .controls-card {{ padding: {}px; }}\n", card_padding.round() as i32)
+    } else {
+        String::new()
+    };
+
     provider.load_from_string(&format!(
         ".{class} .track-title {{ font-size: {title_px}px; }}\n\
          .{class} .track-artist {{ font-size: {artist_px}px; }}\n\
          .{class} .track-album {{ font-size: {album_px}px; }}\n\
-         .{class} .status-badge {{ font-size: {status_px}px; }}\n\
+         .{class} .service-name {{ font-size: {service_px}px; }}\n\
          .{class} .quality-label {{ font-size: {status_px}px; }}\n\
          .{class} .dim-label {{ font-size: {status_px}px; }}\n\
          .{class} .vol-level {{ font-size: {status_px}px; }}\n\
+         .{class} .seek-scale trough {{ min-height: {seek_h}px; border-radius: {half}px; }}\n\
+         {card_padding_rule}\
          .{class} .transport-btn:not(.vol-mute-btn) {{ min-width: {transport_btn}px; min-height: {transport_btn}px; -gtk-icon-size: {transport_icon}px; }}\n\
          .{class} .loop-btn {{ min-width: {loop_btn}px; min-height: {loop_btn}px; -gtk-icon-size: {transport_icon}px; }}\n\
          .{class} .play-btn {{ min-width: {play_btn}px; min-height: {play_btn}px; -gtk-icon-size: {play_icon}px; }}\n\
-         .{class} .vol-btn {{ min-height: {transport_btn}px; }}\n"
+         .{class} .vol-btn {{ min-height: {transport_btn}px; }}\n",
+        half = seek_h / 2,
     ));
 }
 
@@ -304,7 +383,31 @@ impl PlaybackView {
         let title  = SwipeText::new("Not connected", "track-title",  true, false);
         let artist = SwipeText::new("",              "track-artist", true, false);
         let album  = SwipeText::new("",              "track-album",  true, false);
-        let status = Label::builder().css_classes(["status-badge"]).halign(Align::Center).build();
+        // "dim-label", not "status-badge" — same grey as pos/dur (they
+        // share this row now), not the accent/highlight color the old
+        // class used, matching by request. `status-badge` is gone entirely
+        // (was only ever used here).
+        let status = Label::builder().css_classes(["dim-label"]).halign(Align::Center).build();
+        let service = ServiceLabel::new("service-name");
+        // Next to `service`, same rounded-rect badge as its own text
+        // fallback (`ServiceLabel::new()`'s "service-name-pill") and same
+        // font-size class, so the two read as one matched pair.
+        let quality_badge = Label::builder()
+            .css_classes(["service-name", "service-name-pill"]).visible(false)
+            // Extra gap from the service label/icon on top of the
+            // group box's own spacing — reads as a separate badge, not
+            // glued to it.
+            .margin_start(6)
+            // Without this, the label's box defaults to `Fill` within its
+            // parent row and stretches to match the row's own height (set
+            // by its tallest sibling, e.g. the service icon) — the pill's
+            // border/background then paints around that *stretched*
+            // allocation, not the text's natural size, however tight the
+            // CSS padding/min-height is. `Center` keeps its own box at
+            // natural content size, with any extra row height as outside
+            // margin instead of inside the border.
+            .valign(Align::Center)
+            .build();
         // Always visible (never `.set_visible(false)`) so its line-height is
         // permanently reserved in the layout — otherwise the artwork above it
         // resizes whenever quality info appears/disappears (e.g. no bitrate
@@ -378,12 +481,16 @@ impl PlaybackView {
                 // it no longer shares the seek row with pos/dur — freed up,
                 // the scale gets the row's full width instead.
                 seek.set_hexpand(true);
-                let time_row = GtkBox::builder().orientation(Orientation::Horizontal).build();
-                pos.set_hexpand(true);
+                // `status` sits in the same row as pos/dur, centered
+                // between them (same font size as both already — see
+                // below) — a CenterBox rather than a plain Box, since this
+                // row genuinely wants a true centered third element.
+                let time_row = gtk::CenterBox::new();
                 pos.set_halign(Align::Start);
                 dur.set_halign(Align::End);
-                time_row.append(&pos);
-                time_row.append(&dur);
+                time_row.set_start_widget(Some(&pos));
+                time_row.set_center_widget(Some(&status));
+                time_row.set_end_widget(Some(&dur));
                 // spacing(2), same tight grouping as WideRight's seek+time
                 // row — the scale and its labels read as one unit, not two
                 // separately-spaced rows.
@@ -399,6 +506,32 @@ impl PlaybackView {
                 controls_row.set_center_widget(Some(&transport));
                 controls_row.set_end_widget(Some(&volume));
 
+                // Service name on the left edge of the controls row,
+                // vertically aligned with the transport buttons — an
+                // `Overlay`, not `controls_row`'s own `CenterBox` start
+                // slot: a `GtkCenterBox` shrinks its start/end children to
+                // keep the center widget truly centered, which starved
+                // this of width once `transport`+`volume` already filled
+                // most of the row (confirmed live — showed neither icon
+                // nor text). An overlay child is sized off its own natural
+                // size instead, floating in whatever room the row's left
+                // edge actually has, so it can't be starved the same way.
+                // Also tried: its own row in `right_pane` (piled up too
+                // much text under the artwork, the opposite of the point);
+                // the artwork's own top-left corner (sat over the image
+                // itself, which read poorly against arbitrary art).
+                service.widget.set_halign(Align::Start);
+                service.widget.set_valign(Align::Center);
+                let service_group = GtkBox::builder()
+                    .orientation(Orientation::Horizontal).spacing(6)
+                    .halign(Align::Start).valign(Align::Center)
+                    .build();
+                service_group.append(&service.widget);
+                service_group.append(&quality_badge);
+                let controls_overlay = gtk::Overlay::new();
+                controls_overlay.set_child(Some(&controls_row));
+                controls_overlay.add_overlay(&service_group);
+
                 // Seek block + transport grouped into one card under
                 // RustyWiiM Modern (see modern.css); inert everywhere else,
                 // same as "panel-card". Artwork/title/artist/album/status/
@@ -413,7 +546,7 @@ impl PlaybackView {
                     .css_classes(["controls-card"])
                     .build();
                 controls_card.append(&seek_block);
-                controls_card.append(&controls_row);
+                controls_card.append(&controls_overlay);
 
                 let right_pane = GtkBox::builder()
                     .orientation(Orientation::Vertical).spacing(8).hexpand(true)
@@ -423,8 +556,7 @@ impl PlaybackView {
                 right_pane.append(&title.stack);
                 right_pane.append(&artist.stack);
                 right_pane.append(&album.stack);
-                right_pane.append(&status);
-                // Sits below the status label rather than in the transport
+                // Sits below the album line rather than in the transport
                 // row (see `bt_pair`'s own comment) — invisible by default,
                 // `GtkBox` doesn't reserve space for a hidden child either way.
                 right_pane.append(&bt_pair);
@@ -434,16 +566,14 @@ impl PlaybackView {
                 self.set_child(Some(&right_pane));
             }
             PlaybackLayout::WideRight => {
-                // Volume sits next to the transport row instead of the seek
-                // row here — the seek row (below, full width) has no volume
-                // in this layout.
-                volume.set_margin_start(12);
-                transport.append(&volume);
+                // Volume moved out of the controls row entirely, to the
+                // outer right edge of the column (aligned with the seek
+                // bar's own right edge — see the `top_row_overlay` comment
+                // below for why that's structurally guaranteed, not a
+                // coincidence), by request.
                 // Same semi-transparent card styling the classic layout's
                 // seek+transport group gets under RustyWiiM Modern (see
-                // modern.css's ".controls-card" — inert under System/Dark);
-                // here it wraps just the transport+volume row, since the
-                // seek bar lives in its own full-width row below instead.
+                // modern.css's ".controls-card" — inert under System/Dark).
                 transport.add_css_class("controls-card");
                 // Left-aligned like the rest of this column, not centered
                 // (the shared construction above centers it for the
@@ -456,7 +586,9 @@ impl PlaybackView {
                 title.set_center_when_fits(false);
                 artist.set_center_when_fits(false);
                 album.set_center_when_fits(false);
-                status.set_halign(Align::Start);
+                // `status` stays centered (default from its construction
+                // above) — it now lives under the seek row, same as
+                // Classic, not in this left-justified column at all.
                 bt_pair.set_halign(Align::Start);
                 quality.set_halign(Align::Start);
 
@@ -473,17 +605,19 @@ impl PlaybackView {
                 title_group.append(&artist.stack);
                 title_group.append(&album.stack);
 
-                // Status + bitrate, beside the controls box rather than
-                // above it — frees up the column for a bigger title block.
+                // `bt_pair` beside the controls box rather than above it —
+                // frees up the column for a bigger title block. `status`
+                // no longer lives here (moved under the seek row, same as
+                // Classic); the bitrate/depth/rate string (`quality`) moved
+                // out too, to `service_group` below, right of the quality
+                // badge.
                 let status_group = GtkBox::builder()
                     .orientation(Orientation::Vertical)
                     .valign(Align::Center)
                     .build();
-                status_group.append(&status);
                 status_group.append(&bt_pair);
-                status_group.append(&quality);
 
-                // Controls card first (left), status/quality after it —
+                // Controls card first (left), status/bt_pair after it —
                 // both pinned to the bottom of their band via the grid
                 // below (valign(End) here just keeps them together as a
                 // unit; the actual "sits at the very bottom" comes from
@@ -495,6 +629,30 @@ impl PlaybackView {
                 band_row.append(&transport);
                 band_row.append(&status_group);
 
+                // Service name + quality badge + bitrate/depth/rate
+                // string, directly above the controls band, left
+                // justified like the rest of this column. Spacing is set
+                // dynamically below (`apply_wide_right_scale()`'s own
+                // `service_gap`), proportional to screen size like every
+                // other gap in this layout — cancel out `quality_badge`/
+                // `quality`'s own fixed construction-time margins (used by
+                // Classic instead) so the box's spacing is the only gap.
+                quality_badge.set_margin_start(0);
+                quality.set_margin_start(0);
+                let service_group = GtkBox::builder()
+                    .orientation(Orientation::Horizontal)
+                    .halign(Align::Start)
+                    .build();
+                service_group.append(&service.widget);
+                service_group.append(&quality_badge);
+                service_group.append(&quality);
+                let controls_col = GtkBox::builder()
+                    .orientation(Orientation::Vertical)
+                    .valign(Align::End)
+                    .build();
+                controls_col.append(&service_group);
+                controls_col.append(&band_row);
+
                 // Splits the column into an exact 2:1 ratio — title block
                 // vs. the controls band — regardless of how tall the text
                 // actually renders, via a homogeneous 3-row grid (title
@@ -503,7 +661,7 @@ impl PlaybackView {
                     .row_homogeneous(true).hexpand(true).vexpand(true)
                     .build();
                 text_col_grid.attach(&title_group, 0, 0, 1, 2);
-                text_col_grid.attach(&band_row, 0, 2, 1, 1);
+                text_col_grid.attach(&controls_col, 0, 2, 1, 1);
 
                 let text_col = GtkBox::builder()
                     .orientation(Orientation::Vertical)
@@ -541,22 +699,39 @@ impl PlaybackView {
                 top_row.append(&art_overlay);
                 top_row.append(&text_col);
 
-                // Seek scale full width; position/duration sit on their own
-                // row underneath it (flush left/right — a plain Box, not a
-                // CenterBox: CenterBox reserves *equal* space on both sides
-                // for a (here nonexistent) truly-centered middle widget,
-                // sized off the larger of the two, which both misaligned
-                // the shorter label and could inflate this row's own
-                // natural width past the actual screen edge — a plain Box
-                // with pos taking the hexpand and dur simply left at its
-                // own natural width has no such reservation).
+                // Volume, overlaid on `top_row` rather than packed inside
+                // it — `top_row` (art_overlay + text_col) and `seek_row`
+                // below are both direct children of `content_block`, a
+                // plain vertical `GtkBox`, so they share exactly the same
+                // width/right edge as each other (and so does `seek`
+                // itself, `hexpand`ed to fill `seek_row`) — overlaying on
+                // `top_row` at `halign(End)` is what actually guarantees
+                // alignment with the seek bar's own right edge, rather
+                // than hoping some other nested box's width happens to
+                // match. `valign(End)` puts it at the bottom of `top_row`,
+                // roughly level with the transport controls in
+                // `controls_col`/`band_row` below it — not level with the
+                // seek bar itself, which is a separate row underneath
+                // (avoids colliding with `dur`'s own right-aligned slot in
+                // `time_row`).
+                volume.set_halign(Align::End);
+                volume.set_valign(Align::End);
+                let top_row_overlay = gtk::Overlay::new();
+                top_row_overlay.set_child(Some(&top_row));
+                top_row_overlay.add_overlay(&volume);
+
+                // Seek scale full width; position/status/duration sit on
+                // their own row underneath it — a CenterBox, same as
+                // Classic, so `status` lands genuinely centered between
+                // pos/dur rather than as a separate row (which pushed the
+                // controls further down for no reason).
                 seek.set_hexpand(true);
-                let time_row = GtkBox::builder().orientation(Orientation::Horizontal).build();
-                pos.set_hexpand(true);
+                let time_row = gtk::CenterBox::new();
                 pos.set_halign(Align::Start);
                 dur.set_halign(Align::End);
-                time_row.append(&pos);
-                time_row.append(&dur);
+                time_row.set_start_widget(Some(&pos));
+                time_row.set_center_widget(Some(&status));
+                time_row.set_end_widget(Some(&dur));
                 let seek_row = GtkBox::builder().orientation(Orientation::Vertical).spacing(2).build();
                 seek_row.append(&seek);
                 seek_row.append(&time_row);
@@ -565,7 +740,7 @@ impl PlaybackView {
                     .orientation(Orientation::Vertical).hexpand(true)
                     .valign(Align::Start)
                     .build();
-                content_block.append(&top_row);
+                content_block.append(&top_row_overlay);
                 content_block.append(&seek_row);
 
                 // Pushes content_block down by 1/10 of the available
@@ -617,14 +792,18 @@ impl PlaybackView {
                 // size is known yet).
                 let apply_for_screen = glib::clone!(
                     #[strong] art_overlay, #[strong] text_col,
-                    #[strong] title_group, #[strong] status_group, #[strong] volume,
-                    #[strong] band_row, #[strong] top_row, #[strong] content_block, #[strong] outer,
+                    #[strong] title_group, #[strong] status_group, #[strong] service_group, #[strong] volume,
+                    #[strong] service,
+                    #[strong] band_row, #[strong] controls_col, #[strong] top_row,
+                    #[strong] content_block, #[strong] outer,
                     #[strong] class, #[strong] provider,
                     move |screen_w: i32, screen_h: i32| {
                         let side = compute_wide_right_art_side(screen_w, screen_h);
                         art_overlay.set_size_request(side, side);
                         text_col.set_size_request(-1, side);
-                        apply_wide_right_scale(&class, &provider, &title_group, &status_group, &volume, side);
+                        apply_wide_right_scale(
+                            &class, &provider, &title_group, &status_group, &service_group, &volume, &service, side,
+                        );
 
                         // All structural gaps/margins below are fractions
                         // of `side` too, for the same reason the font/
@@ -636,6 +815,7 @@ impl PlaybackView {
                         // text_col looking disproportionately large.
                         let s = side as f64;
                         band_row.set_spacing((s * 0.09).round() as i32);
+                        controls_col.set_spacing((s * 0.03).round() as i32);
                         top_row.set_spacing((s * 0.10).round() as i32);
                         content_block.set_spacing((s * 0.18).round() as i32);
                         let margin_h = wide_right_margin_h(side);
@@ -748,6 +928,8 @@ impl PlaybackView {
         let _ = imp.artist.set(artist);
         let _ = imp.album.set(album);
         imp.status.set(status).unwrap();
+        imp.service.set(service).unwrap();
+        imp.quality_badge.set(quality_badge).unwrap();
         imp.quality.set(quality).unwrap();
         imp.pos.set(pos).unwrap();
         imp.dur.set(dur).unwrap();
@@ -843,6 +1025,8 @@ impl PlaybackView {
         imp.artist.get().unwrap().set_text("");
         imp.album.get().unwrap().set_text("");
         imp.status.get().unwrap().set_label("");
+        imp.service.get().unwrap().set(None, imp.icons.get().unwrap());
+        imp.quality_badge.get().unwrap().set_visible(false);
         imp.quality.get().unwrap().set_label("");
         imp.artwork.get().unwrap().clear();
         if let Some(Some(bg)) = imp.art_bg.get() { bg.clear(); }
@@ -920,8 +1104,19 @@ impl PlaybackView {
                 imp.status.get().unwrap().set_label(&if is_bluetooth {
                     format_bt_status_line(ps.bt_connected, ps.bt_device_name.as_deref(), ps.bt_pairing)
                 } else {
-                    format_status_line(&ps.status, ps.source_name.as_deref())
+                    format_status_only(&ps.status)
                 });
+                // No service badge for a physical input — there's no app/
+                // stream behind it, just whatever's plugged in, and its
+                // name already goes in the title (see the TITLE block
+                // below) instead.
+                let service_name = if ps.is_physical_input { None } else { ps.source_name.as_deref() };
+                imp.service.get().unwrap().set(service_name, imp.icons.get().unwrap());
+                let quality_badge = imp.quality_badge.get().unwrap();
+                match ps.codec_label.as_deref() {
+                    Some(q) => { quality_badge.set_label(q); quality_badge.set_visible(true); }
+                    None => quality_badge.set_visible(false),
+                }
                 // Hidden while already pairing (nothing to "restart") as
                 // well as while connected.
                 imp.bt_pair.get().unwrap().set_visible(is_bluetooth && !ps.bt_connected && !ps.bt_pairing);
@@ -943,8 +1138,21 @@ impl PlaybackView {
         }
 
         if mask & (PC::TITLE | PC::ARTIST | PC::ALBUM | PC::OTHER) != 0 {
-            if mask & PC::TITLE != 0 {
-                imp.title.get().unwrap().set_text(if is_unknown(&ps.title) { "" } else { &ps.title });
+            // Also re-evaluated on a bare `OTHER` (a mode/input switch with
+            // no real title change) — a physical input's title comes from
+            // `source_name` (its own display name, e.g. "Optical In"), not
+            // `ps.title`, which is meaningless without a real app/stream
+            // behind it, and `is_physical_input`/`source_name` both change
+            // via `OTHER`, not `TITLE`.
+            if mask & (PC::TITLE | PC::OTHER) != 0 {
+                let title_text = if ps.is_physical_input {
+                    ps.source_name.as_deref().unwrap_or("")
+                } else if is_unknown(&ps.title) {
+                    ""
+                } else {
+                    &ps.title
+                };
+                imp.title.get().unwrap().set_text(title_text);
             }
             if mask & PC::ARTIST != 0 {
                 imp.artist.get().unwrap().set_text(if is_unknown(&ps.artist) { "" } else { &ps.artist });
@@ -955,7 +1163,7 @@ impl PlaybackView {
             if mask & PC::OTHER != 0 {
                 // Never hidden — see the quality label's construction
                 // comment. An empty label keeps the same reserved height.
-                let q = ps.quality.map(|q| format_quality_line(&q, ps.codec_label.as_deref())).unwrap_or_default();
+                let q = ps.quality.map(|q| format_quality_line(&q)).unwrap_or_default();
                 imp.quality.get().unwrap().set_label(&q);
             }
         }

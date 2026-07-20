@@ -7,6 +7,7 @@ use adw::prelude::*;
 
 use crate::device::playback::{AudioQuality, PlaybackStatus, RepeatMode};
 use crate::device::state::DeviceState;
+use crate::ui::icons::IconSet;
 use crate::ui::scroll_fade_label::ScrollFadeLabel;
 use super::volume::VolumeControl;
 
@@ -77,27 +78,39 @@ pub(crate) fn is_unknown(s: &str) -> bool {
         || s.eq_ignore_ascii_case("<unknown>")
 }
 
-/// "▶ Playing · AirPlay" style label. Presentation only — `status`/
-/// `source_name` are already decoded (`device::playback::decode_status_http`/
-/// `decode_source_name_http`), so this just picks a glyph and joins.
-pub(crate) fn format_status_line(status: &PlaybackStatus, source_name: Option<&str>) -> String {
-    let state = match status {
+/// "▶ Playing" — used by the full and WideRight layouts, which show the
+/// service name as its own element (`ServiceLabel`) rather than appended
+/// to the status text.
+pub(crate) fn format_status_only(status: &PlaybackStatus) -> String {
+    match status {
         PlaybackStatus::Playing      => "▶ Playing",
         PlaybackStatus::Paused       => "⏸ Paused",
         PlaybackStatus::Stopped      => "⏹ Stopped",
         PlaybackStatus::Loading      => "⏳ Loading",
         PlaybackStatus::Unknown(raw) => raw.as_str(),
-    };
-    match source_name {
-        Some(s) => format!("{state} · {s}"),
-        None    => state.to_string(),
+    }.to_string()
+}
+
+/// Just the glyph, no word — the Mini window's status label shows only
+/// this (service/quality get their own separate badges there instead, same
+/// as the full/WideRight layouts). `Unknown` has no icon vocabulary to
+/// fall back to, so it shows the raw wire status verbatim, same as
+/// elsewhere in this module (an unrecognized-but-readable string beats
+/// nothing).
+pub(crate) fn format_status_icon_only(status: &PlaybackStatus) -> &str {
+    match status {
+        PlaybackStatus::Playing      => "▶",
+        PlaybackStatus::Paused       => "⏸",
+        PlaybackStatus::Stopped      => "⏹",
+        PlaybackStatus::Loading      => "⏳",
+        PlaybackStatus::Unknown(raw) => raw.as_str(),
     }
 }
 
-/// Replaces `format_status_line` entirely while Bluetooth is the active
+/// Replaces the plain status text entirely while Bluetooth is the active
 /// input — play/pause state isn't meaningful for an external A2DP source
 /// the way it is for a real queue, so the connection state is more useful
-/// here than "▶ Playing · Bluetooth". `device_name` is only meaningful
+/// here than "▶ Playing". `device_name` is only meaningful
 /// when `connected` (see `PlaybackState::bt_device_name`'s doc comment);
 /// a connected sink that didn't report a name still says "connected"
 /// rather than nothing. `pairing` (only meaningful while disconnected —
@@ -117,7 +130,11 @@ pub(crate) fn format_bt_status_line(connected: bool, device_name: Option<&str>, 
 /// badge prefix is only ever present when the UPnP backend supplied it (see
 /// `device::playback::decode_quality_upnp`) — presentation only, all the
 /// numeric parsing already happened in `decode_quality_http`/`decode_quality_upnp`.
-pub(crate) fn format_quality_line(q: &AudioQuality, codec_label: Option<&str>) -> String {
+/// "1571 kbps / 48.0 kHz / 24-bit" — bitrate/sample-rate/bit-depth only.
+/// No longer takes a codec-label prefix (`"FLAC · ..."`) — that's now the
+/// separate `translate_quality_badge()`-driven badge next to the service
+/// label/icon instead of glued onto this string.
+pub(crate) fn format_quality_line(q: &AudioQuality) -> String {
     let mut parts = Vec::new();
     if let Some(kbps) = q.bit_rate_kbps {
         parts.push(format!("{kbps:.0} kbps"));
@@ -128,12 +145,7 @@ pub(crate) fn format_quality_line(q: &AudioQuality, codec_label: Option<&str>) -
     if let Some(bd) = q.bit_depth {
         parts.push(format!("{bd}-bit"));
     }
-    let line = parts.join(" / ");
-    match codec_label {
-        Some(label) if !line.is_empty() => format!("{label} · {line}"),
-        Some(label)                     => label.to_string(),
-        None                             => line,
-    }
+    parts.join(" / ")
 }
 
 pub(crate) fn vol_icon(muted: bool, vol: f64) -> &'static str {
@@ -189,6 +201,85 @@ pub(crate) fn build_bt_pair_button(css_class: &str, icon_px: i32) -> gtk::Button
         .build();
     btn.set_child(Some(&content));
     btn
+}
+
+/// Displays the active streaming service's name (`PlaybackState::source_name`)
+/// as its own element, separate from the plain status text
+/// (`format_status_only()`/`format_status_icon_only()`) — shown as a
+/// brand-mark icon when one is registered in `IconSet`
+/// (`IconSet::service_paintable()`), falling back to the plain text name
+/// for every other service. Used by every layout (Classic/WideRight each
+/// pack `widget` into their own spot; Mini sizes the icon down via
+/// `set_icon_pixel_size()` to match its own smaller text). `css_class` is
+/// applied to both the icon and the label, but only the label actually
+/// uses it for anything — the icon's own fill color is baked into its SVG
+/// (a plain custom icon, not a GTK symbolic one; see `IconSet::services`'s
+/// doc comment for why), so the shared class just keeps both under one
+/// name for callers to reason about together.
+#[derive(Clone, Debug)]
+pub(crate) struct ServiceLabel {
+    pub widget: gtk::Box,
+    icon:  gtk::Image,
+    label: gtk::Label,
+}
+
+impl ServiceLabel {
+    pub(crate) fn new(css_class: &str) -> Self {
+        let icon = gtk::Image::builder()
+            .pixel_size(36).visible(false).css_classes([css_class])
+            .build();
+        // "service-name-pill" (rounded-rect outline, same look as Kiosk
+        // mode's device-name button) only on the text fallback — the icon
+        // is a plain badge, no backdrop. `valign(Center)`: without it the
+        // label's box defaults to `Fill` and stretches to match this row's
+        // tallest sibling (e.g. the icon in the other, icon-shown case),
+        // so the pill's border paints around that stretched allocation
+        // instead of hugging the text's own natural size.
+        let label = gtk::Label::builder()
+            .css_classes([css_class, "service-name-pill"])
+            .valign(gtk::Align::Center)
+            .build();
+        let widget = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal).spacing(6)
+            .halign(gtk::Align::Start)
+            .build();
+        widget.append(&icon);
+        widget.append(&label);
+        Self { widget, icon, label }
+    }
+
+    /// WideRight/Kiosk-only: the icon's `pixel_size` is a widget property,
+    /// not something CSS font-size scaling reaches, so `apply_wide_right_scale()`
+    /// sets it directly to keep the icon proportional to the dynamically
+    /// scaled `.service-name` text next to it (Classic never calls this —
+    /// its icon stays the fixed default set in `new()`).
+    pub(crate) fn set_icon_pixel_size(&self, px: i32) {
+        self.icon.set_pixel_size(px);
+    }
+
+    /// `name` is `PlaybackState::source_name` as-is (already the decoded
+    /// display string, e.g. "Spotify"/"TIDAL Connect") — `None`/empty
+    /// hides the whole element rather than showing a blank row.
+    pub(crate) fn set(&self, name: Option<&str>, icons: &IconSet) {
+        let name = name.unwrap_or("");
+        if name.is_empty() {
+            self.widget.set_visible(false);
+            return;
+        }
+        self.widget.set_visible(true);
+        match icons.service_paintable(name) {
+            Some(paintable) => {
+                self.icon.set_paintable(Some(paintable));
+                self.icon.set_visible(true);
+                self.label.set_visible(false);
+            }
+            None => {
+                self.icon.set_visible(false);
+                self.label.set_visible(true);
+                self.label.set_label(name);
+            }
+        }
+    }
 }
 
 /// Briefly apply the "key-flash" CSS class to `btn`, then remove it — the
