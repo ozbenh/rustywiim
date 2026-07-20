@@ -68,9 +68,6 @@ pub struct ConnectionConfig {
 /// Which API endpoints are available on this device family.
 #[derive(Debug)]
 pub struct EndpointConfig {
-    /// `getPlayerStatusEx` available (Audio Pro MkII uses `getStatusEx` instead).
-    pub supports_player_status_ex: bool,
-    pub supports_get_meta_info:    bool,
     pub supports_eq:               bool,
     /// Some devices can read EQ but not write it (many Arylic).
     pub supports_eq_set:           bool,
@@ -78,8 +75,6 @@ pub struct EndpointConfig {
     pub supports_alarms:           bool,
     /// WiiM-only sleep timer endpoint.
     pub supports_sleep_timer:      bool,
-    /// Full path for the primary status poll (differs on Audio Pro MkII).
-    pub status_endpoint:           &'static str,
     /// Command string for the reboot API call.
     pub reboot_command:            &'static str,
 }
@@ -104,7 +99,7 @@ pub struct FamilyProfile {
 
 // ── Static family profiles ────────────────────────────────────────────────────
 //
-// Every non-WiiM family defaults to `AccessMethod::UpnpPolled`: we suspect
+// Every family defaults to `AccessMethod::UpnpPolled`: we suspect
 // Arylic/Audio Pro/iEAST all run the same LinkPlay-licensed OEM software
 // stack, which returns more complete data (artwork, metadata) over UPnP than
 // over its HTTP API. WiiM defaults to `UpnpPolled` too now that it's proven
@@ -127,18 +122,16 @@ static FAMILY_WIIM: FamilyProfile = FamilyProfile {
         retry_count:          2,
     },
     endpoints: EndpointConfig {
-        supports_player_status_ex: true,
-        supports_get_meta_info:    true,
         supports_eq:               true,
         supports_eq_set:           true,
         supports_alarms:           true,
         supports_sleep_timer:      true,
-        status_endpoint:           "/httpapi.asp?command=getPlayerStatusEx",
         reboot_command:            "reboot",
     },
     grouping: GroupingConfig { uses_wifi_direct: false },
 };
 
+/// Tested with Arylic S10+ (`DeviceId::ArylicS10Plus`, project "S10P_WIFI").
 static FAMILY_ARYLIC: FamilyProfile = FamilyProfile {
     display_name:     "Arylic",
     // Arylic's own developer docs list coverart/playlist as UPnP-only and
@@ -152,13 +145,10 @@ static FAMILY_ARYLIC: FamilyProfile = FamilyProfile {
         retry_count:          2,
     },
     endpoints: EndpointConfig {
-        supports_player_status_ex: true,
-        supports_get_meta_info:    true,
         supports_eq:               true,
         supports_eq_set:           false, // Many Arylic devices: read-only EQ
         supports_alarms:           false,
         supports_sleep_timer:      false,
-        status_endpoint:           "/httpapi.asp?command=getPlayerStatusEx",
         reboot_command:            "reboot",
     },
     grouping: GroupingConfig { uses_wifi_direct: false },
@@ -167,10 +157,9 @@ static FAMILY_ARYLIC: FamilyProfile = FamilyProfile {
 /// Audio Pro MkII: mTLS, restricted endpoints.
 static FAMILY_AUDIO_PRO_MKII: FamilyProfile = FamilyProfile {
     display_name:     "Audio Pro MkII",
-    // Same shared-stack gap as Arylic (no artwork, no `getMetaInfo`), plus
-    // the same mTLS requirement as iEAST AudioCast. Not itself confirmed
-    // that playback control is broken over HTTP, just that artwork isn't
-    // available there.
+    // Same shared-stack gap as Arylic (no artwork), plus the same mTLS
+    // requirement as iEAST AudioCast. Not itself confirmed that playback
+    // control is broken over HTTP, just that artwork isn't available there.
     playback_access: AccessMethod::UpnpPolled,
     connection: ConnectionConfig {
         requires_client_cert: true,
@@ -180,13 +169,10 @@ static FAMILY_AUDIO_PRO_MKII: FamilyProfile = FamilyProfile {
         retry_count:          3,
     },
     endpoints: EndpointConfig {
-        supports_player_status_ex: false, // Uses getStatusEx instead
-        supports_get_meta_info:    false,
         supports_eq:               false,
         supports_eq_set:           false,
         supports_alarms:           false,
         supports_sleep_timer:      false,
-        status_endpoint:           "/httpapi.asp?command=getStatusEx",
         reboot_command:            "StartRebootTime:0",
     },
     grouping: GroupingConfig { uses_wifi_direct: false },
@@ -195,9 +181,6 @@ static FAMILY_AUDIO_PRO_MKII: FamilyProfile = FamilyProfile {
 /// Audio Pro W-Generation: HTTPS-first, modern endpoints, no client cert.
 static FAMILY_AUDIO_PRO_WGEN: FamilyProfile = FamilyProfile {
     display_name:     "Audio Pro W-Generation",
-    // `supports_get_meta_info` is statically `true` for this generation, so
-    // this is the general non-WiiM consistency call rather than a confirmed
-    // artwork gap here specifically.
     playback_access: AccessMethod::UpnpPolled,
     connection: ConnectionConfig {
         requires_client_cert: false,
@@ -207,13 +190,10 @@ static FAMILY_AUDIO_PRO_WGEN: FamilyProfile = FamilyProfile {
         retry_count:          2,
     },
     endpoints: EndpointConfig {
-        supports_player_status_ex: true,
-        supports_get_meta_info:    true,
         supports_eq:               true,
         supports_eq_set:           true,
         supports_alarms:           false,
         supports_sleep_timer:      false,
-        status_endpoint:           "/httpapi.asp?command=getPlayerStatusEx",
         reboot_command:            "StartRebootTime:0",
     },
     grouping: GroupingConfig { uses_wifi_direct: false },
@@ -222,18 +202,14 @@ static FAMILY_AUDIO_PRO_WGEN: FamilyProfile = FamilyProfile {
 /// Audio Pro Original (Gen1): WiFi Direct grouping. Also covers the Addon
 /// C5 (`DeviceId::AudioProAddonC5`, physically confirmed) via
 /// `detect_audio_pro_family()`'s firmware-based generation detection.
-/// `supports_get_meta_info`/`supports_eq`/`supports_alarms` are known
-/// wrong for that specific unit (its `getMetaInfo` returns "unknown
-/// command"; `EQGetBand`/`EQGetList`/`getAlarmClock` do respond) but
-/// harmless: `getMetaInfo` support is only consulted on the `Http` access
-/// path, and this device is forced onto `UpnpPolled` anyway because its
-/// `<PlayType>` tag is permanently absent from `GetInfoEx` (see
-/// `playback::mode_from_play_medium_fallback()`); EQ/alarms aren't
-/// consumed by any real behavior yet at all.
+/// `supports_eq`/`supports_alarms` are known wrong for that specific unit
+/// (`EQGetBand`/`EQGetList`/`getAlarmClock` do respond) but harmless — EQ/
+/// alarms aren't consumed by any real behavior yet at all. `getMetaInfo`
+/// support (that unit's own `getMetaInfo` returns "unknown command") needs
+/// no similar per-family caveat: it's runtime-detected per connection
+/// (`DeviceCapabilities::probes_meta_info`), not declared statically.
 static FAMILY_AUDIO_PRO_ORIGINAL: FamilyProfile = FamilyProfile {
     display_name:     "Audio Pro Original",
-    // Same as W-Generation: statically `supports_get_meta_info: true`
-    // already, so this is the general consistency call, not a confirmed gap.
     playback_access: AccessMethod::UpnpPolled,
     connection: ConnectionConfig {
         requires_client_cert: false,
@@ -243,13 +219,10 @@ static FAMILY_AUDIO_PRO_ORIGINAL: FamilyProfile = FamilyProfile {
         retry_count:          2,
     },
     endpoints: EndpointConfig {
-        supports_player_status_ex: true,
-        supports_get_meta_info:    true,
         supports_eq:               false,
         supports_eq_set:           false,
         supports_alarms:           false,
         supports_sleep_timer:      false,
-        status_endpoint:           "/httpapi.asp?command=getPlayerStatusEx",
         reboot_command:            "StartRebootTime:0",
     },
     // Gen1 Audio Pro uses WiFi Direct peer-to-peer grouping.
@@ -273,13 +246,10 @@ static FAMILY_LINKPLAY_GENERIC: FamilyProfile = FamilyProfile {
         retry_count:          2,
     },
     endpoints: EndpointConfig {
-        supports_player_status_ex: true,
-        supports_get_meta_info:    true,
         supports_eq:               true,
         supports_eq_set:           true,
         supports_alarms:           false,
         supports_sleep_timer:      false,
-        status_endpoint:           "/httpapi.asp?command=getPlayerStatusEx",
         reboot_command:            "reboot",
     },
     grouping: GroupingConfig { uses_wifi_direct: false },
@@ -291,6 +261,19 @@ static FAMILY_LINKPLAY_GENERIC: FamilyProfile = FamilyProfile {
 /// audibly stuttering while being polled over HTTP, not just missing
 /// artwork. Requires an mTLS client cert too (plain `curl -k` fails
 /// outright), same as Audio Pro MkII.
+///
+/// Also used by the newer `IEastAudioCastPro` (`DeviceId`/`DeviceProfile`
+/// are still separate — different inputs/outputs — only the family-level
+/// endpoint/connection profile is shared): its own capture confirmed the
+/// same no-`getMetaInfo` gap, and re-checking *this* device's original
+/// capture alongside it showed `supports_alarms: false` here was simply
+/// wrong — `getAlarmClock:0/1/2` all returned real data on this device too,
+/// just never asserted by an existing test. `requires_client_cert: true`
+/// costs AudioCast Pro nothing even though its own capture connected fine
+/// without one: nothing in this codebase's connection logic actually acts
+/// on this field (`ConnectionConfig::requires_client_cert` is read only for
+/// `--debug` logging, grep confirms) — offering a client cert an ordinary
+/// TLS server never asked for is harmless.
 static FAMILY_IEAST_AUDIOCAST: FamilyProfile = FamilyProfile {
     display_name:     "iEAST AudioCast",
     playback_access: AccessMethod::UpnpPolled,
@@ -302,17 +285,17 @@ static FAMILY_IEAST_AUDIOCAST: FamilyProfile = FamilyProfile {
         retry_count:          2,
     },
     endpoints: EndpointConfig {
-        supports_player_status_ex: true,
-        supports_get_meta_info:    false,
         supports_eq:               true,
         supports_eq_set:           true,
-        supports_alarms:           false,
+        // Was `false` — confirmed wrong (see this static's own doc
+        // comment) while investigating AudioCast Pro's own capture.
+        supports_alarms:           true,
         supports_sleep_timer:      false,
-        status_endpoint:           "/httpapi.asp?command=getPlayerStatusEx",
         reboot_command:            "reboot",
     },
     grouping: GroupingConfig { uses_wifi_direct: false },
 };
+
 
 // ── Device ID ─────────────────────────────────────────────────────────────────
 //
@@ -342,6 +325,7 @@ pub enum DeviceId {
     ArylicUp2StreamAmp = 100,
     ArylicH50          = 101,
     ArylicGeneric      = 102,
+    ArylicS10Plus      = 103,
 
     // Audio Pro — specific models
     AudioProLink2   = 200,
@@ -353,7 +337,8 @@ pub enum DeviceId {
     AudioProOriginal = 205,
 
     // iEAST
-    IEastAudioCast = 300,
+    IEastAudioCast    = 300,
+    IEastAudioCastPro = 301,
 
     // Generic LinkPlay fallback
     LinkPlayGeneric = 9999,
@@ -385,6 +370,15 @@ impl DeviceId {
         if p.contains("arylic") && p.contains("h50") {
             return Self::ArylicH50;
         }
+        // Confirmed via a real capture (`captures/test-devices/
+        // Arylic_S10P_WIFI_20260720_005332.json`, project "S10P_WIFI") —
+        // matches both that literal wire spelling and the "s10+"/"s10_plus"
+        // aliases `model_name_fallback()` already had a name mapped for
+        // (added ahead of any capture confirming detection for it, so this
+        // is the detection rule that was still missing).
+        if p.contains("s10p") || p.contains("s10+") {
+            return Self::ArylicS10Plus;
+        }
         if p.contains("arylic") || p.contains("up2stream") {
             return Self::ArylicGeneric;
         }
@@ -408,9 +402,15 @@ impl DeviceId {
         // on which of these got it here (known model → MkII; reached only
         // via the loose fallback → Original), and this port had collapsed
         // that distinction away — see `detect_audio_pro_gen()`'s doc
-        // comment for why that mattered on real hardware.
+        // comment for why that mattered on real hardware. `a10`/`a15`/`c10`
+        // are substring checks, matching pywiim's own `detect_vendor()`
+        // (`any(pro in model_lower for pro in [..., "a10", "a15", "c10"])`)
+        // exactly — an earlier version of this port used an exact-string
+        // match instead, which would miss a real device reporting e.g.
+        // `"A10_MkII"` or `"AudioPro-A10"` and silently fall through to the
+        // loose fallback below, getting the wrong generation default.
         if p.contains("audio_pro") || p.contains("addon")
-            || matches!(p.as_str(), "a10" | "a15" | "c10")
+            || p.contains("a10") || p.contains("a15") || p.contains("c10")
         {
             return Self::detect_audio_pro_gen(&p, fw, true);
         }
@@ -430,6 +430,14 @@ impl DeviceId {
 
         // iEAST
         if p == "ieast_02" { return Self::IEastAudioCast; }
+        // "AudioCast Pro" (confirmed via a real capture, project
+        // "AudioCast_M30" — `ali_pid: "AudioCast Pro"` in its own
+        // getStatusEx response) — a distinct, apparently newer/higher-end
+        // model in the same product line as the bare `IEastAudioCast`
+        // above, not the same device: different `plm_support`, and (unlike
+        // that one) it actually answers the Bluetooth-status commands —
+        // see `IEAST_PROFILES[1]`'s own doc comment.
+        if p.contains("audiocast") { return Self::IEastAudioCastPro; }
 
         Self::LinkPlayGeneric
     }
@@ -484,13 +492,13 @@ impl DeviceId {
             | Self::WiimUltra | Self::WiimSound | Self::WiimGeneric => Vendor::WiiM,
 
             Self::ArylicUp2StreamAmp | Self::ArylicH50
-            | Self::ArylicGeneric                 => Vendor::Arylic,
+            | Self::ArylicGeneric | Self::ArylicS10Plus => Vendor::Arylic,
 
             Self::AudioProLink2 | Self::AudioProA28 | Self::AudioProAddonC5
             | Self::AudioProMkII | Self::AudioProWGen
             | Self::AudioProOriginal              => Vendor::AudioPro,
 
-            Self::IEastAudioCast                   => Vendor::IEast,
+            Self::IEastAudioCast | Self::IEastAudioCastPro => Vendor::IEast,
 
             Self::LinkPlayGeneric                 => Vendor::LinkPlayGeneric,
         }
@@ -522,7 +530,7 @@ impl DeviceId {
             | Self::WiimSound | Self::WiimGeneric  => &FAMILY_WIIM,
 
             Self::ArylicUp2StreamAmp | Self::ArylicH50
-            | Self::ArylicGeneric                  => &FAMILY_ARYLIC,
+            | Self::ArylicGeneric | Self::ArylicS10Plus => &FAMILY_ARYLIC,
 
             Self::AudioProMkII                     => &FAMILY_AUDIO_PRO_MKII,
             Self::AudioProWGen                     => &FAMILY_AUDIO_PRO_WGEN,
@@ -531,7 +539,11 @@ impl DeviceId {
             Self::AudioProLink2 | Self::AudioProA28 | Self::AudioProAddonC5
             | Self::AudioProOriginal               => &FAMILY_AUDIO_PRO_ORIGINAL,
 
-            Self::IEastAudioCast                    => &FAMILY_IEAST_AUDIOCAST,
+            // AudioCastPro shares the bare AudioCast's family profile
+            // (own DeviceId/DeviceProfile — different inputs/outputs — but
+            // the same endpoint/connection behavior) — see
+            // FAMILY_IEAST_AUDIOCAST's own doc comment.
+            Self::IEastAudioCast | Self::IEastAudioCastPro => &FAMILY_IEAST_AUDIOCAST,
 
             Self::LinkPlayGeneric                  => &FAMILY_LINKPLAY_GENERIC,
         }
@@ -669,7 +681,7 @@ static WIIM_PROFILES: [DeviceProfile; 9] = [
     },
 ];
 
-static ARYLIC_PROFILES: [DeviceProfile; 3] = [
+static ARYLIC_PROFILES: [DeviceProfile; 4] = [
     /* 100 ArylicUp2StreamAmp */ DeviceProfile {
         model_name:      Some("Arylic Up2Stream Amp"),
         ignore_plm_bits: &[],
@@ -696,6 +708,21 @@ static ARYLIC_PROFILES: [DeviceProfile; 3] = [
         line_out_is_speaker: false, line_out_is_jack: false,
         output_labels: &[],
         input_labels: &[], line_in_is_jack: false,
+    },
+    /* 103 ArylicS10Plus */ DeviceProfile {
+        model_name:      Some("Arylic S10+"),
+        // `plm_support` (confirmed live, 2026-07-20: `0x8006`) decodes to
+        // bluetooth + udisk via PLM_BIT_TO_INPUT, plus bit 15 (unmapped —
+        // not a known input bit, ignored) — both left as-is. "line-in" is
+        // real too (confirmed directly, not from plm_support, which
+        // doesn't assert it) — a 3.5mm jack, not paired RCA.
+        ignore_plm_bits: &[],
+        extra_inputs:    &["line-in"],
+        // Confirmed directly: line-out (3.5mm jack) and optical-out.
+        outputs:         &["line-out", "optical-out"],
+        line_out_is_speaker: false, line_out_is_jack: true,
+        output_labels: &[],
+        input_labels: &[], line_in_is_jack: true,
     },
 ];
 
@@ -778,17 +805,35 @@ static AUDIO_PRO_PROFILES: [DeviceProfile; 6] = [
     },
 ];
 
-static IEAST_PROFILES: [DeviceProfile; 1] = [
+static IEAST_PROFILES: [DeviceProfile; 2] = [
     /* 300 IEastAudioCast */ DeviceProfile {
         model_name:      Some("AudioCast"),
         ignore_plm_bits: &[],
         // Confirmed via a real capture (`captures/test-devices/
-        // AudioCastBu_20260708_095957.json`, project "iEAST-02"): a
+        // AudioCast_iEAST-02_20260708_095957.json`, project "iEAST-02"): a
         // network-only audio adapter with no physical inputs and a single
         // line-out, `plm_support` genuinely `0x0`.
         extra_inputs:    &[],
         outputs:         &["line-out"],
         output_labels: &[],
+        line_out_is_speaker: false, line_out_is_jack: true,
+        input_labels: &[], line_in_is_jack: false,
+    },
+    /* 301 IEastAudioCastPro */ DeviceProfile {
+        model_name:      Some("AudioCast Pro"),
+        // `plm_support` (confirmed live, 2026-07-20: `0x4`) decodes to
+        // udisk via PLM_BIT_TO_INPUT — confirmed wrong (no USB input on
+        // this device at all), so that bit is suppressed. Bluetooth *is*
+        // real despite plm_support not asserting it — confirmed both by
+        // every Bluetooth-status command answering with real data
+        // (getbtstatus/getbtpairstatus/getbthistory/getbtPairDevStat/
+        // getbtdiscoveryresult) and directly.
+        ignore_plm_bits: &[2],
+        extra_inputs:    &["bluetooth"],
+        // Confirmed directly: optical-out and a 3.5mm "Stereo Out" jack
+        // (the device's own name for its line-out).
+        outputs:         &["line-out", "optical-out"],
+        output_labels: &[("line-out", "Stereo Out")],
         line_out_is_speaker: false, line_out_is_jack: true,
         input_labels: &[], line_in_is_jack: false,
     },
@@ -917,6 +962,16 @@ pub struct DeviceCapabilities {
     /// this call, regardless of whether a phone was actually connected.
     /// Set directly by `state.rs`, same reasoning as `probes_outputs`.
     pub probes_bt: bool,
+    /// Whether `getMetaInfo` actually works on this device — same shape as
+    /// `probes_bt` above, replacing what used to be a static per-family
+    /// `EndpointConfig::supports_get_meta_info` guess: starts `true`
+    /// (always tried at least once per connection), flipped to `false` by
+    /// `state.rs`'s `resolve_meta_info()` the first time a call returns
+    /// `ApiOutcome::Unsupported`, so the fast-poll loop stops spending a
+    /// request on a call known to fail from the next tick on and
+    /// synthesizes from `getPlayerStatusEx` instead
+    /// (`MetaData::from_player_status()`).
+    pub probes_meta_info: bool,
     /// Resolved audio input list. Seeded from `get_default_inputs()`'s static
     /// plm_support-based list (`enabled` defaulting `true`), but
     /// `detect_capabilities()` (via `detect_inputs()`) prefers the device's
@@ -1032,6 +1087,7 @@ impl DeviceCapabilities {
             // Standalone callers of `from_device_info()` (e.g. `wiim-capture`,
             // which only wants the model name) never see these matter.
             outputs: Vec::new(), probes_outputs: true, probes_output_status: true, probes_bt: true,
+            probes_meta_info: true,
         };
 
         if DEBUG_DEVICE.load(Ordering::Relaxed) {
@@ -1053,12 +1109,10 @@ impl DeviceCapabilities {
                 c.retry_count, c.requires_client_cert,
             ));
             dbg(&format!(
-                "endpoints: player_status_ex={}  meta={}  eq={}  eq_set={}  alarms={}  sleep_timer={}",
-                ep.supports_player_status_ex, ep.supports_get_meta_info,
+                "endpoints: eq={}  eq_set={}  alarms={}  sleep_timer={}",
                 ep.supports_eq, ep.supports_eq_set,
                 ep.supports_alarms, ep.supports_sleep_timer,
             ));
-            dbg(&format!("  status_endpoint: {:?}", ep.status_endpoint));
             dbg(&format!("  reboot_command:  {:?}", ep.reboot_command));
         }
 
@@ -1757,7 +1811,6 @@ mod tests {
         assert_eq!(caps.family.playback_access, AccessMethod::UpnpPolled);
         assert!(!caps.family.connection.requires_client_cert);
         assert!(caps.family.connection.preferred_ports.contains(&80));
-        assert!(caps.family.endpoints.supports_player_status_ex);
         assert!(caps.firmware_warning.is_none());
         // Real `plm_support` (0x26) decodes to bluetooth+udisk+coaxial via
         // the generic bitmap table — udisk/coaxial are spurious on this
@@ -1785,7 +1838,7 @@ mod tests {
     /// `from_device_info()` alone reports `PresetSource::Unknown` regardless.
     #[test]
     fn ieast_audiocast_real_capture_has_no_forced_inputs_or_extra_outputs() {
-        let cap = load_capture("AudioCastBu_20260708_095957.json");
+        let cap = load_capture("AudioCast_iEAST-02_20260708_095957.json");
         let body = cap.commands.iter()
             .find(|c| c.command == "getStatusEx")
             .expect("capture has no getStatusEx")
@@ -1797,7 +1850,6 @@ mod tests {
         assert_eq!(caps.vendor, Vendor::IEast);
         assert_eq!(caps.model, "AudioCast");
         assert_eq!(caps.family.playback_access, AccessMethod::UpnpPolled);
-        assert!(!caps.family.endpoints.supports_get_meta_info);
         assert_eq!(caps.inputs.len(), 1, "expected only wifi: {:?}", caps.inputs);
         assert_eq!(caps.inputs[0].id, "wifi");
         assert_eq!(caps.device_id.profile().outputs, &["line-out"]);
@@ -1807,5 +1859,77 @@ mod tests {
             .find(|c| c.command == "getPresetInfo")
             .expect("capture has no getPresetInfo");
         assert!(preset_cmd.unsupported);
+    }
+
+    /// Real Arylic S10+ unit (project "S10P_WIFI") — see `ARYLIC_PROFILES[3]`'s
+    /// own doc comment: `outputs` (line-out + optical-out) and the
+    /// "line-in" entry in `extra_inputs` are both confirmed directly
+    /// against the hardware, not derived from this capture (every
+    /// output/input-enumeration command in it was "unknown command").
+    #[test]
+    fn arylic_s10_plus_real_capture_detects_correctly() {
+        let cap = load_capture("Arylic_S10P_WIFI_20260720_005332.json");
+        let body = cap.commands.iter()
+            .find(|c| c.command == "getStatusEx")
+            .expect("capture has no getStatusEx")
+            .body.clone()
+            .expect("getStatusEx has no body");
+        let info: DeviceInfo = serde_json::from_value(body).expect("parsing DeviceInfo");
+        let caps = DeviceCapabilities::from_device_info(&info);
+        assert_eq!(caps.device_id, DeviceId::ArylicS10Plus);
+        assert_eq!(caps.vendor, Vendor::Arylic);
+        assert_eq!(caps.model, "Arylic S10+");
+        assert_eq!(caps.family.playback_access, AccessMethod::UpnpPolled);
+        assert!(!caps.family.connection.requires_client_cert);
+        // plm_support 0x8006 -> bluetooth (bit 1) + udisk (bit 2); bit 15
+        // is unmapped/ignored. "line-in" comes from extra_inputs, confirmed
+        // directly (a 3.5mm jack, not asserted by plm_support at all).
+        let ids: Vec<&str> = caps.inputs.iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(ids, vec!["wifi", "bluetooth", "udisk", "line-in"]);
+        assert_eq!(caps.device_id.profile().outputs, &["line-out", "optical-out"]);
+
+        let meta_cmd = cap.commands.iter()
+            .find(|c| c.command == "getMetaInfo")
+            .expect("capture has no getMetaInfo");
+        assert!(meta_cmd.unsupported);
+    }
+
+    /// Real iEAST "AudioCast Pro" unit (project "AudioCast_M30") — a
+    /// different, newer device from the bare `IEastAudioCast` (iEAST-02)
+    /// above with its own `DeviceId`/`DeviceProfile` (different inputs/
+    /// outputs), but reusing that device's `FAMILY_IEAST_AUDIOCAST`
+    /// (endpoint/connection behavior matched closely enough not to
+    /// justify a second family — see that static's own doc comment,
+    /// including why `requires_client_cert: true` there is harmless even
+    /// though this specific capture didn't need one). See
+    /// `IEAST_PROFILES[1]`'s own doc comment for why "bluetooth" is
+    /// force-added despite `plm_support` not asserting it.
+    #[test]
+    fn ieast_audiocast_pro_real_capture_detects_correctly() {
+        let cap = load_capture("AudioCast_M30_20260720_014924.json");
+        let body = cap.commands.iter()
+            .find(|c| c.command == "getStatusEx")
+            .expect("capture has no getStatusEx")
+            .body.clone()
+            .expect("getStatusEx has no body");
+        let info: DeviceInfo = serde_json::from_value(body).expect("parsing DeviceInfo");
+        let caps = DeviceCapabilities::from_device_info(&info);
+        assert_eq!(caps.device_id, DeviceId::IEastAudioCastPro);
+        assert_eq!(caps.vendor, Vendor::IEast);
+        assert_eq!(caps.model, "AudioCast Pro");
+        assert_eq!(caps.family.playback_access, AccessMethod::UpnpPolled);
+        assert!(caps.family.endpoints.supports_alarms);
+        // plm_support 0x4 -> udisk (bit 2), but confirmed wrong (no USB
+        // input on this device) and suppressed via ignore_plm_bits;
+        // "bluetooth" comes from extra_inputs, confirmed live via the
+        // getbt* commands below.
+        let ids: Vec<&str> = caps.inputs.iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(ids, vec!["wifi", "bluetooth"]);
+        assert_eq!(caps.device_id.profile().outputs, &["line-out", "optical-out"]);
+
+        let bt_cmd = cap.commands.iter()
+            .find(|c| c.command == "getbtstatus")
+            .expect("capture has no getbtstatus");
+        assert!(!bt_cmd.unsupported);
     }
 }

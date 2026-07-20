@@ -357,9 +357,10 @@ impl MetaData {
     }
 
     /// Synthesizes a `MetaData` from a `getPlayerStatusEx` response's own
-    /// `Title`/`Artist`/`Album`, for devices whose family profile has
-    /// `endpoints.supports_get_meta_info: false` — see `fetch_http_fast_poll`
-    /// in `state.rs`, the only caller. No artwork/quality fields: this
+    /// `Title`/`Artist`/`Album`, for devices whose `getMetaInfo` calls have
+    /// been runtime-confirmed unsupported (`DeviceCapabilities::probes_meta_info`,
+    /// mirroring `probes_bt`) — see `resolve_meta_info()` in `state.rs`, the
+    /// only caller. No artwork/quality fields: this
     /// endpoint doesn't carry them at all (confirmed on the Audio Pro Addon
     /// C5 capture this was built for — a real `getPlayerStatusEx` response
     /// while playing had no art-URL field of any kind), so `art_uri()`
@@ -867,10 +868,21 @@ impl WiimClient {
         Ok(PlayerStatus::default())
     }
 
-    pub async fn get_meta_info(&self) -> anyhow::Result<MetaData> {
-        let text = self.cmd("getMetaInfo").await?;
+    /// `ApiOutcome::Unsupported` for a confirmed `"unknown command"`
+    /// response — same split as `get_bt_status()`/`get_audio_output()`,
+    /// and for the same reason: the caller (`state.rs`'s fast poll) acts
+    /// on a definite `Unsupported` by giving up on this endpoint for the
+    /// connection, but keeps retrying on a merely transient `Failed`.
+    pub async fn get_meta_info(&self) -> ApiOutcome<MetaData> {
+        let text = match self.cmd("getMetaInfo").await {
+            Ok(t)  => t,
+            Err(_) => return ApiOutcome::Failed,
+        };
+        if is_unsupported_text(&text) {
+            return ApiOutcome::Unsupported;
+        }
         let resp: MetaInfoResponse = serde_json::from_str(&text).unwrap_or_default();
-        Ok(resp.meta_data)
+        ApiOutcome::Ok(resp.meta_data)
     }
 
     pub async fn get_device_info(&self) -> anyhow::Result<DeviceInfo> {

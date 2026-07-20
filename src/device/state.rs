@@ -170,9 +170,28 @@ pub enum ConnectionState {
 /// because it's genuinely a fast-poll backend result; see
 /// `dispatch_pending_preset_art()`.
 enum PollData {
-    Http { status: Option<PlayerStatus>, meta: Option<MetaData>, bt_status: Option<ApiOutcome<BtStatus>> },
+    Http { status: Option<PlayerStatus>, meta: MetaOutcome, bt_status: Option<ApiOutcome<BtStatus>> },
     Upnp { info: Option<upnp::InfoEx>, bt_status: Option<ApiOutcome<BtStatus>> },
     PresetArt { slot: usize, url: String, bytes: Option<Vec<u8>> },
+}
+
+/// Raw result of this tick's `getMetaInfo` attempt (or reason it wasn't
+/// attempted) — resolved into a final `Option<MetaData>` by
+/// `resolve_meta_info()`, mirroring `ApiOutcome<BtStatus>`/
+/// `resolve_bt_status()`'s split between "raw wire result"
+/// (`fetch_http_fast_poll`, `api.rs`) and "capability-flag interpretation"
+/// (`state.rs`).
+enum MetaOutcome {
+    /// Not attempted: the current input is confirmed to have nothing
+    /// casting (Bluetooth disconnected) — resolves to `None`, force-
+    /// blanking cached song data, same as before this split existed.
+    NotCasting,
+    /// Not attempted: a prior tick's `ApiOutcome::Unsupported` already
+    /// confirmed this device doesn't support `getMetaInfo` at all —
+    /// resolves to a synthesized `MetaData` from this tick's `status`.
+    KnownUnsupported,
+    /// A real attempt was made this tick.
+    Attempted(ApiOutcome<MetaData>),
 }
 
 // ── Slow poll ─────────────────────────────────────────────────────────────────
@@ -464,24 +483,25 @@ async fn run_slow_poll_phase(
 /// failed," so a device that's given up probing keeps fetching metadata
 /// normally rather than getting stuck treating Bluetooth as permanently
 /// silent.
+///
+/// `probe_meta` is the analogous capability flag for `getMetaInfo`
+/// (`DeviceCapabilities::probes_meta_info`). This function only fetches
+/// the raw wire result (or the reason it didn't) — interpreting a `None`/
+/// `ApiOutcome::Unsupported` result, synthesizing a replacement, and
+/// flipping the capability flag are all `resolve_meta_info()`'s job
+/// (`state.rs`-owned, not `api.rs`), same split as `resolve_bt_status()`.
 async fn fetch_http_fast_poll(
-    client: WiimClient, want_bt: bool, probe_bt: bool, has_meta_info: bool,
-) -> (Option<PlayerStatus>, Option<MetaData>, Option<ApiOutcome<BtStatus>>) {
+    client: WiimClient, want_bt: bool, probe_bt: bool, probe_meta: bool,
+) -> (Option<PlayerStatus>, MetaOutcome, Option<ApiOutcome<BtStatus>>) {
     let bt_status = if want_bt && probe_bt { Some(client.get_bt_status().await) } else { None };
     let skip_meta = matches!(&bt_status, Some(ApiOutcome::Ok(b)) if !b.connected);
     let status = client.get_status().await.ok();
     let meta = if skip_meta {
-        None
-    } else if has_meta_info {
-        client.get_meta_info().await.ok()
+        MetaOutcome::NotCasting
+    } else if probe_meta {
+        MetaOutcome::Attempted(client.get_meta_info().await)
     } else {
-        // Family capability flag says `getMetaInfo` isn't supported at all
-        // (confirmed: returns "unknown command" — e.g. Audio Pro Addon C5
-        // on old firmware) — synthesize from this tick's own `status`
-        // instead of spending a request on a call known to fail. See
-        // `MetaData::from_player_status`'s doc comment for what's lost
-        // (no artwork/quality this way — a real trade-off, not a bug).
-        status.as_ref().map(MetaData::from_player_status)
+        MetaOutcome::KnownUnsupported
     };
     (status, meta, bt_status)
 }
@@ -1969,12 +1989,11 @@ impl DeviceState {
     /// `Simple` mode with song-info tracking on.
     fn dispatch_fast_poll(&self) {
         let Some(poll_tx) = self.imp().poll_tx.borrow().clone() else { return };
-        let (wants_upnp, upnp_client, want_bt, client, inflight, has_meta_info, probe_bt, skip_this_tick) = {
+        let (wants_upnp, upnp_client, want_bt, client, inflight, probe_bt, probe_meta, skip_this_tick) = {
             let mut inner = self.imp().inner.borrow_mut();
             let want_bt = capabilities::mode_to_input_source(inner.current_mode) == "bluetooth";
-            let has_meta_info = inner.capabilities.as_ref()
-                .map_or(true, |c| c.family.endpoints.supports_get_meta_info);
             let probe_bt = inner.capabilities.as_ref().map_or(true, |c| c.probes_bt);
+            let probe_meta = inner.capabilities.as_ref().map_or(true, |c| c.probes_meta_info);
 
             // See `Inner::fast_poll_target`'s doc comment. Re-evaluated
             // fresh every tick (never a schedule fixed at the moment health
@@ -2042,7 +2061,7 @@ impl DeviceState {
             }
 
             (inner.access == AccessMethod::UpnpPolled, inner.upnp_client.clone(), want_bt,
-             inner.client.clone(), inner.fast_poll_handle.is_some(), has_meta_info, probe_bt, skip_this_tick)
+             inner.client.clone(), inner.fast_poll_handle.is_some(), probe_bt, probe_meta, skip_this_tick)
         };
         let Some(client) = client else { return };
         if skip_this_tick {
@@ -2071,7 +2090,7 @@ impl DeviceState {
             }
             (false, _) => {
                 let handle = self.rt().spawn(async move {
-                    let (status, meta, bt_status) = fetch_http_fast_poll(client, want_bt, probe_bt, has_meta_info).await;
+                    let (status, meta, bt_status) = fetch_http_fast_poll(client, want_bt, probe_bt, probe_meta).await;
                     let _ = poll_tx.send(PollData::Http { status, meta, bt_status }).await;
                 });
                 self.imp().inner.borrow_mut().fast_poll_handle = Some(handle);
@@ -2787,6 +2806,38 @@ impl DeviceState {
         }
     }
 
+    /// Resolves this tick's raw `MetaOutcome` into the plain
+    /// `Option<MetaData>` `process_poll_http()` expects, folding in the
+    /// same "confirmed unsupported" self-correction `resolve_bt_status()`
+    /// applies for `probes_bt`: a definite `ApiOutcome::Unsupported` flips
+    /// `probes_meta_info` to `false` so `dispatch_fast_poll()` stops
+    /// calling `getMetaInfo` at all from the next tick on, synthesizing
+    /// from `status` instead — both on the tick that just learned this and
+    /// on every subsequent tick that skipped the call for that reason.
+    /// `ApiOutcome::Failed` (transient) resolves to `None`, same as a
+    /// bare failed `get_status()` — keep whatever was cached rather than
+    /// blanking it over a one-off hiccup.
+    fn resolve_meta_info(&self, raw: MetaOutcome, status: Option<&PlayerStatus>) -> Option<MetaData> {
+        let synthesize = || status.map(MetaData::from_player_status);
+        match raw {
+            MetaOutcome::NotCasting => None,
+            MetaOutcome::KnownUnsupported => synthesize(),
+            MetaOutcome::Attempted(ApiOutcome::Ok(meta)) => Some(meta),
+            MetaOutcome::Attempted(ApiOutcome::Unsupported) => {
+                let mut inner = self.imp().inner.borrow_mut();
+                if let Some(caps) = inner.capabilities.as_mut() {
+                    if caps.probes_meta_info {
+                        dbg(self, "getMetaInfo: confirmed unsupported, won't ask again");
+                        caps.probes_meta_info = false;
+                    }
+                }
+                drop(inner);
+                synthesize()
+            }
+            MetaOutcome::Attempted(ApiOutcome::Failed) => None,
+        }
+    }
+
     /// Dispatch to whichever backend actually produced this tick's data —
     /// `PollData::Http`/`PollData::Upnp` are mutually exclusive (see
     /// `PollData`'s doc comment), so exactly one of these runs per tick,
@@ -2795,6 +2846,7 @@ impl DeviceState {
         match data {
             PollData::Http { status, meta, bt_status } => {
                 let bt_status = self.resolve_bt_status(bt_status);
+                let meta = self.resolve_meta_info(meta, status.as_ref());
                 self.imp().inner.borrow_mut().fast_poll_handle = None;
                 self.process_poll_http(status, meta, bt_status, art_tx);
             }
