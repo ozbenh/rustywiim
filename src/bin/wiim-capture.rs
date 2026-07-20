@@ -1552,10 +1552,21 @@ fn sanitize_filename_component(s: &str) -> String {
     replaced.chars().map(|c| if c.is_alphanumeric() || c == '_' || c == '-' { c } else { '_' }).collect()
 }
 
-fn write_output(capture: &CaptureFile) {
+fn write_output(capture: &CaptureFile, use_project: bool) {
     let ts = chrono::Utc::now().format("%Y%m%d_%H%M%S");
-    let model_part = sanitize_filename_component(&capture.model);
-    let filename = format!("{model_part}_{ts}.json");
+    // --use-project names by the raw LinkPlay-internal identifier (e.g.
+    // "Muzo_Mini") instead of the human-readable display model — groups
+    // captures from the same underlying hardware/firmware family together
+    // even when `model` varies by branding. Falls back to `model` even
+    // with the flag set, when project detection failed (`gave_up`, or an
+    // unrecognized device that never got that field).
+    let name_part = if use_project {
+        capture.project.as_deref().filter(|p| !p.is_empty()).unwrap_or(&capture.model)
+    } else {
+        &capture.model
+    };
+    let name_part = sanitize_filename_component(name_part);
+    let filename = format!("{name_part}_{ts}.json");
     let json = serde_json::to_string_pretty(capture).expect("CaptureFile must serialize");
     match std::fs::write(&filename, json) {
         Ok(()) => eprintln!("[wiim-capture] wrote {filename}"),
@@ -1694,10 +1705,18 @@ struct Args {
     /// flag is for when only the tcpuart side is wanted, without waiting
     /// through the full HTTP scheme/port probe and UPnP discovery first.
     tcpuart: bool,
+    /// `--use-project` — name the output file from `CaptureFile::project`
+    /// (the raw LinkPlay-internal identifier, e.g. "Muzo_Mini") instead of
+    /// `model` (the human-readable display name). Off by default: `model`
+    /// matches every capture already committed under `captures/`, and
+    /// changing that unconditionally would make new captures inconsistent
+    /// with them for no reason unless someone actually wants project-based
+    /// grouping (e.g. multiple models sharing the same underlying hardware).
+    use_project: bool,
 }
 
 fn usage() -> ! {
-    eprintln!("usage: wiim-capture [--destructive] <ip>");
+    eprintln!("usage: wiim-capture [--destructive] [--use-project] <ip>");
     eprintln!("       wiim-capture --tcpuart <ip>");
     eprintln!("       wiim-capture --one <command> <ip>");
     eprintln!("       wiim-capture --one upnp:<Action> <ip>");
@@ -1714,6 +1733,8 @@ fn usage() -> ! {
     eprintln!("       --tcpuart alone skips the HTTP/UPnP capture entirely and only probes the");
     eprintln!("       raw TCP UART pass-through protocol (port 8899) — for quick iteration.");
     eprintln!("       A normal (no-flag) run always attempts tcpuart too, alongside HTTP/UPnP.");
+    eprintln!("       --use-project names the output file from the device's raw \"project\" id");
+    eprintln!("       (e.g. Muzo_Mini) instead of its display model name.");
     std::process::exit(2);
 }
 
@@ -1742,11 +1763,13 @@ fn parse_args() -> Args {
     let mut destructive = false;
     let mut one = None;
     let mut tcpuart = false;
+    let mut use_project = false;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--destructive" => destructive = true,
             "--tcpuart" => tcpuart = true,
+            "--use-project" => use_project = true,
             "--one" => {
                 let Some(cmd) = args.next() else {
                     eprintln!("wiim-capture: --one requires a command argument");
@@ -1763,7 +1786,7 @@ fn parse_args() -> Args {
         }
     }
     let Some(ip) = ip else { usage() };
-    Args { ip, destructive, one, tcpuart }
+    Args { ip, destructive, one, tcpuart, use_project }
 }
 
 // ── Main ─────────────────────────────────────────────────────────────────────
@@ -1811,7 +1834,7 @@ async fn main() {
             upnp: None,
             tcpuart: Some(tcpuart),
         };
-        write_output(&capture);
+        write_output(&capture, args.use_project);
         return;
     }
 
@@ -1885,7 +1908,7 @@ async fn main() {
             upnp: None,
             tcpuart: Some(tcpuart),
         };
-        write_output(&capture);
+        write_output(&capture, args.use_project);
         return;
     };
 
@@ -1954,7 +1977,7 @@ async fn main() {
         upnp: Some(upnp),
         tcpuart,
     };
-    write_output(&capture);
+    write_output(&capture, args.use_project);
 }
 
 #[cfg(test)]
