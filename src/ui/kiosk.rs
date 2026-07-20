@@ -250,8 +250,10 @@ impl KioskWindow {
         // Keyboard: "K" exits kiosk mode, "L" swaps between the Classic and
         // WideRight playback layouts (neither shared with DeviceWindow's
         // own controller — no "M" here at all, kiosk has no mini mode).
-        // Everything else delegates to the shared transport-key helper
-        // against whatever's currently bound.
+        // "T" (theme cycle) *is* shared verbatim with DeviceWindow's own
+        // controller, via `ui::theme::cycle_theme()`. Everything else
+        // delegates to the shared transport-key helper against whatever's
+        // currently bound.
         let key_ctrl = gtk::EventControllerKey::new();
         key_ctrl.set_propagation_phase(gtk::PropagationPhase::Capture);
         key_ctrl.connect_key_pressed({
@@ -267,6 +269,10 @@ impl KioskWindow {
                 }
                 if let gtk::gdk::Key::l | gtk::gdk::Key::L = keyval {
                     this.toggle_layout();
+                    return glib::Propagation::Stop;
+                }
+                if let gtk::gdk::Key::t | gtk::gdk::Key::T = keyval {
+                    crate::ui::cycle_theme();
                     return glib::Propagation::Stop;
                 }
                 let Some((ds, view)) = this.bound.borrow().as_ref().map(|b| (b.ds.clone(), b.view.clone())) else {

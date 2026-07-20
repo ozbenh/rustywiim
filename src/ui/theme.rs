@@ -222,3 +222,25 @@ pub(crate) fn apply_theme(theme: ThemeMode) {
         glib::ControlFlow::Break
     });
 }
+
+/// Fixed rotation order for the "T" quick-switch shortcut (`DeviceWindow`
+/// and `KioskWindow` both call this) — same order Settings' own theme
+/// dropdown displays them in, minus its purely-visual separator entry.
+const CYCLE_ORDER: &[ThemeMode] = &[
+    ThemeMode::System,
+    ThemeMode::SystemLight,
+    ThemeMode::SystemDark,
+    ThemeMode::RustyWiiM,
+    ThemeMode::RustyWiiMModern,
+];
+
+/// Advances `config.theme` to the next entry in `CYCLE_ORDER` (wrapping) and
+/// applies it live — a quick way to eyeball a change under every theme
+/// without opening Settings each time.
+pub(crate) fn cycle_theme() {
+    let current = config::with(|cfg| cfg.theme);
+    let pos = CYCLE_ORDER.iter().position(|t| *t == current).unwrap_or(0);
+    let next = CYCLE_ORDER[(pos + 1) % CYCLE_ORDER.len()];
+    config::update(|cfg| cfg.theme = next);
+    apply_theme(next);
+}

@@ -189,7 +189,8 @@ pub(super) fn handle_transport_key(
     // controller with its own meanings for these letters (K exits kiosk
     // there instead, L does the same layout swap; there's no M at all,
     // kiosk has no mini mode) — handled here before falling through to
-    // the transport/volume keys every host shares.
+    // the transport/volume keys every host shares. "T" (theme cycle,
+    // below) *is* shared verbatim with `KioskWindow`.
     if let gtk::gdk::Key::m | gtk::gdk::Key::M = keyval {
         if *i.mini_mode.borrow() { i.exit_mini_mode(); } else { i.enter_mini_mode(); }
         schedule_config_save(i);
@@ -201,6 +202,13 @@ pub(super) fn handle_transport_key(
     }
     if let gtk::gdk::Key::l | gtk::gdk::Key::L = keyval {
         i.toggle_layout();
+        return glib::Propagation::Stop;
+    }
+    // "T" rotates the app-wide theme — shared verbatim with `KioskWindow`
+    // (unlike M/K/L above, this isn't a window-specific meaning), so it
+    // lives in `ui::theme::cycle_theme()` rather than here.
+    if let gtk::gdk::Key::t | gtk::gdk::Key::T = keyval {
+        crate::ui::cycle_theme();
         return glib::Propagation::Stop;
     }
     // The transport shortcuts follow their button's sensitivity (kept
