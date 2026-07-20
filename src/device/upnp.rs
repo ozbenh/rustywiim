@@ -542,7 +542,7 @@ pub(crate) fn unescape_xml_entities(s: &str) -> String {
 /// `GetKeyMapping`/`BrowseQueue` `<Name>` value (e.g. `"My Mix 1_#~2026-
 /// 07-08 16:49:59"` → `"My Mix 1"`) — confirmed present on every named
 /// entry in two real captures from different device families
-/// (`AudioCastBu_20260708_095957.json`'s `GetKeyMapping`/`BrowseQueue`,
+/// (`AudioCast_iEAST-02_20260708_095957.json`'s `GetKeyMapping`/`BrowseQueue`,
 /// `WiiM_Ultra_20260708_100034.json`'s equivalents), so this is the
 /// device's own internal disambiguator (likely so re-saving a preset under
 /// an unchanged display name still gets a distinct identity), not something
@@ -560,7 +560,7 @@ fn strip_wiimu_name_suffix(name: &str) -> String {
 /// `PresetFetchOutcome` shape the HTTP `getPresetInfo` path uses. The real
 /// preset data sits inside `<QueueContext>`, escaped once (LinkPlay's own
 /// XML nested inside the outer SOAP XML) — confirmed against real
-/// `GetKeyMapping` captures (`captures/test-devices/AudioCastBu_20260708_095957.json`,
+/// `GetKeyMapping` captures (`captures/test-devices/AudioCast_iEAST-02_20260708_095957.json`,
 /// `WiiM_Ultra_20260708_100034.json`): `<KeyList><Key1><Name>.../Name>
 /// <Source>...</Source><PicUrl>...</PicUrl></Key1>...</KeyList>`. `Key0` is
 /// always present-but-empty in both captures and never has a meaning here
@@ -984,7 +984,7 @@ mod tests {
     /// a generic icon and no name.
     #[test]
     fn key_mapping_empty_slots_are_dropped_not_placeholder_entries() {
-        let cap = load_device_capture("AudioCastBu_20260708_095957.json");
+        let cap = load_device_capture("AudioCast_iEAST-02_20260708_095957.json");
         let body = get_key_mapping_body(&cap);
         match parse_key_mapping_presets(&body, "") {
             PresetFetchOutcome::Changed(_, entries) => {

@@ -1265,7 +1265,7 @@ mod tests {
     #[test]
     fn device_info_recovers_preset_key() {
         let path = format!(
-            "{}/captures/test-devices/AudioCastBu_20260708_095957.json",
+            "{}/captures/test-devices/AudioCast_iEAST-02_20260708_095957.json",
             env!("CARGO_MANIFEST_DIR"),
         );
         let text = std::fs::read_to_string(&path)
