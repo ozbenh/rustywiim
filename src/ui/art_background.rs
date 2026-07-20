@@ -95,6 +95,16 @@ pub mod imp {
         let bounds = graphene::Rect::new(0.0, 0.0, w, h);
         match tex {
             Some(tex) => {
+                // Opaque backdrop first: some artwork (e.g. a station logo
+                // PNG with a transparent background) has an alpha channel,
+                // and this widget is the window's bottom-most background
+                // layer — libadwaita windows use an alpha-capable surface
+                // for CSD shadows/rounded corners, so any hole left in the
+                // render tree here is a genuine hole through to the desktop
+                // behind the window, not just a visual glitch. Painting a
+                // solid fill underneath guarantees the composited result is
+                // always fully opaque regardless of the source texture.
+                snapshot.append_color(&gdk::RGBA::new(0.039, 0.039, 0.039, 1.0), &bounds);
                 // Blur radius scales with window size for a consistent look
                 // from a small window up to a large one. Floor is low enough
                 // that the mini window (min(w,h) well under 200px) actually
