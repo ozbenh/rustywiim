@@ -730,7 +730,12 @@ pub fn decode_hms_duration(s: &str) -> Duration {
 /// a per-device override applies identically whether this device is
 /// polled over HTTP or UPnP.
 pub fn decode_source_name_upnp(play_medium: &str, track_source: &str, device_id: Option<DeviceId>) -> Option<Rc<str>> {
-    if play_medium.is_empty() {
+    // Same idle sentinels `mode_from_play_medium()` treats as "nothing
+    // playing" (`"" | "NONE" | "UNKNOWN"`) — without this, an idle device
+    // reporting one of the latter two literally fell through to the
+    // generic `other` arm's raw-wire-string passthrough below, showing a
+    // "UNKNOWN"/"NONE" service badge instead of no badge at all.
+    if play_medium.is_empty() || play_medium == "NONE" || play_medium == "UNKNOWN" {
         return None;
     }
     let label = match play_medium {
@@ -1301,6 +1306,18 @@ mod tests {
     #[test]
     fn source_name_songlist_network_unknown_vendor_shows_generic_label() {
         assert_eq!(decode_source_name_upnp("SONGLIST-NETWORK", "", None).as_deref(), Some("Streaming"));
+    }
+
+    /// Regression test for a real bug: an idle device reporting
+    /// `PlayMedium` `"NONE"`/`"UNKNOWN"` (the same idle sentinels
+    /// `mode_from_play_medium()` already treats as "nothing playing")
+    /// showed a literal "UNKNOWN"/"NONE" service badge instead of no badge
+    /// at all — the raw-wire-string passthrough in the generic `other` arm
+    /// caught them since only an empty string short-circuited early.
+    #[test]
+    fn source_name_none_and_unknown_are_idle_not_a_service_name() {
+        assert_eq!(decode_source_name_upnp("NONE", "", None), None);
+        assert_eq!(decode_source_name_upnp("UNKNOWN", "", None), None);
     }
 
     #[test]
