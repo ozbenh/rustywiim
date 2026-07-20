@@ -4223,9 +4223,9 @@ impl DeviceState {
                         Some(_) => {} // matches current_mode already — nothing to do
                         None => {
                             eprintln!(
-                                "{} [gena] unrecognized PlaybackStorageMedium {medium:?} — possible mode \
+                                "{} [gena] {}: unrecognized PlaybackStorageMedium {medium:?} — possible mode \
                                  change, triggering an immediate poll to confirm",
-                                super::timestamp(),
+                                super::timestamp(), self.ip(),
                             );
                             needs_immediate_poll = true;
                         }
