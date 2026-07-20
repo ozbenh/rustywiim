@@ -718,10 +718,21 @@ static ARYLIC_PROFILES: [DeviceProfile; 4] = [
         // doesn't assert it) — a 3.5mm jack, not paired RCA.
         ignore_plm_bits: &[],
         extra_inputs:    &["line-in"],
-        // Confirmed directly: line-out (3.5mm jack) and optical-out.
-        outputs:         &["line-out", "optical-out"],
+        // A single entry, not `&["line-out", "optical-out"]` (its previous
+        // value): confirmed live, 2026-07-20, that both physical outputs (a
+        // 3.5mm jack and optical) are hardwired to always run
+        // simultaneously — there's no selection concept between them, and
+        // Arylic's own app has no output control either. Represented as
+        // one "line-out" entry (keeps the jack icon via `line_out_is_jack`
+        // below — a dedicated combo icon may come later) labeled "Line &
+        // Optical" (`output_labels`) rather than dropped to `&[]` entirely:
+        // this device may grow *other*, genuinely independent outputs some
+        // day (e.g. a DLNA/cast output), and the menu needs a slot for
+        // "the physical pair" to coexist alongside those, not just a
+        // binary "has outputs or doesn't" toggle.
+        outputs:         &["line-out"],
         line_out_is_speaker: false, line_out_is_jack: true,
-        output_labels: &[],
+        output_labels: &[("line-out", "Line & Optical")],
         input_labels: &[], line_in_is_jack: true,
     },
 ];
@@ -830,10 +841,22 @@ static IEAST_PROFILES: [DeviceProfile; 2] = [
         // getbtdiscoveryresult) and directly.
         ignore_plm_bits: &[2],
         extra_inputs:    &["bluetooth"],
-        // Confirmed directly: optical-out and a 3.5mm "Stereo Out" jack
-        // (the device's own name for its line-out).
-        outputs:         &["line-out", "optical-out"],
-        output_labels: &[("line-out", "Stereo Out")],
+        // A single entry, not `&["line-out", "optical-out"]` (its previous
+        // value) — same hardware reality as the Arylic S10+ (see
+        // `ARYLIC_PROFILES[3]`'s doc comment): both physical outputs
+        // (optical and a 3.5mm jack) always run simultaneously, confirmed
+        // live 2026-07-20. Represented the same way: one "line-out" entry
+        // (jack icon via `line_out_is_jack`), labeled "Stereo & Optical" —
+        // leaves room for a genuinely independent future output (e.g. a
+        // DLNA/cast or BT one) to sit alongside this combined pair, rather
+	// than an all-or-nothing `&[]`. The device's own "Stereo Out"/
+        // "Optical Out" naming (this profile's previous, never-actually-
+        // matching `output_labels` entry — its first element didn't match
+        // either canon id, so it silently never applied) is dropped in
+        // favor of the same unified label the Arylic S10+ now uses, since
+        // both outputs are one combined thing here, not two named ones.
+        outputs:         &["line-out"],
+        output_labels: &[("line-out", "Stereo & Optical")],
         line_out_is_speaker: false, line_out_is_jack: true,
         input_labels: &[], line_in_is_jack: false,
     },
@@ -1862,10 +1885,15 @@ mod tests {
     }
 
     /// Real Arylic S10+ unit (project "S10P_WIFI") — see `ARYLIC_PROFILES[3]`'s
-    /// own doc comment: `outputs` (line-out + optical-out) and the
-    /// "line-in" entry in `extra_inputs` are both confirmed directly
-    /// against the hardware, not derived from this capture (every
+    /// own doc comment: the "line-in" entry in `extra_inputs` is confirmed
+    /// directly against the hardware, not derived from this capture (every
     /// output/input-enumeration command in it was "unknown command").
+    /// `outputs` is a single "line-out" entry, not the two independent
+    /// ones its wire-level names might suggest — also confirmed directly:
+    /// both physical outputs (a 3.5mm jack and optical) always run
+    /// simultaneously with no selection concept between them, so they're
+    /// represented as one combined output ("Line & Optical" via
+    /// `output_labels`) rather than two or none.
     #[test]
     fn arylic_s10_plus_real_capture_detects_correctly() {
         let cap = load_capture("Arylic_S10P_WIFI_20260720_005332.json");
@@ -1886,7 +1914,8 @@ mod tests {
         // directly (a 3.5mm jack, not asserted by plm_support at all).
         let ids: Vec<&str> = caps.inputs.iter().map(|e| e.id.as_str()).collect();
         assert_eq!(ids, vec!["wifi", "bluetooth", "udisk", "line-in"]);
-        assert_eq!(caps.device_id.profile().outputs, &["line-out", "optical-out"]);
+        assert_eq!(caps.device_id.profile().outputs, &["line-out"]);
+        assert_eq!(output_display_name("line-out", caps.device_id), "Line & Optical");
 
         let meta_cmd = cap.commands.iter()
             .find(|c| c.command == "getMetaInfo")
@@ -1925,7 +1954,11 @@ mod tests {
         // getbt* commands below.
         let ids: Vec<&str> = caps.inputs.iter().map(|e| e.id.as_str()).collect();
         assert_eq!(ids, vec!["wifi", "bluetooth"]);
-        assert_eq!(caps.device_id.profile().outputs, &["line-out", "optical-out"]);
+        // Same "one combined output, not two independent ones" shape as
+        // the Arylic S10+ (`ARYLIC_PROFILES[3]`'s doc comment) — confirmed
+        // to be the same underlying hardware under different branding.
+        assert_eq!(caps.device_id.profile().outputs, &["line-out"]);
+        assert_eq!(output_display_name("line-out", caps.device_id), "Stereo & Optical");
 
         let bt_cmd = cap.commands.iter()
             .find(|c| c.command == "getbtstatus")

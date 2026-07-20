@@ -439,6 +439,17 @@ impl InputOutputView {
         // seconds later. Grey the dropdown out rather than showing an
         // unselected/first-item guess in the meantime; select_output()
         // re-enables it once the real value arrives.
+        //
+        // Some devices (confirmed: Arylic S10+, AudioCast Pro) will *never*
+        // get a real value here — `getSoundCardModeSupportList` (the output
+        // *list*, above) works fine on them, but `getNewAudioOutputHardwareMode`
+        // (the current-selection query) answers "unknown command" — greying
+        // the menu out forever in that case would hide a perfectly real,
+        // usable output list behind a permanently-disabled control.
+        // `caps.probes_output_status` is state.rs's confirmed-unsupported
+        // flag (`false` once given up, still `true` while genuinely still
+        // waiting) — only fall back to "enabled, no selection" once it's
+        // actually confirmed, not just because a value hasn't arrived yet.
         match ds.output_status() {
             Some(os) => {
                 out_dd.set_sensitive(true);
@@ -450,7 +461,10 @@ impl InputOutputView {
                     }
                 }
             }
-            None => out_dd.set_sensitive(false),
+            None => {
+                let confirmed_unsupported = ds.capabilities().is_some_and(|c| !c.probes_output_status);
+                out_dd.set_sensitive(confirmed_unsupported);
+            }
         }
         imp.out_updating.set(false);
     }
@@ -479,7 +493,17 @@ impl InputOutputView {
         // cleared on disconnect — without this guard a stale cached output
         // would repaint the dropdown as if still connected.
         if ds.device_info().is_none() { return; }
-        let Some(os) = ds.output_status() else { return };
+        let Some(os) = ds.output_status() else {
+            // Reached on `output-changed` when state.rs's OutputStatus
+            // probe just confirmed-gave-up (no real status to select, ever)
+            // — see `populate_output()`'s identical comment. Enable the
+            // menu anyway rather than leaving it greyed out from that
+            // function's own initial "still waiting" state.
+            if ds.capabilities().is_some_and(|c| !c.probes_output_status) {
+                imp.out_dropdown.get().unwrap().set_sensitive(true);
+            }
+            return;
+        };
         let out_dd = imp.out_dropdown.get().unwrap();
         // Now that we actually know the current output, the dropdown no
         // longer needs to stay greyed out from the connect-time "unknown"

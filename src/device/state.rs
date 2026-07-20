@@ -2603,17 +2603,17 @@ impl DeviceState {
     /// Same give-up/retry-budget shape as `handle_slow_poll_outputs()`, for
     /// `getNewAudioOutputHardwareMode` — see that function's doc comment.
     fn handle_slow_poll_output_status(&self, status: ApiOutcome<AudioOutputStatus>) {
-        let out = {
+        let (out, gave_up_now) = {
             let mut inner = self.imp().inner.borrow_mut();
             match status {
                 ApiOutcome::Ok(out) => {
                     inner.output_status_probe_failures = 0;
-                    Some(out)
+                    (Some(out), false)
                 }
                 ApiOutcome::Unsupported => {
                     dbg(self, "slow poll: getNewAudioOutputHardwareMode confirmed unsupported, giving up");
                     if let Some(caps) = inner.capabilities.as_mut() { caps.probes_output_status = false; }
-                    None
+                    (None, true)
                 }
                 ApiOutcome::Failed => {
                     let gave_up = record_probe_failure(
@@ -2623,10 +2623,23 @@ impl DeviceState {
                     if gave_up {
                         if let Some(caps) = inner.capabilities.as_mut() { caps.probes_output_status = false; }
                     }
-                    None
+                    (None, gave_up)
                 }
             }
         };
+        if gave_up_now {
+            // Confirmed this device will never report a current output
+            // (e.g. an Arylic S10+: `getSoundCardModeSupportList` works
+            // fine, giving a real output list, but
+            // `getNewAudioOutputHardwareMode` doesn't) — `output_status`
+            // itself stays `None` forever, but `views/io.rs`'s
+            // `populate_output()`/`select_output()` both check
+            // `caps.probes_output_status` on this same signal to stop
+            // greying the output menu out while waiting for a value that's
+            // never coming.
+            dbg(self, "signal: output-changed (probe gave up, no status ever available)");
+            self.emit_by_name::<()>("output-changed", &[]);
+        }
         let Some(out) = out else { return };
         let (changed, prev_hw) = {
             let inner = self.imp().inner.borrow();
