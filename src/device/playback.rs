@@ -421,14 +421,26 @@ fn is_physical_input_mode(mode: i32) -> bool {
 /// handling wants to know whether to trust it enough to skip triggering a
 /// confirming poll).
 ///
-/// The exact numeric value only matters for two things:
-/// `mode_to_input_source()`'s bucket (line-in/optical/HDMI/phono/
-/// bluetooth/"everything else is wifi") and `is_physical_input_mode()`'s
-/// bool — *not* for distinguishing between different streaming services
+/// The exact numeric value matters for `mode_to_input_source()`'s bucket
+/// (line-in/optical/HDMI/phono/bluetooth/"everything else is wifi"),
+/// `is_physical_input_mode()`'s bool, and `decode_transport_caps_http()`/
+/// `decode_transport_caps_upnp()`'s own per-mode capability table — *not*
+/// for distinguishing between different streaming services in general
 /// (Spotify vs. TuneIn vs. Tidal), which `process_poll_upnp`'s separate
-/// `play_medium`/`track_source` diffing already handles on its own. So
-/// every confirmed non-physical streaming source shares one placeholder
-/// (`10`), not a distinct value each.
+/// `play_medium`/`track_source` diffing already handles on its own — so
+/// every streaming source *without* its own already-established HTTP
+/// `mode` number shares the one generic placeholder (`10`). But a source
+/// that *does* have an existing dedicated HTTP `mode` (`SPOTIFY`→`31`,
+/// `TIDAL_CONNECT`→`32`, `QOBUZ_CONNECT`→`36`) must return that same
+/// number, not `10` — a real bug (2026-07-20, see `TIDAL_CONNECT`'s own
+/// comment below) came from `TIDAL_CONNECT` returning `10` here while
+/// `inner.current_mode` was already `32` from HTTP/UPnP polling: this
+/// function disagreeing with the poll's own numbering for a source that
+/// hadn't actually changed made `DeviceState` see a false mode change on
+/// every GENA `PlaybackStorageMedium` NOTIFY, blanking and immediately
+/// re-populating the whole playback baseline (visible as `FlipCover`
+/// flipping away and straight back to the same artwork). When adding a
+/// new entry here, check `decode_source_name_http()`'s mode table first.
 pub fn mode_from_play_medium(play_medium: &str) -> Option<i32> {
     match play_medium {
         "" | "NONE" | "UNKNOWN" => Some(0), // idle — matches `has_playable_content()`'s own `0` sentinel
@@ -447,10 +459,23 @@ pub fn mode_from_play_medium(play_medium: &str) -> Option<i32> {
         // reasoning as `SPOTIFY` above for using its own specific value
         // instead of the generic `10` placeholder.
         "QOBUZ_CONNECT" => Some(36),
-        // Both confirmed live, 2026-07-18, matching this device's own
-        // `getPlayerStatusEx` `mode` for the same session — see
-        // `decode_source_name_upnp()`'s own handling of these two values.
-        "TIDAL_CONNECT" | "SONGLIST-NETWORK" => Some(10),
+        // Re-confirmed live, 2026-07-20 (WiiM Ultra, real Tidal Connect
+        // session): `GetInfoEx`'s own `PlayType` was `32` throughout,
+        // matching `decode_source_name_http`'s `32 => "TIDAL Connect"` and
+        // `decode_transport_caps_http`/`decode_transport_caps_upnp`'s own
+        // specific handling of that value — same reasoning as `SPOTIFY`/
+        // `QOBUZ_CONNECT` above. Previously shared the generic `10`
+        // bucket with `SONGLIST-NETWORK`; that mismatch (this function
+        // returning `10` for a GENA `PlaybackStorageMedium` NOTIFY while
+        // `inner.current_mode` was already `32` from HTTP/UPnP polling)
+        // caused a real, visible bug: `DeviceState` saw that as a genuine
+        // mode change, ran `blank_playback_baseline()` (clearing title/
+        // artist/album/art/caps), then immediately saw the *next* poll
+        // report `32` again and repopulated everything — visible as
+        // `FlipCover` flipping away to the fallback icon and straight back
+        // to the exact same artwork, for no actual source change at all.
+        "TIDAL_CONNECT" => Some(32),
+        "SONGLIST-NETWORK" => Some(10),
         _ => None, // unrecognized — not a confirmed value, let the caller decide
     }
 }
@@ -976,11 +1001,15 @@ mod tests {
         assert_eq!(mode_from_play_medium_fallback("LINE-IN"), 40);
         assert_eq!(mode_from_play_medium_fallback("RCA"), 44);
         assert_eq!(mode_from_play_medium_fallback("SPOTIFY"), 31);
-        assert_eq!(mode_from_play_medium_fallback("TIDAL_CONNECT"), 10);
+        // Was `10` — corrected 2026-07-20 against a real WiiM Ultra Tidal
+        // Connect session, where `GetInfoEx`'s own `PlayType` was `32`
+        // throughout; see `mode_from_play_medium()`'s own doc comment for
+        // the real bug the old value caused.
+        assert_eq!(mode_from_play_medium_fallback("TIDAL_CONNECT"), 32);
         assert_eq!(mode_from_play_medium_fallback("SONGLIST-NETWORK"), 10);
         assert_eq!(mode_from_play_medium_fallback("SOME_FUTURE_SERVICE"), 10);
         assert_eq!(mode_from_play_medium("SOME_FUTURE_SERVICE"), None);
-        assert_eq!(mode_from_play_medium("TIDAL_CONNECT"), Some(10));
+        assert_eq!(mode_from_play_medium("TIDAL_CONNECT"), Some(32));
     }
 
     /// `"un_known"` is a real firmware placeholder confirmed live on a WiiM
