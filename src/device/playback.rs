@@ -772,6 +772,18 @@ pub fn decode_source_name_upnp(play_medium: &str, track_source: &str, device_id:
             let vn = vendor_display(track_source);
             if vn.is_empty() { "Streaming".to_string() } else { vn.to_string() }
         }
+        // A personalized station-style stream with skip support (as
+        // opposed to `RADIO-NETWORK`'s plain, no-skip stream) — confirmed
+        // via 3 real captures, all Pandora sessions (see
+        // `mode_from_play_medium()`'s own comment), but the same
+        // "recognized vendor still wins, `other`'s raw-string passthrough
+        // otherwise" bug `SONGLIST-NETWORK` already hit applies here too —
+        // a user reported seeing `"STATION-NETWORK"` verbatim in the
+        // service badge (2026-07-21).
+        "STATION-NETWORK" => {
+            let vn = vendor_display(track_source);
+            if vn.is_empty() { "Radio".to_string() } else { vn.to_string() }
+        }
         other => {
             let vn = vendor_display(track_source);
             if !vn.is_empty() {
@@ -779,7 +791,11 @@ pub fn decode_source_name_upnp(play_medium: &str, track_source: &str, device_id:
             } else if let Some(prefix) = other.strip_suffix("_CONNECT").or_else(|| other.strip_suffix("-CONNECT")) {
                 format!("{prefix} Connect")
             } else {
-                other.to_string()
+                // Never echo an unrecognized raw wire string verbatim —
+                // mirrors `mode_source()`'s own `10 | 20 => "WiFi"`
+                // fallback for the equivalent ambiguous case on the HTTP
+                // side.
+                "Wifi".to_string()
             }
         }
     };
@@ -1306,6 +1322,29 @@ mod tests {
     #[test]
     fn source_name_songlist_network_unknown_vendor_shows_generic_label() {
         assert_eq!(decode_source_name_upnp("SONGLIST-NETWORK", "", None).as_deref(), Some("Streaming"));
+    }
+
+    /// Regression test for a real bug: same shape as `SONGLIST-NETWORK`'s
+    /// above, this time for "STATION-NETWORK" — a user reported seeing the
+    /// raw wire string verbatim in the service badge (2026-07-21).
+    #[test]
+    fn source_name_station_network_unknown_vendor_shows_generic_label() {
+        assert_eq!(decode_source_name_upnp("STATION-NETWORK", "", None).as_deref(), Some("Radio"));
+    }
+
+    #[test]
+    fn source_name_station_network_known_vendor_via_vendor_display() {
+        assert_eq!(decode_source_name_upnp("STATION-NETWORK", "Tidal", None).as_deref(), Some("TIDAL"));
+    }
+
+    /// Regression test: the generic `other` catch-all arm used to echo an
+    /// entirely unrecognized `PlayMedium` string verbatim (same bug class
+    /// as the two above, just for a medium with no dedicated arm at all) —
+    /// now falls back to a generic "Wifi" label, mirroring `mode_source()`'s
+    /// own `10 | 20 => "WiFi"` fallback for the equivalent HTTP-side case.
+    #[test]
+    fn source_name_unrecognized_medium_falls_back_to_wifi_not_raw_string() {
+        assert_eq!(decode_source_name_upnp("SOME-FUTURE-MEDIUM", "", None).as_deref(), Some("Wifi"));
     }
 
     /// Regression test for a real bug: an idle device reporting
