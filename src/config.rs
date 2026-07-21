@@ -53,8 +53,8 @@ fn default_devlist_song_info() -> bool { true }
 fn default_scroll_speed() -> f64 { 0.6 }
 fn default_kiosk_auto_hide_controls() -> bool { true }
 fn default_kiosk_screensaver_enable() -> bool { true }
-/// 2 minutes — Settings' own slider range is 10s-600s (10 minutes).
-fn default_kiosk_screensaver_timeout_secs() -> u32 { 120 }
+/// Settings' own slider range is 10s-600s (10 minutes).
+fn default_kiosk_screensaver_timeout_secs() -> u32 { 30 }
 fn default_kiosk_screensaver_include_phys_inputs() -> bool { true }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
