@@ -146,7 +146,15 @@ impl DiscoveryWindow {
         window.connect_close_request(clone!(#[strong(rename_to = _window)] window, move |w| {
             let (ww, wh) = (w.width(), w.height());
             config::update(|cfg| {
-                cfg.discovery_open = false;
+                // Not cleared while entering Kiosk mode — this close is a
+                // transient side effect of that transition, not the user
+                // actually dismissing the device list, and `exit_kiosk()`
+                // needs `discovery_open` to still reflect reality
+                // afterward (mirrors `DeviceWindowInner::cleanup()`'s
+                // identical `ENTERING_KIOSK` guard on `window_open`).
+                if !crate::ui::ENTERING_KIOSK.load(std::sync::atomic::Ordering::Relaxed) {
+                    cfg.discovery_open = false;
+                }
                 if ww > 0 { cfg.discovery_window_width  = ww; }
                 if wh > 0 { cfg.discovery_window_height = wh; }
             });
