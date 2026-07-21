@@ -280,6 +280,10 @@ fn apply_wide_right_scale(
     // by request, reads as secondary detail rather than matching the
     // pos/dur/status row it sits under.
     let quality_line_px = round_to_even((status_px as f64 * 0.8 * SERVICE_ENSEMBLE_SCALE).max(14.0));
+    crate::ui::dbg_ui(&format!(
+        "wide-right font sizes: title={title_px} artist={artist_px} album={album_px} \
+         service={service_px} status={status_px} quality_line={quality_line_px} (h={h})",
+    ));
     let status_gap = (h * 0.0192).round() as i32;
     status_group.set_spacing(status_gap.max(2));
     // Spacing between service/quality-badge/bitrate-string — was a fixed
@@ -862,17 +866,30 @@ impl PlaybackView {
                     #[strong] art_overlay, #[strong] text_col,
                     #[strong] title_group, #[strong] status_group, #[strong] service_group, #[strong] volume,
                     #[strong] service, #[strong] quality_badge,
+                    #[strong] title, #[strong] artist, #[strong] album,
                     #[strong] band_row, #[strong] controls_col, #[strong] top_row,
                     #[strong] content_block, #[strong] seek_row, #[strong] outer,
                     #[strong] class, #[strong] provider,
                     move |screen_w: i32, screen_h: i32| {
                         let side = compute_wide_right_art_side(screen_w, screen_h);
+                        crate::ui::dbg_ui(&format!(
+                            "wide-right rescale: screen={screen_w}x{screen_h} -> side={side}",
+                        ));
                         art_overlay.set_size_request(side, side);
                         text_col.set_size_request(-1, side);
                         apply_wide_right_scale(
                             &class, &provider, &title_group, &status_group, &service_group, &volume,
                             &service, &quality_badge, side,
                         );
+                        // Forces both faces of each SwipeText to recompute
+                        // their style now that the CSS provider above just
+                        // changed — see `SwipeText::force_restyle()`'s own
+                        // doc comment for why this is needed (confirmed
+                        // live: a still-hidden `gtk::Stack` face doesn't
+                        // reliably notice the new rule on its own).
+                        title.force_restyle();
+                        artist.force_restyle();
+                        album.force_restyle();
 
                         // All structural gaps/margins below are fractions
                         // of `side` too, for the same reason the font/

@@ -57,6 +57,10 @@ impl SwipeText {
         // track title or a transient empty-title flicker that reverts.
         if outgoing.text() == text { return; }
         incoming.set_text(text);
+        crate::ui::dbg_ui(&format!(
+            "SwipeText::set_text: face={name} text={text:?} font={:?}",
+            incoming.pango_context().font_description().map(|d| d.to_string()),
+        ));
         let transition = if crate::config::with(|cfg| cfg.animations) {
             gtk::StackTransitionType::SlideLeft
         } else {
@@ -71,6 +75,15 @@ impl SwipeText {
     pub(crate) fn set_center_when_fits(&self, center: bool) {
         self.a.set_center_when_fits(center);
         self.b.set_center_when_fits(center);
+    }
+
+    /// Forces both faces to recompute their style — see
+    /// `ScrollFadeLabel::force_restyle()`'s own doc comment for why this is
+    /// needed: whichever face is currently hidden doesn't reliably notice
+    /// a CSS provider change on its own.
+    pub(crate) fn force_restyle(&self) {
+        self.a.force_restyle();
+        self.b.force_restyle();
     }
 }
 

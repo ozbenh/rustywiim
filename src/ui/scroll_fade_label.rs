@@ -456,6 +456,24 @@ impl ScrollFadeLabel {
         self.add_css_class(class);
     }
 
+    /// Forces a full style-context recompute (not just a layout pass) —
+    /// confirmed live (2026-07-21, Kiosk mode's WideRight layout on a
+    /// Raspberry Pi 5) that a `gtk::Stack` child still hidden at the
+    /// moment a *new*, higher-priority `gtk::CssProvider` is added doesn't
+    /// reliably pick up that provider's rule on its own; it keeps
+    /// resolving to whatever font it had at construction time until
+    /// something forces a real restyle. A plain `queue_resize()` alone
+    /// only re-triggers layout, not style resolution, so it doesn't help —
+    /// removing and re-adding this widget's CSS classes does force GTK to
+    /// recompute style, same trick as toggling any CSS class to force a
+    /// restyle.
+    pub fn force_restyle(&self) {
+        let classes: Vec<String> = self.css_classes().iter().map(|s| s.to_string()).collect();
+        self.set_css_classes(&[]);
+        self.set_css_classes(&classes.iter().map(String::as_str).collect::<Vec<_>>());
+        self.queue_resize();
+    }
+
     pub fn set_center_when_fits(&self, center: bool) {
         let imp = self.imp();
         imp.center_when_fits.set(center);
