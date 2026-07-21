@@ -665,13 +665,19 @@ impl PlaybackView {
                 band_row.append(&status_group);
 
                 // Service name + quality badge + bitrate/depth/rate
-                // string, directly above the controls band, left
-                // justified like the rest of this column. Spacing is set
-                // dynamically below (`apply_wide_right_scale()`'s own
-                // `service_gap`), proportional to screen size like every
-                // other gap in this layout — cancel out `quality_badge`/
-                // `quality`'s own fixed construction-time margins (used by
-                // Classic instead) so the box's spacing is the only gap.
+                // string — moved between the artwork/text row and the seek
+                // bar instead of above the controls band (by request,
+                // 2026-07-21: it read as "floating" once Kiosk's "All
+                // Controls" auto-hide could fade the band away from under
+                // it). Left justified, same as everything else in this
+                // layout — added as its own child of `content_block` below,
+                // not nested inside `art_overlay`'s own column (an earlier
+                // attempt at that distorted `top_row_overlay`'s height).
+                // Its own gap above/below is `content_block`'s spacing,
+                // shared with the rest of that Box's children — cancel out
+                // `quality_badge`/`quality`'s own fixed construction-time
+                // margins (used by Classic instead) so there's no separate
+                // extra gap fighting it.
                 quality_badge.widget.set_margin_start(0);
                 quality.set_margin_start(0);
                 let service_group = GtkBox::builder()
@@ -685,7 +691,6 @@ impl PlaybackView {
                     .orientation(Orientation::Vertical)
                     .valign(Align::End)
                     .build();
-                controls_col.append(&service_group);
                 controls_col.append(&band_row);
 
                 // Splits the column into an exact 2:1 ratio — title block
@@ -776,6 +781,20 @@ impl PlaybackView {
                     .valign(Align::Start)
                     .build();
                 content_block.append(&top_row_overlay);
+                // Sits between the artwork/text row and the seek bar (by
+                // request, 2026-07-21 — moved here from above the controls
+                // band, where it read as "floating" once "All Controls"
+                // could fade the band away from under it) — a real sibling
+                // of `top_row_overlay`/`seek_row`, so its own height (plus
+                // its and `seek_row`'s small margins below) is the only
+                // thing added to `content_block`'s total — both margins
+                // are kept deliberately tight (not the original generous
+                // gap) so that total stays close to what `content_block`
+                // used to need, since any growth here gets amplified
+                // ~10/9x by `vgrid`'s homogeneous-row math below and pushed
+                // the bottom status bar down when it wasn't (confirmed live
+                // via screenshot).
+                content_block.append(&service_group);
                 content_block.append(&seek_row);
 
                 // Pushes content_block down by 1/10 of the available
@@ -830,7 +849,7 @@ impl PlaybackView {
                     #[strong] title_group, #[strong] status_group, #[strong] service_group, #[strong] volume,
                     #[strong] service, #[strong] quality_badge,
                     #[strong] band_row, #[strong] controls_col, #[strong] top_row,
-                    #[strong] content_block, #[strong] outer,
+                    #[strong] content_block, #[strong] seek_row, #[strong] outer,
                     #[strong] class, #[strong] provider,
                     move |screen_w: i32, screen_h: i32| {
                         let side = compute_wide_right_art_side(screen_w, screen_h);
@@ -853,7 +872,24 @@ impl PlaybackView {
                         band_row.set_spacing((s * 0.09).round() as i32);
                         controls_col.set_spacing((s * 0.03).round() as i32);
                         top_row.set_spacing((s * 0.10).round() as i32);
-                        content_block.set_spacing((s * 0.18).round() as i32);
+                        // `content_block` has three children now
+                        // (top_row_overlay, service_group, seek_row) —
+                        // its own uniform `spacing` would put the *same*
+                        // gap both above and below service_group, so each
+                        // gets its own explicit margin instead. Both kept
+                        // deliberately tight — service_group's own real
+                        // height is already unavoidable added weight on
+                        // `content_block`'s total, which `vgrid`'s
+                        // homogeneous-row math below amplifies ~10/9x, so
+                        // generous gaps on top of that pushed the bottom
+                        // status bar down further than intended (confirmed
+                        // live via screenshot). Together these two add
+                        // noticeably less than the original single 0.18
+                        // gap (directly below top_row_overlay) used to be
+                        // on its own, before service_group existed here.
+                        content_block.set_spacing(0);
+                        service_group.set_margin_top((s * 0.04).round() as i32);
+                        seek_row.set_margin_top((s * 0.1).round() as i32);
                         let margin_h = wide_right_margin_h(side);
                         let margin_v = (s * 0.06).round() as i32;
                         outer.set_margin_start(margin_h);
