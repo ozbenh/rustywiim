@@ -89,7 +89,7 @@ use crate::ui::art_background::ArtBackground;
 use crate::ui::flip_cover::FlipCover;
 use crate::ui::icons::IconSet;
 use super::common::{
-    build_bt_pair_button, format_bt_status_line, format_status_icon_only, is_unknown,
+    build_bt_pair_button, format_bt_status_line, is_unknown,
     QualityBadge, ServiceLabel, SwipeText,
 };
 use super::volume::VolumeControl;
@@ -381,7 +381,7 @@ impl MiniPlaybackView {
         };
         imp.title.get().unwrap().set_text(title);
         imp.artist.get().unwrap().set_text("");
-        imp.status.get().unwrap().set_label("");
+        imp.status.get().unwrap().set_visible(false);
         imp.service.get().unwrap().set(None, imp.icons.get().unwrap());
         imp.quality.get().unwrap().widget.set_visible(false);
         imp.artwork.get().unwrap().clear();
@@ -410,12 +410,18 @@ impl MiniPlaybackView {
                 } else {
                     "media-playback-start-symbolic"
                 });
+            // The plain play/pause/stop glyph this used to show alongside
+            // the service badge wasn't particularly useful (reported live,
+            // 2026-07-21) — hidden entirely now, letting the service/
+            // quality badges sit where it used to. Still shown (as real
+            // text, not an icon) for Bluetooth's own connection status,
+            // which has no other place to go in this layout.
             let is_bluetooth = ps.source_name.as_deref() == Some("Bluetooth");
-            imp.status.get().unwrap().set_label(&if is_bluetooth {
-                format_bt_status_line(ps.bt_connected, ps.bt_device_name.as_deref(), ps.bt_pairing)
-            } else {
-                format_status_icon_only(&ps.status).to_string()
-            });
+            let status_label = imp.status.get().unwrap();
+            status_label.set_visible(is_bluetooth);
+            if is_bluetooth {
+                status_label.set_label(&format_bt_status_line(ps.bt_connected, ps.bt_device_name.as_deref(), ps.bt_pairing));
+            }
             // No service badge for a physical input — same reasoning as
             // the full/WideRight layouts (see their identical comment):
             // there's no app/stream behind it, and its name goes in the

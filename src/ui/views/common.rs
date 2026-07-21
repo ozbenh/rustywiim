@@ -94,22 +94,6 @@ pub(crate) fn format_status_only(status: &PlaybackStatus) -> String {
     }.to_string()
 }
 
-/// Just the glyph, no word — the Mini window's status label shows only
-/// this (service/quality get their own separate badges there instead, same
-/// as the full/WideRight layouts). `Unknown` has no icon vocabulary to
-/// fall back to, so it shows the raw wire status verbatim, same as
-/// elsewhere in this module (an unrecognized-but-readable string beats
-/// nothing).
-pub(crate) fn format_status_icon_only(status: &PlaybackStatus) -> &str {
-    match status {
-        PlaybackStatus::Playing      => "▶",
-        PlaybackStatus::Paused       => "⏸",
-        PlaybackStatus::Stopped      => "⏹",
-        PlaybackStatus::Loading      => "⏳",
-        PlaybackStatus::Unknown(raw) => raw.as_str(),
-    }
-}
-
 /// Replaces the plain status text entirely while Bluetooth is the active
 /// input — play/pause state isn't meaningful for an external A2DP source
 /// the way it is for a real queue, so the connection state is more useful
@@ -204,7 +188,7 @@ pub(crate) fn build_bt_pair_button(css_class: &str, icon_px: i32) -> gtk::Button
 
 /// Displays the active streaming service's name (`PlaybackState::source_name`)
 /// as its own element, separate from the plain status text
-/// (`format_status_only()`/`format_status_icon_only()`) — shown as a
+/// (`format_status_only()`) — shown as a
 /// brand-mark icon when one is registered in `IconSet`
 /// (`IconSet::service_paintable()`), falling back to the plain text name
 /// for every other service. Used by every layout (Classic/WideRight each
