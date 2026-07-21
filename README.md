@@ -136,6 +136,26 @@ You can pretty-print this file using `target/debug/wiim-capdump`. I would apprec
 * Kiosk mode doesn't have a way to manually add a device by IP address yet
 
 ## Changelog ##
+  * 0.10.1 - 2026-07-21
+    * Increase side bad min size before snapping
+	* Add button to enter/exit kiosk mode
+	* Add option to start kiosk mode "only" (with no button to switch back)
+	* Add speed setting for scroll text and increase default speed
+	* Fixup some bogus streaming service names
+	* Add an "Idle" handler that hides a number of elements of the kiosk mode
+	  after a couple of seconds without user input. This can be configured
+	  in the Settings dialog: enabled/disabled and whether to hide just the
+	  top controls or a whole lot more things.
+    * Link with system screensaver to prevent it from blanking when in kiosk
+	  mode (optional, see settings, can be set to only kick in while playing)
+    * Add a basic built-in screensaver (in absence of a system one, for example
+	  when running under a trivial compositor like cage). It only blanks the
+	  screen for now. By default (configurable) it will kick in when not
+	  playing or when the current input is a physical input and the system
+	  has been idle for 30s.
+    * Some cosmetic changes to Kiosk mode to better accomodate auto-hide
+	* Fix a font size issue occasionally in kiosk mode
+
   * 0.10.0 - 2026-07-20
     * A new experimental full screen "Kiosk" mode (single window)
     * Raspberry Pi .deb builds (for trixie/RPiOS)
