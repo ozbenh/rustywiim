@@ -18,11 +18,13 @@ Licensed under the [MIT License](LICENSE).
 <a href="pics/mini-modern.png"><img src="pics/thumbs/mini-modern.png" width="150" alt="Mini window, modern theme"></a>
 <a href="pics/devlist.png"><img src="pics/thumbs/devlist.png" width="150" alt="Device list window"></a>
 <a href="pics/settings.png"><img src="pics/thumbs/settings.png" width="150" alt="Settings dialog"></a>
+<a href="pics/settings-kiosk.png"><img src="pics/thumbs/settings-kiosk.png" width="150" alt="Settings dialog - Kiosk"></a>
 
 ### Kiosk mode (fullscreen) [Experimental]
 
 <a href="pics/kiosk-dark.png"><img src="pics/thumbs/kiosk-dark.png" width="150" alt="Kiosk mode, dark theme"></a>
 <a href="pics/kiosk-modern.png"><img src="pics/thumbs/kiosk-modern.png" width="150" alt="Kiosk mode, modern theme"></a>
+<a href="pics/kiosk-modern-no-controls.png"><img src="pics/thumbs/kiosk-modern-no-controls.png" width="150" alt="Kiosk mode, modern theme, controls hidden"></a>
 <a href="pics/kiosk-modern-devlist.png"><img src="pics/thumbs/kiosk-modern-devlist.png" width="150" alt="Kiosk mode, modern theme, device list"></a>
 
 ## Introduction
@@ -340,9 +342,15 @@ You can pretty-print this file using `target/debug/wiim-capdump`. I would apprec
 ![Screenshot](pics/main-modern.png)
 **Mini window, modern theme**
 ![Screenshot](pics/mini-modern.png)
-**Kiosk mode (Raspberry Pi5 + 1024x600 touchscreen), dark theme**
+**Kiosk mode (Raspberry Pi5 + 1024x600 touchscreen), dark theme **
 ![Screenshot](pics/kiosk-dark.png)
 **Kiosk mode (Raspberry Pi5 + 1024x600 touchscreen), modern theme**
+![Screenshot](pics/kiosk-modern.png)
+**Kiosk mode (Raspberry Pi5 + 1024x600 touchscreen), modern theme, controls hidden**
+![Screenshot](pics/kiosk-modern-no-controls.png)
+**Kiosk mode (Raspberry Pi5 + 1024x600 touchscreen), modern theme with devices list**
+![Screenshot](pics/kiosk-modern-devlist.png)
+**Kiosk mode (Raspberry Pi5 + 1024x600 touchscreen), modern theme - (new) controls visible**
 ![Screenshot](pics/kiosk-modern.png)
 **Kiosk mode (Raspberry Pi5 + 1024x600 touchscreen), modern theme with devices list**
 ![Screenshot](pics/kiosk-modern-devlist.png)
@@ -350,3 +358,5 @@ You can pretty-print this file using `target/debug/wiim-capdump`. I would apprec
 ![Screenshot](pics/devlist.png)
 **Settings dialog**
 ![Screenshot](pics/settings.png)
+**Settings dialog for kiosk mode**
+![Screenshot](pics/settings-kiosk.png)
