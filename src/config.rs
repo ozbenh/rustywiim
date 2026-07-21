@@ -55,6 +55,7 @@ fn default_kiosk_auto_hide_controls() -> bool { true }
 fn default_kiosk_screensaver_enable() -> bool { true }
 /// 2 minutes — Settings' own slider range is 10s-600s (10 minutes).
 fn default_kiosk_screensaver_timeout_secs() -> u32 { 120 }
+fn default_kiosk_screensaver_include_phys_inputs() -> bool { true }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -326,6 +327,15 @@ pub struct Config {
     /// own slider range is 10-600.
     #[serde(default = "default_kiosk_screensaver_timeout_secs")]
     pub kiosk_screensaver_timeout_secs: u32,
+    /// Whether a physical input (line-in/optical/RCA/HDMI/phono/Bluetooth)
+    /// counts as "not playing" for the screensaver's own idle clock, even
+    /// while its `PlaybackStatus` reports `Playing` — a device parked on
+    /// one can report `Playing` with nothing audible actually happening
+    /// (nothing plugged in, a silent source), so without this the
+    /// screensaver would never trigger for that class of input at all.
+    /// Defaults on; only meaningful when `kiosk_screensaver_enable` is.
+    #[serde(default = "default_kiosk_screensaver_include_phys_inputs")]
+    pub kiosk_screensaver_include_phys_inputs: bool,
 }
 
 impl Default for Config {
@@ -350,6 +360,7 @@ impl Default for Config {
             kiosk_inhibit_screensaver: InhibitSystemScreensaver::default(),
             kiosk_screensaver_enable: default_kiosk_screensaver_enable(),
             kiosk_screensaver_timeout_secs: default_kiosk_screensaver_timeout_secs(),
+            kiosk_screensaver_include_phys_inputs: default_kiosk_screensaver_include_phys_inputs(),
         }
     }
 }

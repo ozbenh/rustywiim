@@ -641,12 +641,29 @@ fn build_kiosk_page() -> adw::PreferencesPage {
         timeout_label.set_label(&format_mmss(secs));
     }));
 
-    screensaver_row.connect_active_notify(glib::clone!(#[weak] timeout_row, #[weak] timeout_scale, move |row| {
-        let active = row.is_active();
-        config::update(|cfg| cfg.kiosk_screensaver_enable = active);
-        timeout_row.set_sensitive(active);
-        timeout_scale.set_sensitive(active);
-    }));
+    let treat_physical_as_stopped = config::with(|cfg| cfg.kiosk_screensaver_include_phys_inputs);
+    let physical_input_row = adw::SwitchRow::builder()
+        .title("Treat Physical Inputs as Stopped")
+        .subtitle("A physical input (line-in/optical/RCA/HDMI/phono/Bluetooth) still \
+                   triggers the screen saver after the delay above, even while it \
+                   reports \"Playing\"")
+        .active(treat_physical_as_stopped)
+        .sensitive(screensaver_enable)
+        .build();
+    physical_input_row.connect_active_notify(move |row| {
+        config::update(|cfg| cfg.kiosk_screensaver_include_phys_inputs = row.is_active());
+    });
+
+    screensaver_row.connect_active_notify(glib::clone!(
+        #[weak] timeout_row, #[weak] timeout_scale, #[weak] physical_input_row,
+        move |row| {
+            let active = row.is_active();
+            config::update(|cfg| cfg.kiosk_screensaver_enable = active);
+            timeout_row.set_sensitive(active);
+            timeout_scale.set_sensitive(active);
+            physical_input_row.set_sensitive(active);
+        }
+    ));
 
     let group = adw::PreferencesGroup::builder()
         .title("Kiosk")
@@ -655,6 +672,7 @@ fn build_kiosk_page() -> adw::PreferencesPage {
     group.add(&inhibit_row);
     group.add(&screensaver_row);
     group.add(&timeout_row);
+    group.add(&physical_input_row);
 
     let page = adw::PreferencesPage::new();
     page.add(&group);

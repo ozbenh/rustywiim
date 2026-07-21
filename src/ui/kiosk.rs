@@ -136,6 +136,11 @@ pub(crate) struct KioskWindow {
     /// dismissal (see `on_playback_changed()`'s doc comment) — only a
     /// genuine `Playing` status clears it.
     screensaver_idle_since: Cell<Option<Instant>>,
+    /// Last `PlaybackStatus` this window logged — `on_playback_changed()`
+    /// fires on every `playback-changed` signal regardless of what
+    /// actually changed (volume, time, ...), so this dedupes the debug log
+    /// down to real Playing/Paused/Stopped/... transitions only.
+    last_logged_status: RefCell<Option<crate::device::playback::PlaybackStatus>>,
 
     /// The one system-idle-inhibit cookie this window ever holds at a
     /// time, per `InhibitSystemScreensaver`'s three modes — `Always`
@@ -324,6 +329,7 @@ impl KioskWindow {
             screensaver_active: Cell::new(false),
             screensaver_fade_anim: RefCell::new(None),
             screensaver_idle_since: Cell::new(None),
+            last_logged_status: RefCell::new(None),
             inhibit_cookie: Cell::new(None),
         });
 
@@ -863,6 +869,7 @@ impl KioskWindow {
         // second before it blinked back). Only restarts an already-running
         // clock (not playing); stays `None` while genuinely `Playing`.
         if self.screensaver_idle_since.get().is_some() {
+            crate::ui::dbg_ui(&format!("kiosk screensaver: idle clock restarted (activity: {source})"));
             self.screensaver_idle_since.set(Some(Instant::now()));
         }
     }
@@ -1016,14 +1023,47 @@ impl KioskWindow {
     fn on_playback_changed(self: &Rc<Self>, ds: &DeviceState) {
         self.hide_screensaver();
 
-        let playing = ds.playback_state().status == PlaybackStatus::Playing;
-        if playing {
+        let ps = ds.playback_state();
+
+        // Dedup'd transition log — this fires on *every* playback-changed
+        // signal (volume, time, ...), not just real status changes, so
+        // logging ps.status unconditionally here would mostly show noise.
+        {
+            let mut last = self.last_logged_status.borrow_mut();
+            if last.as_ref() != Some(&ps.status) {
+                crate::ui::dbg_ui(&format!(
+                    "kiosk playback status: {:?} -> {:?} (mode={} is_physical_input={} source_name={:?})",
+                    *last, ps.status, ds.current_mode(), ps.is_physical_input, ps.source_name,
+                ));
+                *last = Some(ps.status.clone());
+            }
+        }
+
+        let playing = ps.status == PlaybackStatus::Playing;
+        // The screensaver's own idle clock additionally treats a physical
+        // input as "not playing" when the setting says so (default on) —
+        // a device parked on one can report `Playing` with nothing
+        // audible actually happening (nothing plugged in, a silent
+        // source), so counting it as always-active would defeat the
+        // screensaver entirely for that class of input. Doesn't affect
+        // `update_system_inhibit()` below, which stays purely about the
+        // real playback status.
+        let include_phys = config::with(|cfg| cfg.kiosk_screensaver_include_phys_inputs);
+        let treat_as_stopped = ps.is_physical_input && include_phys;
+        let screensaver_playing = playing && !treat_as_stopped;
+        if screensaver_playing {
             if self.screensaver_idle_since.get().is_some() {
-                crate::ui::dbg_ui("kiosk screensaver: idle clock cleared (playing)");
+                crate::ui::dbg_ui("kiosk screensaver: idle clock cleared (playback-changed: now playing)");
             }
             self.screensaver_idle_since.set(None);
         } else {
-            crate::ui::dbg_ui("kiosk screensaver: idle clock (re)started (not playing)");
+            let status = &ps.status;
+            let is_physical_input = ps.is_physical_input;
+            crate::ui::dbg_ui(&format!(
+                "kiosk screensaver: idle clock (re)started (playback-changed: status={status:?} \
+                 is_physical_input={is_physical_input} kiosk_screensaver_include_phys_inputs={include_phys} \
+                 treat_as_stopped={treat_as_stopped})",
+            ));
             self.screensaver_idle_since.set(Some(Instant::now()));
         }
 
