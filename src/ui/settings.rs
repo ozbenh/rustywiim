@@ -88,6 +88,13 @@ impl SettingsWindow {
             .build();
         sidebar_list.append(&appearance_row);
 
+        let kiosk_row = adw::ActionRow::builder()
+            .title("Kiosk")
+            .selectable(true)
+            .activatable(true)
+            .build();
+        sidebar_list.append(&kiosk_row);
+
         let general_row = adw::ActionRow::builder()
             .title("General")
             .selectable(true)
@@ -187,6 +194,9 @@ impl SettingsWindow {
         let appearance_page = build_appearance_page();
         content_stack.add_named(&appearance_page, Some("appearance"));
 
+        let kiosk_page = build_kiosk_page();
+        content_stack.add_named(&kiosk_page, Some("kiosk"));
+
         let general_page = build_general_page(disc_mgr);
         content_stack.add_named(&general_page, Some("general"));
 
@@ -206,7 +216,8 @@ impl SettingsWindow {
                 device_list.unselect_all();
                 let name = match row.index() {
                     0 => "appearance",
-                    1 => "general",
+                    1 => "kiosk",
+                    2 => "general",
                     _ => return,
                 };
                 stack.set_visible_child_name(name);
@@ -549,6 +560,104 @@ fn build_appearance_page() -> adw::PreferencesPage {
     let page = adw::PreferencesPage::new();
     page.add(&group);
     page.add(&actions_group);
+    page
+}
+
+const INHIBIT_CHOICES: &[(&str, config::InhibitSystemScreensaver)] = &[
+    ("Never", config::InhibitSystemScreensaver::Never),
+    ("Always", config::InhibitSystemScreensaver::Always),
+    ("When Playing", config::InhibitSystemScreensaver::WhenPlaying),
+];
+fn inhibit_index(v: config::InhibitSystemScreensaver) -> u32 {
+    INHIBIT_CHOICES.iter().position(|(_, m)| *m == v).unwrap_or(0) as u32
+}
+
+fn format_mmss(secs: u32) -> String {
+    format!("{:02}:{:02}", secs / 60, secs % 60)
+}
+
+/// Settings that only take effect on the *next* Kiosk session — Settings
+/// isn't reachable from inside Kiosk mode, so unlike Appearance's live
+/// `broadcast_appearance_changed()`, `KioskWindow` just reads these
+/// straight from config at tick-time/bind time.
+fn build_kiosk_page() -> adw::PreferencesPage {
+    let auto_hide = config::with(|cfg| cfg.kiosk_auto_hide_controls);
+    let auto_hide_row = adw::SwitchRow::builder()
+        .title("Auto-hide Controls")
+        .subtitle("Fade the device-select and sidebar/exit buttons out after a few seconds idle")
+        .active(auto_hide)
+        .build();
+    auto_hide_row.connect_active_notify(move |row| {
+        config::update(|cfg| cfg.kiosk_auto_hide_controls = row.is_active());
+    });
+
+    let inhibit = config::with(|cfg| cfg.kiosk_inhibit_screensaver);
+    let inhibit_names: Vec<&str> = INHIBIT_CHOICES.iter().map(|(n, _)| *n).collect();
+    let inhibit_row = adw::ComboRow::builder()
+        .title("Inhibit System Screensaver")
+        .subtitle("Prevent the system's own idle/screensaver/lock while in Kiosk mode")
+        .model(&gtk::StringList::new(&inhibit_names))
+        .build();
+    inhibit_row.set_selected(inhibit_index(inhibit));
+    inhibit_row.connect_selected_notify(move |row| {
+        let (_, mode) = INHIBIT_CHOICES[row.selected() as usize];
+        config::update(|cfg| cfg.kiosk_inhibit_screensaver = mode);
+    });
+
+    let screensaver_enable = config::with(|cfg| cfg.kiosk_screensaver_enable);
+    let screensaver_row = adw::SwitchRow::builder()
+        .title("Screen Saver")
+        .subtitle("Fade the display to black after a period without playback")
+        .active(screensaver_enable)
+        .build();
+
+    // TODO: a log-scale slider with graduation marks would suit 10s–10min
+    // much better than this linear one — plain for now.
+    let timeout = config::with(|cfg| cfg.kiosk_screensaver_timeout_secs);
+    let timeout_adj = gtk::Adjustment::new(timeout as f64, 10.0, 600.0, 5.0, 15.0, 0.0);
+    let timeout_scale = gtk::Scale::builder()
+        .orientation(Orientation::Horizontal)
+        .adjustment(&timeout_adj)
+        .valign(gtk::Align::Center)
+        .width_request(160)
+        .sensitive(screensaver_enable)
+        .build();
+    timeout_scale.set_draw_value(false);
+    let timeout_label = gtk::Label::builder()
+        .label(format_mmss(timeout))
+        .valign(gtk::Align::Center)
+        .css_classes(["dim-label", "numeric"])
+        .build();
+    let timeout_row = adw::ActionRow::builder()
+        .title("Screen Saver Delay")
+        .subtitle("Time without playback before it triggers (10s–10min)")
+        .sensitive(screensaver_enable)
+        .build();
+    timeout_row.add_suffix(&timeout_scale);
+    timeout_row.add_suffix(&timeout_label);
+    timeout_adj.connect_value_changed(glib::clone!(#[weak] timeout_label, move |adj| {
+        let secs = adj.value().round() as u32;
+        config::update(|cfg| cfg.kiosk_screensaver_timeout_secs = secs);
+        timeout_label.set_label(&format_mmss(secs));
+    }));
+
+    screensaver_row.connect_active_notify(glib::clone!(#[weak] timeout_row, #[weak] timeout_scale, move |row| {
+        let active = row.is_active();
+        config::update(|cfg| cfg.kiosk_screensaver_enable = active);
+        timeout_row.set_sensitive(active);
+        timeout_scale.set_sensitive(active);
+    }));
+
+    let group = adw::PreferencesGroup::builder()
+        .title("Kiosk")
+        .build();
+    group.add(&auto_hide_row);
+    group.add(&inhibit_row);
+    group.add(&screensaver_row);
+    group.add(&timeout_row);
+
+    let page = adw::PreferencesPage::new();
+    page.add(&group);
     page
 }
 

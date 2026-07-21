@@ -24,12 +24,15 @@
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use adw::prelude::*;
 use glib::clone;
 
 use crate::config;
+use crate::config::InhibitSystemScreensaver;
 use crate::device::discovery_manager::DiscoveryManager;
+use crate::device::playback::PlaybackStatus;
 use crate::device::state::{DeviceState, FullModeGuard};
 use crate::ui::art_background::ArtBackground;
 use crate::ui::icons::IconSet;
@@ -64,10 +67,16 @@ struct BoundDevice {
     _presets: crate::ui::views::presets::PresetsView,
     _io:      crate::ui::views::io::InputOutputView,
     _full_mode: FullModeGuard,
+    /// Disconnected explicitly when this binding is released — `ds` may
+    /// outlive `BoundDevice` (`DeviceManager` dedups by uuid, so another
+    /// window can hold its own strong ref), so dropping `BoundDevice` alone
+    /// doesn't guarantee the signal connection goes away with it.
+    playback_changed_handler: glib::SignalHandlerId,
 }
 
 pub(crate) struct KioskWindow {
     window:        adw::ApplicationWindow,
+    app:           adw::Application,
     manager:       DiscoveryManager,
     icons:         Rc<IconSet>,
     art_bg:        ArtBackground,
@@ -99,6 +108,41 @@ pub(crate) struct KioskWindow {
     /// `new()`'s `initial_layout` (`--kiosk:layout`, default `WideRight`)
     /// on a fresh launch.
     layout:        Cell<PlaybackLayout>,
+
+    /// The floating chrome group (sidebar toggle + exit-Kiosk button),
+    /// stored here (rather than re-derived each time, as `new()` briefly
+    /// did) so the auto-hide fade can target it directly.
+    top_left_group: gtk::Box,
+    /// Last mouse/touch activity, updated by the controllers `new()` wires
+    /// on `window` — read by the idle timer for both auto-hide-controls
+    /// and screensaver dismissal.
+    activity_at:    Cell<Instant>,
+    /// Last coordinates seen by the motion controller — a synthetic
+    /// motion event with unchanged coordinates (see `new()`'s own comment)
+    /// doesn't count as activity, only a genuine position change does.
+    last_motion_pos: Cell<(f64, f64)>,
+    /// Whether `top_left_group`/`device_btn` are currently shown — avoids
+    /// re-triggering the fade when already in the target state.
+    controls_visible: Cell<bool>,
+    controls_fade_anim: RefCell<Option<adw::TimedAnimation>>,
+
+    /// Solid-black overlay, last-added so it stacks above everything else.
+    screensaver_overlay: gtk::Box,
+    screensaver_active:  Cell<bool>,
+    screensaver_fade_anim: RefCell<Option<adw::TimedAnimation>>,
+    /// `None` while the bound device is `Playing`; set to `Some(instant)`
+    /// the moment it stops being `Playing` — the idle timer compares this
+    /// against `kiosk_screensaver_timeout_secs`. Not reset by mere
+    /// dismissal (see `on_playback_changed()`'s doc comment) — only a
+    /// genuine `Playing` status clears it.
+    screensaver_idle_since: Cell<Option<Instant>>,
+
+    /// The one system-idle-inhibit cookie this window ever holds at a
+    /// time, per `InhibitSystemScreensaver`'s three modes — `Always`
+    /// acquires it once in `new()`/releases in `close()`; `WhenPlaying`
+    /// acquires/releases it around `Playing` transitions in
+    /// `on_playback_changed()`; `Never` leaves this permanently `None`.
+    inhibit_cookie: Cell<Option<u32>>,
 }
 
 /// Kiosk mode is read at a distance (a fullscreen display, not a desktop
@@ -115,6 +159,15 @@ const SIDEBAR_OPEN_WIDTH: i32 = 280;
 /// Extra room to the left of the sidebar's own content once opened, so it
 /// doesn't sit flush against the divider.
 const SIDEBAR_OPEN_MARGIN: i32 = 24;
+
+/// How long without mouse/touch activity before the floating chrome
+/// buttons fade out — not user-configurable, only the feature itself is.
+const AUTO_HIDE_IDLE: Duration = Duration::from_secs(4);
+const CONTROLS_FADE_MS: u32 = 150;
+/// Fades in slowly (easing the display to black) but out quickly (any
+/// activity should feel instantly responsive).
+const SCREENSAVER_FADE_IN_MS: u32 = 800;
+const SCREENSAVER_FADE_OUT_MS: u32 = 200;
 
 impl KioskWindow {
     pub(crate) fn new(
@@ -197,6 +250,16 @@ impl KioskWindow {
             exit_kiosk_btn.set_visible(false);
         }
 
+        // Solid-black screensaver overlay — added last, after every other
+        // overlay child, so it always stacks on top of them (including the
+        // floating buttons) once shown. Starts hidden.
+        let screensaver_overlay = gtk::Box::builder()
+            .css_classes(["kiosk-screensaver"])
+            .hexpand(true).vexpand(true)
+            .visible(false)
+            .build();
+        overlay.add_overlay(&screensaver_overlay);
+
         // Tracks the panel's own right edge while open, snapping back to
         // the base (CSS-set) margin while closed — see sidebar_btn's own
         // field doc comment. Moves `top_left_group` (sidebar_btn +
@@ -238,6 +301,7 @@ impl KioskWindow {
 
         let this = Rc::new(Self {
             window: window.clone(),
+            app: app.clone(),
             manager: manager.clone(),
             icons: Rc::clone(icons),
             art_bg,
@@ -248,6 +312,92 @@ impl KioskWindow {
             panel_anim: RefCell::new(None),
             bound: RefCell::new(None),
             layout: Cell::new(initial_layout),
+            top_left_group: top_left_group.clone(),
+            activity_at: Cell::new(Instant::now()),
+            // NAN != NAN is always true, so the very first real motion
+            // event still counts as activity despite matching "no prior
+            // position" rather than a real coordinate change.
+            last_motion_pos: Cell::new((f64::NAN, f64::NAN)),
+            controls_visible: Cell::new(true),
+            controls_fade_anim: RefCell::new(None),
+            screensaver_overlay,
+            screensaver_active: Cell::new(false),
+            screensaver_fade_anim: RefCell::new(None),
+            screensaver_idle_since: Cell::new(None),
+            inhibit_cookie: Cell::new(None),
+        });
+
+        // Always mode holds one inhibit for the whole session, independent
+        // of any device binding — released in close(). Never/WhenPlaying
+        // start with nothing held (WhenPlaying acquires on the first
+        // Playing transition, via on_playback_changed()).
+        if config::with(|cfg| cfg.kiosk_inhibit_screensaver) == InhibitSystemScreensaver::Always {
+            let cookie = this.app.inhibit(Some(&this.window), gtk::ApplicationInhibitFlags::IDLE, Some("RustyWiiM Kiosk mode"));
+            if cookie != 0 {
+                crate::ui::dbg_ui(&format!("kiosk inhibit: acquired cookie={cookie} (Always)"));
+                this.inhibit_cookie.set(Some(cookie));
+            } else {
+                crate::ui::dbg_ui("kiosk inhibit: acquire failed (cookie=0, platform declined)");
+            }
+        }
+
+        // Activity detection (mouse motion + a stationary tap/click, which
+        // a motion controller alone would miss) — feeds both the
+        // auto-hide-controls timer and screensaver dismissal below.
+        let motion_ctrl = gtk::EventControllerMotion::new();
+        motion_ctrl.connect_motion({
+            let weak = Rc::downgrade(&this);
+            move |_, x, y| {
+                let Some(this) = weak.upgrade() else { return };
+                // GTK/Wayland synthesizes a motion event (same coordinates,
+                // no real pointer movement) whenever the widget under an
+                // otherwise-stationary pointer changes — confirmed live:
+                // showing/hiding the screensaver overlay right under a
+                // parked cursor did exactly this, each one immediately
+                // dismissing the screensaver it had just shown and causing
+                // a show/hide blink loop. Only real movement counts.
+                let last = this.last_motion_pos.replace((x, y));
+                if last != (x, y) {
+                    this.note_activity("motion");
+                }
+            }
+        });
+        window.add_controller(motion_ctrl);
+        let click_ctrl = gtk::GestureClick::new();
+        click_ctrl.set_button(0);
+        click_ctrl.set_propagation_phase(gtk::PropagationPhase::Capture);
+        click_ctrl.connect_pressed({
+            let weak = Rc::downgrade(&this);
+            move |_, _, _, _| {
+                let Some(this) = weak.upgrade() else { return };
+                this.note_activity("click");
+            }
+        });
+        window.add_controller(click_ctrl);
+        // Belt-and-suspenders: the window-level controllers above should
+        // already see input over the screensaver overlay too, but wiring
+        // one directly on it removes any doubt.
+        let overlay_click_ctrl = gtk::GestureClick::new();
+        overlay_click_ctrl.set_button(0);
+        overlay_click_ctrl.connect_pressed({
+            let weak = Rc::downgrade(&this);
+            move |_, _, _, _| {
+                let Some(this) = weak.upgrade() else { return };
+                this.note_activity("screensaver-click");
+            }
+        });
+        this.screensaver_overlay.add_controller(overlay_click_ctrl);
+
+        // One ~1s tick driving both the auto-hide-controls fade and the
+        // screensaver idle check — Kiosk-only, doesn't reuse the device
+        // poll timer.
+        glib::timeout_add_local(Duration::from_secs(1), {
+            let weak = Rc::downgrade(&this);
+            move || {
+                let Some(this) = weak.upgrade() else { return glib::ControlFlow::Break };
+                this.tick_idle_checks();
+                glib::ControlFlow::Continue
+            }
         });
 
         device_btn.connect_clicked(clone!(#[weak] popover, move |_| {
@@ -305,6 +455,12 @@ impl KioskWindow {
                 }
                 if let gtk::gdk::Key::t | gtk::gdk::Key::T = keyval {
                     crate::ui::cycle_theme();
+                    return glib::Propagation::Stop;
+                }
+                // Testing aid: shows the screensaver immediately, bypassing
+                // the idle timer/threshold and the enable toggle both.
+                if let gtk::gdk::Key::s | gtk::gdk::Key::S = keyval {
+                    this.show_screensaver();
                     return glib::Propagation::Stop;
                 }
                 let Some((ds, view)) = this.bound.borrow().as_ref().map(|b| (b.ds.clone(), b.view.clone())) else {
@@ -377,14 +533,14 @@ impl KioskWindow {
     /// uses, which naturally renders the disconnected/greyed-out state
     /// `PlaybackView` already supports, rather than adding a distinct
     /// "no device at all" mode to it.
-    pub(crate) fn bind_device(&self, key: Option<&str>) {
+    pub(crate) fn bind_device(self: &Rc<Self>, key: Option<&str>) {
         // Release whichever device was shown before, regardless of what
         // (if anything) replaces it — mirrors DeviceWindow's own
         // set_window_open bookkeeping so DiscoveryManager's prune logic
         // doesn't think a stale device is still "open" here. No-ops for
         // the empty key the "no device" branch below uses.
         if let Some(old) = self.bound.borrow_mut().take() {
-            self.manager.set_window_open(&old.key, false);
+            self.release_bound(old);
         }
         // Clear generically rather than removing old.view/old.status_bar
         // individually, so any future addition here doesn't need its own
@@ -424,9 +580,9 @@ impl KioskWindow {
     /// either (unresolved until `getStatusEx` answers), and re-selecting
     /// it from the popover later isn't meaningful the way a discovered
     /// device's is.
-    pub(crate) fn bind_direct(&self, ds: DeviceState, label: &str) {
+    pub(crate) fn bind_direct(self: &Rc<Self>, ds: DeviceState, label: &str) {
         if let Some(old) = self.bound.borrow_mut().take() {
-            self.manager.set_window_open(&old.key, false);
+            self.release_bound(old);
         }
         while let Some(child) = self.content_holder.first_child() {
             self.content_holder.remove(&child);
@@ -434,11 +590,28 @@ impl KioskWindow {
         self.finish_bind(String::new(), ds, label.to_string());
     }
 
+    /// Tears down a released `BoundDevice`'s Kiosk-specific state: the
+    /// `playback-changed` handler (its `DeviceState` may outlive
+    /// `BoundDevice` — see that field's own doc comment) and, under
+    /// `WhenPlaying`, any inhibit cookie held for it (re-acquired by
+    /// `finish_bind()`'s own initial `on_playback_changed()` call if
+    /// whatever replaces it is also playing).
+    fn release_bound(&self, old: BoundDevice) {
+        self.manager.set_window_open(&old.key, false);
+        old.ds.disconnect(old.playback_changed_handler);
+        if config::with(|cfg| cfg.kiosk_inhibit_screensaver) == InhibitSystemScreensaver::WhenPlaying {
+            if let Some(cookie) = self.inhibit_cookie.take() {
+                crate::ui::dbg_ui(&format!("kiosk inhibit: released cookie={cookie} (device unbound)"));
+                self.app.uninhibit(cookie);
+            }
+        }
+    }
+
     /// Shared tail of `bind_device()`/`bind_direct()`: builds the fresh
     /// `PlaybackView`/`StatusBarView` for `ds` and installs the new
     /// `BoundDevice`. Caller has already released the old binding and
     /// cleared `content_holder`.
-    fn finish_bind(&self, key: String, ds: DeviceState, label: String) {
+    fn finish_bind(self: &Rc<Self>, key: String, ds: DeviceState, label: String) {
         self.device_btn.set_label(&label);
 
         // Known synchronously for every device switch (the window's
@@ -560,6 +733,18 @@ impl KioskWindow {
         status_bar.set_active(true);
         self.content_holder.append(&status_bar);
 
+        // Connected before the initial on_playback_changed() call below so
+        // the two share identical logic — no separate "seed the initial
+        // state" copy of it.
+        let playback_changed_handler = ds.connect_playback_changed({
+            let weak = Rc::downgrade(self);
+            move |ds, _mask| {
+                let Some(this) = weak.upgrade() else { return };
+                this.on_playback_changed(ds);
+            }
+        });
+        self.on_playback_changed(&ds);
+
         *self.bound.borrow_mut() = Some(BoundDevice {
             key,
             _full_mode: ds.acquire_full(),
@@ -568,6 +753,7 @@ impl KioskWindow {
             _status_bar: status_bar,
             _presets: presets,
             _io: io,
+            playback_changed_handler,
         });
     }
 
@@ -578,14 +764,21 @@ impl KioskWindow {
     /// read `self.layout` fresh). Reuses the same `key`/`ds` `finish_bind()`
     /// already has, rather than going through `bind_device()`'s
     /// `DiscoveryManager` resolution again — this isn't a device switch.
-    pub(crate) fn toggle_layout(&self) {
+    pub(crate) fn toggle_layout(self: &Rc<Self>) {
         self.layout.set(match self.layout.get() {
             PlaybackLayout::Classic => PlaybackLayout::WideRight,
             PlaybackLayout::WideRight => PlaybackLayout::Classic,
         });
-        let Some((key, ds)) = self.bound.borrow().as_ref().map(|b| (b.key.clone(), b.ds.clone())) else {
+        // Not a device switch — reuses the same `ds`, so only its
+        // playback-changed handler needs disconnecting (finish_bind()
+        // connects a fresh one) rather than the full release_bound() (that
+        // would also mark the device "closed" and drop a WhenPlaying
+        // inhibit it's still entitled to hold).
+        let Some(old) = self.bound.borrow_mut().take() else {
             return;
         };
+        old.ds.disconnect(old.playback_changed_handler);
+        let (key, ds) = (old.key, old.ds);
         let label = self.device_btn.label().map(|s| s.to_string()).unwrap_or_default();
         while let Some(child) = self.content_holder.first_child() {
             self.content_holder.remove(&child);
@@ -619,8 +812,13 @@ impl KioskWindow {
         // Same animation DeviceWindow's own animate_panel_to() uses —
         // skip (not just drop) any still-running one first, since a
         // dropped TimedAnimation doesn't stop driving its callback target
-        // on its own.
-        if let Some(a) = self.panel_anim.borrow_mut().take() { a.skip(); }
+        // on its own. Two statements, not a single `if let ... { a.skip() }`:
+        // the if-let scrutinee's RefMut temporary stays borrowed through the
+        // whole block (Rust's temporary-lifetime rule), so panel_anim would
+        // still be borrowed while skip() runs — and skip() synchronously
+        // fires connect_done, which borrows panel_anim again and panics.
+        let old_anim = self.panel_anim.borrow_mut().take();
+        if let Some(a) = old_anim { a.skip(); }
 
         let from = self.sidebar_paned.position();
         let animate = from != target
@@ -646,6 +844,216 @@ impl KioskWindow {
         *self.panel_anim.borrow_mut() = Some(anim);
     }
 
+    /// Records fresh activity, brings the chrome buttons back if hidden,
+    /// and dismisses the screensaver if showing.
+    fn note_activity(self: &Rc<Self>, source: &str) {
+        let idle_was = self.activity_at.get().elapsed();
+        self.activity_at.set(Instant::now());
+        // Only logged on a real gap (not once per pixel of mouse movement) —
+        // continuous motion keeps resetting idle_was to near-zero on its own.
+        if idle_was.as_secs_f64() > 0.5 {
+            crate::ui::dbg_ui(&format!("kiosk activity ({source}) after {:.1}s idle", idle_was.as_secs_f64()));
+        }
+        self.animate_controls(true);
+        self.hide_screensaver();
+        // Restart the screensaver's own idle clock too, not just dismiss
+        // its visual overlay — otherwise it's still (near-)expired and
+        // reappears on the very next ~1s tick, which reads as broken
+        // (confirmed live: a single mouse twitch only bought about a
+        // second before it blinked back). Only restarts an already-running
+        // clock (not playing); stays `None` while genuinely `Playing`.
+        if self.screensaver_idle_since.get().is_some() {
+            self.screensaver_idle_since.set(Some(Instant::now()));
+        }
+    }
+
+    /// The ~1s idle-check tick: auto-hides the chrome buttons after
+    /// `AUTO_HIDE_IDLE`, and triggers the screensaver once the bound
+    /// device has gone `kiosk_screensaver_timeout_secs` without `Playing`.
+    fn tick_idle_checks(self: &Rc<Self>) {
+        let idle = self.activity_at.get().elapsed();
+        let auto_hide = config::with(|cfg| cfg.kiosk_auto_hide_controls);
+        crate::ui::dbg_ui(&format!(
+            "kiosk tick: idle={:.1}s auto_hide={auto_hide} controls_visible={} screensaver_active={}",
+            idle.as_secs_f64(), self.controls_visible.get(), self.screensaver_active.get()
+        ));
+        if auto_hide && idle >= AUTO_HIDE_IDLE {
+            self.animate_controls(false);
+        }
+        if config::with(|cfg| cfg.kiosk_screensaver_enable) {
+            if let Some(since) = self.screensaver_idle_since.get() {
+                let timeout = Duration::from_secs(config::with(|cfg| cfg.kiosk_screensaver_timeout_secs) as u64);
+                if since.elapsed() >= timeout {
+                    self.show_screensaver();
+                }
+            }
+        }
+    }
+
+    /// Fades `top_left_group`/`device_btn` to/from hidden as one unit — a
+    /// no-op if already in the target state. Disables `can_target` the
+    /// moment they finish fading out (so an invisible button can't still
+    /// be clicked) and re-enables it immediately on the way back in
+    /// (mirrors `animate_panel_to()`'s "visible immediately when opening").
+    fn animate_controls(self: &Rc<Self>, show: bool) {
+        if self.controls_visible.get() == show { return; }
+        crate::ui::dbg_ui(&format!("kiosk controls: {}", if show { "showing" } else { "hiding" }));
+        self.controls_visible.set(show);
+
+        // Cursor visibility rides along with the chrome — "none" is a
+        // real CSS3 cursor value GTK4 honors (hides it entirely), not a
+        // theme lookup that can fail; no fade, it's binary either way.
+        self.window.set_cursor_from_name(if show { None } else { Some("none") });
+
+        // Two statements, not `if let Some(a) = ...borrow_mut().take() { a.skip(); }`
+        // — see toggle_sidebar()'s identical comment for why that single-
+        // statement form panics (confirmed live: crashed on a Pi5/cage after
+        // mouse motion arrived while a fade-out was still in flight).
+        let old_anim = self.controls_fade_anim.borrow_mut().take();
+        if let Some(a) = old_anim { a.skip(); }
+        if show {
+            self.top_left_group.set_can_target(true);
+            self.device_btn.set_can_target(true);
+        }
+
+        let target = if show { 1.0 } else { 0.0 };
+        let from = self.top_left_group.opacity();
+        let animate = config::with(|cfg| cfg.animations)
+            && gtk::Settings::default().is_some_and(|s| s.is_gtk_enable_animations());
+        if !animate {
+            self.top_left_group.set_opacity(target);
+            self.device_btn.set_opacity(target);
+            if !show {
+                self.top_left_group.set_can_target(false);
+                self.device_btn.set_can_target(false);
+            }
+            return;
+        }
+
+        let top_left_group = self.top_left_group.clone();
+        let device_btn = self.device_btn.clone();
+        let anim_target = adw::CallbackAnimationTarget::new(move |v| {
+            top_left_group.set_opacity(v);
+            device_btn.set_opacity(v);
+        });
+        let anim = adw::TimedAnimation::new(&self.top_left_group, from, target, CONTROLS_FADE_MS, anim_target);
+        anim.set_easing(adw::Easing::EaseInOutCubic);
+        let weak = Rc::downgrade(self);
+        let (top_left_group, device_btn) = (self.top_left_group.clone(), self.device_btn.clone());
+        anim.connect_done(move |_| {
+            let Some(this) = weak.upgrade() else { return };
+            *this.controls_fade_anim.borrow_mut() = None;
+            if !show {
+                top_left_group.set_can_target(false);
+                device_btn.set_can_target(false);
+            }
+        });
+        anim.play();
+        *self.controls_fade_anim.borrow_mut() = Some(anim);
+    }
+
+    /// "S" and the idle-timeout tick both funnel through here.
+    fn show_screensaver(self: &Rc<Self>) {
+        if self.screensaver_active.get() { return; }
+        crate::ui::dbg_ui("kiosk screensaver: showing");
+        self.screensaver_active.set(true);
+        self.animate_screensaver(true);
+    }
+
+    fn hide_screensaver(self: &Rc<Self>) {
+        if !self.screensaver_active.get() { return; }
+        crate::ui::dbg_ui("kiosk screensaver: hiding");
+        self.screensaver_active.set(false);
+        self.animate_screensaver(false);
+    }
+
+    /// Fades `screensaver_overlay` in/out — slower in (`SCREENSAVER_FADE_IN_MS`)
+    /// than out (`SCREENSAVER_FADE_OUT_MS`), per the design (easing to black
+    /// should feel gradual, dismissing it should feel instant). Shown
+    /// before the fade-in starts and hidden only once the fade-out
+    /// completes, same show/hide timing `animate_panel_to()` uses.
+    fn animate_screensaver(self: &Rc<Self>, show: bool) {
+        // See toggle_sidebar()'s comment on this same two-statement pattern.
+        let old_anim = self.screensaver_fade_anim.borrow_mut().take();
+        if let Some(a) = old_anim { a.skip(); }
+        if show { self.screensaver_overlay.set_visible(true); }
+
+        let target = if show { 1.0 } else { 0.0 };
+        let from = self.screensaver_overlay.opacity();
+        let animate = config::with(|cfg| cfg.animations)
+            && gtk::Settings::default().is_some_and(|s| s.is_gtk_enable_animations());
+        if !animate {
+            self.screensaver_overlay.set_opacity(target);
+            self.screensaver_overlay.set_visible(show);
+            return;
+        }
+
+        let duration = if show { SCREENSAVER_FADE_IN_MS } else { SCREENSAVER_FADE_OUT_MS };
+        let overlay = self.screensaver_overlay.clone();
+        let anim_target = adw::CallbackAnimationTarget::new(move |v| {
+            overlay.set_opacity(v);
+        });
+        let anim = adw::TimedAnimation::new(&self.screensaver_overlay, from, target, duration, anim_target);
+        anim.set_easing(adw::Easing::EaseInOutCubic);
+        let weak = Rc::downgrade(self);
+        let overlay = self.screensaver_overlay.clone();
+        anim.connect_done(move |_| {
+            let Some(this) = weak.upgrade() else { return };
+            *this.screensaver_fade_anim.borrow_mut() = None;
+            if !show { overlay.set_visible(false); }
+        });
+        anim.play();
+        *self.screensaver_fade_anim.borrow_mut() = Some(anim);
+    }
+
+    /// Shared by the live `playback-changed` signal and the initial call
+    /// `finish_bind()` makes right after binding a fresh device. Dismisses
+    /// the screensaver and restarts its idle clock from now (rather than
+    /// leaving it wherever it was) — a screensaver that reappears almost
+    /// immediately after being dismissed reads as broken, confirmed live.
+    /// `Playing` clears the clock entirely instead of just restarting it,
+    /// since it shouldn't be running at all while genuinely playing.
+    fn on_playback_changed(self: &Rc<Self>, ds: &DeviceState) {
+        self.hide_screensaver();
+
+        let playing = ds.playback_state().status == PlaybackStatus::Playing;
+        if playing {
+            if self.screensaver_idle_since.get().is_some() {
+                crate::ui::dbg_ui("kiosk screensaver: idle clock cleared (playing)");
+            }
+            self.screensaver_idle_since.set(None);
+        } else {
+            crate::ui::dbg_ui("kiosk screensaver: idle clock (re)started (not playing)");
+            self.screensaver_idle_since.set(Some(Instant::now()));
+        }
+
+        self.update_system_inhibit(playing);
+    }
+
+    /// `Never`/`Always` are fully handled elsewhere (never touched here /
+    /// held for the whole session via `new()`/`close()`) — only
+    /// `WhenPlaying` reacts to a `Playing` transition here.
+    fn update_system_inhibit(&self, playing: bool) {
+        if config::with(|cfg| cfg.kiosk_inhibit_screensaver) != InhibitSystemScreensaver::WhenPlaying {
+            return;
+        }
+        let held = self.inhibit_cookie.get().is_some();
+        if playing && !held {
+            let cookie = self.app.inhibit(Some(&self.window), gtk::ApplicationInhibitFlags::IDLE, Some("RustyWiiM Kiosk mode: playing"));
+            if cookie != 0 {
+                crate::ui::dbg_ui(&format!("kiosk inhibit: acquired cookie={cookie} (WhenPlaying)"));
+                self.inhibit_cookie.set(Some(cookie));
+            } else {
+                crate::ui::dbg_ui("kiosk inhibit: acquire failed (cookie=0, platform declined)");
+            }
+        } else if !playing && held {
+            if let Some(cookie) = self.inhibit_cookie.take() {
+                crate::ui::dbg_ui(&format!("kiosk inhibit: released cookie={cookie} (WhenPlaying)"));
+                self.app.uninhibit(cookie);
+            }
+        }
+    }
+
     pub(crate) fn present(&self) {
         // fullscreen() before present(), not after: requesting it before
         // the window is first mapped lets it be negotiated as part of the
@@ -660,7 +1068,14 @@ impl KioskWindow {
 
     pub(crate) fn close(&self) {
         if let Some(old) = self.bound.borrow_mut().take() {
-            self.manager.set_window_open(&old.key, false);
+            self.release_bound(old);
+        }
+        // Whatever's left at this point is the `Always`-mode cookie
+        // acquired once in `new()` (`WhenPlaying`'s own cookie was already
+        // released by `release_bound()` above, if held).
+        if let Some(cookie) = self.inhibit_cookie.take() {
+            crate::ui::dbg_ui(&format!("kiosk inhibit: released cookie={cookie} (window closing)"));
+            self.app.uninhibit(cookie);
         }
         self.window.close();
     }

@@ -101,6 +101,10 @@ mod tests {
 fn main() -> glib::ExitCode {
     let app = adw::Application::builder()
         .application_id(ui::APP_ID)
+        // Required for gtk::Application::inhibit()/uninhibit() to actually
+        // do anything (Kiosk mode's system-screensaver inhibit) — GTK's own
+        // docs are explicit that inhibit() silently no-ops without this.
+        .register_session(true)
         .build();
 
     app.add_main_option(

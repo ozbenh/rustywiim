@@ -51,6 +51,10 @@ fn default_accent_color() -> String { "#4ecdc4".to_string() }
 fn default_devlist_song_info() -> bool { true }
 /// Matches `ScrollFadeLabel::SPEED_DEFAULT`.
 fn default_scroll_speed() -> f64 { 0.6 }
+fn default_kiosk_auto_hide_controls() -> bool { true }
+fn default_kiosk_screensaver_enable() -> bool { true }
+/// 2 minutes — Settings' own slider range is 10s-600s (10 minutes).
+fn default_kiosk_screensaver_timeout_secs() -> u32 { 120 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -71,6 +75,18 @@ pub enum ThemeMode {
     #[serde(rename = "rusty_wiim_modern")]
     #[default]
     RustyWiiMModern,
+}
+
+/// Kiosk mode's "Inhibit System Screensaver" setting — see
+/// `ui::kiosk`'s doc comment on its own inhibit-cookie handling for the
+/// rationale behind offering all three instead of a plain on/off.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum InhibitSystemScreensaver {
+    Never,
+    #[default]
+    WhenPlaying,
+    Always,
 }
 
 /// Per-device window state, keyed on the device UUID from `getStatusEx`.
@@ -292,6 +308,24 @@ pub struct Config {
     /// device instead of starting with nothing selected.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kiosk_last_uuid: Option<String>,
+    /// Fade the floating chrome (device-name/sidebar/exit buttons) out
+    /// after a few seconds of no mouse/touch activity, back in on any
+    /// activity. Defaults on.
+    #[serde(default = "default_kiosk_auto_hide_controls")]
+    pub kiosk_auto_hide_controls: bool,
+    /// Whether to inhibit the *system's* idle/screensaver/DPMS mechanism,
+    /// and under what condition — see `InhibitSystemScreensaver`'s own doc
+    /// comment.
+    #[serde(default)]
+    pub kiosk_inhibit_screensaver: InhibitSystemScreensaver,
+    /// Whether Kiosk mode fades to black after `kiosk_screensaver_timeout_secs`
+    /// of the bound device not `Playing`. Defaults on.
+    #[serde(default = "default_kiosk_screensaver_enable")]
+    pub kiosk_screensaver_enable: bool,
+    /// Seconds of not-`Playing` before the screensaver triggers. Settings'
+    /// own slider range is 10-600.
+    #[serde(default = "default_kiosk_screensaver_timeout_secs")]
+    pub kiosk_screensaver_timeout_secs: u32,
 }
 
 impl Default for Config {
@@ -312,6 +346,10 @@ impl Default for Config {
             devlist_song_info: default_devlist_song_info(),
             gena_enabled: default_gena_enabled(),
             kiosk_last_uuid: None,
+            kiosk_auto_hide_controls: default_kiosk_auto_hide_controls(),
+            kiosk_inhibit_screensaver: InhibitSystemScreensaver::default(),
+            kiosk_screensaver_enable: default_kiosk_screensaver_enable(),
+            kiosk_screensaver_timeout_secs: default_kiosk_screensaver_timeout_secs(),
         }
     }
 }
