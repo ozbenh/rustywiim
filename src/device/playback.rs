@@ -52,6 +52,15 @@ pub struct PlaybackState {
     /// this flag is what lets a view show that name as the title instead
     /// of as a service badge, since there's no real song info either way.
     pub is_physical_input: bool,
+    /// Nothing playable right now (idle mode, or a Bluetooth input with
+    /// nothing connected to it) — set alongside `has_content` at both
+    /// polling backends' own call sites. `title` already carries a real
+    /// placeholder ("No music selected") for this case rather than being
+    /// empty, but consumers that need to tell "genuinely idle" apart from
+    /// "a real title that happens to be blank for a tick" (e.g. `devlist`'s
+    /// row subtitle, which falls back to the device's model name instead)
+    /// should check this instead of inferring it from `title`'s content.
+    pub is_idle: bool,
     pub title:       Rc<str>,
     pub artist:      Rc<str>,
     pub album:       Rc<str>,
@@ -99,6 +108,7 @@ impl Default for PlaybackState {
             status:      PlaybackStatus::Stopped,
             source_name: None,
             is_physical_input: false,
+            is_idle:     true,
             title:       Rc::from(""),
             artist:      Rc::from(""),
             album:       Rc::from(""),
@@ -514,6 +524,32 @@ pub fn mode_from_play_medium(play_medium: &str) -> Option<i32> {
 /// `PlayType`-missing case).
 pub fn mode_from_play_medium_fallback(play_medium: &str) -> i32 {
     mode_from_play_medium(play_medium).unwrap_or(10)
+}
+
+/// Reconciles a `GetInfoEx` response's `PlayType` against its own
+/// `PlayMedium` before either is used as this connection's `mode` —
+/// `fetch_upnp_fast_poll()`'s one call site mutates the wire response in
+/// place with the result. Two distinct firmware quirks, both real:
+/// - `PlayType` absent entirely (`-1`, some devices never send the tag at
+///   all, e.g. Audio Pro Addon C5) — substitute from `PlayMedium` via
+///   `mode_from_play_medium_fallback()`.
+/// - `PlayType` *present* but stale (confirmed live, 2026-07-21, WiiM
+///   Ultra): kept reporting a real non-idle value (`10`), even flapping
+///   between `0` and `10` tick to tick, for several seconds after playback
+///   genuinely stopped, while `PlayMedium` correctly and consistently read
+///   `"NONE"` the whole time. `PlayMedium`'s idle sentinels (`""`/`"NONE"`/
+///   `"UNKNOWN"`, `mode_from_play_medium()`'s `Some(0)` case) are
+///   unambiguous, so they win over a disagreeing `PlayType` rather than
+///   "idle" depending on which of the two fields this specific firmware
+///   happens to keep in sync.
+pub fn reconcile_play_type(play_type: i32, play_medium: &str) -> i32 {
+    if play_type == -1 {
+        mode_from_play_medium_fallback(play_medium)
+    } else if play_type != 0 && mode_from_play_medium(play_medium) == Some(0) {
+        0
+    } else {
+        play_type
+    }
 }
 
 /// `pywiim`'s `SOURCE_CAPABILITIES` table, translated into HTTP's
@@ -1133,6 +1169,36 @@ mod tests {
         assert_eq!(mode_from_play_medium_fallback("SOME_FUTURE_SERVICE"), 10);
         assert_eq!(mode_from_play_medium("SOME_FUTURE_SERVICE"), None);
         assert_eq!(mode_from_play_medium("TIDAL_CONNECT"), Some(32));
+    }
+
+    #[test]
+    fn reconcile_play_type_substitutes_when_tag_absent() {
+        assert_eq!(reconcile_play_type(-1, "SPOTIFY"), 31);
+        assert_eq!(reconcile_play_type(-1, "NONE"), 0);
+    }
+
+    /// Regression test for a real bug: a WiiM Ultra's `GetInfoEx` kept
+    /// reporting `PlayType` `10` (even flapping between `0` and `10` tick
+    /// to tick) for several seconds after playback genuinely stopped,
+    /// while `PlayMedium` correctly and consistently read `"NONE"` —
+    /// `has_playable_content()` only looks at the resolved mode, so this
+    /// left the device stuck showing as "has content" (blank title, no
+    /// "No music selected" placeholder) despite being genuinely idle.
+    #[test]
+    fn reconcile_play_type_trusts_idle_play_medium_over_stale_play_type() {
+        assert_eq!(reconcile_play_type(10, "NONE"), 0);
+        assert_eq!(reconcile_play_type(10, "UNKNOWN"), 0);
+        assert_eq!(reconcile_play_type(10, ""), 0);
+    }
+
+    #[test]
+    fn reconcile_play_type_leaves_agreeing_or_unrelated_values_alone() {
+        // Already idle — no-op.
+        assert_eq!(reconcile_play_type(0, "NONE"), 0);
+        // A real, non-idle PlayMedium — trust PlayType as-is regardless of
+        // whether it happens to match this table's own mapping.
+        assert_eq!(reconcile_play_type(31, "SPOTIFY"), 31);
+        assert_eq!(reconcile_play_type(40, "LINE-IN"), 40);
     }
 
     /// `"un_known"` is a real firmware placeholder confirmed live on a WiiM

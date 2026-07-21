@@ -119,6 +119,12 @@ pub struct ManagedEntry {
 #[derive(Debug, Clone)]
 pub struct NowPlaying {
     pub title:    String,
+    /// Mirrors `PlaybackState::is_idle` — `title` is a real placeholder
+    /// ("No music selected") rather than empty when idle, so row rendering
+    /// (`subtitle_text_for()`) needs this to still prefer the device's
+    /// model name over that placeholder, matching its own established
+    /// "idle-but-connected still gets something sensible" behavior.
+    pub is_idle:  bool,
     pub artist:   String,
     pub artwork:  Option<std::rc::Rc<Vec<u8>>>,
     /// Doubles as `ui/`'s `FlipCover::set_art()` de-dupe key (same as the
@@ -785,6 +791,7 @@ fn compute_now_playing(ds: &DeviceState) -> NowPlaying {
     };
     NowPlaying {
         title:   ps.title.to_string(),
+        is_idle: ps.is_idle,
         artist:  ps.artist.to_string(),
         artwork: ps.artwork.clone(),
         art_url: ps.art_url.as_deref().map(|s| s.to_string()),

@@ -133,10 +133,14 @@ struct RowWidgets {
 
 /// "Title · Artist" (round-dot separator, same as the mini window's
 /// artist/album line) when now-playing content is available; falls back
-/// to the model name otherwise. Shared by `build_row()` (initial render)
-/// and the `song-info-changed` handler (in-place update).
+/// to the model name otherwise — including while idle, where `np.title` is
+/// a real placeholder ("No music selected") rather than empty, so `is_idle`
+/// (not `title`'s content) is what gates the fallback here. Shared by
+/// `build_row()` (initial render) and the `song-info-changed` handler
+/// (in-place update).
 fn subtitle_text_for(entry: &ManagedEntry) -> String {
     match &entry.now_playing {
+        Some(np) if np.is_idle => entry.model.clone(),
         Some(np) if !np.title.is_empty() && !np.artist.is_empty() => format!("{} \u{00b7} {}", np.title, np.artist),
         Some(np) if !np.title.is_empty()  => np.title.clone(),
         Some(np) if !np.artist.is_empty() => np.artist.clone(),

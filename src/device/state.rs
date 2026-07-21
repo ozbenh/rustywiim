@@ -94,6 +94,12 @@ const GENA_HEALTHY_FAST_POLL_TICKS: u32 = 30;
 /// longer than a normal poll tick.
 const INPUT_CHANGE_TIMEOUT: Duration = Duration::from_secs(2);
 
+/// The canonical `PlaybackState::title` placeholder for "nothing playable
+/// right now" (`blank_playback_baseline()`) — a real string, not an empty
+/// one, so the UI shows something instead of a blank title with no
+/// indication a device is even selected.
+const NO_MUSIC_SELECTED: &str = "No music selected";
+
 use glib::prelude::*;
 use glib::subclass::prelude::*;
 use gtk::glib;
@@ -540,15 +546,9 @@ async fn fetch_upnp_fast_poll(
             info.current_mute = Some(muted);
         }
     }
-    if info.play_type == -1 {
-        // `<PlayType>` confirmed permanently absent on some devices (Audio
-        // Pro Addon C5) — fabricate a substitute from `PlayMedium` instead
-        // of leaving input-source tracking stuck at "unknown" forever. See
-        // `mode_from_play_medium_fallback()`'s doc comment for why this is
-        // preferred over a supplementary HTTP call (an earlier version of
-        // this fix): zero extra network cost, same data already in hand.
-        info.play_type = playback::mode_from_play_medium_fallback(&info.play_medium);
-    }
+    // See `reconcile_play_type()`'s own doc comment for the two distinct
+    // firmware quirks this covers (tag absent vs. present-but-stale).
+    info.play_type = playback::reconcile_play_type(info.play_type, &info.play_medium);
     (Some(info), bt_status)
 }
 
@@ -2356,16 +2356,25 @@ impl DeviceState {
     /// capability (including `can_playpause`) to disabled — the shared
     /// "nothing playable right now" state, used whenever
     /// `has_playable_content()` says so (idle mode, or Bluetooth not
-    /// confirmed connected). Diffed against the *current* `playback` state
-    /// (not either backend's own raw response cache), so it's a cheap
-    /// no-op once already blank — returns whether it actually changed
-    /// anything, for the caller to decide whether a
+    /// confirmed connected — physical inputs never reach this function at
+    /// all, since `has_playable_content()` treats those as always having
+    /// content regardless of whether anything's plugged in; the UI shows
+    /// their `source_name` instead of `title` anyway). Diffed against the
+    /// *current* `playback` state (not either backend's own raw response
+    /// cache), so it's a cheap no-op once already blank — returns whether
+    /// it actually changed anything, for the caller to decide whether a
     /// `playback_changed::ALL` refresh is warranted (see the "`blank_mask`
     /// is overkill" note this replaced — a precise per-field bitmask isn't
     /// worth the bookkeeping for a reset this coarse).
     fn blank_playback_baseline(ds: &DeviceState, inner: &mut Inner) -> bool {
         let mut changed = false;
-        if !inner.playback.title.is_empty()  { inner.playback.title  = Rc::from(""); changed = true; }
+        // A real placeholder, not empty — an idle device (or a selected
+        // Bluetooth input with nothing connected to it yet) used to show a
+        // blank title with no indication anything was actually selected.
+        if inner.playback.title.as_ref() != NO_MUSIC_SELECTED {
+            inner.playback.title = Rc::from(NO_MUSIC_SELECTED);
+            changed = true;
+        }
         if !inner.playback.artist.is_empty() { inner.playback.artist = Rc::from(""); changed = true; }
         if !inner.playback.album.is_empty()  { inner.playback.album  = Rc::from(""); changed = true; }
         if inner.playback.quality.is_some() || inner.playback.codec_label.is_some() {
@@ -3164,7 +3173,12 @@ impl DeviceState {
                 } else if Self::blank_playback_baseline(self, &mut inner) {
                     playback_mask |= playback_changed::ALL;
                 }
+                inner.playback.is_idle = !has_content;
                 inner.has_content = has_content;
+                dbg(self, &format!(
+                    "poll (http): mode={} has_content={has_content} is_idle={} title={:?}",
+                    st.mode, inner.playback.is_idle, inner.playback.title,
+                ));
             }
 
             if emit_input_changed {
@@ -3526,7 +3540,12 @@ impl DeviceState {
             } else if Self::blank_playback_baseline(self, &mut inner) {
                 playback_mask |= playback_changed::ALL;
             }
+            inner.playback.is_idle = !has_content;
             inner.has_content = has_content;
+            dbg(self, &format!(
+                "poll (upnp): play_type={} play_medium={:?} has_content={has_content} is_idle={} title={:?}",
+                info.play_type, info.play_medium, inner.playback.is_idle, inner.playback.title,
+            ));
         }
 
         if emit_input_changed {
@@ -4337,8 +4356,25 @@ impl DeviceState {
                 // no accompanying `CurrentTrackDuration`) — see `do_prev()`'s
                 // identical reasoning for the explicit-command case.
                 if let Some(v) = &ev.title {
-                    if v.as_str() != inner.playback.title.as_ref() {
-                        inner.playback.title = Rc::from(v.as_str());
+                    // An empty `v` while genuinely idle (mode `-1`/`0`,
+                    // same sentinel `has_playable_content()` checks first,
+                    // before its Bluetooth-specific case) must not
+                    // overwrite the placeholder `blank_playback_baseline()`
+                    // already set with a bare `""` — confirmed live,
+                    // 2026-07-21: the very first "Subscribing -> Healthy"
+                    // NOTIFY after a fresh connection did exactly that,
+                    // producing a visible flicker (placeholder -> blank ->
+                    // placeholder again once the next poll tick restored
+                    // it). But an empty title is *also* completely normal
+                    // for a real, actively-playing source with no track-
+                    // level metadata at all (internet radio, a third-party
+                    // DLNA push) — only substitute the placeholder for the
+                    // idle case, never just because `v` happens to be
+                    // empty regardless of mode.
+                    let is_idle_now = matches!(inner.current_mode, -1 | 0);
+                    let new_title = if v.is_empty() && is_idle_now { NO_MUSIC_SELECTED } else { v.as_str() };
+                    if new_title != inner.playback.title.as_ref() {
+                        inner.playback.title = Rc::from(new_title);
                         mask |= playback_changed::TITLE;
                         needs_immediate_poll = true;
                         // See `Inner::seek_pending`'s doc comment on this
