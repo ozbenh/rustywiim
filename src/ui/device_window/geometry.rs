@@ -516,6 +516,23 @@ pub(super) fn wire_maximize_tracking(inner: &Rc<DeviceWindowInner>) {
                 ));
                 return; // our own restore, not a fresh external maximize
             }
+            // Real bug, confirmed live: the mini window is `resizable(false)`
+            // and has no CSD of its own, but some external trigger (seen on
+            // a user's system, cause unconfirmed — possibly a compositor/
+            // decoration-negotiation quirk, not something this app did) can
+            // still flip its `maximized` WM state hint while it's the one
+            // showing. Without this guard, that got treated as a genuine
+            // *full*-mode maximize and stored the mini panel's own tiny
+            // dimensions (reported live: 360×200) into `full_mode_size` —
+            // silently corrupting the size `exit_mini_mode()` restores to,
+            // so leaving mini mode afterward reopened the full window at
+            // that same tiny size instead of the user's real one. The mini
+            // window's own geometry is never a meaningful "full mode" size
+            // under any circumstance, genuine external maximize or not.
+            if *i.mini_mode.borrow() {
+                dbg_ui("maximize notify: mini mode active, not storing into full_mode_size");
+                return;
+            }
             let (w, h) = (win.width(), win.height());
             if w > 0 && h > 0 {
                 let (old_fw, old_fh) = *i.full_mode_size.borrow();
