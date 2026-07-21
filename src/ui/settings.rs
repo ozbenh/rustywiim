@@ -14,6 +14,7 @@ use gtk::Orientation;
 use std::cell::Cell;
 
 use crate::config::{self, ThemeMode};
+use crate::ui::scroll_fade_label::{SPEED_MAX, SPEED_MIN};
 use crate::device::api::DeviceInfo;
 use crate::device::capabilities::DeviceCapabilities;
 use crate::device::playback::AccessMethod;
@@ -481,23 +482,43 @@ fn build_appearance_page() -> adw::PreferencesPage {
         }
     ));
 
+    let scroll_speed = config::with(|cfg| cfg.scroll_speed);
+    let scroll_speed_adj = gtk::Adjustment::new(scroll_speed, SPEED_MIN, SPEED_MAX, 0.05, 0.1, 0.0);
+    let scroll_speed_scale = gtk::Scale::builder()
+        .orientation(Orientation::Horizontal)
+        .adjustment(&scroll_speed_adj)
+        .valign(gtk::Align::Center)
+        .width_request(160)
+        .build();
+    scroll_speed_scale.set_draw_value(false);
+    let scroll_speed_row = adw::ActionRow::builder()
+        .title("Text Scroll Speed")
+        .subtitle("Title/artist/album marquee speed")
+        .build();
+    scroll_speed_row.add_suffix(&scroll_speed_scale);
+    scroll_speed_adj.connect_value_changed(move |adj| {
+        config::update(|cfg| cfg.scroll_speed = adj.value());
+        crate::ui::broadcast_appearance_changed(crate::ui::appearance_changed::SCROLL_SPEED);
+    });
+
     // config::reset_ui_settings() persists the defaults in one write; the
     // widget setters below then push those values into the controls, which
     // fires each control's own connect_*_notify handler and writes the same
     // values back — a no-op given config::update()'s diff-before-persist, so
     // this can't drift the widgets and the persisted config apart. Lives in
     // this page's own actions group (not the individual settings' card),
-    // specific to Appearance — it only ever resets these four rows.
+    // specific to Appearance — it only ever resets these rows.
     let reset_btn = gtk::Button::builder()
         .label("Reset")
         .valign(gtk::Align::Center)
         .build();
     reset_btn.connect_clicked(glib::clone!(
-        #[weak] theme_row, #[weak] mini_modern_row, #[weak] animations_row, #[weak] accent_button
+        #[weak] theme_row, #[weak] mini_modern_row, #[weak] animations_row, #[weak] accent_button,
+        #[weak] scroll_speed_adj
        , move |_| {
             config::reset_ui_settings();
-            let (theme, mini_modern, animations, accent_color) = config::with(|cfg| {
-                (cfg.theme, cfg.mini_modern, cfg.animations, cfg.accent_color.clone())
+            let (theme, mini_modern, animations, accent_color, speed) = config::with(|cfg| {
+                (cfg.theme, cfg.mini_modern, cfg.animations, cfg.accent_color.clone(), cfg.scroll_speed)
             });
             theme_row.set_selected(theme_index(theme));
             mini_modern_row.set_active(mini_modern);
@@ -505,6 +526,7 @@ fn build_appearance_page() -> adw::PreferencesPage {
             if let Ok(rgba) = gtk::gdk::RGBA::parse(&accent_color) {
                 accent_button.set_rgba(&rgba);
             }
+            scroll_speed_adj.set_value(speed);
         }
     ));
 
@@ -515,6 +537,7 @@ fn build_appearance_page() -> adw::PreferencesPage {
     group.add(&mini_modern_row);
     group.add(&animations_row);
     group.add(&accent_row);
+    group.add(&scroll_speed_row);
 
     let actions_group = adw::PreferencesGroup::new();
     let reset_row = adw::ActionRow::builder()

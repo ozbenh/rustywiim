@@ -22,9 +22,12 @@ pub(crate) struct SwipeText {
 }
 
 impl SwipeText {
-    pub(crate) fn new(initial: &str, css_class: &str, center_when_fits: bool, drop_shadow: bool) -> Self {
-        let a = ScrollFadeLabel::new(initial);
-        let b = ScrollFadeLabel::new("");
+    pub(crate) fn new(
+        initial: &str, css_class: &str, center_when_fits: bool, drop_shadow: bool,
+        speed_multiplier: f64,
+    ) -> Self {
+        let a = ScrollFadeLabel::with_speed_multiplier(initial, speed_multiplier);
+        let b = ScrollFadeLabel::with_speed_multiplier("", speed_multiplier);
         for l in [&a, &b] {
             l.add_label_css_class(css_class);
             l.set_hexpand(true);

@@ -49,6 +49,8 @@ fn default_gena_enabled() -> bool { true }
 /// user-configurable, so existing users see no visual change by default.
 fn default_accent_color() -> String { "#4ecdc4".to_string() }
 fn default_devlist_song_info() -> bool { true }
+/// Matches `ScrollFadeLabel::SPEED_DEFAULT`.
+fn default_scroll_speed() -> f64 { 0.6 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -253,6 +255,11 @@ pub struct Config {
     /// Adwaita's own accent colour instead.
     #[serde(default = "default_accent_color")]
     pub accent_color: String,
+    /// Marquee scroll speed for title/artist/album text (`ScrollFadeLabel`'s
+    /// `speed` property, pixels/tick). User-adjustable in Settings'
+    /// Appearance page.
+    #[serde(default = "default_scroll_speed")]
+    pub scroll_speed: f64,
     /// Hidden/debug-only: paint an explicit background behind the mini
     /// window's artwork+info row, working around a stale-GPU-pixel
     /// rendering glitch some users have seen there (NGL renderer). Off by
@@ -297,9 +304,10 @@ impl Default for Config {
             discovery_open: false,
             discovery_window_width: 0,
             discovery_window_height: 0,
-            animations: true,
+            animations: default_animations(),
             mini_modern: default_mini_modern(),
             accent_color: default_accent_color(),
+            scroll_speed: default_scroll_speed(),
             mini_stale_pixel_workaround: false,
             devlist_song_info: default_devlist_song_info(),
             gena_enabled: default_gena_enabled(),
@@ -495,15 +503,22 @@ pub fn update<R>(f: impl FnOnce(&mut Config) -> R) -> R {
 }
 
 /// Reset every field the Settings window's Appearance page controls
-/// (theme, mini-window Modern, animations, accent colour) to its default, in
-/// one `update()` call. Callers still need to push the new values into their
-/// widgets afterwards — this only touches the persisted config.
+/// (theme, mini-window Modern, animations, accent colour, scroll speed) to
+/// its default, in one `update()` call. Callers still need to push the new
+/// values into their widgets afterwards — this only touches the persisted
+/// config.
 pub fn reset_ui_settings() {
     update(|cfg| {
-        cfg.theme = ThemeMode::RustyWiiM;
+        // `ThemeMode::default()` (its `#[default]` variant), not a
+        // hardcoded value here — this drifted out of sync with the real
+        // default once before (was `ThemeMode::RustyWiiM`, a full theme
+        // switch away from the actual `RustyWiiMModern` default), so
+        // deriving it keeps the two from silently diverging again.
+        cfg.theme = ThemeMode::default();
         cfg.mini_modern = default_mini_modern();
         cfg.animations = default_animations();
         cfg.accent_color = default_accent_color();
+        cfg.scroll_speed = default_scroll_speed();
     });
 }
 

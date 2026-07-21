@@ -101,6 +101,13 @@ pub(crate) struct KioskWindow {
     layout:        Cell<PlaybackLayout>,
 }
 
+/// Kiosk mode is read at a distance (a fullscreen display, not a desktop
+/// window up close), so its marquee text scrolls faster than everywhere
+/// else — passed to `PlaybackView::new()` as its `text_speed_multiplier`,
+/// applied on top of the user's configured `scroll_speed`, not a
+/// replacement for it.
+pub(crate) const KIOSK_SCROLL_SPEED_MULTIPLIER: f64 = 2.0;
+
 /// Fallback width if the sidebar's start child is somehow unset when
 /// opened (shouldn't happen in practice — `toggle_sidebar()` measures the
 /// real content instead, see its own comment).
@@ -460,7 +467,9 @@ impl KioskWindow {
                 Some((avail_w, win_h))
             })
         };
-        let view = PlaybackView::new(&ds, &self.icons, Some(&self.art_bg), layout, size_source);
+        let view = PlaybackView::new(
+            &ds, &self.icons, Some(&self.art_bg), layout, size_source, KIOSK_SCROLL_SPEED_MULTIPLIER,
+        );
         // Fills sidebar_paned's end slot (art_bg is the main overlay child
         // driving the window's own size, per new()'s comment) — still
         // needs its own explicit expansion to fill that slot.

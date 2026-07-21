@@ -2,6 +2,11 @@
 //! the adw color scheme, the embedded icon GResource, and the
 //! widget-tree walks that re-sync theme-dependent widget state
 //! (ArtBackground visibility, ScrollFadeLabel drop shadows) on a switch.
+//!
+//! Also `appearance_changed`/`broadcast_appearance_changed()`: a bitmask
+//! broadcast mechanism any Appearance-page setting can plug a receiver
+//! into, instead of growing its own plumbing (see that function's doc
+//! comment).
 
 use std::cell::RefCell;
 
@@ -123,6 +128,7 @@ pub(crate) fn apply_accent_color() {
     for win in gtk::Window::list_toplevels() {
         queue_draw_recursive(&win);
     }
+    broadcast_appearance_changed(appearance_changed::ACCENT_COLOR);
 }
 
 /// Walk the widget tree rooted at `widget` and call `queue_draw()` on every
@@ -221,6 +227,49 @@ pub(crate) fn apply_theme(theme: ThemeMode) {
         }
         glib::ControlFlow::Break
     });
+
+    broadcast_appearance_changed(appearance_changed::THEME);
+}
+
+// ── Appearance-change broadcast ─────────────────────────────────────────────
+//
+// A bitmask of which Appearance-page settings changed, so a single widget-
+// tree walk can dispatch to whichever receivers care, instead of every new
+// Appearance setting growing its own bespoke plumbing path. `apply_theme()`/
+// `apply_accent_color()` call this alongside their own existing CSS-reload/
+// art-background-visibility logic (which stays as-is, above); this function
+// only owns the generic, walk-based reactions — currently just
+// `SCROLL_SPEED`, but any bit can gain a receiver here later without
+// touching call sites.
+
+pub(crate) mod appearance_changed {
+    pub const THEME:        u32 = 1 << 0;
+    pub const ACCENT_COLOR: u32 = 1 << 1;
+    pub const SCROLL_SPEED: u32 = 1 << 2;
+}
+
+pub(crate) fn broadcast_appearance_changed(mask: u32) {
+    if mask & appearance_changed::SCROLL_SPEED != 0 {
+        // Every ScrollFadeLabel gets the same base speed here — each
+        // instance applies its own fixed `speed_multiplier` on top (see
+        // `ScrollFadeLabel::with_speed_multiplier()`), so this walker
+        // doesn't need to know or care which window a label lives in.
+        let speed = config::with(|cfg| cfg.scroll_speed);
+        for win in gtk::Window::list_toplevels() {
+            set_scroll_speed_recursive(&win, speed);
+        }
+    }
+}
+
+fn set_scroll_speed_recursive(widget: &gtk::Widget, speed: f64) {
+    if let Some(label) = widget.downcast_ref::<scroll_fade_label::ScrollFadeLabel>() {
+        label.set_speed(speed);
+    }
+    let mut child = widget.first_child();
+    while let Some(c) = child {
+        set_scroll_speed_recursive(&c, speed);
+        child = c.next_sibling();
+    }
 }
 
 /// Fixed rotation order for the "T" quick-switch shortcut (`DeviceWindow`

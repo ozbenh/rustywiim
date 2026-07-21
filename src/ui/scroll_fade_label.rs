@@ -49,6 +49,12 @@
 //! label.set_text("New title");
 //! ```
 
+/// Default marquee speed (pixels advanced per timer tick).
+pub(crate) const SPEED_DEFAULT: f64 = 0.6;
+/// Settings' scroll-speed slider range.
+pub(crate) const SPEED_MIN: f64 = 0.25;
+pub(crate) const SPEED_MAX: f64 = 1.65;
+
 pub mod imp {
     use std::cell::{Cell, RefCell};
     use std::sync::OnceLock;
@@ -59,7 +65,6 @@ pub mod imp {
     use gtk::prelude::*;
     use gtk::subclass::prelude::*;
 
-    const SPEED_DEFAULT:            f64  = 0.33;
     const FADE_WIDTH_DEFAULT:       i32  = 15;   // percent of widget width per fade zone
     const CENTER_WHEN_FITS_DEFAULT: bool = true;
     const GAP: f32 = 50.0; // px gap between the two text copies in loop mode
@@ -67,6 +72,12 @@ pub mod imp {
     pub struct ScrollFadeLabel {
         pub scroll_timer_id:  RefCell<Option<glib::SourceId>>,
         pub speed:            Cell<f64>,
+        // Baked in at construction (`ScrollFadeLabel::with_speed_multiplier()`),
+        // never changed afterward. Applied on top of whatever base speed
+        // `set_speed()` is given, so every instance auto-scales itself
+        // (Kiosk's labels included) without any caller needing to know
+        // which instances want which multiplier.
+        pub speed_multiplier: Cell<f64>,
         pub fade_pct:         Cell<i32>,
         pub is_hovered:       Cell<bool>,
         pub is_scrolling:     Cell<bool>,
@@ -87,7 +98,8 @@ pub mod imp {
         fn default() -> Self {
             Self {
                 scroll_timer_id:  RefCell::new(None),
-                speed:            Cell::new(SPEED_DEFAULT),
+                speed:            Cell::new(super::SPEED_DEFAULT),
+                speed_multiplier: Cell::new(1.0),
                 fade_pct:         Cell::new(FADE_WIDTH_DEFAULT),
                 is_hovered:       Cell::new(false),
                 is_scrolling:     Cell::new(false),
@@ -119,9 +131,9 @@ pub mod imp {
                         .build(),
                     glib::ParamSpecDouble::builder("speed")
                         .nick("Speed")
-                        .minimum(0.1)
-                        .maximum(20.0)
-                        .default_value(SPEED_DEFAULT)
+                        .minimum(super::SPEED_MIN)
+                        .maximum(super::SPEED_MAX)
+                        .default_value(super::SPEED_DEFAULT)
                         .build(),
                     glib::ParamSpecInt::builder("fade-width")
                         .nick("Fade Width")
@@ -150,7 +162,7 @@ pub mod imp {
                     *self.layout_cache.borrow_mut() = None;
                     self.obj().queue_resize();
                 }
-                "speed"      => self.speed.set(value.get::<f64>().unwrap_or(SPEED_DEFAULT)),
+                "speed"      => self.set_speed(value.get::<f64>().unwrap_or(super::SPEED_DEFAULT)),
                 "fade-width" => self.fade_pct.set(value.get::<i32>().unwrap_or(FADE_WIDTH_DEFAULT)),
                 "center-when-fits" => {
                     self.center_when_fits.set(value.get::<bool>().unwrap_or(CENTER_WHEN_FITS_DEFAULT));
@@ -354,6 +366,23 @@ pub mod imp {
             self.obj().queue_draw();
         }
 
+        /// `base_speed` is clamped to `SPEED_MIN..=SPEED_MAX` *before*
+        /// `speed_multiplier` is applied — the multiplier is deliberately
+        /// allowed to push the final result past `SPEED_MAX` (that's the
+        /// point of it), only the caller-supplied base is bounded to the
+        /// Settings slider's own range. Restarts the scroll timer if one is
+        /// running, so its tick interval (calibrated from `speed` at start
+        /// time) recalculates — just updating the `speed` Cell would keep
+        /// ticking at the old cadence.
+        pub(super) fn set_speed(&self, base_speed: f64) {
+            let clamped = base_speed.clamp(super::SPEED_MIN, super::SPEED_MAX);
+            self.speed.set(clamped * self.speed_multiplier.get());
+            if self.scroll_timer_id.borrow().is_some() {
+                self.stop_scroll_timer();
+                self.start_scroll_timer();
+            }
+        }
+
         fn start_scroll_timer(&self) {
             if self.scroll_timer_id.borrow().is_some() { return; }
             let interval_ms =
@@ -389,8 +418,25 @@ glib::wrapper! {
 }
 
 impl ScrollFadeLabel {
+    /// Plain 1.0-multiplier constructor — see `with_speed_multiplier()`.
     pub fn new(text: &str) -> Self {
-        glib::Object::builder().property("text", text).build()
+        Self::with_speed_multiplier(text, 1.0)
+    }
+
+    /// `speed_multiplier` is fixed for this instance's lifetime (e.g.
+    /// Kiosk mode's labels read at a distance and want to scroll faster —
+    /// see `kiosk::KIOSK_SCROLL_SPEED_MULTIPLIER`). Seeds from the user's
+    /// configured base speed, not just the compiled-in `SPEED_DEFAULT` —
+    /// `broadcast_appearance_changed()` only re-syncs already-existing
+    /// labels on a live Settings change, so a label built afterward (a new
+    /// window, Kiosk mode entered/exited, a devlist row rebuilt, ...) would
+    /// otherwise silently start back at the default until the next live
+    /// change happened to catch it up.
+    pub fn with_speed_multiplier(text: &str, speed_multiplier: f64) -> Self {
+        let obj: Self = glib::Object::builder().property("text", text).build();
+        obj.imp().speed_multiplier.set(speed_multiplier);
+        obj.set_speed(crate::config::with(|cfg| cfg.scroll_speed));
+        obj
     }
 
     pub fn set_text(&self, text: &str) {
@@ -414,6 +460,12 @@ impl ScrollFadeLabel {
         let imp = self.imp();
         imp.center_when_fits.set(center);
         self.queue_draw();
+    }
+
+    /// Set the marquee scroll speed (pixels/tick), clamped to
+    /// `SPEED_MIN..=SPEED_MAX`.
+    pub fn set_speed(&self, speed: f64) {
+        self.imp().set_speed(speed);
     }
 
     /// Toggle the manual drop shadow — off by default. Experimental knob for

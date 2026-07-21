@@ -11,7 +11,10 @@ pub(crate) mod settings;
 mod views;
 
 use device_window::DeviceWindow;
-pub(crate) use theme::{apply_accent_color, apply_theme, cycle_theme, update_art_background_visibility};
+pub(crate) use theme::{
+    apply_accent_color, apply_theme, appearance_changed, broadcast_appearance_changed,
+    cycle_theme, update_art_background_visibility,
+};
 use theme::{init_css, init_icon_resource};
 
 use std::cell::RefCell;

@@ -366,16 +366,16 @@ impl PlaybackView {
     /// available to *this view specifically*.
     pub(crate) fn new(
         ds: &DeviceState, icons: &Rc<IconSet>, art_bg: Option<&ArtBackground>, layout: PlaybackLayout,
-        size_source: Rc<dyn Fn() -> Option<(i32, i32)>>,
+        size_source: Rc<dyn Fn() -> Option<(i32, i32)>>, text_speed_multiplier: f64,
     ) -> Self {
         let obj: Self = glib::Object::new();
-        obj.build(ds, icons, art_bg, layout, size_source);
+        obj.build(ds, icons, art_bg, layout, size_source, text_speed_multiplier);
         obj
     }
 
     fn build(
         &self, ds: &DeviceState, icons: &Rc<IconSet>, art_bg: Option<&ArtBackground>, layout: PlaybackLayout,
-        size_source: Rc<dyn Fn() -> Option<(i32, i32)>>,
+        size_source: Rc<dyn Fn() -> Option<(i32, i32)>>, text_speed_multiplier: f64,
     ) {
         let imp = self.imp();
         imp.ds.set(ds.clone()).unwrap();
@@ -398,9 +398,9 @@ impl PlaybackView {
         // toggled live by update_art_background_visibility() in ui/mod.rs
         // (called once more right after window construction, so this
         // initial value only matters for the instant before that runs).
-        let title  = SwipeText::new("Not connected", "track-title",  true, false);
-        let artist = SwipeText::new("",              "track-artist", true, false);
-        let album  = SwipeText::new("",              "track-album",  true, false);
+        let title  = SwipeText::new("Not connected", "track-title",  true, false, text_speed_multiplier);
+        let artist = SwipeText::new("",              "track-artist", true, false, text_speed_multiplier);
+        let album  = SwipeText::new("",              "track-album",  true, false, text_speed_multiplier);
         // "dim-label", not "status-badge" — same grey as pos/dur (they
         // share this row now), not the accent/highlight color the old
         // class used, matching by request. `status-badge` is gone entirely

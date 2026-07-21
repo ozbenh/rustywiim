@@ -126,8 +126,9 @@ impl MiniPlaybackView {
         // extreme angles) — no rounded corners here, so nothing to clip normally.
         artwork.set_overflow(gtk::Overflow::Hidden);
 
-        let title  = SwipeText::new("—", "mini-title",  false, false);
-        let artist = SwipeText::new("",  "mini-artist", false, false);
+        // Mini mode never runs inside Kiosk (no "M" there) — plain 1.0 multiplier.
+        let title  = SwipeText::new("—", "mini-title",  false, false, 1.0);
+        let artist = SwipeText::new("",  "mini-artist", false, false, 1.0);
         let bt_pair = build_bt_pair_button("mini-bt-pair-btn", 11);
         // Left-aligned (not the shared helper's default Center) so it lines
         // up with the status label's own left edge (halign(Start) below).
