@@ -48,6 +48,56 @@ fn extract_host_port(url: &str) -> Option<String> {
     if host_port.is_empty() { None } else { Some(host_port.to_string()) }
 }
 
+/// Generic comma-separated `key`/`key:value` token parser, reusable by any
+/// `--option=a,b:c,...`-style flag (first user: `--kiosk`) — same
+/// `name`/`name:modifier` shape as `--debug`. Returns a `Vec`, not a
+/// `HashMap`: duplicate keys are the caller's call, not this parser's.
+fn parse_kv_csv(s: &str) -> Vec<(&str, Option<&str>)> {
+    s.split(',').map(|tok| match tok.split_once(':') {
+        Some((k, v)) => (k, Some(v)),
+        None => (tok, None),
+    }).collect()
+}
+
+/// Rewrites `--kiosk=<value>` to `--kiosk:opts=<value>` before argv reaches
+/// GLib's option parser. Bare `--kiosk` (no `=`) is left untouched: GLib
+/// can't accept an optional value on a plain string option, so the two
+/// forms need separate registered option names under the hood.
+fn rewrite_kiosk_arg(args: impl Iterator<Item = String>) -> Vec<String> {
+    args.map(|a| match a.strip_prefix("--kiosk=") {
+        Some(value) => format!("--kiosk:opts={value}"),
+        None => a,
+    }).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_kv_csv_splits_bare_and_kv_tokens() {
+        assert_eq!(parse_kv_csv("layout:1,only"), vec![("layout", Some("1")), ("only", None)]);
+        assert_eq!(parse_kv_csv("only,layout:2"), vec![("only", None), ("layout", Some("2"))]);
+    }
+
+    #[test]
+    fn rewrite_kiosk_arg_only_touches_kiosk_equals() {
+        let args = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>().into_iter();
+        assert_eq!(
+            rewrite_kiosk_arg(args(&["rustywiim", "--kiosk=layout:1,only", "--no-config"])),
+            vec!["rustywiim", "--kiosk:opts=layout:1,only", "--no-config"],
+        );
+        assert_eq!(
+            rewrite_kiosk_arg(args(&["rustywiim", "--kiosk"])),
+            vec!["rustywiim", "--kiosk"],
+        );
+        assert_eq!(
+            rewrite_kiosk_arg(args(&["rustywiim", "--kiosk:opts=only"])),
+            vec!["rustywiim", "--kiosk:opts=only"],
+        );
+    }
+}
+
 fn main() -> glib::ExitCode {
     let app = adw::Application::builder()
         .application_id(ui::APP_ID)
@@ -99,23 +149,25 @@ fn main() -> glib::ExitCode {
         Some("PATH"),
     );
     app.add_main_option(
+        "kiosk:opts",
+        glib::Char(0),
+        glib::OptionFlags::NONE,
+        glib::OptionArg::String,
+        "Start directly in Kiosk mode (a single fullscreen window), with \
+         suboptions, comma-separated, any order: \"layout:1\" (Classic) or \
+         \"layout:2\" (WideRight, the default), and/or \"only\" (lock the \
+         session into Kiosk mode permanently — no exit button, no \"K\" key)",
+        Some("OPTS"),
+    );
+    app.add_main_option(
         "kiosk",
         glib::Char(0),
         glib::OptionFlags::NONE,
         glib::OptionArg::None,
-        "Start directly in Kiosk mode (a single fullscreen window), unbound — \
-         select a device from its device-list popover. Combined with --connect, \
-         Kiosk mode starts pre-bound to that device instead of unbound",
+        "Start directly in Kiosk mode. See --kiosk:opts for suboptions \
+         (--kiosk=<opts> also accepted — deprecated syntax, alias for \
+         --kiosk:opts=<opts>)",
         None,
-    );
-    app.add_main_option(
-        "kiosk:layout",
-        glib::Char(0),
-        glib::OptionFlags::NONE,
-        glib::OptionArg::String,
-        "Kiosk mode's initial playback layout: 1 (Classic) or 2 (WideRight, the \
-         default). Implies --kiosk itself; can still be changed at runtime with \"L\"",
-        Some("1|2"),
     );
 
     app.connect_handle_local_options(|_, opts| {
@@ -189,16 +241,20 @@ fn main() -> glib::ExitCode {
         if opts.lookup::<bool>("kiosk").ok().flatten().unwrap_or(false) {
             ui::set_start_in_kiosk(true);
         }
-        if let Ok(Some(layout)) = opts.lookup::<String>("kiosk:layout") {
-            match layout.as_str() {
-                // Implies --kiosk itself, same as --debug=api:verbose
-                // implies --debug=api — a bare --kiosk:layout=1 without
-                // also spelling out --kiosk read as a real bug the first
-                // time this was tried live (it just started the normal,
-                // non-kiosk UI instead).
-                "1" => { ui::set_kiosk_layout_override(ui::KioskLayoutOverride::Classic); ui::set_start_in_kiosk(true); }
-                "2" => { ui::set_kiosk_layout_override(ui::KioskLayoutOverride::WideRight); ui::set_start_in_kiosk(true); }
-                _   => eprintln!("--kiosk:layout: expected 1 or 2, got {layout:?} — ignoring"),
+        // `--kiosk=<suboptions>` is rewritten to `--kiosk:opts=<suboptions>`
+        // by `rewrite_kiosk_arg()` before argv reaches here; `kiosk:opts`
+        // also stays directly usable on its own.
+        if let Ok(Some(csv)) = opts.lookup::<String>("kiosk:opts") {
+            ui::set_start_in_kiosk(true); // implies --kiosk
+            for (key, value) in parse_kv_csv(&csv) {
+                match (key, value) {
+                    ("layout", Some("1")) => ui::set_kiosk_layout_override(ui::KioskLayoutOverride::Classic),
+                    ("layout", Some("2")) => ui::set_kiosk_layout_override(ui::KioskLayoutOverride::WideRight),
+                    ("layout", v) => eprintln!("--kiosk: expected layout:1 or layout:2, got layout:{v:?} — ignoring"),
+                    ("only", None) => ui::set_kiosk_only(true),
+                    ("only", Some(v)) => eprintln!("--kiosk: \"only\" takes no value, got only:{v:?} — ignoring"),
+                    (other, _) => eprintln!("--kiosk: unknown suboption {other:?} — ignoring"),
+                }
             }
         }
         // `OptionArg::Filename` options surface as a GVariant bytestring
@@ -303,7 +359,7 @@ fn main() -> glib::ExitCode {
         ui::AppState::activate(&state);
     });
 
-    let exit_code = app.run();
+    let exit_code = app.run_with_args(&rewrite_kiosk_arg(std::env::args()));
 
     // Unblock the tokio thread's block_on(shutdown_rx) and join it so
     // in-flight tasks unwind via normal Drop instead of being torn down

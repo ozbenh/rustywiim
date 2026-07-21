@@ -9,9 +9,12 @@
 //! collapsible side panel (presets/IO) split off it via `sidebar_paned` —
 //! same shape as `DeviceWindow`'s own, just with its own floating toggle
 //! button (top-left, symmetric to the device-name button) instead of a
-//! header-bar one, since Kiosk mode has no header bar. A transparent
-//! top-right button showing the bound device's name opens a popover
-//! containing a `DeviceListView` to switch devices.
+//! header-bar one, since Kiosk mode has no header bar. Grouped in the same
+//! floating cluster (a `top_left_group` `gtk::Box`, moving together as one
+//! unit when the panel opens/closes): an exit-Kiosk button, next to the
+//! panel toggle rather than its own separate corner, by request. A
+//! transparent top-right button showing the bound device's name opens a
+//! popover containing a `DeviceListView` to switch devices.
 //!
 //! Keyboard shortcuts are owned entirely by this window, not shared with
 //! `DeviceWindow`'s own controller — "K" exits kiosk mode here; there is
@@ -113,6 +116,7 @@ impl KioskWindow {
         icons:          &Rc<IconSet>,
         exit_kiosk:     Rc<dyn Fn()>,
         initial_layout: PlaybackLayout,
+        kiosk_only:     bool,
     ) -> Rc<Self> {
         // resizable(false) is deliberately *not* set here, unlike the mini
         // window — that flag exists there specifically to keep GNOME/Mutter
@@ -178,19 +182,30 @@ impl KioskWindow {
         // content_holder so it always stacks on top (gtk::Overlay z-orders
         // purely by add order) — the device-name button and the sidebar
         // toggle, symmetric to it on the opposite corner.
-        let (device_btn, sidebar_btn) = Self::build_floating_buttons(&overlay);
+        let (device_btn, sidebar_btn, exit_kiosk_btn) = Self::build_floating_buttons(&overlay);
+        // `--kiosk:only`: no exit path at all, not even hidden-but-wired —
+        // see `ui::kiosk_only()`'s own doc comment. The button itself just
+        // disappears from the group rather than leaving an empty gap.
+        if kiosk_only {
+            exit_kiosk_btn.set_visible(false);
+        }
 
         // Tracks the panel's own right edge while open, snapping back to
         // the base (CSS-set) margin while closed — see sidebar_btn's own
-        // field doc comment. `.kiosk-sidebar-btn` deliberately doesn't set
-        // margin-start itself, so this always wins without a CSS priority
-        // fight (see that class's own comment in dark.css/system.css).
+        // field doc comment. Moves `top_left_group` (sidebar_btn +
+        // exit_kiosk_btn together), not sidebar_btn alone, so the exit
+        // button stays glued to it as one unit. `.kiosk-sidebar-btn`
+        // deliberately doesn't set margin-start itself, so this always wins
+        // without a CSS priority fight (see that class's own comment in
+        // dark.css/system.css).
+        let top_left_group = sidebar_btn.parent().and_downcast::<gtk::Box>()
+            .expect("sidebar_btn's parent is the top_left_group Box built alongside it");
         sidebar_paned.connect_notify_local(Some("position"), clone!(
-            #[weak] sidebar_btn,
+            #[weak] top_left_group,
             move |paned, _| {
                 let pos = paned.position();
-                if pos > 8 { sidebar_btn.set_margin_start(pos + 12); }
-                else       { sidebar_btn.set_margin_start(20); }
+                if pos > 8 { top_left_group.set_margin_start(pos + 12); }
+                else       { top_left_group.set_margin_start(20); }
             }
         ));
 
@@ -238,6 +253,12 @@ impl KioskWindow {
                 this.toggle_sidebar();
             }
         });
+        if !kiosk_only {
+            exit_kiosk_btn.connect_clicked({
+                let exit_kiosk = Rc::clone(&exit_kiosk);
+                move |_| exit_kiosk()
+            });
+        }
         device_list.connect_device_selected({
             let weak = Rc::downgrade(&this);
             move |_, key| {
@@ -247,13 +268,15 @@ impl KioskWindow {
             }
         });
 
-        // Keyboard: "K" exits kiosk mode, "L" swaps between the Classic and
-        // WideRight playback layouts (neither shared with DeviceWindow's
-        // own controller — no "M" here at all, kiosk has no mini mode).
-        // "T" (theme cycle) *is* shared verbatim with DeviceWindow's own
-        // controller, via `ui::theme::cycle_theme()`. Everything else
-        // delegates to the shared transport-key helper against whatever's
-        // currently bound.
+        // Keyboard: "K" exits kiosk mode (unless `--kiosk:only` — see
+        // `ui::kiosk_only()`'s own doc comment, same reasoning as the exit
+        // button above: no wired escape hatch at all, not just a hidden
+        // one), "L" swaps between the Classic and WideRight playback
+        // layouts (neither shared with DeviceWindow's own controller — no
+        // "M" here at all, kiosk has no mini mode). "T" (theme cycle) *is*
+        // shared verbatim with DeviceWindow's own controller, via
+        // `ui::theme::cycle_theme()`. Everything else delegates to the
+        // shared transport-key helper against whatever's currently bound.
         let key_ctrl = gtk::EventControllerKey::new();
         key_ctrl.set_propagation_phase(gtk::PropagationPhase::Capture);
         key_ctrl.connect_key_pressed({
@@ -263,9 +286,11 @@ impl KioskWindow {
                 if state.intersects(gtk::gdk::ModifierType::CONTROL_MASK | gtk::gdk::ModifierType::ALT_MASK) {
                     return glib::Propagation::Proceed;
                 }
-                if let gtk::gdk::Key::k | gtk::gdk::Key::K = keyval {
-                    exit_kiosk();
-                    return glib::Propagation::Stop;
+                if !kiosk_only {
+                    if let gtk::gdk::Key::k | gtk::gdk::Key::K = keyval {
+                        exit_kiosk();
+                        return glib::Propagation::Stop;
+                    }
                 }
                 if let gtk::gdk::Key::l | gtk::gdk::Key::L = keyval {
                     this.toggle_layout();
@@ -292,7 +317,7 @@ impl KioskWindow {
     /// `PlaybackView` is currently showing), all added from this one place
     /// rather than scattered through `new()`. Returns them specifically
     /// since `new()` still needs both to wire up their click handling.
-    fn build_floating_buttons(overlay: &gtk::Overlay) -> (gtk::Button, gtk::Button) {
+    fn build_floating_buttons(overlay: &gtk::Overlay) -> (gtk::Button, gtk::Button, gtk::Button) {
         let device_btn = gtk::Button::builder()
             .label("Select device")
             .css_classes(["kiosk-device-btn"])
@@ -301,22 +326,35 @@ impl KioskWindow {
             .build();
         overlay.add_overlay(&device_btn);
 
-        // Symmetric to device_btn on the opposite corner — margin-start
-        // set explicitly (matching the CSS class's own base value) since
-        // .kiosk-sidebar-btn deliberately doesn't set it, leaving it fully
-        // Rust-controlled (see sidebar_paned's "notify::position" handler
-        // in new(), which moves it live once the panel's open).
+        // Symmetric to device_btn on the opposite corner. No margin-start
+        // set directly on either button here — that's the wrapping
+        // `top_left_group` Box's job below (matching `.kiosk-sidebar-btn`'s
+        // own comment on deliberately not setting it itself), so it stays
+        // fully Rust-controlled (see sidebar_paned's "notify::position"
+        // handler in new(), which moves the whole group live once the
+        // panel's open) and both buttons move together as one unit.
         let sidebar_btn = gtk::Button::builder()
             .icon_name("sidebar-show-symbolic")
             .tooltip_text("Toggle presets panel")
             .css_classes(["kiosk-sidebar-btn"])
-            .halign(gtk::Align::Start)
-            .valign(gtk::Align::Start)
+            .build();
+        // Exits Kiosk mode, next to `sidebar_btn` rather than its own
+        // separate floating corner, by request.
+        let exit_kiosk_btn = gtk::Button::builder()
+            .icon_name("rustywiim-exit-kiosk")
+            .tooltip_text("Exit Kiosk mode")
+            .css_classes(["kiosk-sidebar-btn"])
+            .build();
+        let top_left_group = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal).spacing(8)
+            .halign(gtk::Align::Start).valign(gtk::Align::Start)
             .margin_start(20)
             .build();
-        overlay.add_overlay(&sidebar_btn);
+        top_left_group.append(&sidebar_btn);
+        top_left_group.append(&exit_kiosk_btn);
+        overlay.add_overlay(&top_left_group);
 
-        (device_btn, sidebar_btn)
+        (device_btn, sidebar_btn, exit_kiosk_btn)
     }
 
     /// Resolves `key` (a `device_key()` result — see `DiscoveryManager`)

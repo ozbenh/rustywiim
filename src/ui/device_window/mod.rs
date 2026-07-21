@@ -206,6 +206,7 @@ struct DeviceWindowInner {
     mini_mode_width:     Cell<i32>,
 
     mini_btn:          gtk::Button,
+    kiosk_btn:         gtk::Button,
 }
 
 impl Drop for DeviceWindowInner {
@@ -404,7 +405,7 @@ impl DeviceWindow {
 
         dbg_ui(&format!("DeviceWindow creating (uuid={})", cfg_uuid));
 
-        let (header, sidebar_btn, mini_btn, connecting_spinner) = build_header(init_dev_cfg.panel_visible);
+        let (header, sidebar_btn, kiosk_btn, mini_btn, connecting_spinner) = build_header(init_dev_cfg.panel_visible);
         let presets = views::presets::PresetsView::new(&ds, &icons);
         let io = views::io::InputOutputView::new(&ds, &icons);
         let left_pane = build_left_pane(&presets, &io);
@@ -576,6 +577,7 @@ impl DeviceWindow {
             maximize_call_pending: Cell::new(false),
             mini_mode_width:     Cell::new(init_dev_cfg.mini_window_width),
             mini_btn:          mini_btn.clone(),
+            kiosk_btn:         kiosk_btn.clone(),
         });
 
         wire_device_signals(&inner);
@@ -764,6 +766,13 @@ fn wire_window_lifecycle(
         });
     }
     window.add_action(&kiosk_action);
+
+    inner.kiosk_btn.connect_clicked({
+        let i = Rc::downgrade(&inner);
+        move |_| {
+            if let Some(i) = i.upgrade() { (i.enter_kiosk_fn)(); }
+        }
+    });
 
     wire_window_actions(&window, Some(ds.clone()), open_settings);
 

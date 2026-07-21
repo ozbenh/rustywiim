@@ -30,7 +30,8 @@ pub(super) struct MiniWidgets {
 // ── Build functions ───────────────────────────────────────────────────────────
 
 /// Returns the header-bar widget to actually add as the toolbar's top bar,
-/// the two existing toggle buttons, and a small spinner shown while
+/// its buttons (sidebar toggle, Enter Kiosk, mini-player), and a small
+/// spinner shown while
 /// `ConnectionState::Connecting` — see `reset_device_ui()`. The spinner is
 /// **not** attached anywhere in here — `adw::HeaderBar` reserves its own
 /// far-right corner for the native CSD window buttons
@@ -43,7 +44,7 @@ pub(super) struct MiniWidgets {
 /// already in that corner of the content instead.
 pub(super) fn build_header(
     init_panel_visible: bool,
-) -> (adw::HeaderBar, gtk::ToggleButton, gtk::Button, gtk::Spinner) {
+) -> (adw::HeaderBar, gtk::ToggleButton, gtk::Button, gtk::Button, gtk::Spinner) {
     let header = adw::HeaderBar::new();
 
     let sidebar_btn = gtk::ToggleButton::builder()
@@ -53,6 +54,12 @@ pub(super) fn build_header(
         .build();
     sidebar_btn.add_css_class("sidebar-toggle");
     header.pack_start(&sidebar_btn);
+
+    let kiosk_btn = gtk::Button::builder()
+        .icon_name("rustywiim-enter-kiosk")
+        .tooltip_text("Enter Kiosk mode")
+        .build();
+    header.pack_start(&kiosk_btn);
 
     header.pack_end(&crate::ui::menu::build_menu_button(true));
 
@@ -81,7 +88,7 @@ pub(super) fn build_header(
     connecting_spinner.set_size_request(20, 20);
     connecting_spinner.add_css_class("connecting-spinner");
 
-    (header, sidebar_btn, mini_btn, connecting_spinner)
+    (header, sidebar_btn, kiosk_btn, mini_btn, connecting_spinner)
 }
 
 pub(super) fn build_left_pane(

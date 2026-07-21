@@ -136,6 +136,23 @@ pub fn set_start_in_kiosk(v: bool) {
     START_IN_KIOSK.store(v, Ordering::Relaxed);
 }
 
+/// `--kiosk:only`: locks the session into Kiosk mode permanently — no
+/// exit button, no "K" key. Implies `--kiosk` itself (same as
+/// `--kiosk:layout`), set before `activate()` runs. `KioskWindow::new()`
+/// reads this via `kiosk_only()` to skip wiring both exit paths entirely,
+/// rather than merely hiding/disabling them — a locked-down kiosk
+/// deployment shouldn't leave a technically-still-wired escape hatch
+/// behind a hidden button or a stray keypress.
+static KIOSK_ONLY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn set_kiosk_only(v: bool) {
+    KIOSK_ONLY.store(v, Ordering::Relaxed);
+}
+
+pub fn kiosk_only() -> bool {
+    KIOSK_ONLY.load(Ordering::Relaxed)
+}
+
 /// `--kiosk:layout=1|2`: which playback layout Kiosk mode starts in
 /// (still changeable at runtime with "L"). A lightweight mirror of
 /// `views::playback_full::PlaybackLayout` rather than that type itself —
@@ -670,7 +687,9 @@ impl AppState {
             Some(KioskLayoutOverride::Classic) => views::playback_full::PlaybackLayout::Classic,
             Some(KioskLayoutOverride::WideRight) | None => views::playback_full::PlaybackLayout::WideRight,
         };
-        let kw = kiosk::KioskWindow::new(&self_rc.app, &self_rc.disc_mgr, &icons, exit_fn, initial_layout);
+        let kw = kiosk::KioskWindow::new(
+            &self_rc.app, &self_rc.disc_mgr, &icons, exit_fn, initial_layout, kiosk_only(),
+        );
         kw.present();
         *self_rc.kiosk_win.borrow_mut() = Some(Rc::clone(&kw));
 

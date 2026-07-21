@@ -113,7 +113,7 @@ For now just this one:
 | `--connect=<url>`     | Connect directly to `scheme://ip[:port]` (e.g. `http://127.0.0.1:8080` for `wiim-simulator`), opening a device window for it immediately instead of discovery |
 | `--no-config`         | Don't load or save the config file — every run behaves like a fresh install |
 | `--config-file=<path>`| Use an alternate config file path instead of the default (for testing) |
-| `--kiosk[:layout=x]`  | Start in Kiosk mode (optionally specify layout 1 or 2 |
+| `--kiosk[=<opts>]`    | Start directly in Kiosk mode (a single fullscreen window). Comma-separated suboptions, any order: `layout:1` (Classic) or `layout:2` (WideRight, the default), and/or `only` (lock the session into Kiosk mode permanently — no exit button, no "K" key). E.g. `--kiosk=layout:1,only`. `--kiosk:opts=<opts>` also accepted directly |
 
 ## Helping with your device ##
 
