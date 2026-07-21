@@ -12,6 +12,22 @@ use adw::prelude::*;
 use crate::config;
 use super::*;
 
+/// Floor for the side panel's *open* width — DeviceWindow-only (Kiosk
+/// mode's own sidebar in `ui/kiosk.rs` computes its open width completely
+/// independently, from a live natural-size measurement, and never reads
+/// this or any other DeviceWindow state — see that module's own comments).
+/// Previously there was no real floor beyond `wire_sidebar()`'s
+/// `SNAP_PX = 30` open-vs-closed threshold, so a user could drag the panel
+/// open to anything from 30px up — uncomfortably narrow well before
+/// reaching a size any of `PresetsView`/`InputOutputView`'s real content
+/// needs. Applied both when reading a saved/default width back
+/// (construction, `apply_device_window_state()`) and when capturing a
+/// freshly-dragged one (`wire_sidebar()`'s settle timer and button-release
+/// handler), so an old too-small persisted value from before this floor
+/// existed gets corrected the next time it's read, not just newly-dragged
+/// ones going forward.
+pub(super) const MIN_PANEL_WIDTH: i32 = 260;
+
 impl DeviceWindowInner {
     /// Apply per-device window/panel state (size, maximized, panel
     /// visibility/width, mini-window width) for the device identified by
@@ -69,7 +85,8 @@ impl DeviceWindowInner {
         self.ds.set_mute_access_override(dev_cfg.mute_access_override);
         self.ds.set_loop_mode_access_override(dev_cfg.loop_mode_access_override);
 
-        let panel_width = if dev_cfg.paned_position > 0 { dev_cfg.paned_position } else { 200 };
+        let panel_width = (if dev_cfg.paned_position > 0 { dev_cfg.paned_position } else { 200 })
+            .max(MIN_PANEL_WIDTH);
         *self.saved_panel_width.borrow_mut() = panel_width;
 
         // Guard with panel_collapsing to avoid triggering the sidebar toggle handler.

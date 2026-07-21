@@ -435,7 +435,8 @@ impl DeviceWindow {
         paned.set_margin_top(4);
         paned.set_margin_bottom(8);
 
-        let panel_width = if init_dev_cfg.paned_position > 0 { init_dev_cfg.paned_position } else { 200 };
+        let panel_width = (if init_dev_cfg.paned_position > 0 { init_dev_cfg.paned_position } else { 200 })
+            .max(geometry::MIN_PANEL_WIDTH);
         paned.set_position(panel_width);
         left_pane.set_visible(init_dev_cfg.panel_visible);
 

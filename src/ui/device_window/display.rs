@@ -12,7 +12,7 @@ use adw::prelude::*;
 use crate::config;
 use crate::ui::*;
 use super::*;
-use super::geometry::schedule_config_save;
+use super::geometry::{schedule_config_save, MIN_PANEL_WIDTH};
 
 // ── impl DeviceWindowInner ────────────────────────────────────────────────────
 
@@ -273,6 +273,27 @@ pub(super) fn animate_panel_to(i: &Rc<DeviceWindowInner>, target_pos: i32) {
     *i.panel_anim.borrow_mut() = Some(anim);
 }
 
+/// A just-settled open position below `MIN_PANEL_WIDTH` (but still above
+/// `SNAP_PX`, i.e. genuinely "open," just uncomfortably narrow) gets
+/// corrected up to the floor instead of being remembered as-is — covers
+/// both a live drag settling there and an old, already-persisted value
+/// from before this floor existed (`apply_device_window_state()`/
+/// construction both already clamp what they *read* back; this is the
+/// other half, clamping what a drag just *wrote*). Guarded by
+/// `panel_collapsing` like every other programmatic `set_position()` in
+/// this file, so the correction doesn't re-trigger this same
+/// `notify::position` handler recursively.
+fn settle_panel_width(i: &Rc<DeviceWindowInner>, pos: i32) -> i32 {
+    if pos < MIN_PANEL_WIDTH {
+        *i.panel_collapsing.borrow_mut() = true;
+        i.paned.set_position(MIN_PANEL_WIDTH);
+        *i.panel_collapsing.borrow_mut() = false;
+        MIN_PANEL_WIDTH
+    } else {
+        pos
+    }
+}
+
 /// The sidebar paned's collapse/snap/settle logic and its header toggle
 /// button — a self-contained cluster around `animate_panel_to()`.
 pub(super) fn wire_sidebar(inner: &Rc<DeviceWindowInner>) {
@@ -315,7 +336,7 @@ pub(super) fn wire_sidebar(inner: &Rc<DeviceWindowInner>) {
                     }
                     if shown && !btn_held {
                         let pos = i2.paned.position();
-                        if pos >= SNAP_PX { *i2.saved_panel_width.borrow_mut() = pos; }
+                        if pos >= SNAP_PX { *i2.saved_panel_width.borrow_mut() = settle_panel_width(&i2, pos); }
                     }
                     geometry::schedule_config_save(&i2);
                 },
@@ -346,7 +367,7 @@ pub(super) fn wire_sidebar(inner: &Rc<DeviceWindowInner>) {
                         }
                         if shown {
                             let pos = i.paned.position();
-                            if pos >= SNAP_PX { *i.saved_panel_width.borrow_mut() = pos; }
+                            if pos >= SNAP_PX { *i.saved_panel_width.borrow_mut() = settle_panel_width(&i, pos); }
                         }
                         geometry::schedule_config_save(&i);
                     }
