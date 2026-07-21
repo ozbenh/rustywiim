@@ -64,6 +64,18 @@ pub mod imp {
         pub(super) shuffle:  OnceCell<gtk::Button>,
         pub(super) repeat:   OnceCell<gtk::Button>,
         pub(super) volume:   OnceCell<VolumeControl>,
+        /// The widget `fade_group()` fades for Kiosk's "All Controls"
+        /// auto-hide — *not* necessarily the visible card itself. In
+        /// WideRight it's `transport`, which genuinely is the whole
+        /// translucent card (background included, safe to fade wholesale
+        /// — nothing else shares it). In Classic it's `controls_row`
+        /// (just the transport+volume `CenterBox`), deliberately *not*
+        /// the outer card or its `Overlay` — those also contain
+        /// `service_group` (a sibling overlay child, unaffected by
+        /// `controls_row`'s own opacity but *not* by the `Overlay`
+        /// widget's own) and the seek bar, none of which should fade.
+        /// See `fade_group()`'s own doc comment.
+        pub(super) controls_card: OnceCell<gtk::Widget>,
     }
 
     #[glib::object_subclass]
@@ -544,19 +556,29 @@ impl PlaybackView {
 
                 // Seek block + transport grouped into one card under
                 // RustyWiiM Modern (see modern.css); inert everywhere else,
-                // same as "panel-card". Artwork/title/artist/album/status/
-                // quality stay uncarded, floating directly on the blurred
-                // background when that theme is active. spacing(8),
-                // unchanged from before this row was split in two — so
-                // transport's own gap from the seek bar (now the bottom of
-                // seek_block, not the scale row directly) doesn't grow
-                // just because time_row was inserted above it.
+                // same as "panel-card". Kept exactly as originally built —
+                // this card's own background/layout never changes, static
+                // or under Kiosk's "All Controls" auto-hide.
                 let controls_card = GtkBox::builder()
                     .orientation(Orientation::Vertical).spacing(8)
                     .css_classes(["controls-card"])
                     .build();
                 controls_card.append(&seek_block);
                 controls_card.append(&controls_overlay);
+                // The fade target is `controls_row` specifically (just
+                // transport+volume), not the whole card: fading the card
+                // itself, or `controls_overlay`, would also fade
+                // `service_group` (it's a sibling overlay child of the
+                // *same* Overlay, and an Overlay's own opacity applies to
+                // its whole composited result including overlay children)
+                // — service/quality aren't meant to hide (still true even
+                // after the "All Controls" ask), and the seek bar and the
+                // card's own translucent background should both stay put
+                // regardless, matching how this looked before "All
+                // Controls" existed at all (confirmed live: an earlier
+                // attempt that also moved the seek bar out of this card
+                // entirely visibly shrank/shifted it — not wanted).
+                self.imp().controls_card.set(controls_row.clone().upcast()).unwrap();
 
                 let right_pane = GtkBox::builder()
                     .orientation(Orientation::Vertical).spacing(8).hexpand(true)
@@ -584,7 +606,10 @@ impl PlaybackView {
                 // Same semi-transparent card styling the classic layout's
                 // seek+transport group gets under RustyWiiM Modern (see
                 // modern.css's ".controls-card" — inert under System/Dark).
+                // Volume lives elsewhere in this layout (see above), so
+                // unlike Classic this card is just the transport row.
                 transport.add_css_class("controls-card");
+                self.imp().controls_card.set(transport.clone().upcast()).unwrap();
                 // Left-aligned like the rest of this column, not centered
                 // (the shared construction above centers it for the
                 // classic layout, where it sits under a centered artwork).
@@ -1009,6 +1034,26 @@ impl PlaybackView {
     /// The embedded volume cluster, for the host's Up/Down keyboard shortcuts.
     pub(crate) fn volume(&self) -> VolumeControl {
         self.imp().volume.get().unwrap().clone()
+    }
+
+    /// Widgets that fade together under Kiosk mode's "All Controls"
+    /// auto-hide: the transport buttons (shuffle/prev/play/next/repeat,
+    /// grouped as one widget — see `controls_card`'s own doc comment for
+    /// what that actually is per layout), volume (listed explicitly since
+    /// WideRight positions it outside that widget), and the plain status
+    /// text ("Playing"/"Paused"/...). Deliberately *not* the seek bar, the
+    /// card's own translucent background, or the service/quality badges —
+    /// none of those should fade, in either layout (confirmed live: an
+    /// earlier version that restructured Classic's card to pull the seek
+    /// bar out of it visibly shrank/shifted the card even when nothing
+    /// was fading, which is what this now avoids).
+    pub(crate) fn fade_group(&self) -> Vec<gtk::Widget> {
+        let imp = self.imp();
+        vec![
+            imp.controls_card.get().unwrap().clone(),
+            imp.volume.get().unwrap().clone().upcast(),
+            imp.status.get().unwrap().clone().upcast(),
+        ]
     }
 
     /// Full render from the `DeviceState` cache — live or offline.

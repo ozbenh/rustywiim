@@ -52,6 +52,7 @@ fn default_devlist_song_info() -> bool { true }
 /// Matches `ScrollFadeLabel::SPEED_DEFAULT`.
 fn default_scroll_speed() -> f64 { 0.6 }
 fn default_kiosk_auto_hide_controls() -> bool { true }
+fn default_kiosk_auto_hide_all_controls() -> bool { true }
 fn default_kiosk_screensaver_enable() -> bool { true }
 /// Settings' own slider range is 10s-600s (10 minutes).
 fn default_kiosk_screensaver_timeout_secs() -> u32 { 30 }
@@ -314,6 +315,12 @@ pub struct Config {
     /// activity. Defaults on.
     #[serde(default = "default_kiosk_auto_hide_controls")]
     pub kiosk_auto_hide_controls: bool,
+    /// When `kiosk_auto_hide_controls` is also on, additionally fades the
+    /// bound device's own playback transport buttons and volume control
+    /// out along with the floating chrome, instead of just the latter.
+    /// Defaults on.
+    #[serde(default = "default_kiosk_auto_hide_all_controls")]
+    pub kiosk_auto_hide_all_controls: bool,
     /// Whether to inhibit the *system's* idle/screensaver/DPMS mechanism,
     /// and under what condition — see `InhibitSystemScreensaver`'s own doc
     /// comment.
@@ -357,6 +364,7 @@ impl Default for Config {
             gena_enabled: default_gena_enabled(),
             kiosk_last_uuid: None,
             kiosk_auto_hide_controls: default_kiosk_auto_hide_controls(),
+            kiosk_auto_hide_all_controls: default_kiosk_auto_hide_all_controls(),
             kiosk_inhibit_screensaver: InhibitSystemScreensaver::default(),
             kiosk_screensaver_enable: default_kiosk_screensaver_enable(),
             kiosk_screensaver_timeout_secs: default_kiosk_screensaver_timeout_secs(),

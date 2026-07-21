@@ -587,9 +587,23 @@ fn build_kiosk_page() -> adw::PreferencesPage {
         .subtitle("Fade the device-select and sidebar/exit buttons out after a few seconds idle")
         .active(auto_hide)
         .build();
-    auto_hide_row.connect_active_notify(move |row| {
-        config::update(|cfg| cfg.kiosk_auto_hide_controls = row.is_active());
+
+    let auto_hide_all = config::with(|cfg| cfg.kiosk_auto_hide_all_controls);
+    let auto_hide_all_row = adw::SwitchRow::builder()
+        .title("Auto-hide more")
+        .subtitle("Also fade out the playback and volume control and status bar")
+        .active(auto_hide_all)
+        .sensitive(auto_hide)
+        .build();
+    auto_hide_all_row.connect_active_notify(move |row| {
+        config::update(|cfg| cfg.kiosk_auto_hide_all_controls = row.is_active());
     });
+
+    auto_hide_row.connect_active_notify(glib::clone!(#[weak] auto_hide_all_row, move |row| {
+        let active = row.is_active();
+        config::update(|cfg| cfg.kiosk_auto_hide_controls = active);
+        auto_hide_all_row.set_sensitive(active);
+    }));
 
     let inhibit = config::with(|cfg| cfg.kiosk_inhibit_screensaver);
     let inhibit_names: Vec<&str> = INHIBIT_CHOICES.iter().map(|(n, _)| *n).collect();
@@ -669,6 +683,7 @@ fn build_kiosk_page() -> adw::PreferencesPage {
         .title("Kiosk")
         .build();
     group.add(&auto_hide_row);
+    group.add(&auto_hide_all_row);
     group.add(&inhibit_row);
     group.add(&screensaver_row);
     group.add(&timeout_row);

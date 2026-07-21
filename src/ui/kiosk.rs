@@ -125,6 +125,12 @@ pub(crate) struct KioskWindow {
     /// re-triggering the fade when already in the target state.
     controls_visible: Cell<bool>,
     controls_fade_anim: RefCell<Option<adw::TimedAnimation>>,
+    /// The bound view's own fade group (`PlaybackView::fade_group()` —
+    /// transport buttons, volume, status text) plus the bottom status bar,
+    /// captured fresh on every `finish_bind()` (both are rebuilt each
+    /// time) — folded into the same fade as `top_left_group`/`device_btn`
+    /// when `kiosk_auto_hide_all_controls` is on, otherwise left untouched.
+    extra_controls: RefCell<Vec<gtk::Widget>>,
 
     /// Solid-black overlay, last-added so it stacks above everything else.
     screensaver_overlay: gtk::Box,
@@ -325,6 +331,7 @@ impl KioskWindow {
             last_motion_pos: Cell::new((f64::NAN, f64::NAN)),
             controls_visible: Cell::new(true),
             controls_fade_anim: RefCell::new(None),
+            extra_controls: RefCell::new(Vec::new()),
             screensaver_overlay,
             screensaver_active: Cell::new(false),
             screensaver_fade_anim: RefCell::new(None),
@@ -657,6 +664,7 @@ impl KioskWindow {
         // Views start inactive (views/mod.rs's shared contract) — this is
         // what actually performs the initial render.
         view.set_active(true);
+
         self.sidebar_paned.set_end_child(Some(&view));
 
         // Side panel (presets/IO) — same widget shapes DeviceWindow's own
@@ -739,6 +747,13 @@ impl KioskWindow {
         status_bar.set_active(true);
         self.content_holder.append(&status_bar);
 
+        // Captured fresh for `animate_controls()`'s `kiosk_auto_hide_all_controls`
+        // case — view/status_bar are both rebuilt on every bind, so the
+        // old widgets would otherwise be stale/dangling.
+        let mut extra = view.fade_group();
+        extra.push(status_bar.clone().upcast());
+        *self.extra_controls.borrow_mut() = extra;
+
         // Connected before the initial on_playback_changed() call below so
         // the two share identical logic — no separate "seed the initial
         // state" copy of it.
@@ -775,6 +790,9 @@ impl KioskWindow {
             PlaybackLayout::Classic => PlaybackLayout::WideRight,
             PlaybackLayout::WideRight => PlaybackLayout::Classic,
         });
+        // "L" always counts as activity regardless of what follows below.
+        self.note_activity("layout-toggle");
+
         // Not a device switch — reuses the same `ds`, so only its
         // playback-changed handler needs disconnecting (finish_bind()
         // connects a fresh one) rather than the full release_bound() (that
@@ -790,6 +808,16 @@ impl KioskWindow {
             self.content_holder.remove(&child);
         }
         self.finish_bind(key, ds, label);
+
+        // `finish_bind()` just rebuilt the view/status_bar into a fresh
+        // `extra_controls` — force a real `animate_controls(true)` pass
+        // over them (not just the `note_activity()` call above, which ran
+        // against the *old*, about-to-be-discarded widgets) rather than
+        // trusting them to already be visible by default, so a layout
+        // switch mid-auto-hide can't leave some controls shown and others
+        // still faded out (confirmed live, 2026-07-21).
+        self.controls_visible.set(false);
+        self.animate_controls(true);
     }
 
     /// The side-panel toggle button. Reading `sidebar_paned.position()` as
@@ -918,41 +946,46 @@ impl KioskWindow {
         // mouse motion arrived while a fade-out was still in flight).
         let old_anim = self.controls_fade_anim.borrow_mut().take();
         if let Some(a) = old_anim { a.skip(); }
-        if show {
-            self.top_left_group.set_can_target(true);
-            self.device_btn.set_can_target(true);
+
+        // Base group (device-select + sidebar/exit) plus, when
+        // `kiosk_auto_hide_all_controls` is also on, the currently-bound
+        // view's transport buttons + volume control too — `extra_controls`
+        // is recaptured on every bind (see `finish_bind()`) since
+        // `PlaybackView` itself is rebuilt each time.
+        let mut targets: Vec<gtk::Widget> =
+            vec![self.top_left_group.clone().upcast(), self.device_btn.clone().upcast()];
+        if config::with(|cfg| cfg.kiosk_auto_hide_all_controls) {
+            targets.extend(self.extra_controls.borrow().iter().cloned());
         }
 
-        let target = if show { 1.0 } else { 0.0 };
+        if show {
+            for w in &targets { w.set_can_target(true); }
+        }
+
+        let target_opacity = if show { 1.0 } else { 0.0 };
         let from = self.top_left_group.opacity();
         let animate = config::with(|cfg| cfg.animations)
             && gtk::Settings::default().is_some_and(|s| s.is_gtk_enable_animations());
         if !animate {
-            self.top_left_group.set_opacity(target);
-            self.device_btn.set_opacity(target);
+            for w in &targets { w.set_opacity(target_opacity); }
             if !show {
-                self.top_left_group.set_can_target(false);
-                self.device_btn.set_can_target(false);
+                for w in &targets { w.set_can_target(false); }
             }
             return;
         }
 
-        let top_left_group = self.top_left_group.clone();
-        let device_btn = self.device_btn.clone();
+        let anim_targets = targets.clone();
         let anim_target = adw::CallbackAnimationTarget::new(move |v| {
-            top_left_group.set_opacity(v);
-            device_btn.set_opacity(v);
+            for w in &anim_targets { w.set_opacity(v); }
         });
-        let anim = adw::TimedAnimation::new(&self.top_left_group, from, target, CONTROLS_FADE_MS, anim_target);
+        let anim = adw::TimedAnimation::new(&self.top_left_group, from, target_opacity, CONTROLS_FADE_MS, anim_target);
         anim.set_easing(adw::Easing::EaseInOutCubic);
         let weak = Rc::downgrade(self);
-        let (top_left_group, device_btn) = (self.top_left_group.clone(), self.device_btn.clone());
         anim.connect_done(move |_| {
             let Some(this) = weak.upgrade() else { return };
             *this.controls_fade_anim.borrow_mut() = None;
             if !show {
-                top_left_group.set_can_target(false);
-                device_btn.set_can_target(false);
+                for w in &targets { w.set_can_target(false); }
             }
         });
         anim.play();
