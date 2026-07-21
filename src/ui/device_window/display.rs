@@ -12,7 +12,7 @@ use adw::prelude::*;
 use crate::config;
 use crate::ui::*;
 use super::*;
-use super::geometry::{schedule_config_save, MIN_PANEL_WIDTH};
+use super::geometry::schedule_config_save;
 
 // ── impl DeviceWindowInner ────────────────────────────────────────────────────
 
@@ -273,37 +273,35 @@ pub(super) fn animate_panel_to(i: &Rc<DeviceWindowInner>, target_pos: i32) {
     *i.panel_anim.borrow_mut() = Some(anim);
 }
 
-/// A just-settled open position below `MIN_PANEL_WIDTH` (but still above
-/// `SNAP_PX`, i.e. genuinely "open," just uncomfortably narrow) gets
-/// corrected up to the floor instead of being remembered as-is — covers
-/// both a live drag settling there and an old, already-persisted value
-/// from before this floor existed (`apply_device_window_state()`/
-/// construction both already clamp what they *read* back; this is the
-/// other half, clamping what a drag just *wrote*). Guarded by
-/// `panel_collapsing` like every other programmatic `set_position()` in
-/// this file, so the correction doesn't re-trigger this same
-/// `notify::position` handler recursively.
-fn settle_panel_width(i: &Rc<DeviceWindowInner>, pos: i32) -> i32 {
-    if pos < MIN_PANEL_WIDTH {
-        *i.panel_collapsing.borrow_mut() = true;
-        i.paned.set_position(MIN_PANEL_WIDTH);
-        *i.panel_collapsing.borrow_mut() = false;
-        MIN_PANEL_WIDTH
-    } else {
-        pos
-    }
-}
-
 /// The sidebar paned's collapse/snap/settle logic and its header toggle
 /// button — a self-contained cluster around `animate_panel_to()`.
+///
+/// **No floor enforcement below `MIN_PANEL_WIDTH` during a live drag** —
+/// tried and abandoned (confirmed live, 2026-07-21). A `gtk::EventControllerLegacy`
+/// on `paned` was meant to track whether the mouse button was still held,
+/// so a debounced "settle" pass could snap a too-narrow position back up to
+/// `MIN_PANEL_WIDTH` only once the drag had genuinely ended. `--debug=ui`
+/// logging showed it never once saw a `ButtonPress`/`ButtonRelease` at
+/// all — GTK's own internal handle-drag apparently claims those before a
+/// `Legacy` controller on the outer `Paned` ever sees them, so the tracked
+/// "held" state was permanently stuck `false`. That made the debounced
+/// settle *always* believe the drag had already ended: it kept forcing the
+/// position back up to the floor while the mouse was still actively
+/// holding it below that, and GTK's own live drag-tracking immediately
+/// reasserted the real (sub-floor) pointer position right after — a fast,
+/// continuous bounce between the two every ~50-65ms for as long as the
+/// user held still below the floor. `MIN_PANEL_WIDTH` is still used
+/// elsewhere (initial/restored width, `geometry.rs`/`mod.rs`) — those are
+/// one-shot, not-mid-drag `set_position()` calls with no live grab to
+/// fight, so they're unaffected and stay as they were; only *this* drag-
+/// time correction was the problem, and it's gone rather than patched
+/// further, since there's no reliable signal here to correct it on.
 pub(super) fn wire_sidebar(inner: &Rc<DeviceWindowInner>) {
     // ── Sidebar toggle ────────────────────────────────────────────────────────
-    let paned_btn_held = Rc::new(RefCell::new(false));
-    const SNAP_PX: i32 = 30;
+    const SNAP_PX: i32 = 60;
 
     inner.paned.connect_position_notify({
-        let i    = Rc::downgrade(&inner);
-        let held = Rc::clone(&paned_btn_held);
+        let i = Rc::downgrade(&inner);
         move |p| {
             let Some(i) = i.upgrade() else { return };
             if *i.panel_collapsing.borrow() { return; }
@@ -320,23 +318,20 @@ pub(super) fn wire_sidebar(inner: &Rc<DeviceWindowInner>) {
                 *i.panel_collapsing.borrow_mut() = false;
             }
             if let Some(id) = i.settle_timer.borrow_mut().take() { id.remove(); }
-            let i2    = Rc::clone(&i);
-            let held2 = Rc::clone(&held);
+            let i2 = Rc::clone(&i);
             let id = glib::timeout_add_local_once(
                 std::time::Duration::from_millis(50),
                 move || {
                     *i2.settle_timer.borrow_mut() = None;
-                    let btn_held = *held2.borrow();
-                    *held2.borrow_mut() = false;
                     let shown = i2.left_pane.is_visible();
                     if i2.sidebar_btn.is_active() != shown {
                         *i2.panel_collapsing.borrow_mut() = true;
                         i2.sidebar_btn.set_active(shown);
                         *i2.panel_collapsing.borrow_mut() = false;
                     }
-                    if shown && !btn_held {
+                    if shown {
                         let pos = i2.paned.position();
-                        if pos >= SNAP_PX { *i2.saved_panel_width.borrow_mut() = settle_panel_width(&i2, pos); }
+                        if pos >= SNAP_PX { *i2.saved_panel_width.borrow_mut() = pos; }
                     }
                     geometry::schedule_config_save(&i2);
                 },
@@ -344,40 +339,6 @@ pub(super) fn wire_sidebar(inner: &Rc<DeviceWindowInner>) {
             *i.settle_timer.borrow_mut() = Some(id);
         }
     });
-
-    {
-        let drag_ctrl = gtk::EventControllerLegacy::new();
-        drag_ctrl.connect_event({
-            let i    = Rc::downgrade(&inner);
-            let held = Rc::clone(&paned_btn_held);
-            move |_, event| {
-                let Some(i) = i.upgrade() else { return glib::Propagation::Proceed };
-                match event.event_type() {
-                    gtk::gdk::EventType::ButtonPress => {
-                        *held.borrow_mut() = true;
-                    }
-                    gtk::gdk::EventType::ButtonRelease => {
-                        *held.borrow_mut() = false;
-                        if let Some(id) = i.settle_timer.borrow_mut().take() { id.remove(); }
-                        let shown = i.left_pane.is_visible();
-                        if i.sidebar_btn.is_active() != shown {
-                            *i.panel_collapsing.borrow_mut() = true;
-                            i.sidebar_btn.set_active(shown);
-                            *i.panel_collapsing.borrow_mut() = false;
-                        }
-                        if shown {
-                            let pos = i.paned.position();
-                            if pos >= SNAP_PX { *i.saved_panel_width.borrow_mut() = settle_panel_width(&i, pos); }
-                        }
-                        geometry::schedule_config_save(&i);
-                    }
-                    _ => {}
-                }
-                glib::Propagation::Proceed
-            }
-        });
-        inner.paned.add_controller(drag_ctrl);
-    }
 
     inner.sidebar_btn.connect_toggled({
         let i = Rc::downgrade(&inner);

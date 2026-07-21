@@ -12,20 +12,18 @@ use adw::prelude::*;
 use crate::config;
 use super::*;
 
-/// Floor for the side panel's *open* width — DeviceWindow-only (Kiosk
-/// mode's own sidebar in `ui/kiosk.rs` computes its open width completely
-/// independently, from a live natural-size measurement, and never reads
-/// this or any other DeviceWindow state — see that module's own comments).
-/// Previously there was no real floor beyond `wire_sidebar()`'s
-/// `SNAP_PX = 30` open-vs-closed threshold, so a user could drag the panel
-/// open to anything from 30px up — uncomfortably narrow well before
-/// reaching a size any of `PresetsView`/`InputOutputView`'s real content
-/// needs. Applied both when reading a saved/default width back
-/// (construction, `apply_device_window_state()`) and when capturing a
-/// freshly-dragged one (`wire_sidebar()`'s settle timer and button-release
-/// handler), so an old too-small persisted value from before this floor
-/// existed gets corrected the next time it's read, not just newly-dragged
-/// ones going forward.
+/// Floor for the side panel's *initial/restored* open width only —
+/// DeviceWindow-only (Kiosk mode's own sidebar in `ui/kiosk.rs` computes
+/// its open width completely independently, from a live natural-size
+/// measurement, and never reads this or any other DeviceWindow state — see
+/// that module's own comments). Applied when reading a saved/default width
+/// back (construction, `apply_device_window_state()`), so an old
+/// uncomfortably-small persisted value still gets corrected on next
+/// launch. **Not** enforced against a live drag — `wire_sidebar()`'s own
+/// doc comment covers why that was tried and abandoned (an unreliable
+/// button-held signal made it fight GTK's own drag-tracking and bounce);
+/// dragging can go as narrow as `wire_sidebar()`'s separate `SNAP_PX`
+/// open-vs-closed threshold allows.
 pub(super) const MIN_PANEL_WIDTH: i32 = 260;
 
 impl DeviceWindowInner {
