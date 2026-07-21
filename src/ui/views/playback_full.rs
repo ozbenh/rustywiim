@@ -210,6 +210,20 @@ pub(crate) fn wide_right_margin_h(art_side: i32) -> i32 {
 /// (the other 1/3) gets a button size that scales the same way, rather
 /// than the fixed pixel sizes `.transport-btn`/`.play-btn`/`.loop-btn`
 /// normally use, which only look right on one specific screen size.
+/// Rounds to the nearest *even* integer — confirmed live (see
+/// `dark.css`/`system.css`'s own "font-size 18px, not 17" fix) that
+/// certain odd font-size values hit a rasterization/hinting rounding
+/// artifact at some display scale factors (Kiosk mode's album name
+/// missing its top line of pixels on a Raspberry Pi 5). That fix picked
+/// one hardcoded value by hand; every font size below is computed
+/// proportionally instead, so a plain `.round()` can land on an odd value
+/// depending on the actual screen height — this rounds every one of them
+/// the same way instead.
+fn round_to_even(v: f64) -> i32 {
+    let r = v.round() as i32;
+    if r % 2 != 0 { r + 1 } else { r }
+}
+
 fn apply_wide_right_scale(
     class: &str, provider: &gtk::CssProvider,
     title_group: &GtkBox, status_group: &GtkBox, service_group: &GtkBox, volume: &VolumeControl,
@@ -231,9 +245,9 @@ fn apply_wide_right_scale(
     // both a 4K desktop and a Raspberry Pi touchscreen.
     // Title reduced a further ~15% (0.1408 -> 0.12) by request — still
     // clearly bigger than artist below.
-    let title_px  = (h * 0.12).round() as i32;
-    let artist_px = (h * 0.0768).round() as i32;
-    let album_px  = (h * 0.064).round() as i32;
+    let title_px  = round_to_even(h * 0.12);
+    let artist_px = round_to_even(h * 0.0768);
+    let album_px  = round_to_even(h * 0.064);
     // "Slightly smaller than the album name" per the design ask, then
     // reduced another ~20% (0.85 -> 0.68) — the whole badge read too big
     // in Kiosk mode. The icon's `pixel_size` (a widget property, not
@@ -241,7 +255,7 @@ fn apply_wide_right_scale(
     // ratio Classic's fixed values use (36px icon : 12px `.service-name`
     // base font-size), then reduced a further 10% (3.0 -> 2.7) — the icon
     // specifically (not the text) still read too big.
-    let service_px = (album_px as f64 * 0.68 * SERVICE_ENSEMBLE_SCALE).round() as i32;
+    let service_px = round_to_even(album_px as f64 * 0.68 * SERVICE_ENSEMBLE_SCALE);
     let service_icon_px = (service_px as f64 * 2.7).round() as i32;
     service.set_icon_pixel_size(service_icon_px);
     // 20% smaller than the service icon — see `QualityBadge::new()`'s
@@ -260,12 +274,12 @@ fn apply_wide_right_scale(
     // deliberate, deviation from pure proportionality: legibility has a
     // hard floor human eyes need regardless of screen size, unlike pure
     // layout spacing.
-    let status_px = (h * 0.0352).round().max(18.0) as i32;
+    let status_px = round_to_even((h * 0.0352).max(18.0));
     // The bitrate/samplerate/bit-depth string specifically, 20% smaller
     // than `status_px` (which `.dim-label`/`.vol-level` still use as-is) —
     // by request, reads as secondary detail rather than matching the
     // pos/dur/status row it sits under.
-    let quality_line_px = (status_px as f64 * 0.8 * SERVICE_ENSEMBLE_SCALE).round().max(14.0) as i32;
+    let quality_line_px = round_to_even((status_px as f64 * 0.8 * SERVICE_ENSEMBLE_SCALE).max(14.0));
     let status_gap = (h * 0.0192).round() as i32;
     status_group.set_spacing(status_gap.max(2));
     // Spacing between service/quality-badge/bitrate-string — was a fixed
