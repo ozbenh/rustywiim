@@ -147,6 +147,7 @@ impl IconSet {
             ("TIDAL Connect", "rustywiim-svc-tidal"),
             ("TIDAL",         "rustywiim-svc-tidal"),
             ("Qobuz",         "rustywiim-svc-qobuz"),
+            ("Qobuz Connect", "rustywiim-svc-qobuz"),
             ("Deezer",        "rustywiim-svc-deezer"),
             ("Pandora",       "rustywiim-svc-pandora"),
             ("Napster",       "rustywiim-svc-napster"),

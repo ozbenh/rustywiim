@@ -776,6 +776,13 @@ pub fn decode_source_name_upnp(play_medium: &str, track_source: &str, device_id:
     }
     let label = match play_medium {
         "TIDAL_CONNECT"  => "TIDAL Connect".to_string(),
+        // Same reasoning as `TIDAL_CONNECT` above: without its own arm this
+        // fell through to the generic `other` arm below, which (no
+        // `vendor_display()` match, `_CONNECT`-suffix-stripped) produced
+        // the raw-cased `"QOBUZ Connect"` — not `"Qobuz Connect"`, so it
+        // never matched `icons.rs`'s service-icon table either, showing no
+        // logo (reported live, 2026-07-21).
+        "QOBUZ_CONNECT"  => "Qobuz Connect".to_string(),
         "SONGLIST-LOCAL" => "USB".to_string(),
         "THIRD-DLNA"     => "DLNA".to_string(),
         "LINE-IN"        => capabilities::input_display_name(device_id, "line-in").to_string(),
@@ -1344,6 +1351,16 @@ mod tests {
     #[test]
     fn source_name_tidal_connect() {
         assert_eq!(decode_source_name_upnp("TIDAL_CONNECT", "Tidal", None).as_deref(), Some("TIDAL Connect"));
+    }
+
+    /// Regression test for a real bug: without its own arm, this fell
+    /// through to the generic `other` arm's `_CONNECT`-suffix-stripping
+    /// fallback, producing the raw-cased `"QOBUZ Connect"` — which then
+    /// failed to match `icons.rs`'s `"Qobuz Connect"` service-icon key,
+    /// showing no logo (reported live, 2026-07-21).
+    #[test]
+    fn source_name_qobuz_connect() {
+        assert_eq!(decode_source_name_upnp("QOBUZ_CONNECT", "", None).as_deref(), Some("Qobuz Connect"));
     }
 
     #[test]
