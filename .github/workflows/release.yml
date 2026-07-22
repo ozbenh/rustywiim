@@ -70,9 +70,10 @@ jobs:
           path: target/debian/*.deb
 
   rpm-fedora:
-    name: .rpm (Fedora 44)
+    # Built against Fedora 43 - still works with 44
+    name: .rpm (Fedora 43)
     runs-on: ubuntu-latest
-    container: fedora:44
+    container: fedora:43
     steps:
       - uses: actions/checkout@v5
         with:
@@ -82,7 +83,7 @@ jobs:
       - run: make rpm
       - uses: actions/upload-artifact@v6
         with:
-          name: rpm-fedora-44
+          name: rpm-fedora-43
           path: target/generate-rpm/*.rpm
 
   source-tarball:
@@ -116,5 +117,5 @@ jobs:
             deb-ubuntu-24.04/*.deb
             deb-debian-trixie-amd64/*.deb
             deb-debian-trixie-arm64/*.deb
-            rpm-fedora-44/*.rpm
+            rpm-fedora-43/*.rpm
             source-tarball/*.tar.gz
