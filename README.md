@@ -141,6 +141,18 @@ You can pretty-print this file using `target/debug/wiim-capdump`. I would apprec
 * Kiosk mode doesn't have a way to manually add a device by IP address yet
 
 ## Changelog ##
+  * 0.10.3 - 2026-07-22
+    * A few more icons-related fix: Hi-Res logo (used by Qobuz) doesn't look
+	  "grey" on light themes, services logos are no longer constrainted to
+	  a square so we can have more reasonable size for wide ones like
+	  Qobuz or TuneIn.
+    * An ugly workaround for windows occasionally "snapping" to some arbitrary
+	  small size after having been minimized, un-minimized, then clicking
+	  somewhere else (so far affects Ubuntu 24.04). Workaround seems to work,
+	  it's grossed ... fingers crossed. I might drop it one day.
+    * Add access to the Settings dialog in Kiosk mode. We might create something
+	  a bit more touch-screen friendly at some point but this will do for now.
+
   * 0.10.2 - 2026-07-22
     * Fix kiosk enter/exit icon with light themes
 	* Fix rendering of streaming services icons (fix with light theme, stop
