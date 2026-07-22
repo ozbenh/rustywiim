@@ -517,7 +517,7 @@ impl KioskWindow {
         // Exits Kiosk mode, next to `sidebar_btn` rather than its own
         // separate floating corner, by request.
         let exit_kiosk_btn = gtk::Button::builder()
-            .icon_name("rustywiim-exit-kiosk")
+            .icon_name("rustywiim-exit-kiosk-symbolic")
             .tooltip_text("Exit Kiosk mode")
             .css_classes(["kiosk-sidebar-btn"])
             .build();

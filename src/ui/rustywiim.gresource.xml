@@ -31,7 +31,14 @@
          Unlike the brand marks, this is the real certification logo's own
          colors (gold/bronze gradient), not a baked flat fill. -->
     <file alias="rustywiim-hires-audio-logo.svg">icons/hires-audio-logo.svg</file>
-    <file alias="rustywiim-enter-kiosk.svg">icons/enter-kiosk.svg</file>
-    <file alias="rustywiim-exit-kiosk.svg">icons/exit-kiosk.svg</file>
+    <!-- These two are genuine "-symbolic" icons (unlike the plain custom
+         icons above): the alias name's "-symbolic" suffix is what makes
+         GTK treat them as recolorable, substituting the SVG's "#2e3436"
+         placeholder stroke for the current foreground color — same
+         mechanism as Adwaita's own symbolic icons (e.g. "sidebar-show-symbolic"
+         right next to these in the header/floating-button code), so they
+         track the active theme instead of staying a fixed baked-in color. -->
+    <file alias="rustywiim-enter-kiosk-symbolic.svg">icons/enter-kiosk.svg</file>
+    <file alias="rustywiim-exit-kiosk-symbolic.svg">icons/exit-kiosk.svg</file>
   </gresource>
 </gresources>

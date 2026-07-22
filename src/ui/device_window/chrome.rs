@@ -56,7 +56,7 @@ pub(super) fn build_header(
     header.pack_start(&sidebar_btn);
 
     let kiosk_btn = gtk::Button::builder()
-        .icon_name("rustywiim-enter-kiosk")
+        .icon_name("rustywiim-enter-kiosk-symbolic")
         .tooltip_text("Enter Kiosk mode")
         .build();
     header.pack_start(&kiosk_btn);
