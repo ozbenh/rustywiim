@@ -73,18 +73,27 @@ pub struct IconSet {
     /// BLE remote icon, shown in the main window's bottom status bar.
     remote: gdk::Paintable,
 
-    /// Streaming-service name → paintable, keyed by the lowercased
+    /// Streaming-service name → icon-name string, keyed by the lowercased
     /// display string (e.g. `"spotify"`, `"tidal connect"`) — see
-    /// `service_names` in `load()`; `service_paintable()` lowercases its
+    /// `service_names` in `load()`; `service_icon_name()` lowercases its
     /// own query the same way, for a case-insensitive match against a raw
     /// wire vendor string too, not just the fully-normalized display
     /// form. Only covers services with a bundled brand-mark SVG; anything
     /// else (Amazon Music, Radio Paradise, ...) simply isn't a key here.
-    /// No fallback field, unlike `sources`/`outputs` above: `None` here
-    /// is a real, meaningful answer ("no icon for this one, show text"),
-    /// not a gap to paper over — every caller (`ServiceLabel` in
-    /// `ui/views/common.rs`) falls back to the plain text name.
-    services: HashMap<String, gdk::Paintable>,
+    /// Unlike `sources`/`outputs` above, this stores the resolved icon
+    /// name itself, not a pre-rendered `gdk::Paintable`: these are
+    /// "-symbolic" icons (see `service_names`'s entries and
+    /// `rustywiim.gresource.xml`'s doc comment on the streaming-service
+    /// marks), and a plain `gtk::Image` given an icon name via
+    /// `set_icon_name()` drives GTK's own symbolic-recolor machinery
+    /// itself — pre-resolving through `gtk::IconTheme::lookup_icon()` and
+    /// handing a caller a fixed `gdk::Paintable`, as `sources`/`outputs`
+    /// do, rendered these blank in testing. No fallback field, unlike
+    /// `sources`/`outputs` above: `None` here is a real, meaningful answer
+    /// ("no icon for this one, show text"), not a gap to paper over —
+    /// every caller (`ServiceLabel` in `ui/views/common.rs`) falls back to
+    /// the plain text name.
+    services: HashMap<String, &'static str>,
 
     /// `translate_quality_badge()`'s translated display string (e.g.
     /// `"Hi-Res"`), lowercased, → paintable — same shape/rationale as
@@ -134,26 +143,26 @@ impl IconSet {
         // Keyed by the display strings `device::playback::vendor_display()`/
         // `decode_source_name_http()`/`decode_source_name_upnp()` actually
         // produce (`PlaybackState::source_name`) — case-insensitively (both
-        // these keys and `service_paintable()`'s query are lowercased), so
+        // these keys and `service_icon_name()`'s query are lowercased), so
         // a raw not-yet-normalized vendor string matches too, not just the
         // fully-normalized display form. `"TIDAL Connect"` and `"TIDAL"`
         // (the Connect-specific and plain-radio source names — see
         // `mode_from_play_medium()`/`vendor_display()`) share one icon.
         // Services with no bundled SVG yet (Radio Paradise, vTuner, ...)
-        // are simply absent — see `service_paintable()`'s doc comment for
+        // are simply absent — see `service_icon_name()`'s doc comment for
         // the text-fallback path.
         let service_names: &[(&'static str, &str)] = &[
-            ("Spotify",       "rustywiim-svc-spotify"),
-            ("TIDAL Connect", "rustywiim-svc-tidal"),
-            ("TIDAL",         "rustywiim-svc-tidal"),
-            ("Qobuz",         "rustywiim-svc-qobuz"),
-            ("Qobuz Connect", "rustywiim-svc-qobuz"),
-            ("Deezer",        "rustywiim-svc-deezer"),
-            ("Pandora",       "rustywiim-svc-pandora"),
-            ("Napster",       "rustywiim-svc-napster"),
-            ("iHeartRadio",   "rustywiim-svc-iheartradio"),
-            ("TuneIn",        "rustywiim-svc-tunein"),
-            ("Amazon Music",  "rustywiim-svc-amazon"),
+            ("Spotify",       "rustywiim-svc-spotify-symbolic"),
+            ("TIDAL Connect", "rustywiim-svc-tidal-symbolic"),
+            ("TIDAL",         "rustywiim-svc-tidal-symbolic"),
+            ("Qobuz",         "rustywiim-svc-qobuz-symbolic"),
+            ("Qobuz Connect", "rustywiim-svc-qobuz-symbolic"),
+            ("Deezer",        "rustywiim-svc-deezer-symbolic"),
+            ("Pandora",       "rustywiim-svc-pandora-symbolic"),
+            ("Napster",       "rustywiim-svc-napster-symbolic"),
+            ("iHeartRadio",   "rustywiim-svc-iheartradio-symbolic"),
+            ("TuneIn",        "rustywiim-svc-tunein-symbolic"),
+            ("Amazon Music",  "rustywiim-svc-amazon-symbolic"),
         ];
         // Keyed by `translate_quality_badge()`'s translated display string
         // (case-insensitively, same as `service_names` above).
@@ -167,14 +176,17 @@ impl IconSet {
         let outputs: HashMap<&'static str, gdk::Paintable> = output_names.iter()
             .map(|&(id, name)| (id, theme_icon(&theme, name)))
             .collect();
-        // Lowercased keys — `service_paintable()` also lowercases its
+        // Lowercased keys — `service_icon_name()` also lowercases its
         // query, so a lookup against a raw not-yet-normalized vendor
         // string (e.g. `"newtunein"`, the wire spelling `vendor_display()`
         // itself already translates to `"TuneIn"` before this is normally
         // reached) still matches case-insensitively rather than requiring
-        // the exact display-string casing.
-        let services: HashMap<String, gdk::Paintable> = service_names.iter()
-            .map(|&(id, name)| (id.to_lowercase(), theme_icon(&theme, name)))
+        // the exact display-string casing. Just a table transform — no
+        // `gtk::IconTheme` lookup here, since the caller resolves the name
+        // itself via `gtk::Image::set_icon_name()` (see `services`'s own
+        // doc comment).
+        let services: HashMap<String, &'static str> = service_names.iter()
+            .map(|&(id, name)| (id.to_lowercase(), name))
             .collect();
         let qualities: HashMap<String, gdk::Paintable> = quality_names.iter()
             .map(|&(id, name)| (id.to_lowercase(), theme_icon(&theme, name)))
@@ -208,19 +220,22 @@ impl IconSet {
         &self.remote
     }
 
-    /// Paintable for a streaming service — case-insensitive match against
-    /// its display name (e.g. `"Spotify"`, `"TIDAL Connect"` —
-    /// `PlaybackState::source_name` as-is) or a raw not-yet-normalized
-    /// vendor string. `None` (not a fallback icon) when no matching SVG
-    /// is registered — see `services`'s own doc comment; callers are
-    /// expected to fall back to the service's text name.
-    pub fn service_paintable(&self, name: &str) -> Option<&gdk::Paintable> {
-        self.services.get(&name.to_lowercase())
+    /// Resolved "-symbolic" icon name for a streaming service —
+    /// case-insensitive match against its display name (e.g. `"Spotify"`,
+    /// `"TIDAL Connect"` — `PlaybackState::source_name` as-is) or a raw
+    /// not-yet-normalized vendor string. `None` (not a fallback icon) when
+    /// no matching SVG is registered — see `services`'s own doc comment;
+    /// callers are expected to fall back to the service's text name.
+    /// Callers hand this straight to `gtk::Image::set_icon_name()`, not
+    /// `gtk::IconTheme::lookup_icon()` — see `services`'s doc comment for
+    /// why.
+    pub fn service_icon_name(&self, name: &str) -> Option<&'static str> {
+        self.services.get(&name.to_lowercase()).copied()
     }
 
     /// Paintable for a translated quality-badge label (e.g. `"Hi-Res"` —
     /// `translate_quality_badge()`'s output, not a raw wire code) —
-    /// case-insensitive, same shape as `service_paintable()`. `None` when
+    /// case-insensitive, same shape as `service_icon_name()`. `None` when
     /// no matching icon is registered; callers fall back to the plain text
     /// pill.
     pub fn quality_paintable(&self, label: &str) -> Option<&gdk::Paintable> {

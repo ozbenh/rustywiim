@@ -9,35 +9,33 @@
     <file alias="rustywiim-hdmi-inout.svg">icons/hdmi-inout.svg</file>
     <file alias="rustywiim-audio-output.svg">icons/audio-output.svg</file>
     <file alias="rustywiim-remote.svg">icons/wiim-remote.svg</file>
-    <!-- Streaming-service brand marks — plain custom icons (fixed opaque
-         white fill baked into each SVG), not "-symbolic": a symbolic-
-         suffixed custom icon looked up manually and applied via a plain
-         `gtk::Image::set_paintable()` rendered blank in testing (unlike
-         `gtk::Image::set_from_icon_name()`, which manages its own
-         style-context-driven recoloring). See svc-spotify.svg's own
-         comment for sourcing/attribution. -->
-    <file alias="rustywiim-svc-spotify.svg">icons/svc-spotify.svg</file>
-    <file alias="rustywiim-svc-tidal.svg">icons/svc-tidal.svg</file>
-    <file alias="rustywiim-svc-qobuz.svg">icons/svc-qobuz.svg</file>
-    <file alias="rustywiim-svc-deezer.svg">icons/svc-deezer.svg</file>
-    <file alias="rustywiim-svc-pandora.svg">icons/svc-pandora.svg</file>
-    <file alias="rustywiim-svc-napster.svg">icons/svc-napster.svg</file>
-    <file alias="rustywiim-svc-iheartradio.svg">icons/svc-iheartradio.svg</file>
-    <file alias="rustywiim-svc-tunein.svg">icons/svc-tunein.svg</file>
-    <file alias="rustywiim-svc-amazon.svg">icons/svc-amazon.svg</file>
+    <!-- Streaming-service brand marks — genuine "-symbolic" icons, same
+         mechanism as the enter/exit-kiosk icons below: each SVG's paths
+         use the "#2e3436" recolor-placeholder fill (GNOME/Adwaita's
+         standard "regular foreground" convention), and the "-symbolic"
+         suffix on the alias name is what makes GTK treat the icon as
+         recolorable at all — that check is purely name-based for a
+         GResource-backed custom icon theme, no `index.theme` involved.
+         Looked up as a plain icon-name string and displayed via
+         `gtk::Image`'s `icon-name` property. Path data for the plain
+         (non-Illustrator-export) marks is the pristine simple-icons project
+         source (github.com/simple-icons/simple-icons, CC0-1.0) -->
+    <file alias="rustywiim-svc-spotify-symbolic.svg">icons/svc-spotify.svg</file>
+    <file alias="rustywiim-svc-tidal-symbolic.svg">icons/svc-tidal.svg</file>
+    <file alias="rustywiim-svc-qobuz-symbolic.svg">icons/svc-qobuz.svg</file>
+    <file alias="rustywiim-svc-deezer-symbolic.svg">icons/svc-deezer.svg</file>
+    <file alias="rustywiim-svc-pandora-symbolic.svg">icons/svc-pandora.svg</file>
+    <file alias="rustywiim-svc-napster-symbolic.svg">icons/svc-napster.svg</file>
+    <file alias="rustywiim-svc-iheartradio-symbolic.svg">icons/svc-iheartradio.svg</file>
+    <file alias="rustywiim-svc-tunein-symbolic.svg">icons/svc-tunein.svg</file>
+    <file alias="rustywiim-svc-amazon-symbolic.svg">icons/svc-amazon.svg</file>
     <!-- Quality-tier badge icons — same icon-vs-text-pill pattern as the
          service brand marks above, but keyed by the translated quality
          label instead of the service name (see IconSet::quality_paintable()).
          Unlike the brand marks, this is the real certification logo's own
          colors (gold/bronze gradient), not a baked flat fill. -->
     <file alias="rustywiim-hires-audio-logo.svg">icons/hires-audio-logo.svg</file>
-    <!-- These two are genuine "-symbolic" icons (unlike the plain custom
-         icons above): the alias name's "-symbolic" suffix is what makes
-         GTK treat them as recolorable, substituting the SVG's "#2e3436"
-         placeholder stroke for the current foreground color — same
-         mechanism as Adwaita's own symbolic icons (e.g. "sidebar-show-symbolic"
-         right next to these in the header/floating-button code), so they
-         track the active theme instead of staying a fixed baked-in color. -->
+    <!-- These two are genuine "-symbolic" icons -->
     <file alias="rustywiim-enter-kiosk-symbolic.svg">icons/enter-kiosk.svg</file>
     <file alias="rustywiim-exit-kiosk-symbolic.svg">icons/exit-kiosk.svg</file>
   </gresource>

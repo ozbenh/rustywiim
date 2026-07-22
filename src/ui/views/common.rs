@@ -203,15 +203,20 @@ pub(crate) fn build_bt_pair_button(css_class: &str, icon_px: i32) -> gtk::Button
 /// as its own element, separate from the plain status text
 /// (`format_status_only()`) — shown as a
 /// brand-mark icon when one is registered in `IconSet`
-/// (`IconSet::service_paintable()`), falling back to the plain text name
+/// (`IconSet::service_icon_name()`), falling back to the plain text name
 /// for every other service. Used by every layout (Classic/WideRight each
 /// pack `widget` into their own spot; Mini sizes the icon down via
-/// `set_icon_pixel_size()` to match its own smaller text). `css_class` is
-/// applied to both the icon and the label, but only the label actually
-/// uses it for anything — the icon's own fill color is baked into its SVG
-/// (a plain custom icon, not a GTK symbolic one; see `IconSet::services`'s
-/// doc comment for why), so the shared class just keeps both under one
-/// name for callers to reason about together.
+/// `set_icon_pixel_size()` to match its own smaller text). The icon is a
+/// real GTK "-symbolic" icon (`gtk::Image::set_icon_name()`, not a
+/// pre-cached paintable — see `IconSet::services`'s doc comment for why),
+/// so it needs its own explicit black/white polarity rather than trusting
+/// whatever ambient foreground color the theme resolves a symbolic icon
+/// to (`set_icon_polarity()` below). `css_class` is applied only to
+/// `label`, never to `icon`: applying the same class to both used to
+/// alpha-blend the icon's rendered output against its background too
+/// (`system.css`'s `.service-name { opacity: 0.7; }` is meant to dim only
+/// the plain-text fallback), which showed up as a washed-out grey instead
+/// of a crisp black/white mark.
 #[derive(Clone, Debug)]
 pub(crate) struct ServiceLabel {
     pub widget: gtk::Box,
@@ -219,11 +224,25 @@ pub(crate) struct ServiceLabel {
     label: gtk::Label,
 }
 
+/// Force `icon`'s resolved symbolic color to pure black or white, matching
+/// the active theme's light/dark polarity (`adw::StyleManager::is_dark()`
+/// — reliable across every theme mode, including the two RustyWiiM themes,
+/// both of which force `ColorScheme::ForceDark` so this already reports
+/// `true` for them with no special-casing needed). These two classes carry
+/// nothing but a `color` override (`ui/css/system.css`/`dark.css`), which
+/// is what a symbolic SVG's "#2e3436" placeholder fill actually resolves
+/// against at render time.
+fn set_icon_polarity(icon: &gtk::Image) {
+    let dark = adw::StyleManager::default().is_dark();
+    icon.set_css_classes(&[if dark { "brand-icon-force-white" } else { "brand-icon-force-black" }]);
+}
+
 impl ServiceLabel {
     pub(crate) fn new(css_class: &str) -> Self {
         let icon = gtk::Image::builder()
-            .pixel_size(36).visible(false).css_classes([css_class])
+            .pixel_size(36).visible(false)
             .build();
+        set_icon_polarity(&icon);
         // "service-name-pill" (rounded-rect outline, same look as Kiosk
         // mode's device-name button) only on the text fallback — the icon
         // is a plain badge, no backdrop. `valign(Center)`: without it the
@@ -263,9 +282,10 @@ impl ServiceLabel {
             return;
         }
         self.widget.set_visible(true);
-        match icons.service_paintable(name) {
-            Some(paintable) => {
-                self.icon.set_paintable(Some(paintable));
+        match icons.service_icon_name(name) {
+            Some(icon_name) => {
+                set_icon_polarity(&self.icon);
+                self.icon.set_icon_name(Some(icon_name));
                 self.icon.set_visible(true);
                 self.label.set_visible(false);
             }
@@ -281,7 +301,7 @@ impl ServiceLabel {
 /// Displays `translate_quality_badge()`'s translated quality-tier string
 /// (e.g. "Hi-Res"/"CD"/"MQA") next to `ServiceLabel` — same icon-vs-text
 /// pattern as that widget (`IconSet::quality_paintable()` instead of
-/// `service_paintable()`), for tiers with a recognizable certification/
+/// `service_icon_name()`), for tiers with a recognizable certification/
 /// brand mark (currently just Qobuz's "Hi-Res" tier) rather than every
 /// tier getting its own icon.
 #[derive(Clone, Debug)]
