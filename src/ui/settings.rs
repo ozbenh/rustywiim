@@ -12,6 +12,7 @@ use adw::prelude::*;
 use gtk::glib;
 use gtk::Orientation;
 use std::cell::Cell;
+use std::rc::Rc;
 
 use crate::config::{self, ThemeMode};
 use crate::ui::scroll_fade_label::{SPEED_MAX, SPEED_MIN};
@@ -20,6 +21,7 @@ use crate::device::capabilities::DeviceCapabilities;
 use crate::device::playback::AccessMethod;
 use crate::device::state::{DeviceState, FullModeGuard};
 use crate::device::discovery_manager::DiscoveryManager;
+use crate::ui::kiosk::kiosk_settings_changed;
 use crate::ui::DEBUG_UI;
 use std::sync::atomic::Ordering;
 
@@ -59,7 +61,7 @@ pub(crate) struct SettingsWindow {
 }
 
 impl SettingsWindow {
-    pub(crate) fn new(ds: Option<DeviceState>, disc_mgr: &DiscoveryManager) -> Self {
+    pub(crate) fn new(ds: Option<DeviceState>, disc_mgr: &DiscoveryManager, notify_kiosk_changed: Rc<dyn Fn(u32)>) -> Self {
         let full_mode = ds.as_ref().map(|d| d.acquire_full());
         // ── Navigation sidebar ─────────────────────────────────────────────────
         let sidebar_box = gtk::Box::builder()
@@ -194,7 +196,7 @@ impl SettingsWindow {
         let appearance_page = build_appearance_page();
         content_stack.add_named(&appearance_page, Some("appearance"));
 
-        let kiosk_page = build_kiosk_page();
+        let kiosk_page = build_kiosk_page(notify_kiosk_changed);
         content_stack.add_named(&kiosk_page, Some("kiosk"));
 
         let general_page = build_general_page(disc_mgr);
@@ -576,11 +578,16 @@ fn format_mmss(secs: u32) -> String {
     format!("{:02}:{:02}", secs / 60, secs % 60)
 }
 
-/// Settings that only take effect on the *next* Kiosk session — Settings
-/// isn't reachable from inside Kiosk mode, so unlike Appearance's live
-/// `broadcast_appearance_changed()`, `KioskWindow` just reads these
-/// straight from config at tick-time/bind time.
-fn build_kiosk_page() -> adw::PreferencesPage {
+/// Settings live-update a running `KioskWindow` via `notify_kiosk_changed`
+/// (built by `AppState::open_settings()`, calling `KioskWindow::on_settings_changed()`
+/// if one is currently open — a no-op otherwise) — the `kiosk::kiosk_settings_changed`
+/// bitmask, mirroring Appearance's own `broadcast_appearance_changed()`. Most
+/// of these fields are already re-read fresh from config on every
+/// `tick_idle_checks()`/`on_playback_changed()` call regardless (≤1s
+/// later), so the notify call is mostly future-proofing; `INHIBIT_SCREENSAVER_MODE`
+/// is the one bit with a real, immediate receiver today — see
+/// `KioskWindow::on_settings_changed()`'s doc comment for why.
+fn build_kiosk_page(notify_kiosk_changed: Rc<dyn Fn(u32)>) -> adw::PreferencesPage {
     let auto_hide = config::with(|cfg| cfg.kiosk_auto_hide_controls);
     let auto_hide_row = adw::SwitchRow::builder()
         .title("Auto-hide Controls")
@@ -595,14 +602,16 @@ fn build_kiosk_page() -> adw::PreferencesPage {
         .active(auto_hide_all)
         .sensitive(auto_hide)
         .build();
-    auto_hide_all_row.connect_active_notify(move |row| {
+    auto_hide_all_row.connect_active_notify(glib::clone!(#[strong] notify_kiosk_changed, move |row| {
         config::update(|cfg| cfg.kiosk_auto_hide_all_controls = row.is_active());
-    });
+        notify_kiosk_changed(kiosk_settings_changed::AUTO_HIDE_SETTINGS);
+    }));
 
-    auto_hide_row.connect_active_notify(glib::clone!(#[weak] auto_hide_all_row, move |row| {
+    auto_hide_row.connect_active_notify(glib::clone!(#[weak] auto_hide_all_row, #[strong] notify_kiosk_changed, move |row| {
         let active = row.is_active();
         config::update(|cfg| cfg.kiosk_auto_hide_controls = active);
         auto_hide_all_row.set_sensitive(active);
+        notify_kiosk_changed(kiosk_settings_changed::AUTO_HIDE_SETTINGS);
     }));
 
     let inhibit = config::with(|cfg| cfg.kiosk_inhibit_screensaver);
@@ -613,10 +622,11 @@ fn build_kiosk_page() -> adw::PreferencesPage {
         .model(&gtk::StringList::new(&inhibit_names))
         .build();
     inhibit_row.set_selected(inhibit_index(inhibit));
-    inhibit_row.connect_selected_notify(move |row| {
+    inhibit_row.connect_selected_notify(glib::clone!(#[strong] notify_kiosk_changed, move |row| {
         let (_, mode) = INHIBIT_CHOICES[row.selected() as usize];
         config::update(|cfg| cfg.kiosk_inhibit_screensaver = mode);
-    });
+        notify_kiosk_changed(kiosk_settings_changed::INHIBIT_SCREENSAVER_MODE);
+    }));
 
     let screensaver_enable = config::with(|cfg| cfg.kiosk_screensaver_enable);
     let screensaver_row = adw::SwitchRow::builder()
@@ -649,10 +659,11 @@ fn build_kiosk_page() -> adw::PreferencesPage {
         .build();
     timeout_row.add_suffix(&timeout_scale);
     timeout_row.add_suffix(&timeout_label);
-    timeout_adj.connect_value_changed(glib::clone!(#[weak] timeout_label, move |adj| {
+    timeout_adj.connect_value_changed(glib::clone!(#[weak] timeout_label, #[strong] notify_kiosk_changed, move |adj| {
         let secs = adj.value().round() as u32;
         config::update(|cfg| cfg.kiosk_screensaver_timeout_secs = secs);
         timeout_label.set_label(&format_mmss(secs));
+        notify_kiosk_changed(kiosk_settings_changed::SCREENSAVER_SETTINGS);
     }));
 
     let treat_physical_as_stopped = config::with(|cfg| cfg.kiosk_screensaver_include_phys_inputs);
@@ -664,15 +675,17 @@ fn build_kiosk_page() -> adw::PreferencesPage {
         .active(treat_physical_as_stopped)
         .sensitive(screensaver_enable)
         .build();
-    physical_input_row.connect_active_notify(move |row| {
+    physical_input_row.connect_active_notify(glib::clone!(#[strong] notify_kiosk_changed, move |row| {
         config::update(|cfg| cfg.kiosk_screensaver_include_phys_inputs = row.is_active());
-    });
+        notify_kiosk_changed(kiosk_settings_changed::SCREENSAVER_SETTINGS);
+    }));
 
     screensaver_row.connect_active_notify(glib::clone!(
-        #[weak] timeout_row, #[weak] timeout_scale, #[weak] physical_input_row,
+        #[weak] timeout_row, #[weak] timeout_scale, #[weak] physical_input_row, #[strong] notify_kiosk_changed,
         move |row| {
             let active = row.is_active();
             config::update(|cfg| cfg.kiosk_screensaver_enable = active);
+            notify_kiosk_changed(kiosk_settings_changed::SCREENSAVER_SETTINGS);
             timeout_row.set_sensitive(active);
             timeout_scale.set_sensitive(active);
             physical_input_row.set_sensitive(active);

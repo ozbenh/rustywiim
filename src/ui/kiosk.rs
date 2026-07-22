@@ -46,6 +46,27 @@ use crate::ui::views::playback_full::{
     compute_wide_right_art_side, wide_right_margin_h, PlaybackLayout, PlaybackView,
 };
 
+/// A bitmask of which Kiosk-page Settings fields changed, mirroring
+/// `theme::appearance_changed`'s shape — see `KioskWindow::on_settings_changed()`
+/// for how it's dispatched and why most bits currently have no receiver.
+pub(crate) mod kiosk_settings_changed {
+    /// Either of the auto-hide-controls settings (whether it's on, and
+    /// whether it also covers playback/volume/status bar) — one bit, same
+    /// reasoning as `SCREENSAVER_SETTINGS` below: neither currently has a
+    /// distinct receiver, so there's no reason to split them.
+    pub const AUTO_HIDE_SETTINGS:       u32 = 1 << 0;
+    pub const INHIBIT_SCREENSAVER_MODE: u32 = 1 << 1;
+    /// Any of the in-app screensaver overlay's own settings (enable,
+    /// timeout, physical-input handling) — lumped into one bit rather than
+    /// split per-field, since none of the three currently has a distinct
+    /// receiver anyway (see `KioskWindow::on_settings_changed()`) and
+    /// they're one cohesive settings group. Distinct from
+    /// `INHIBIT_SCREENSAVER_MODE`, which is a different config field (the
+    /// *system* screensaver/idle inhibit, not this in-app overlay) with
+    /// real, immediate behavior.
+    pub const SCREENSAVER_SETTINGS:     u32 = 1 << 2;
+}
+
 /// The currently-shown device's view plus the `FullModeGuard` keeping its
 /// polling at full fidelity for as long as Kiosk mode is looking at it —
 /// dropping this (on unbind/rebind, or the whole window closing) releases
@@ -1204,6 +1225,71 @@ impl KioskWindow {
                 crate::ui::dbg_ui(&format!("kiosk inhibit: released cookie={cookie} (WhenPlaying)"));
                 self.app.uninhibit(cookie);
             }
+        }
+    }
+
+    /// Re-derives the inhibit state from scratch against whatever
+    /// `kiosk_inhibit_screensaver` currently says — the one bit
+    /// `on_settings_changed()` below needs an actual receiver for (see that
+    /// function's doc comment for why the other Kiosk settings don't).
+    /// `Never`/`Always` just release/acquire directly; `WhenPlaying` defers
+    /// to `update_system_inhibit()`'s existing acquire-if-playing-and-not-
+    /// held / release-if-not-playing-and-held logic, which already handles
+    /// reconciling a cookie left over from a *previous* mode correctly
+    /// (e.g. switching `Always` -> `WhenPlaying` while paused: `held=true,
+    /// playing=false` releases it, exactly as it should).
+    fn reconcile_inhibit_mode(&self) {
+        let mode = config::with(|cfg| cfg.kiosk_inhibit_screensaver);
+        match mode {
+            InhibitSystemScreensaver::Never => {
+                if let Some(cookie) = self.inhibit_cookie.take() {
+                    crate::ui::dbg_ui(&format!("kiosk inhibit: released cookie={cookie} (mode changed to Never)"));
+                    self.app.uninhibit(cookie);
+                }
+            }
+            InhibitSystemScreensaver::Always => {
+                if self.inhibit_cookie.get().is_none() {
+                    let cookie = self.app.inhibit(Some(&self.window), gtk::ApplicationInhibitFlags::IDLE, Some("RustyWiiM Kiosk mode"));
+                    if cookie != 0 {
+                        crate::ui::dbg_ui(&format!("kiosk inhibit: acquired cookie={cookie} (mode changed to Always)"));
+                        self.inhibit_cookie.set(Some(cookie));
+                    } else {
+                        crate::ui::dbg_ui("kiosk inhibit: acquire failed (cookie=0, platform declined)");
+                    }
+                }
+            }
+            InhibitSystemScreensaver::WhenPlaying => {
+                let playing = self.bound.borrow().as_ref()
+                    .map(|b| b.ds.playback_state().status == PlaybackStatus::Playing)
+                    .unwrap_or(false);
+                self.update_system_inhibit(playing);
+            }
+        }
+    }
+
+    /// Live reaction to a Kiosk-page Settings change made *while* this
+    /// `KioskWindow` is already open — mirrors `theme::broadcast_appearance_changed()`'s
+    /// bitmask shape (see `kiosk_settings_changed` below), but dispatches
+    /// directly to the one live `KioskWindow` (via `AppState::kiosk_win`,
+    /// threaded down from `settings.rs`'s Kiosk-page controls as a plain
+    /// callback) rather than a widget-tree walk — unlike Appearance's
+    /// settings, which can affect arbitrarily many open windows at once, at
+    /// most one `KioskWindow` ever exists, so there's nothing to walk.
+    ///
+    /// Only `INHIBIT_SCREENSAVER_MODE` has a real receiver right now: it's
+    /// the one Kiosk setting that isn't already read fresh from config on
+    /// every `tick_idle_checks()`/`on_playback_changed()` call (≤1s later)
+    /// — everything else self-heals on its own within that window, so
+    /// there was nothing actually broken for those bits to fix. They're
+    /// still defined and dispatched through here (not just left as inert
+    /// config writes) so a future setting that genuinely needs an
+    /// immediate reaction has a receiver to add itself to, same spirit as
+    /// `broadcast_appearance_changed()`'s own THEME/ACCENT_COLOR bits,
+    /// which today are likewise defined without this function itself
+    /// acting on them (their own call sites handle them directly).
+    pub(crate) fn on_settings_changed(&self, mask: u32) {
+        if mask & kiosk_settings_changed::INHIBIT_SCREENSAVER_MODE != 0 {
+            self.reconcile_inhibit_mode();
         }
     }
 

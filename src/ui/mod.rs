@@ -269,7 +269,15 @@ impl AppState {
             }
         }
         dbg_state(&format!("settings: opening new for {:?}", ds_uuid));
-        let s = settings::SettingsWindow::new(ds, &self_rc.disc_mgr);
+        let notify_kiosk_changed = {
+            let state = Rc::clone(self_rc);
+            Rc::new(move |mask: u32| {
+                if let Some(kiosk) = state.kiosk_win.borrow().as_ref() {
+                    kiosk.on_settings_changed(mask);
+                }
+            }) as Rc<dyn Fn(u32)>
+        };
+        let s = settings::SettingsWindow::new(ds, &self_rc.disc_mgr, notify_kiosk_changed);
         let win_clone  = s.window_ref().clone();
         let weak_self  = Rc::downgrade(self_rc);
         let close_uuid = ds_uuid.clone();
