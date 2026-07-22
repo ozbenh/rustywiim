@@ -290,6 +290,14 @@ impl VolumeControl {
         self.imp().icon_img.get().unwrap().set_pixel_size(px);
     }
 
+    /// The popover itself, for a caller that needs to know whether it's
+    /// currently open (Kiosk mode's auto-hide inhibition, `kiosk.rs`) or
+    /// react to it closing — not otherwise exposed since every other
+    /// caller only ever needs the button/slider, not the popover directly.
+    pub(crate) fn popover(&self) -> gtk::Popover {
+        self.imp().popover.get().unwrap().clone()
+    }
+
     /// Nudge the volume by `delta` (clamped to 0..=100) — used by the
     /// Up/Down keyboard shortcuts. Routes through the same path as a
     /// manual slider drag so it gets the same optimistic UI update,

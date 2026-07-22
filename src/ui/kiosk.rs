@@ -427,6 +427,17 @@ impl KioskWindow {
         device_btn.connect_clicked(clone!(#[weak] popover, move |_| {
             if popover.is_visible() { popover.popdown(); } else { popover.popup(); }
         }));
+        // Auto-hide/screensaver are inhibited outright while this is open
+        // (see `any_popover_open()`), not just reset on activity — closing
+        // it still needs to restart the idle clock cleanly, otherwise it
+        // may already read as long-expired the moment it closes and hide
+        // everything instantly instead of on the usual gradual timeout.
+        popover.connect_closed({
+            let weak = Rc::downgrade(&this);
+            move |_| {
+                if let Some(this) = weak.upgrade() { this.note_activity("device-popover-closed"); }
+            }
+        });
         settings_btn.connect_clicked({
             let weak = Rc::downgrade(&this);
             let open_settings = Rc::clone(&open_settings);
@@ -790,6 +801,17 @@ impl KioskWindow {
         extra.push(status_bar.clone().upcast());
         *self.extra_controls.borrow_mut() = extra;
 
+        // Same auto-hide/screensaver inhibition as the device-list popover
+        // above (`any_popover_open()`) — connected fresh each bind since
+        // `view` (and its `VolumeControl`) is rebuilt every time, unlike
+        // that other popover which persists for this window's lifetime.
+        view.volume().popover().connect_closed({
+            let weak = Rc::downgrade(self);
+            move |_| {
+                if let Some(this) = weak.upgrade() { this.note_activity("volume-popover-closed"); }
+            }
+        });
+
         // Connected before the initial on_playback_changed() call below so
         // the two share identical logic — no separate "seed the initial
         // state" copy of it.
@@ -938,10 +960,32 @@ impl KioskWindow {
         }
     }
 
+    /// Whether the device-list popover or the bound view's volume popover
+    /// is currently open — auto-hide and the screensaver are both
+    /// inhibited outright while either is (see `tick_idle_checks()`),
+    /// rather than merely resetting the idle clock on activity, since
+    /// neither of those popovers' own internal interactions (dragging the
+    /// volume slider, scrolling the device list) are guaranteed to reach
+    /// the window-level motion/click controllers `note_activity()` relies
+    /// on elsewhere — a `gtk::Popover` is its own layered surface, and
+    /// nothing here has confirmed whether its input still bubbles to a
+    /// capture-phase controller on the base window. Simple visibility
+    /// inhibition sidesteps needing to know either way.
+    fn any_popover_open(&self) -> bool {
+        self.popover.is_visible()
+            || self.bound.borrow().as_ref().is_some_and(|b| b.view.volume().popover().is_visible())
+    }
+
     /// The ~1s idle-check tick: auto-hides the chrome buttons after
     /// `AUTO_HIDE_IDLE`, and triggers the screensaver once the bound
     /// device has gone `kiosk_screensaver_timeout_secs` without `Playing`.
+    /// Both skipped entirely while a popover is open — see
+    /// `any_popover_open()`.
     fn tick_idle_checks(self: &Rc<Self>) {
+        if self.any_popover_open() {
+            crate::ui::dbg_ui("kiosk tick: skipped, a popover is open");
+            return;
+        }
         let idle = self.activity_at.get().elapsed();
         let auto_hide = config::with(|cfg| cfg.kiosk_auto_hide_controls);
         crate::ui::dbg_ui(&format!(
