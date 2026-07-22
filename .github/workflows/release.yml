@@ -51,13 +51,24 @@ jobs:
     runs-on: ${{ matrix.runner }}
     container: debian:trixie
     steps:
+      # debian:trixie has no git preinstalled, and actions/checkout silently
+      # falls back to a tag-less GitHub REST API tarball download (no .git
+      # dir at all) when it can't find git on PATH — which starves
+      # build.rs's `git describe` and makes it fall through to its
+      # no-tags-found case, tacking a spurious '+' onto the version even on
+      # an exact release tag. Install git before checkout so it does a real
+      # fetch with full tag history instead.
+      - name: Install git (needed before checkout)
+        run: |
+          apt-get update
+          apt-get install -y git ca-certificates
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
       - name: Install build dependencies
         run: |
           apt-get update
-          apt-get install -y libgtk-4-dev libadwaita-1-dev libssl-dev libglib2.0-dev-bin build-essential curl git make ca-certificates
+          apt-get install -y libgtk-4-dev libadwaita-1-dev libssl-dev libglib2.0-dev-bin build-essential curl make
       - uses: dtolnay/rust-toolchain@stable
       - run: make deb
       - name: Tag filename with the distro/arch
@@ -75,11 +86,20 @@ jobs:
     runs-on: ubuntu-latest
     container: fedora:43
     steps:
+      # fedora:43 has no git preinstalled, and actions/checkout silently
+      # falls back to a tag-less GitHub REST API tarball download (no .git
+      # dir at all) when it can't find git on PATH — which starves
+      # build.rs's `git describe` and makes it fall through to its
+      # no-tags-found case, tacking a spurious '+' onto the version even on
+      # an exact release tag. Install git before checkout so it does a real
+      # fetch with full tag history instead.
+      - name: Install git (needed before checkout)
+        run: dnf install -y git
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
       - name: Install build dependencies
-        run: dnf install -y cargo rust gtk4-devel libadwaita-devel openssl-devel glib2-devel gcc git make
+        run: dnf install -y cargo rust gtk4-devel libadwaita-devel openssl-devel glib2-devel gcc make
       - run: make rpm
       - uses: actions/upload-artifact@v6
         with:
