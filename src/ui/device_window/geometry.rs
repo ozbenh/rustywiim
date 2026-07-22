@@ -26,6 +26,19 @@ use super::*;
 /// open-vs-closed threshold allows.
 pub(super) const MIN_PANEL_WIDTH: i32 = 260;
 
+/// Master on/off switch for the Ubuntu-24.04-only `size_request`
+/// spurious-reset workaround — see `wire_size_request_sync()`'s doc
+/// comment for the full story. Flip to `false` to fall back to a plain,
+/// unconditional restore of `FULL_MODE_FLOOR` with none of the
+/// press-watcher/settle-debounce machinery, e.g. once older GNOME/Mutter
+/// versions exhibiting this bug are no longer a support target.
+pub(super) const SIZE_REQUEST_WORKAROUND: bool = true;
+
+/// AdwWindow's own original constructor-time minimum size for the full
+/// window — see `apply_window_chrome()`'s mini-branch comment for where
+/// this comes from.
+pub(super) const FULL_MODE_FLOOR: (i32, i32) = (360, 200);
+
 impl DeviceWindowInner {
     /// Apply per-device window/panel state (size, maximized, panel
     /// visibility/width, mini-window width) for the device identified by
@@ -199,10 +212,10 @@ impl DeviceWindowInner {
             // 200px tall even though the mini content only wants ~118px, packing
             // it into the top half (the "twice as tall" bug seen on the newer
             // libadwaita in GTK 4.22 / Fedora 44 — the 4.14 AdwWindow had no such
-            // request). Clear it while mini content is shown; restored below when
-            // returning to full mode. This works because it's the *shared* window
-            // now — the old design's mini panel was a plain gtk::ApplicationWindow,
-            // which never had this request in the first place.
+            // request). Clear it while mini content is shown; kept clear
+            // unconditionally the whole time mini mode is active — see
+            // `wire_size_request_sync()`'s doc comment for why the full-mode
+            // side (just below) no longer restores any floor here either.
             self.window.set_size_request(-1, -1);
         } else {
             self.window.remove_css_class("mini-window");
@@ -211,9 +224,15 @@ impl DeviceWindowInner {
             self.window.set_content(Some(&self.full_content));
             self.window.set_decorated(true);
             self.window.set_resizable(true);
-            // Restore AdwWindow's own default minimum, cleared for mini mode
-            // above — see that comment.
-            self.window.set_size_request(360, 200);
+            if SIZE_REQUEST_WORKAROUND {
+                // No floor restored here — see `wire_size_request_sync()`'s
+                // doc comment for why (a real GTK/Mutter bug this sidesteps
+                // rather than fixes directly). That function re-syncs
+                // size_request to the real size shortly after this settles.
+                self.window.set_size_request(-1, -1);
+            } else {
+                self.window.set_size_request(FULL_MODE_FLOOR.0, FULL_MODE_FLOOR.1);
+            }
         }
         // Re-derives ArtBackground visibility (+ mini-window-modern +
         // ScrollFadeLabel drop-shadow) for whichever content subtree is now
@@ -541,4 +560,105 @@ pub(super) fn wire_maximize_tracking(inner: &Rc<DeviceWindowInner>) {
             }
         }
     });
+}
+
+/// Works around a genuinely unresolved GTK/Mutter bug, confirmed live only
+/// on Ubuntu 24.04 (not Fedora 44): some time after `exit_mini_mode()`
+/// restores `default_size` to the real full-panel size, `default_size`
+/// silently resets to some *other*, unrelated value on its own — no
+/// corresponding call anywhere in this codebase, triggered by something as
+/// small as a focus change to a different window. Root-caused via a
+/// standalone repro tool (`src/bin/repro_minisize.rs`, kept for future
+/// reference) across many tested variants: it's not GTK reconciling toward
+/// whatever `size_request` holds (a mismatched *or* absent `size_request`
+/// both still reproduce it, snapping to some transitional mid-resize size
+/// instead of any deliberately-set value), and it's not about avoiding a
+/// second `set_size_request()` call either (a single compromise floor, set
+/// only once at construction and never touched again, still reproduces it
+/// too). The only state found to reliably avoid it: `size_request` kept
+/// permanently equal to the window's own *actual* current size. Doing that
+/// naively is unusable on its own though — being a hard minimum at the
+/// protocol level, it also blocks the user from ever dragging the window
+/// smaller again.
+///
+/// This reconciles both: `size_request` stays synced to the actual size
+/// most of the time (safe against the reset), but is lowered right before
+/// anything about to resize the window — a capture-phase press watcher
+/// below (so it sees the press before GTK's own CSD border-drag handling
+/// grabs the gesture, unblocking a user-driven edge-drag; drops to a real
+/// floor, not `(-1,-1)`, or a live drag could shrink the window to
+/// nothing), and `apply_window_chrome()` itself for our own mini/full
+/// chrome swaps (that one *does* use `(-1,-1)` — a programmatic transition,
+/// not a live drag, so nothing needs a floor in the brief moment before
+/// its own `set_default_size()` call right after) — then re-synced to the
+/// now-current size once nothing has changed `default-width`/
+/// `default-height` for `SETTLE_MS` (same debounce shape as
+/// `schedule_config_save()`). Scoped to full mode only: mini mode stays at
+/// `(-1,-1)` unconditionally, for its own unrelated reason (see
+/// `apply_window_chrome()`'s mini-branch comment).
+pub(super) fn wire_size_request_sync(inner: &Rc<DeviceWindowInner>) {
+    if !SIZE_REQUEST_WORKAROUND { return; }
+    const SETTLE_MS: u64 = 400;
+    // FULL_MODE_FLOOR (module level, shared with apply_window_chrome()'s
+    // non-workaround fallback): the floor to drop to on press while in
+    // full mode, not `(-1,-1)` — a live drag is already a safe,
+    // already-proven-fine code path on this platform (the bug this whole
+    // mechanism works around is specifically about *programmatic* resizes
+    // on an idle window), so there's no need to remove the floor entirely
+    // just to unblock it — only lower it enough to permit shrinking.
+    // Without this, a live drag had no lower bound at all and could
+    // shrink the window down to nothing.
+
+    // Schedules the re-sync-to-actual-size debounce; called both from the
+    // press watcher below (an ordinary click that *isn't* a resize would
+    // otherwise leave the floor dropped forever — nothing else would ever
+    // fire to restore it) and from default-width/height notifications
+    // (which fire repeatedly during a real drag, continually pushing the
+    // resync back until the drag actually stops).
+    let schedule = {
+        let i = Rc::downgrade(inner);
+        move || {
+            let Some(i) = i.upgrade() else { return };
+            if let Some(id) = i.size_request_settle_timer.borrow_mut().take() { id.remove(); }
+            let i2 = Rc::downgrade(&i);
+            let id = glib::timeout_add_local_once(std::time::Duration::from_millis(SETTLE_MS), move || {
+                let Some(i) = i2.upgrade() else { return };
+                *i.size_request_settle_timer.borrow_mut() = None;
+                if *i.mini_mode.borrow() { return; }
+                let (w, h) = (i.window.width(), i.window.height());
+                if w > 0 && h > 0 {
+                    i.window.set_size_request(w, h);
+                }
+            });
+            *i.size_request_settle_timer.borrow_mut() = Some(id);
+        }
+    };
+
+    let press_watcher = gtk::GestureClick::new();
+    press_watcher.set_propagation_phase(gtk::PropagationPhase::Capture);
+    press_watcher.set_button(0); // any button
+    press_watcher.connect_pressed({
+        let i = Rc::downgrade(inner);
+        let schedule = schedule.clone();
+        move |_, _, _, _| {
+            let Some(i) = i.upgrade() else { return };
+            // Mini mode needs to stay unrestricted always (see
+            // `apply_window_chrome()`'s mini-branch comment) — dropping to
+            // `FULL_MODE_FLOOR` there would reintroduce the "twice as
+            // tall" bug that clearing it for mini was originally for.
+            if *i.mini_mode.borrow() {
+                i.window.set_size_request(-1, -1);
+            } else {
+                i.window.set_size_request(FULL_MODE_FLOOR.0, FULL_MODE_FLOOR.1);
+            }
+            schedule();
+        }
+    });
+    inner.window.add_controller(press_watcher);
+
+    inner.window.connect_notify_local(Some("default-width"), {
+        let schedule = schedule.clone();
+        move |_, _| schedule()
+    });
+    inner.window.connect_notify_local(Some("default-height"), move |_, _| schedule());
 }

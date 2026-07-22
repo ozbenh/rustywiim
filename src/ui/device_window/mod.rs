@@ -95,6 +95,11 @@ struct DeviceWindowInner {
     /// Deferred config-save timer: cancelled and rescheduled on every
     /// state change so only one disk write happens after a burst of events.
     config_save_timer:   Rc<RefCell<Option<glib::SourceId>>>,
+    // -- size_request workaround (geometry::SIZE_REQUEST_WORKAROUND) --
+    /// Debounce timer for `geometry::wire_size_request_sync()` — see that
+    /// function's doc comment for the full story.
+    size_request_settle_timer: Rc<RefCell<Option<glib::SourceId>>>,
+    // -- end size_request workaround --
     /// UUID this window is/was for — pre-seeded at construction with the
     /// *expected* UUID (from `config`, before any live connection) so
     /// `DeviceWindow::uuid()` can dedup windows even before the device has
@@ -240,6 +245,9 @@ impl DeviceWindowInner {
         if let Some(id) = self.settle_timer.borrow_mut().take() { id.remove(); }
         if let Some(id) = self.config_save_timer.borrow_mut().take() { id.remove(); }
         if let Some(id) = self.spinner_hide_timer.borrow_mut().take() { id.remove(); }
+        // -- size_request workaround (geometry::SIZE_REQUEST_WORKAROUND) --
+        if let Some(id) = self.size_request_settle_timer.borrow_mut().take() { id.remove(); }
+        // -- end size_request workaround --
         self.save_config_now();
 
         // Skip saving the "window_open" flag to false if that was the last
@@ -542,6 +550,9 @@ impl DeviceWindow {
             panel_anim: RefCell::new(None),
             settle_timer,
             config_save_timer,
+            // -- size_request workaround (geometry::SIZE_REQUEST_WORKAROUND) --
+            size_request_settle_timer: Rc::new(RefCell::new(None)),
+            // -- end size_request workaround --
             applied_window_key: RefCell::new(cfg_uuid.clone()),
             window_state_loaded: Cell::new(false),
             cleaned_up: Cell::new(false),
@@ -606,6 +617,9 @@ impl DeviceWindow {
         inner.mini.view.set_active(*inner.mini_mode.borrow());
 
         geometry::wire_maximize_tracking(&inner);
+        // -- size_request workaround (geometry::SIZE_REQUEST_WORKAROUND) --
+        geometry::wire_size_request_sync(&inner);
+        // -- end size_request workaround --
 
         display::wire_sidebar(&inner);
 
