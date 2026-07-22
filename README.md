@@ -48,11 +48,13 @@ So far tested with:
  * WiiM Amp
  * WiiM Amp Ultra
  * iEAST AudioCast
+ * iEAST AudioCast Pro
  * AudioPro C5
+ * Arylic S10+
 
 On the following distributions:
 
- * Fedora 44 (x86_64)
+ * Fedora 43 and 44 (x86_64)
  * Ubuntu 24.04 (x86_64)
  * Raspberry PiOS (trixie) (Pi5)
  
@@ -92,18 +94,21 @@ See [Releases page](https://github.com/ozbenh/rustywiim/releases)
 
 * Basic build:
 
-`cargo build`
+`cargo build` (debug build use `cargo build --release` for a release build)
 
 or
 
-`make`
+`make` (debug build)
 
 * Package build (.deb or .rpm depending on your distro):
 
 `make package`
 
 ### Run ###
-`target/debug/rustywiim`
+`target/debug/rustywiim` (for debug build) or
+`target/release/rustywiim` (for a release build)
+
+Or just `rustywiim` or launch from the desktop GUI for a package install
 
 ## Options ##
 For now just this one:
@@ -136,6 +141,13 @@ You can pretty-print this file using `target/debug/wiim-capdump`. I would apprec
 * Kiosk mode doesn't have a way to manually add a device by IP address yet
 
 ## Changelog ##
+  * 0.10.2 - 2026-07-22
+    * Fix kiosk enter/exit icon with light themes
+	* Fix rendering of streaming services icons (fix with light theme, stop
+	  pre-rendering, force black/white, fix spotify icon on Ubuntu, etc...)
+    * Build Fedora RPM on Fedora 43 (still works on 44 but at least will now
+	  install on 43).
+
   * 0.10.1 - 2026-07-21
     * Increase side bad min size before snapping
 	* Add button to enter/exit kiosk mode
