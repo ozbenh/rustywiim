@@ -316,8 +316,16 @@ impl QualityBadge {
         // 36 (ServiceLabel's own default) minus ~20% — reads as a smaller,
         // secondary accent next to the service brand mark rather than
         // competing with it at equal size.
+        // Not `.css_classes([css_class])` on the icon — same bug as
+        // `ServiceLabel` had (see its own doc comment): `.service-name`/
+        // `.quality-label`'s `opacity` (system.css dims both, meant only
+        // for the plain-text fallback) alpha-blended this icon's own
+        // black/white pixels against the background too, turning the
+        // logo's black decorative bits grey on light themes. Confirmed
+        // live (2026-07-22, Ben): "the 'Dark' parts in it should be
+        // black, they tend to be grey on light themes instead."
         let icon = gtk::Image::builder()
-            .pixel_size(29).visible(false).css_classes([css_class])
+            .pixel_size(29).visible(false)
             .build();
         let label = gtk::Label::builder()
             .css_classes([css_class, "service-name-pill"])
