@@ -7,6 +7,7 @@ use adw::prelude::*;
 
 use crate::device::playback::{AudioQuality, PlaybackStatus, RepeatMode};
 use crate::device::state::DeviceState;
+use crate::ui::brand_icon::BrandIcon;
 use crate::ui::icons::IconSet;
 use crate::ui::scroll_fade_label::ScrollFadeLabel;
 use super::volume::VolumeControl;
@@ -203,46 +204,32 @@ pub(crate) fn build_bt_pair_button(css_class: &str, icon_px: i32) -> gtk::Button
 /// as its own element, separate from the plain status text
 /// (`format_status_only()`) — shown as a
 /// brand-mark icon when one is registered in `IconSet`
-/// (`IconSet::service_icon_name()`), falling back to the plain text name
+/// (`IconSet::service_svg()`), falling back to the plain text name
 /// for every other service. Used by every layout (Classic/WideRight each
 /// pack `widget` into their own spot; Mini sizes the icon down via
-/// `set_icon_pixel_size()` to match its own smaller text). The icon is a
-/// real GTK "-symbolic" icon (`gtk::Image::set_icon_name()`, not a
-/// pre-cached paintable — see `IconSet::services`'s doc comment for why),
-/// so it needs its own explicit black/white polarity rather than trusting
-/// whatever ambient foreground color the theme resolves a symbolic icon
-/// to (`set_icon_polarity()` below). `css_class` is applied only to
-/// `label`, never to `icon`: applying the same class to both used to
-/// alpha-blend the icon's rendered output against its background too
-/// (`system.css`'s `.service-name { opacity: 0.7; }` is meant to dim only
-/// the plain-text fallback), which showed up as a washed-out grey instead
-/// of a crisp black/white mark.
+/// `set_icon_height()` to match its own smaller text). The icon is a
+/// `BrandIcon` (`ui/brand_icon.rs`) — fixed height, variable width,
+/// rendered via `resvg` at the color/size needed — not a plain
+/// `gtk::Image`; see that module's doc comment for why (several of these
+/// marks are wide wordmarks, not square icons, which `gtk::IconTheme`
+/// can't represent). `css_class` is applied only to `label`, never to
+/// `icon`: applying the same class to both used to alpha-blend the
+/// icon's rendered output against its background too (`system.css`'s
+/// `.service-name { opacity: 0.7; }` is meant to dim only the plain-text
+/// fallback), which showed up as a washed-out grey instead of a crisp
+/// black/white mark.
 #[derive(Clone, Debug)]
 pub(crate) struct ServiceLabel {
     pub widget: gtk::Box,
-    icon:  gtk::Image,
+    icon:  BrandIcon,
     label: gtk::Label,
-}
-
-/// Force `icon`'s resolved symbolic color to pure black or white, matching
-/// the active theme's light/dark polarity (`adw::StyleManager::is_dark()`
-/// — reliable across every theme mode, including the two RustyWiiM themes,
-/// both of which force `ColorScheme::ForceDark` so this already reports
-/// `true` for them with no special-casing needed). These two classes carry
-/// nothing but a `color` override (`ui/css/system.css`/`dark.css`), which
-/// is what a symbolic SVG's "#2e3436" placeholder fill actually resolves
-/// against at render time.
-fn set_icon_polarity(icon: &gtk::Image) {
-    let dark = adw::StyleManager::default().is_dark();
-    icon.set_css_classes(&[if dark { "brand-icon-force-white" } else { "brand-icon-force-black" }]);
 }
 
 impl ServiceLabel {
     pub(crate) fn new(css_class: &str) -> Self {
-        let icon = gtk::Image::builder()
-            .pixel_size(36).visible(false)
-            .build();
-        set_icon_polarity(&icon);
+        let icon = BrandIcon::new();
+        icon.set_height(27);
+        icon.set_visible(false);
         // "service-name-pill" (rounded-rect outline, same look as Kiosk
         // mode's device-name button) only on the text fallback — the icon
         // is a plain badge, no backdrop. `valign(Center)`: without it the
@@ -263,13 +250,14 @@ impl ServiceLabel {
         Self { widget, icon, label }
     }
 
-    /// WideRight/Kiosk-only: the icon's `pixel_size` is a widget property,
-    /// not something CSS font-size scaling reaches, so `apply_wide_right_scale()`
-    /// sets it directly to keep the icon proportional to the dynamically
-    /// scaled `.service-name` text next to it (Classic never calls this —
-    /// its icon stays the fixed default set in `new()`).
+    /// WideRight/Kiosk-only: `apply_wide_right_scale()` sets this directly
+    /// to keep the icon proportional to the dynamically scaled
+    /// `.service-name` text next to it (Classic never calls this — its
+    /// icon stays the fixed default set in `new()`). Width follows
+    /// automatically from the icon's own aspect ratio (`BrandIcon`), not
+    /// set separately.
     pub(crate) fn set_icon_pixel_size(&self, px: i32) {
-        self.icon.set_pixel_size(px);
+        self.icon.set_height(px);
     }
 
     /// `name` is `PlaybackState::source_name` as-is (already the decoded
@@ -282,10 +270,9 @@ impl ServiceLabel {
             return;
         }
         self.widget.set_visible(true);
-        match icons.service_icon_name(name) {
-            Some(icon_name) => {
-                set_icon_polarity(&self.icon);
-                self.icon.set_icon_name(Some(icon_name));
+        match icons.service_svg(name) {
+            Some(svg) => {
+                self.icon.set_svg(Some(svg));
                 self.icon.set_visible(true);
                 self.label.set_visible(false);
             }

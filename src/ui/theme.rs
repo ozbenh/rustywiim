@@ -174,31 +174,6 @@ fn set_scroll_fade_drop_shadow(widget: &gtk::Widget, enabled: bool) {
     }
 }
 
-/// Find every streaming-service brand-mark icon in `widget`'s subtree
-/// (identified by which of the two force-polarity CSS classes it currently
-/// carries — there's no dedicated widget type to downcast to here, it's a
-/// plain `gtk::Image`) and re-apply the class matching the current theme's
-/// light/dark polarity. Needed because `ServiceLabel::set_icon_polarity()`
-/// (`ui/views/common.rs`) only runs when the icon's content changes, not on
-/// a theme switch — without this, an icon set while dark stays forced-white
-/// even after switching to a light theme, until the next track change.
-fn set_brand_icon_polarity_recursive(widget: &gtk::Widget, dark: bool) {
-    if widget.has_css_class("brand-icon-force-black") || widget.has_css_class("brand-icon-force-white") {
-        if dark {
-            widget.remove_css_class("brand-icon-force-black");
-            widget.add_css_class("brand-icon-force-white");
-        } else {
-            widget.remove_css_class("brand-icon-force-white");
-            widget.add_css_class("brand-icon-force-black");
-        }
-    }
-    let mut child = widget.first_child();
-    while let Some(c) = child {
-        set_brand_icon_polarity_recursive(&c, dark);
-        child = c.next_sibling();
-    }
-}
-
 /// Sync every open window's `ArtBackground` visibility (and, for the mini
 /// window, a CSS marker class + text drop-shadow) to the current theme +
 /// mini_modern setting. Called on theme switch and whenever mini_modern is
@@ -239,11 +214,6 @@ pub(crate) fn apply_theme(theme: ThemeMode) {
     reload_css_provider(&build_css(theme, &accent));
 
     update_art_background_visibility();
-
-    let dark = adw::StyleManager::default().is_dark();
-    for win in gtk::Window::list_toplevels() {
-        set_brand_icon_polarity_recursive(&win, dark);
-    }
 
     // Mark every widget in every window dirty so the next frame re-snapshot's
     // everything from the updated CSS.  Two passes: immediate + LOW-priority

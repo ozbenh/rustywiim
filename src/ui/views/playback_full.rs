@@ -250,13 +250,18 @@ fn apply_wide_right_scale(
     let album_px  = round_to_even(h * 0.064);
     // "Slightly smaller than the album name" per the design ask, then
     // reduced another ~20% (0.85 -> 0.68) — the whole badge read too big
-    // in Kiosk mode. The icon's `pixel_size` (a widget property, not
-    // CSS-reachable) is kept proportional to this text at the same 3:1
-    // ratio Classic's fixed values use (36px icon : 12px `.service-name`
-    // base font-size), then reduced a further 10% (3.0 -> 2.7) — the icon
-    // specifically (not the text) still read too big.
+    // in Kiosk mode. The icon's height (`BrandIcon::set_height()`, a
+    // widget property, not CSS-reachable) is kept proportional to this
+    // text at the same 3:1 ratio Classic's fixed values use (36px icon :
+    // 12px `.service-name` base font-size), then reduced a further 10%
+    // (3.0 -> 2.7) — the icon specifically (not the text) still read too
+    // big, then another ~10% (2.7 -> 2.43) once the brand marks switched
+    // to `BrandIcon`'s true-aspect-ratio sizing (wordmark icons rendered
+    // visibly bigger than before at the same height), then another 15%
+    // (2.43 -> 2.07), main/Kiosk window only (Mini has its own fixed
+    // value, sized separately).
     let service_px = round_to_even(album_px as f64 * 0.68 * SERVICE_ENSEMBLE_SCALE);
-    let service_icon_px = (service_px as f64 * 2.7).round() as i32;
+    let service_icon_px = (service_px as f64 * 2.07).round() as i32;
     service.set_icon_pixel_size(service_icon_px);
     // 20% smaller than the service icon — see `QualityBadge::new()`'s
     // comment for why the quality badge reads smaller everywhere.

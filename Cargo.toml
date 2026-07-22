@@ -26,6 +26,7 @@ flate2 = { version = "1", default-features = false, features = ["rust_backend"] 
 tar = "0.4"
 tiny_http = { version = "0.12", default-features = false, features = ["ssl-openssl"] }
 rcgen = "0.14"
+resvg = { version = "0.47", default-features = false }
 
 [package.metadata.deb]
 maintainer = "Benjamin Herrenschmidt <benh@kernel.crashing.org>"

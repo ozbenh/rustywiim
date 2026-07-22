@@ -26,8 +26,10 @@
 /// (scale-2) display doesn't hit the exact same problem one step up.
 
 use gtk::gdk;
+use gtk::gio;
 use gtk::prelude::*;
 use std::collections::HashMap;
+use std::rc::Rc;
 
 /// Must stay ≥ the largest logical `pixel_size`/`icon_size` any caller
 /// actually requests — currently that's `views/playback_full.rs`'s main
@@ -54,6 +56,24 @@ fn theme_icon(theme: &gtk::IconTheme, name: &str) -> gdk::Paintable {
     .upcast::<gdk::Paintable>()
 }
 
+/// Read `name`'s raw bytes straight out of the embedded GResource bundle
+/// (bypassing `gtk::IconTheme` entirely) — same resource path convention
+/// `theme.rs`'s `init_icon_resource()` registers
+/// (`/<APP_ID as path>/icons/scalable/apps/<name>.svg`), just fetched as
+/// plain data instead of looked up/rasterized as an icon. `name` is the
+/// same GResource alias already used for the (unrelated) `-symbolic`
+/// real-icon-theme path elsewhere — that suffix means nothing here, it's
+/// just whatever string the alias happens to be.
+fn load_svg_resource(name: &str) -> Rc<[u8]> {
+    let path = format!(
+        "/{}/icons/scalable/apps/{name}.svg",
+        super::APP_ID.replace('.', "/"),
+    );
+    let bytes = gio::resources_lookup_data(&path, gio::ResourceLookupFlags::NONE)
+        .unwrap_or_else(|e| panic!("bad embedded GResource — missing {path}: {e}"));
+    Rc::from(bytes.as_ref())
+}
+
 // ── IconSet ───────────────────────────────────────────────────────────────────
 
 /// All application icons, pre-loaded at startup as `gdk::Paintable`.
@@ -73,27 +93,33 @@ pub struct IconSet {
     /// BLE remote icon, shown in the main window's bottom status bar.
     remote: gdk::Paintable,
 
-    /// Streaming-service name → icon-name string, keyed by the lowercased
-    /// display string (e.g. `"spotify"`, `"tidal connect"`) — see
-    /// `service_names` in `load()`; `service_icon_name()` lowercases its
-    /// own query the same way, for a case-insensitive match against a raw
-    /// wire vendor string too, not just the fully-normalized display
-    /// form. Only covers services with a bundled brand-mark SVG; anything
-    /// else (Amazon Music, Radio Paradise, ...) simply isn't a key here.
-    /// Unlike `sources`/`outputs` above, this stores the resolved icon
-    /// name itself, not a pre-rendered `gdk::Paintable`: these are
-    /// "-symbolic" icons (see `service_names`'s entries and
-    /// `rustywiim.gresource.xml`'s doc comment on the streaming-service
-    /// marks), and a plain `gtk::Image` given an icon name via
-    /// `set_icon_name()` drives GTK's own symbolic-recolor machinery
-    /// itself — pre-resolving through `gtk::IconTheme::lookup_icon()` and
-    /// handing a caller a fixed `gdk::Paintable`, as `sources`/`outputs`
-    /// do, rendered these blank in testing. No fallback field, unlike
+    /// Streaming-service name → the brand mark's raw SVG source bytes,
+    /// keyed by the lowercased display string (e.g. `"spotify"`,
+    /// `"tidal connect"`) — see `service_names` in `load()`;
+    /// `service_svg()` lowercases its own query the same way, for a
+    /// case-insensitive match against a raw wire vendor string too, not
+    /// just the fully-normalized display form. Only covers services with
+    /// a bundled brand-mark SVG; anything else (Radio Paradise, vTuner,
+    /// ...) simply isn't a key here. No fallback field, unlike
     /// `sources`/`outputs` above: `None` here is a real, meaningful answer
     /// ("no icon for this one, show text"), not a gap to paper over —
     /// every caller (`ServiceLabel` in `ui/views/common.rs`) falls back to
     /// the plain text name.
-    services: HashMap<String, &'static str>,
+    ///
+    /// Unlike `sources`/`outputs`/`qualities`, these are **not** pre-baked
+    /// via `theme_icon()`/`gtk::IconTheme::lookup_icon()` into a fixed
+    /// `gdk::Paintable` — that path bakes a *square* raster regardless of
+    /// the source SVG's own proportions (confirmed live:
+    /// `GtkIconPaintable::intrinsic_aspect_ratio()` reports exactly `1`
+    /// no matter what), which breaks for the several of these that are
+    /// genuinely wide wordmarks, not square marks (see
+    /// `ui/brand_icon.rs`'s doc comment for the full history and the
+    /// confirmed aspect ratios). `BrandIcon` instead re-parses and
+    /// re-rasterizes this raw source with `resvg` on every paint, at the
+    /// exact target color/size needed — so what's cached here is just the
+    /// source bytes, read once via `gio::resources_lookup_data()` (cheap
+    /// to clone out, `Rc`-shared).
+    services: HashMap<String, Rc<[u8]>>,
 
     /// `translate_quality_badge()`'s translated display string (e.g.
     /// `"Hi-Res"`), lowercased, → paintable — same shape/rationale as
@@ -143,13 +169,13 @@ impl IconSet {
         // Keyed by the display strings `device::playback::vendor_display()`/
         // `decode_source_name_http()`/`decode_source_name_upnp()` actually
         // produce (`PlaybackState::source_name`) — case-insensitively (both
-        // these keys and `service_icon_name()`'s query are lowercased), so
+        // these keys and `service_svg()`'s query are lowercased), so
         // a raw not-yet-normalized vendor string matches too, not just the
         // fully-normalized display form. `"TIDAL Connect"` and `"TIDAL"`
         // (the Connect-specific and plain-radio source names — see
         // `mode_from_play_medium()`/`vendor_display()`) share one icon.
         // Services with no bundled SVG yet (Radio Paradise, vTuner, ...)
-        // are simply absent — see `service_icon_name()`'s doc comment for
+        // are simply absent — see `service_svg()`'s doc comment for
         // the text-fallback path.
         let service_names: &[(&'static str, &str)] = &[
             ("Spotify",       "rustywiim-svc-spotify-symbolic"),
@@ -176,17 +202,14 @@ impl IconSet {
         let outputs: HashMap<&'static str, gdk::Paintable> = output_names.iter()
             .map(|&(id, name)| (id, theme_icon(&theme, name)))
             .collect();
-        // Lowercased keys — `service_icon_name()` also lowercases its
-        // query, so a lookup against a raw not-yet-normalized vendor
-        // string (e.g. `"newtunein"`, the wire spelling `vendor_display()`
-        // itself already translates to `"TuneIn"` before this is normally
+        // Lowercased keys — `service_svg()` also lowercases its query, so
+        // a lookup against a raw not-yet-normalized vendor string (e.g.
+        // `"newtunein"`, the wire spelling `vendor_display()` itself
+        // already translates to `"TuneIn"` before this is normally
         // reached) still matches case-insensitively rather than requiring
-        // the exact display-string casing. Just a table transform — no
-        // `gtk::IconTheme` lookup here, since the caller resolves the name
-        // itself via `gtk::Image::set_icon_name()` (see `services`'s own
-        // doc comment).
-        let services: HashMap<String, &'static str> = service_names.iter()
-            .map(|&(id, name)| (id.to_lowercase(), name))
+        // the exact display-string casing.
+        let services: HashMap<String, Rc<[u8]>> = service_names.iter()
+            .map(|&(id, name)| (id.to_lowercase(), load_svg_resource(name)))
             .collect();
         let qualities: HashMap<String, gdk::Paintable> = quality_names.iter()
             .map(|&(id, name)| (id.to_lowercase(), theme_icon(&theme, name)))
@@ -220,22 +243,22 @@ impl IconSet {
         &self.remote
     }
 
-    /// Resolved "-symbolic" icon name for a streaming service —
+    /// Raw SVG source for a streaming service's brand mark —
     /// case-insensitive match against its display name (e.g. `"Spotify"`,
     /// `"TIDAL Connect"` — `PlaybackState::source_name` as-is) or a raw
     /// not-yet-normalized vendor string. `None` (not a fallback icon) when
     /// no matching SVG is registered — see `services`'s own doc comment;
-    /// callers are expected to fall back to the service's text name.
-    /// Callers hand this straight to `gtk::Image::set_icon_name()`, not
-    /// `gtk::IconTheme::lookup_icon()` — see `services`'s doc comment for
-    /// why.
-    pub fn service_icon_name(&self, name: &str) -> Option<&'static str> {
-        self.services.get(&name.to_lowercase()).copied()
+    /// callers are expected to fall back to the service's text name. Feed
+    /// this straight to `BrandIcon::set_svg()`, which re-rasterizes it at
+    /// the right color/size itself — this is source bytes, not a
+    /// ready-to-display paintable.
+    pub fn service_svg(&self, name: &str) -> Option<Rc<[u8]>> {
+        self.services.get(&name.to_lowercase()).cloned()
     }
 
     /// Paintable for a translated quality-badge label (e.g. `"Hi-Res"` —
     /// `translate_quality_badge()`'s output, not a raw wire code) —
-    /// case-insensitive, same shape as `service_icon_name()`. `None` when
+    /// case-insensitive, same shape as `service_svg()`. `None` when
     /// no matching icon is registered; callers fall back to the plain text
     /// pill.
     pub fn quality_paintable(&self, label: &str) -> Option<&gdk::Paintable> {

@@ -1,4 +1,5 @@
 mod art_background;
+mod brand_icon;
 pub mod devlist;
 mod flip_cover;
 mod icons;

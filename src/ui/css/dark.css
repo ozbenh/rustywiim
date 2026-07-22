@@ -40,14 +40,6 @@ window { background-color: #0a0a0a; }
        so it should hug the text's own line height, not add extra. */
     min-height: 0;
 }
-/* Forces a streaming-service brand-mark icon's resolved symbolic color to
-   pure black/white regardless of the active foreground color — brand marks
-   are copyrighted shapes that may only ever render as a flat silhouette,
-   never an arbitrary accent tint (see `ServiceLabel` in
-   `ui/views/common.rs`, which picks between these two based on
-   `adw::StyleManager::is_dark()`). */
-.brand-icon-force-black { color: #000000; }
-.brand-icon-force-white { color: #ffffff; }
 /* dim-label inherits from Adwaita opacity of 0.55, make it brighter */
 .dim-label    { font-size: 12px; color: #eeeeee; }
 .section-label { font-size: 12px; font-weight: 700; color: #505050; letter-spacing: 1px; }

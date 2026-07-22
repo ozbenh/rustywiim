@@ -25,10 +25,6 @@
        ".service-name"'s own min-height. */
     min-height: 0;
 }
-/* See dark.css's identical rule for why these force a fixed polarity
-   regardless of the active foreground color. */
-.brand-icon-force-black { color: #000000; }
-.brand-icon-force-white { color: #ffffff; }
 .dim-label    { font-size: 12px; }
 .section-label { font-size: 12px; font-weight: 700; letter-spacing: 1px; }
 .panel-dropdown { font-size: 12px; min-width: 0; }

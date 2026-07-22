@@ -164,13 +164,17 @@ impl MiniPlaybackView {
         // Started at 14px, matching `build_bt_pair_button`'s own
         // icon-alongside-small-text precedent rather than the much bigger
         // default meant for the full/WideRight layouts' own larger text;
-        // bumped 20%, then another 10%, by request.
-        service.set_icon_pixel_size(19);
+        // bumped 20%, then another 10%, then back down to 16 once the
+        // brand marks switched to BrandIcon's true-aspect-ratio sizing
+        // (wordmark icons rendered visibly bigger than before at the same
+        // height), by request.
+        service.set_icon_pixel_size(16);
         // Same icon-vs-text-pill badge as the full/WideRight layouts'
         // own `quality_badge` — shown as the Hi-Res Audio mark instead of
         // text when the current tier has one.
         let quality = QualityBadge::new("mini-status-label");
-        // 20% smaller than `service`'s own 19px — see `QualityBadge::new()`'s
+        // Kept at its own fixed size (not re-derived from `service`'s,
+        // which shrank independently above) — see `QualityBadge::new()`'s
         // comment for why the quality badge reads smaller everywhere.
         quality.set_icon_pixel_size(15);
         // Extra gap from the service label/icon on top of `info_row`'s
