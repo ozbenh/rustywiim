@@ -179,14 +179,19 @@ menubutton.mini-restore-btn > button:hover { background-color: rgba(127, 127, 12
 window.kiosk-window { background-color: @window_bg_color; color: @window_fg_color; }
 /* Kiosk mode's device-name button, top-right overlay: text + outline only,
    no fill, so it reads as a floating label rather than a normal button
-   until hovered. */
+   until hovered. Vertical margin only, like `.kiosk-sidebar-btn` below —
+   horizontal spacing/positioning is the wrapping `top_right_group` Box's
+   job (`kiosk.rs`'s `build_floating_buttons()`), not this button's own;
+   a left/right margin here would just add an inconsistent extra gap next
+   to the Settings button sharing that group. */
 .kiosk-device-btn {
     background-color: transparent;
     border: 1px solid alpha(@window_fg_color, 0.25);
     color: alpha(@window_fg_color, 0.65);
     border-radius: 8px;
     padding: 6px 14px;
-    margin: 20px;
+    margin-top: 20px;
+    margin-bottom: 20px;
 }
 .kiosk-device-btn:hover { background-color: alpha(@window_fg_color, 0.12); }
 /* Same look as .kiosk-device-btn — see dark.css's identical rule for why

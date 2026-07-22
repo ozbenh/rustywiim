@@ -235,13 +235,17 @@ window.mini-window .marquee-fade {
 /* Kiosk mode's device-name button, top-right overlay: text + outline only,
    no fill, so it reads as a floating label rather than a normal button
    until hovered. */
+/* Vertical margin only — see system.css's identical rule for why
+   horizontal spacing is the wrapping `top_right_group` Box's job now,
+   not this button's own. */
 .kiosk-device-btn {
     background-color: transparent;
     border: 1px solid rgba(255, 255, 255, 0.25);
     border-radius: 8px;
     color: rgba(255, 255, 255, 0.65);
     padding: 6px 14px;
-    margin: 20px;
+    margin-top: 20px;
+    margin-bottom: 20px;
 }
 .kiosk-device-btn:hover { background-color: rgba(255, 255, 255, 0.12); }
 /* Same look as .kiosk-device-btn (top-left instead of top-right — the

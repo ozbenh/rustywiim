@@ -704,12 +704,18 @@ impl AppState {
             let state = Rc::clone(self_rc);
             Rc::new(move || Self::exit_kiosk(&state)) as Rc<dyn Fn()>
         };
+        // Same shared, plain non-modal open_settings_fn every other window
+        // uses (DeviceWindow/DiscoveryWindow).
+        let open_settings_fn = {
+            let state = Rc::clone(self_rc);
+            Rc::new(move |ds| Self::open_settings(&state, ds)) as Rc<dyn Fn(Option<DeviceState>)>
+        };
         let initial_layout = match KIOSK_LAYOUT_OVERRIDE.get() {
             Some(KioskLayoutOverride::Classic) => views::playback_full::PlaybackLayout::Classic,
             Some(KioskLayoutOverride::WideRight) | None => views::playback_full::PlaybackLayout::WideRight,
         };
         let kw = kiosk::KioskWindow::new(
-            &self_rc.app, &self_rc.disc_mgr, &icons, exit_fn, initial_layout, kiosk_only(),
+            &self_rc.app, &self_rc.disc_mgr, &icons, exit_fn, open_settings_fn, initial_layout, kiosk_only(),
         );
         kw.present();
         *self_rc.kiosk_win.borrow_mut() = Some(Rc::clone(&kw));

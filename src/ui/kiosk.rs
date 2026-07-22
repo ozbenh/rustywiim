@@ -14,7 +14,10 @@
 //! unit when the panel opens/closes): an exit-Kiosk button, next to the
 //! panel toggle rather than its own separate corner, by request. A
 //! transparent top-right button showing the bound device's name opens a
-//! popover containing a `DeviceListView` to switch devices.
+//! popover containing a `DeviceListView` to switch devices, grouped
+//! (`top_right_group`, same shape as `top_left_group`) with a stop-gap
+//! Settings button to its left — opens the same plain, non-modal
+//! `SettingsWindow` every other window uses.
 //!
 //! Keyboard shortcuts are owned entirely by this window, not shared with
 //! `DeviceWindow`'s own controller — "K" exits kiosk mode here; there is
@@ -88,6 +91,10 @@ pub(crate) struct KioskWindow {
     /// since `gtk::Overlay` z-orders purely by add order.
     content_holder: gtk::Box,
     device_btn:    gtk::Button,
+    /// Groups `device_btn` with the stop-gap Settings button (see
+    /// `KioskWindow::new()`'s `open_settings` param) so they move/fade
+    /// together as one unit — same shape as `top_left_group` below.
+    top_right_group: gtk::Box,
     popover:       gtk::Popover,
     /// Splits the side panel (presets/IO, start child) from the playback
     /// content (end child) — same shape as `DeviceWindow`'s own `paned`.
@@ -182,12 +189,13 @@ const SCREENSAVER_FADE_OUT_MS: u32 = 200;
 
 impl KioskWindow {
     pub(crate) fn new(
-        app:            &adw::Application,
-        manager:        &DiscoveryManager,
-        icons:          &Rc<IconSet>,
-        exit_kiosk:     Rc<dyn Fn()>,
-        initial_layout: PlaybackLayout,
-        kiosk_only:     bool,
+        app:              &adw::Application,
+        manager:          &DiscoveryManager,
+        icons:            &Rc<IconSet>,
+        exit_kiosk:       Rc<dyn Fn()>,
+        open_settings:    Rc<dyn Fn(Option<DeviceState>)>,
+        initial_layout:   PlaybackLayout,
+        kiosk_only:       bool,
     ) -> Rc<Self> {
         // resizable(false) is deliberately *not* set here, unlike the mini
         // window — that flag exists there specifically to keep GNOME/Mutter
@@ -253,7 +261,9 @@ impl KioskWindow {
         // content_holder so it always stacks on top (gtk::Overlay z-orders
         // purely by add order) — the device-name button and the sidebar
         // toggle, symmetric to it on the opposite corner.
-        let (device_btn, sidebar_btn, exit_kiosk_btn) = Self::build_floating_buttons(&overlay);
+        let (device_btn, settings_btn, sidebar_btn, exit_kiosk_btn) = Self::build_floating_buttons(&overlay);
+        let top_right_group = device_btn.parent().and_downcast::<gtk::Box>()
+            .expect("device_btn's parent is the top_right_group Box built alongside it");
         // `--kiosk:only`: no exit path at all, not even hidden-but-wired —
         // see `ui::kiosk_only()`'s own doc comment. The button itself just
         // disappears from the group rather than leaving an empty gap.
@@ -318,6 +328,7 @@ impl KioskWindow {
             art_bg,
             content_holder,
             device_btn: device_btn.clone(),
+            top_right_group: top_right_group.clone(),
             popover: popover.clone(),
             sidebar_paned,
             panel_anim: RefCell::new(None),
@@ -416,6 +427,15 @@ impl KioskWindow {
         device_btn.connect_clicked(clone!(#[weak] popover, move |_| {
             if popover.is_visible() { popover.popdown(); } else { popover.popup(); }
         }));
+        settings_btn.connect_clicked({
+            let weak = Rc::downgrade(&this);
+            let open_settings = Rc::clone(&open_settings);
+            move |_| {
+                let Some(this) = weak.upgrade() else { return };
+                let ds = this.bound.borrow().as_ref().map(|b| b.ds.clone());
+                open_settings(ds);
+            }
+        });
         sidebar_btn.connect_clicked({
             let weak = Rc::downgrade(&this);
             move |_| {
@@ -493,14 +513,30 @@ impl KioskWindow {
     /// `PlaybackView` is currently showing), all added from this one place
     /// rather than scattered through `new()`. Returns them specifically
     /// since `new()` still needs both to wire up their click handling.
-    fn build_floating_buttons(overlay: &gtk::Overlay) -> (gtk::Button, gtk::Button, gtk::Button) {
+    fn build_floating_buttons(overlay: &gtk::Overlay) -> (gtk::Button, gtk::Button, gtk::Button, gtk::Button) {
         let device_btn = gtk::Button::builder()
             .label("Select device")
             .css_classes(["kiosk-device-btn"])
-            .halign(gtk::Align::End)
-            .valign(gtk::Align::Start)
             .build();
-        overlay.add_overlay(&device_btn);
+        // Stop-gap Settings entry point for Kiosk mode (see `KioskWindow::new()`'s
+        // `open_settings` param doc comment) — no dedicated Kiosk icon yet,
+        // just the stock Adwaita "system" emblem. Grouped with device_btn
+        // (not its own floating corner) the same way sidebar_btn/
+        // exit_kiosk_btn share `top_left_group` below, so both move/fade as
+        // one unit.
+        let settings_btn = gtk::Button::builder()
+            .icon_name("emblem-system-symbolic")
+            .tooltip_text("Settings")
+            .css_classes(["kiosk-sidebar-btn"])
+            .build();
+        let top_right_group = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal).spacing(8)
+            .halign(gtk::Align::End).valign(gtk::Align::Start)
+            .margin_end(20)
+            .build();
+        top_right_group.append(&settings_btn);
+        top_right_group.append(&device_btn);
+        overlay.add_overlay(&top_right_group);
 
         // Symmetric to device_btn on the opposite corner. No margin-start
         // set directly on either button here — that's the wrapping
@@ -530,7 +566,7 @@ impl KioskWindow {
         top_left_group.append(&exit_kiosk_btn);
         overlay.add_overlay(&top_left_group);
 
-        (device_btn, sidebar_btn, exit_kiosk_btn)
+        (device_btn, settings_btn, sidebar_btn, exit_kiosk_btn)
     }
 
     /// Resolves `key` (a `device_key()` result — see `DiscoveryManager`)
@@ -925,7 +961,7 @@ impl KioskWindow {
         }
     }
 
-    /// Fades `top_left_group`/`device_btn` to/from hidden as one unit — a
+    /// Fades `top_left_group`/`top_right_group` to/from hidden as one unit — a
     /// no-op if already in the target state. Disables `can_target` the
     /// moment they finish fading out (so an invisible button can't still
     /// be clicked) and re-enables it immediately on the way back in
@@ -953,7 +989,7 @@ impl KioskWindow {
         // is recaptured on every bind (see `finish_bind()`) since
         // `PlaybackView` itself is rebuilt each time.
         let mut targets: Vec<gtk::Widget> =
-            vec![self.top_left_group.clone().upcast(), self.device_btn.clone().upcast()];
+            vec![self.top_left_group.clone().upcast(), self.top_right_group.clone().upcast()];
         if config::with(|cfg| cfg.kiosk_auto_hide_all_controls) {
             targets.extend(self.extra_controls.borrow().iter().cloned());
         }
