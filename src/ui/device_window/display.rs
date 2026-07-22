@@ -94,6 +94,12 @@ impl DeviceWindowInner {
         } else {
             format!("RustyWiiM ({cached_name})")
         };
+        // The mini top bar's device-name label is chrome, not part of
+        // MiniPlaybackView (see `apply_device_info()`'s identical comment)
+        // — it needs the same cached-name fallback here, or it's just
+        // left blank (its construction-time default) for as long as the
+        // device stays unreachable, unlike the window title right above.
+        self.mini.device_label.set_label(&cached_name);
         drop(cached_name);
         self.window.set_title(Some(&win_title));
 
