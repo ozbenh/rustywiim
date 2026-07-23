@@ -62,6 +62,21 @@ jobs:
         run: |
           apt-get update
           apt-get install -y git ca-certificates
+      # Running inside `container:` means the checkout (owned by the host
+      # runner's UID) and git (running as this container's own default
+      # user, root) don't match — git 2.35.2+'s "detected dubious
+      # ownership in repository" safety check (CVE-2022-24765) then
+      # refuses to run *any* command against it, including build.rs's own
+      # `git describe`/`rev-parse`. That failure is silently
+      # indistinguishable, from build.rs's own perspective, from "no tag
+      # found at all" — same spurious '+' this job's git-install fix above
+      # was already once written to solve, just from a different cause
+      # (confirmed live: `deb-ubuntu`, the one job here *without* a
+      # `container:`, never showed it). `'*'` rather than the exact
+      # checkout path — this container is thrown away at the end of the
+      # job, so there's nothing a wildcard trust actually risks here.
+      - name: Mark the workspace as a safe git directory
+        run: git config --global --add safe.directory '*'
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
@@ -95,6 +110,10 @@ jobs:
       # fetch with full tag history instead.
       - name: Install git (needed before checkout)
         run: dnf install -y git
+      # See the identical step/comment in the deb-debian job above — same
+      # "dubious ownership" issue (git 2.35.2+, CVE-2022-24765), same fix.
+      - name: Mark the workspace as a safe git directory
+        run: git config --global --add safe.directory '*'
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
