@@ -1,0 +1,3643 @@
+{
+  "captured_at": "2026-07-22T08:27:52.460685992+00:00",
+  "gave_up": false,
+  "model": "WiiM Pro Plus",
+  "model_source": "getStatusEx",
+  "firmware": "Linkplay.4.8.814734",
+  "hardware": "AmlogicA113",
+  "project": "WiiM_Pro_Plus",
+  "tls_scheme": "https",
+  "tls_port": 443,
+  "commands": [
+    {
+      "command": "getStatusEx",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getStatusEx",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "json",
+      "body": {
+        "AP_MAC": "xx:xx:xx:xx:xx:xx",
+        "BSSID": "",
+        "BTMAC": "xx:xx:xx:xx:xx:xx",
+        "BleRemoteBatterylevel": "90",
+        "BleRemoteConnected": "1",
+        "BleRemoteControl": "1",
+        "BleRemoteException": "0",
+        "BleRemoteNewVersion": "",
+        "BleRemoteRSSI": "-60",
+        "BleRemoteVersion": "",
+        "BleRemote_dev_state": "normal",
+        "BleRemote_has_new": "0",
+        "BleRemote_power_status": "0",
+        "BleRemote_update_checked_counter": "0",
+        "DeviceName": "xxxx xxx xxxx",
+        "EQVersion": "4.3",
+        "EQ_support": "Eq10HP_ver_2.0",
+        "ETH_MAC": "xx:xx:xx:xx:xx:xx",
+        "FW_Release_version": "",
+        "GroupName": "xxxx xxx xxxx",
+        "HiFiSRC_version": "1.1",
+        "InitialConfiguration": "1",
+        "MAC": "xx:xx:xx:xx:xx:xx",
+        "ModuleColorNumber": "0",
+        "ModuleColorString": "",
+        "NewVer": "0",
+        "PCB_version": "3",
+        "RSSI": "0",
+        "Release": "20260423",
+        "VersionUpdate": "0",
+        "WifiChannel": "0",
+        "alexa_beta_enable": "0",
+        "alexa_force_beta_cfg": "0",
+        "alexa_ver": "20180604",
+        "apcli0": "x.x.x.x",
+        "app_timezone_id": "Asia/Jerusalem",
+        "audio_channel_config": "1.0",
+        "audiocast": "1",
+        "autoSenseVersion": "1.0",
+        "avs_timezone_id": "Asia/Jerusalem",
+        "battery": "0",
+        "battery_percent": "0",
+        "ble_active": "0",
+        "build": "release",
+        "cap1": "0x40000400",
+        "capability": "0x20084808",
+        "cast_enable": 1,
+        "cast_usage_report": 0,
+        "communication_port": "8819",
+        "date": "2026:07:22",
+        "dsp_ver": "",
+        "dsp_ver_new": "",
+        "essid": "",
+        "eth0": "xx.x.x.xx",
+        "eth2": "x.x.x.x",
+        "expired": "0",
+        "external": "0x0",
+        "firmware": "Linkplay.4.8.814734",
+        "group": "0",
+        "hardware": "AmlogicA113",
+        "hideSSID": "x",
+        "internet": "1",
+        "kernel_verinfo": "#1 SMP PREEMPT Wed Jul 9 10:56:01 CST 2025",
+        "language": "en_us",
+        "languages": "0x11ec",
+        "lbc_support": "0",
+        "max_volume": "100",
+        "mcu_ver": "0",
+        "mcu_ver_new": "0",
+        "mqtt_support": "1",
+        "netstat": "0",
+        "new_iheart_podcast": "1",
+        "new_tunein_preset_and_alarm": "1",
+        "ota_api_ver": "3.0",
+        "ota_interface_ver": "2.0",
+        "plm_support": "0x700016",
+        "power_mode": "-1",
+        "preset_key": "12",
+        "priv_prj": "WiiM_Pro_Plus",
+        "privacy_mode": "0",
+        "project": "WiiM_Pro_Plus",
+        "project_build_name": "xxxx_xxx_xxxx",
+        "prompt_status": "1",
+        "public_https_version": "1.0",
+        "ra0": "xx.xx.xx.xxx",
+        "region": "unknown",
+        "securemode": "1",
+        "security": "https/2.0",
+        "security_capabilities": {
+          "aes_ver": "1.0",
+          "ver": "1.0"
+        },
+        "security_version": "3.0",
+        "service_version": "1.0",
+        "set_play_mode_enable": "1",
+        "set_play_mode_gain": "1",
+        "silence_ota_flag": "0",
+        "ssid": "xxxx xxx xxxx-xxxx",
+        "streams": "0xedf33fd",
+        "streams_all": "0xedf33fd",
+        "temp_uuid": "xxxxxxxxxxxxxxxx",
+        "tidal_version": "2.0",
+        "time": "08:27:52",
+        "tz": "3.0",
+        "tz_info_ver": "1.0",
+        "uart_pass_port": "0",
+        "uboot_verinfo": "",
+        "update_check_count": "59",
+        "upnp_uuid": "xxxx:xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+        "upnp_version": "1005",
+        "uuid": "xxxxxxxxxxxxxxxxxxxxxxxx",
+        "volume_control": "0",
+        "web_firmware_update_hide": "0",
+        "wlanDataRate": "0",
+        "wlanFreq": "0",
+        "wlanNoise": "0",
+        "wlanSnr": "0",
+        "wmrm_capability": 63,
+        "wmrm_sub_ver": "7",
+        "wmrm_version": "4.3"
+      }
+    },
+    {
+      "command": "getPlayerStatusEx",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getPlayerStatusEx",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "json",
+      "body": {
+        "Album": "556E6B6E6F776E",
+        "Artist": "556E6B6E6F776E",
+        "Title": "556E6B6E6F776E",
+        "alarmflag": "0",
+        "ch": "0",
+        "curpos": "0",
+        "eq": "0",
+        "loop": "4",
+        "mode": "43",
+        "mute": "0",
+        "offset_pts": "0",
+        "plicount": "0",
+        "plicurr": "0",
+        "status": "stop",
+        "totlen": "0",
+        "type": "0",
+        "vendor": "",
+        "vol": "8"
+      },
+      "decoded": {
+        "Album": "Unknown",
+        "Artist": "Unknown",
+        "Title": "Unknown"
+      },
+      "summary": "Get the playback status (extended) — this app's primary status poll"
+    },
+    {
+      "command": "getAudioInputEnable",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getAudioInputEnable",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "json",
+      "body": {
+        "audioInput": [
+          {
+            "enable": 1,
+            "mode": "wifi"
+          },
+          {
+            "enable": 1,
+            "mode": "bluetooth"
+          },
+          {
+            "enable": 1,
+            "mode": "line-in"
+          },
+          {
+            "enable": 1,
+            "mode": "optical"
+          }
+        ],
+        "ver": "1.0"
+      },
+      "summary": "Get enabled audio inputs"
+    },
+    {
+      "command": "getAudioOutputStatus",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getAudioOutputStatus",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "text",
+      "body": "unknown command",
+      "unsupported": true,
+      "summary": "Get audio output status"
+    },
+    {
+      "command": "getAudioInputCapbility",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getAudioInputCapbility",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "json",
+      "body": {
+        "audioInput": [
+          {
+            "mode": "wifi"
+          },
+          {
+            "mode": "line-in"
+          },
+          {
+            "mode": "bluetooth"
+          },
+          {
+            "mode": "optical"
+          }
+        ],
+        "ver": "1.0"
+      },
+      "summary": "Get audio input capability"
+    },
+    {
+      "command": "getDeviceInfo",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getDeviceInfo",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "text",
+      "body": "unknown command",
+      "unsupported": true,
+      "summary": "Alias of getStatusEx"
+    },
+    {
+      "command": "getTriggeroutStatus",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getTriggeroutStatus",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "json",
+      "body": {
+        "status": 0
+      },
+      "summary": "12V trigger status (Ultra/Pro/Pro Plus only per pywiim)"
+    },
+    {
+      "command": "GetAcousticCapability",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=GetAcousticCapability",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "json",
+      "body": {
+        "EQBlock": {
+          "Blocks": [
+            {
+              "id": 1,
+              "type": "EQ"
+            },
+            {
+              "id": 2,
+              "type": "RC"
+            }
+          ],
+          "Version": "1.0"
+        },
+        "Evaluation": {
+          "Version": "1.1"
+        },
+        "GEQ": {
+          "Version": "1.0"
+        },
+        "OutputDelay": {
+          "EnableMicroDelay": true,
+          "MaxDelayUs": 1000000,
+          "MinDelayUs": -1000000,
+          "PerOutputDelay": false,
+          "StepDelayUs": 100,
+          "Version": "1.0"
+        },
+        "PEQ": {
+          "Filters": [
+            "OFF",
+            "LS",
+            "PK",
+            "HS",
+            "LP",
+            "HP"
+          ],
+          "Version": "1.0"
+        },
+        "RC": {
+          "Version": "1.0"
+        },
+        "SubLPF": {
+          "Version": "1.0"
+        },
+        "Version": "1.0"
+      },
+      "summary": "Get acoustic capability"
+    },
+    {
+      "command": "getMetaInfo",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getMetaInfo",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "json",
+      "body": {
+        "metaData": {
+          "album": "unknow",
+          "albumArtURI": "unknow",
+          "artist": "unknow",
+          "bitDepth": "unknow",
+          "bitRate": "unknow",
+          "sampleRate": "unknow",
+          "subtitle": "unknow",
+          "title": "unknow",
+          "trackId": "0"
+        }
+      },
+      "summary": "Get Current Track Metadata"
+    },
+    {
+      "command": "getPlayerStatus",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getPlayerStatus",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "json",
+      "body": {
+        "Album": "556E6B6E6F776E",
+        "Artist": "556E6B6E6F776E",
+        "Title": "556E6B6E6F776E",
+        "alarmflag": "0",
+        "ch": "0",
+        "curpos": "0",
+        "eq": "0",
+        "loop": "4",
+        "mode": "43",
+        "mute": "0",
+        "offset_pts": "0",
+        "plicount": "0",
+        "plicurr": "0",
+        "status": "stop",
+        "totlen": "0",
+        "type": "0",
+        "vendor": "",
+        "vol": "8"
+      },
+      "decoded": {
+        "Album": "Unknown",
+        "Artist": "Unknown",
+        "Title": "Unknown"
+      },
+      "summary": "Get the playback status"
+    },
+    {
+      "command": "getAllRoutines",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getAllRoutines",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "json",
+      "body": {
+        "routines": [
+          {
+            "createDate": "2025-10-15T12:36:31Z",
+            "id": "00000000641e7c3b",
+            "index": 0,
+            "name": "pc",
+            "steps": [
+              {
+                "payload": {
+                  "input": "line-in"
+                },
+                "type": "audioInput"
+              },
+              {
+                "payload": {
+                  "mode": 4
+                },
+                "type": "loopMode"
+              },
+              {
+                "payload": {
+                  "subOutput": 0
+                },
+                "type": "subwoofer"
+              }
+            ]
+          },
+          {
+            "createDate": "2025-10-15T12:37:17Z",
+            "id": "0000000036df8ae2",
+            "index": 1,
+            "name": "wifi",
+            "steps": [
+              {
+                "payload": {
+                  "input": "wifi"
+                },
+                "type": "audioInput"
+              },
+              {
+                "payload": {
+                  "mode": 4
+                },
+                "type": "loopMode"
+              },
+              {
+                "payload": {
+                  "subOutput": 0
+                },
+                "type": "subwoofer"
+              }
+            ]
+          },
+          {
+            "createDate": "2025-11-02T13:39:26Z",
+            "id": "000000006cad58b0",
+            "index": 2,
+            "name": "optical in",
+            "steps": [
+              {
+                "payload": {
+                  "input": "optical"
+                },
+                "type": "audioInput"
+              },
+              {
+                "payload": {
+                  "mode": 4
+                },
+                "type": "loopMode"
+              },
+              {
+                "payload": {
+                  "subOutput": 0
+                },
+                "type": "subwoofer"
+              }
+            ]
+          }
+        ]
+      },
+      "summary": "Get all routines"
+    },
+    {
+      "command": "getPresetInfo",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getPresetInfo",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "json",
+      "body": {
+        "preset_list": [],
+        "preset_num": 0
+      },
+      "summary": "Get Preset List"
+    },
+    {
+      "command": "getRoutineCapability",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getRoutineCapability",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "json",
+      "body": {
+        "version": "1.1"
+      },
+      "summary": "Get routine capability"
+    },
+    {
+      "command": "EQGetList",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=EQGetList",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "json",
+      "body": [
+        "Flat",
+        "Acoustic",
+        "Bass Booster",
+        "Bass Reducer",
+        "Classical",
+        "Dance",
+        "Deep",
+        "Electronic",
+        "Game",
+        "Hip-Hop",
+        "Jazz",
+        "Latin",
+        "Loudness",
+        "Lounge",
+        "Movie",
+        "Piano",
+        "Pop",
+        "R&B",
+        "Rock",
+        "Small Speakers",
+        "Spoken Word",
+        "Treble Booster",
+        "Treble Reducer",
+        "Vocal Booster"
+      ],
+      "summary": "Get theGEQ preset list"
+    },
+    {
+      "command": "EQGetBand",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=EQGetBand",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "json",
+      "body": {
+        "EQBand": [
+          {
+            "index": 0,
+            "param_name": "band31hz",
+            "value": 50
+          },
+          {
+            "index": 1,
+            "param_name": "band63hz",
+            "value": 50
+          },
+          {
+            "index": 2,
+            "param_name": "band125hz",
+            "value": 50
+          },
+          {
+            "index": 3,
+            "param_name": "band250hz",
+            "value": 50
+          },
+          {
+            "index": 4,
+            "param_name": "band500hz",
+            "value": 50
+          },
+          {
+            "index": 5,
+            "param_name": "band1khz",
+            "value": 50
+          },
+          {
+            "index": 6,
+            "param_name": "band2khz",
+            "value": 50
+          },
+          {
+            "index": 7,
+            "param_name": "band4khz",
+            "value": 50
+          },
+          {
+            "index": 8,
+            "param_name": "band8khz",
+            "value": 50
+          },
+          {
+            "index": 9,
+            "param_name": "band16khz",
+            "value": 50
+          }
+        ],
+        "EQLevel": 1,
+        "EQStat": "Off",
+        "Name": "xxxx",
+        "channelMode": "Stereo",
+        "pluginURI": "http://moddevices.com/plugins/caps/Eq10HP",
+        "source_name": "xxxxxxx",
+        "status": "OK"
+      },
+      "summary": "Read the current EQ values for 10 bands GEQ (old API, no source specified, current source)"
+    },
+    {
+      "command": "EQGetStat",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=EQGetStat",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "json",
+      "body": {
+        "status": "Failed"
+      },
+      "summary": "Check if the EQ is ON or OFF (often doesn't work, probably deprecated)"
+    },
+    {
+      "command": "RoomCorrGet",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=RoomCorrGet",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "json",
+      "body": {
+        "EQBand": [
+          {
+            "index": 0,
+            "param_name": "a_mode",
+            "value": 1.0
+          },
+          {
+            "index": 1,
+            "param_name": "a_freq",
+            "value": 57.0
+          },
+          {
+            "index": 2,
+            "param_name": "a_q",
+            "value": 2.69
+          },
+          {
+            "index": 3,
+            "param_name": "a_gain",
+            "value": 6.7
+          },
+          {
+            "index": 4,
+            "param_name": "b_mode",
+            "value": 1.0
+          },
+          {
+            "index": 5,
+            "param_name": "b_freq",
+            "value": 89.0
+          },
+          {
+            "index": 6,
+            "param_name": "b_q",
+            "value": 5.09
+          },
+          {
+            "index": 7,
+            "param_name": "b_gain",
+            "value": -2.99
+          },
+          {
+            "index": 8,
+            "param_name": "c_mode",
+            "value": 1.0
+          },
+          {
+            "index": 9,
+            "param_name": "c_freq",
+            "value": 146.0
+          },
+          {
+            "index": 10,
+            "param_name": "c_q",
+            "value": 7.09
+          },
+          {
+            "index": 11,
+            "param_name": "c_gain",
+            "value": -4.65
+          },
+          {
+            "index": 12,
+            "param_name": "d_mode",
+            "value": 1.0
+          },
+          {
+            "index": 13,
+            "param_name": "d_freq",
+            "value": 212.0
+          },
+          {
+            "index": 14,
+            "param_name": "d_q",
+            "value": 6.2
+          },
+          {
+            "index": 15,
+            "param_name": "d_gain",
+            "value": -7.53
+          },
+          {
+            "index": 16,
+            "param_name": "e_mode",
+            "value": 1.0
+          },
+          {
+            "index": 17,
+            "param_name": "e_freq",
+            "value": 260.0
+          },
+          {
+            "index": 18,
+            "param_name": "e_q",
+            "value": 4.97
+          },
+          {
+            "index": 19,
+            "param_name": "e_gain",
+            "value": 3.91
+          },
+          {
+            "index": 20,
+            "param_name": "f_mode",
+            "value": 1.0
+          },
+          {
+            "index": 21,
+            "param_name": "f_freq",
+            "value": 799.0
+          },
+          {
+            "index": 22,
+            "param_name": "f_q",
+            "value": 2.78
+          },
+          {
+            "index": 23,
+            "param_name": "f_gain",
+            "value": 2.48
+          },
+          {
+            "index": 24,
+            "param_name": "g_mode",
+            "value": 1.0
+          },
+          {
+            "index": 25,
+            "param_name": "g_freq",
+            "value": 937.0
+          },
+          {
+            "index": 26,
+            "param_name": "g_q",
+            "value": 6.59
+          },
+          {
+            "index": 27,
+            "param_name": "g_gain",
+            "value": -4.49
+          },
+          {
+            "index": 28,
+            "param_name": "h_mode",
+            "value": 1.0
+          },
+          {
+            "index": 29,
+            "param_name": "h_freq",
+            "value": 1347.0
+          },
+          {
+            "index": 30,
+            "param_name": "h_q",
+            "value": 4.43
+          },
+          {
+            "index": 31,
+            "param_name": "h_gain",
+            "value": 3.74
+          },
+          {
+            "index": 32,
+            "param_name": "i_mode",
+            "value": 1.0
+          },
+          {
+            "index": 33,
+            "param_name": "i_freq",
+            "value": 1709.0
+          },
+          {
+            "index": 34,
+            "param_name": "i_q",
+            "value": 3.25
+          },
+          {
+            "index": 35,
+            "param_name": "i_gain",
+            "value": -2.89
+          },
+          {
+            "index": 36,
+            "param_name": "j_mode",
+            "value": 1.0
+          },
+          {
+            "index": 37,
+            "param_name": "j_freq",
+            "value": 2344.0
+          },
+          {
+            "index": 38,
+            "param_name": "j_q",
+            "value": 5.18
+          },
+          {
+            "index": 39,
+            "param_name": "j_gain",
+            "value": 3.73
+          },
+          {
+            "index": 40,
+            "param_name": "k_mode",
+            "value": -1.0
+          },
+          {
+            "index": 41,
+            "param_name": "k_freq",
+            "value": 18000.0
+          },
+          {
+            "index": 42,
+            "param_name": "k_q",
+            "value": 0.25
+          },
+          {
+            "index": 43,
+            "param_name": "k_gain",
+            "value": 0.0
+          },
+          {
+            "index": 44,
+            "param_name": "l_mode",
+            "value": -1.0
+          },
+          {
+            "index": 45,
+            "param_name": "l_freq",
+            "value": 20000.0
+          },
+          {
+            "index": 46,
+            "param_name": "l_q",
+            "value": 0.25
+          },
+          {
+            "index": 47,
+            "param_name": "l_gain",
+            "value": 0.0
+          }
+        ],
+        "EQLevel": 2,
+        "EQStat": "Off",
+        "Name": "",
+        "channelMode": "Stereo",
+        "pluginURI": "http://moddevices.com/plugins/caps/EqNp",
+        "source_name": "xxxxxxx",
+        "status": "OK"
+      },
+      "summary": "Get the current room correction settings"
+    },
+    {
+      "command": "EQv2GetList:http://moddevices.com/plugins/caps/Eq10HP",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=EQv2GetList:http://moddevices.com/plugins/caps/Eq10HP",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "json",
+      "body": {
+        "custom": [],
+        "preset": [
+          "Flat",
+          "Acoustic",
+          "Bass Booster",
+          "Bass Reducer",
+          "Classical",
+          "Dance",
+          "Deep",
+          "Electronic",
+          "Game",
+          "Hip-Hop",
+          "Jazz",
+          "Latin",
+          "Loudness",
+          "Lounge",
+          "Movie",
+          "Piano",
+          "Pop",
+          "R&B",
+          "Rock",
+          "Small Speakers",
+          "Spoken Word",
+          "Treble Booster",
+          "Treble Reducer",
+          "Vocal Booster"
+        ]
+      },
+      "summary": "Get the preset list for new-style plugin based EQ, using GEQ (old non-encoded API)"
+    },
+    {
+      "command": "EQv2GetList:http://moddevices.com/plugins/caps/EqNp",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=EQv2GetList:http://moddevices.com/plugins/caps/EqNp",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "json",
+      "body": {
+        "custom": [],
+        "preset": []
+      },
+      "summary": "Get the preset list for new-style plugin based EQ, using PEQ (old non-encoded API)"
+    },
+    {
+      "command": "EQv2GetNewList:%7B%22pluginURI%22%3A%22http%3A%2F%2Fmoddevices.com%2Fplugins%2Fcaps%2FEq10HP%22%7D",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=EQv2GetNewList:%7B%22pluginURI%22%3A%22http%3A%2F%2Fmoddevices.com%2Fplugins%2Fcaps%2FEq10HP%22%7D",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "json",
+      "body": {
+        "custom": [],
+        "preset": [
+          {
+            "Name": "Flat",
+            "Type": "Custom",
+            "channelMode": "Stereo"
+          },
+          {
+            "Name": "Acoustic",
+            "Type": "Custom",
+            "channelMode": "Stereo"
+          },
+          {
+            "Name": "Bass Booster",
+            "Type": "Custom",
+            "channelMode": "Stereo"
+          },
+          {
+            "Name": "Bass Reducer",
+            "Type": "Custom",
+            "channelMode": "Stereo"
+          },
+          {
+            "Name": "Classical",
+            "Type": "Custom",
+            "channelMode": "Stereo"
+          },
+          {
+            "Name": "Dance",
+            "Type": "Custom",
+            "channelMode": "Stereo"
+          },
+          {
+            "Name": "Deep",
+            "Type": "Custom",
+            "channelMode": "Stereo"
+          },
+          {
+            "Name": "Electronic",
+            "Type": "Custom",
+            "channelMode": "Stereo"
+          },
+          {
+            "Name": "Game",
+            "Type": "Custom",
+            "channelMode": "Stereo"
+          },
+          {
+            "Name": "Hip-Hop",
+            "Type": "Custom",
+            "channelMode": "Stereo"
+          },
+          {
+            "Name": "Jazz",
+            "Type": "Custom",
+            "channelMode": "Stereo"
+          },
+          {
+            "Name": "Latin",
+            "Type": "Custom",
+            "channelMode": "Stereo"
+          },
+          {
+            "Name": "Loudness",
+            "Type": "Custom",
+            "channelMode": "Stereo"
+          },
+          {
+            "Name": "Lounge",
+            "Type": "Custom",
+            "channelMode": "Stereo"
+          },
+          {
+            "Name": "Movie",
+            "Type": "Custom",
+            "channelMode": "Stereo"
+          },
+          {
+            "Name": "Piano",
+            "Type": "Custom",
+            "channelMode": "Stereo"
+          },
+          {
+            "Name": "Pop",
+            "Type": "Custom",
+            "channelMode": "Stereo"
+          },
+          {
+            "Name": "R&B",
+            "Type": "Custom",
+            "channelMode": "Stereo"
+          },
+          {
+            "Name": "Rock",
+            "Type": "Custom",
+            "channelMode": "Stereo"
+          },
+          {
+            "Name": "Small Speakers",
+            "Type": "Custom",
+            "channelMode": "Stereo"
+          },
+          {
+            "Name": "Spoken Word",
+            "Type": "Custom",
+            "channelMode": "Stereo"
+          },
+          {
+            "Name": "Treble Booster",
+            "Type": "Custom",
+            "channelMode": "Stereo"
+          },
+          {
+            "Name": "Treble Reducer",
+            "Type": "Custom",
+            "channelMode": "Stereo"
+          },
+          {
+            "Name": "Vocal Booster",
+            "Type": "Custom",
+            "channelMode": "Stereo"
+          }
+        ]
+      },
+      "summary": "Get the preset list for new-style plugin based EQ, using GEQ"
+    },
+    {
+      "command": "EQv2GetNewList:%7B%22pluginURI%22%3A%22http%3A%2F%2Fmoddevices.com%2Fplugins%2Fcaps%2FEqNp%22%7D",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=EQv2GetNewList:%7B%22pluginURI%22%3A%22http%3A%2F%2Fmoddevices.com%2Fplugins%2Fcaps%2FEqNp%22%7D",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "json",
+      "body": {
+        "custom": [],
+        "preset": []
+      },
+      "summary": "Get the presets for new-style plugin based EQ, using PEQ"
+    },
+    {
+      "command": "EQGetLV2BandEx:%7B%22pluginURI%22%3A%22http%3A%2F%2Fmoddevices.com%2Fplugins%2Fcaps%2FEq10HP%22%7D",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=EQGetLV2BandEx:%7B%22pluginURI%22%3A%22http%3A%2F%2Fmoddevices.com%2Fplugins%2Fcaps%2FEq10HP%22%7D",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "base64",
+      "body": "eyJzdGF0dXMiOiJPSyIsIkVRTGV2ZWwiOjEsInNvdXJjZV9uYW1lIjoib3B0aWNhbCIsIkVRU3RhdCI6Ik9mZiIsIk5hbWUiOiIiLCJwbHVnaW5VUkkiOiJ7InBsdWdpblVSSSI6Imh0dHA6Ly9tb2RkZXZpY2VzLmNvbS9wbHVnaW5zL2NhcHMvRXExMEhQIn0iLCJjaGFubmVsTW9kZSI6IlN0ZXJlbyIsIkVRQmFuZCI6fQ==",
+      "summary": "Read the new style current source EQ bands for a source (GEQ)"
+    },
+    {
+      "command": "EQGetLV2BandEx:%7B%22pluginURI%22%3A%22http%3A%2F%2Fmoddevices.com%2Fplugins%2Fcaps%2FEqNp%22%7D",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=EQGetLV2BandEx:%7B%22pluginURI%22%3A%22http%3A%2F%2Fmoddevices.com%2Fplugins%2Fcaps%2FEqNp%22%7D",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "base64",
+      "body": "eyJzdGF0dXMiOiJPSyIsIkVRTGV2ZWwiOjEsInNvdXJjZV9uYW1lIjoib3B0aWNhbCIsIkVRU3RhdCI6Ik9mZiIsIk5hbWUiOiIiLCJwbHVnaW5VUkkiOiJ7InBsdWdpblVSSSI6Imh0dHA6Ly9tb2RkZXZpY2VzLmNvbS9wbHVnaW5zL2NhcHMvRXFOcCJ9IiwiY2hhbm5lbE1vZGUiOiJTdGVyZW8iLCJFUUJhbmQiOn0=",
+      "summary": "Read the new style current source EQ bands for a source (PEQ)"
+    },
+    {
+      "command": "EQGetLV2SourceBandEx:%7B%22pluginURI%22%3A%22http%3A%2F%2Fmoddevices.com%2Fplugins%2Fcaps%2FEq10HP%22%2C%22source_name%22%3A%22wifi%22%7D",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=EQGetLV2SourceBandEx:%7B%22pluginURI%22%3A%22http%3A%2F%2Fmoddevices.com%2Fplugins%2Fcaps%2FEq10HP%22%2C%22source_name%22%3A%22wifi%22%7D",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "json",
+      "body": {
+        "EQBand": [
+          {
+            "index": 0,
+            "param_name": "band31hz",
+            "value": 5.5
+          },
+          {
+            "index": 1,
+            "param_name": "band63hz",
+            "value": 4.2
+          },
+          {
+            "index": 2,
+            "param_name": "band125hz",
+            "value": 3.5
+          },
+          {
+            "index": 3,
+            "param_name": "band250hz",
+            "value": 2.5
+          },
+          {
+            "index": 4,
+            "param_name": "band500hz",
+            "value": 1.2
+          },
+          {
+            "index": 5,
+            "param_name": "band1khz",
+            "value": 0.0
+          },
+          {
+            "index": 6,
+            "param_name": "band2khz",
+            "value": 0.0
+          },
+          {
+            "index": 7,
+            "param_name": "band4khz",
+            "value": 0.0
+          },
+          {
+            "index": 8,
+            "param_name": "band8khz",
+            "value": 0.0
+          },
+          {
+            "index": 9,
+            "param_name": "band16khz",
+            "value": 0.0
+          }
+        ],
+        "EQLevel": 1,
+        "EQStat": "Off",
+        "Name": "xxxx xxxxxxx",
+        "channelMode": "Stereo",
+        "pluginURI": "http://moddevices.com/plugins/caps/Eq10HP",
+        "source_name": "xxxx",
+        "status": "OK"
+      },
+      "summary": "Read the new style per-source EQ bands for a source (GEQ)"
+    },
+    {
+      "command": "EQGetLV2SourceBandEx:%7B%22pluginURI%22%3A%22http%3A%2F%2Fmoddevices.com%2Fplugins%2Fcaps%2FEqNp%22%2C%22source_name%22%3A%22wifi%22%7D",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=EQGetLV2SourceBandEx:%7B%22pluginURI%22%3A%22http%3A%2F%2Fmoddevices.com%2Fplugins%2Fcaps%2FEqNp%22%2C%22source_name%22%3A%22wifi%22%7D",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "json",
+      "body": {
+        "EQBand": [
+          {
+            "index": 0,
+            "param_name": "a_mode",
+            "value": 1.0
+          },
+          {
+            "index": 1,
+            "param_name": "a_freq",
+            "value": 31.25
+          },
+          {
+            "index": 2,
+            "param_name": "a_q",
+            "value": 0.25
+          },
+          {
+            "index": 3,
+            "param_name": "a_gain",
+            "value": 0.0
+          },
+          {
+            "index": 4,
+            "param_name": "b_mode",
+            "value": 1.0
+          },
+          {
+            "index": 5,
+            "param_name": "b_freq",
+            "value": 62.5
+          },
+          {
+            "index": 6,
+            "param_name": "b_q",
+            "value": 0.25
+          },
+          {
+            "index": 7,
+            "param_name": "b_gain",
+            "value": 0.0
+          },
+          {
+            "index": 8,
+            "param_name": "c_mode",
+            "value": 1.0
+          },
+          {
+            "index": 9,
+            "param_name": "c_freq",
+            "value": 125.0
+          },
+          {
+            "index": 10,
+            "param_name": "c_q",
+            "value": 0.25
+          },
+          {
+            "index": 11,
+            "param_name": "c_gain",
+            "value": 0.0
+          },
+          {
+            "index": 12,
+            "param_name": "d_mode",
+            "value": 1.0
+          },
+          {
+            "index": 13,
+            "param_name": "d_freq",
+            "value": 250.0
+          },
+          {
+            "index": 14,
+            "param_name": "d_q",
+            "value": 0.25
+          },
+          {
+            "index": 15,
+            "param_name": "d_gain",
+            "value": 0.0
+          },
+          {
+            "index": 16,
+            "param_name": "e_mode",
+            "value": 1.0
+          },
+          {
+            "index": 17,
+            "param_name": "e_freq",
+            "value": 500.0
+          },
+          {
+            "index": 18,
+            "param_name": "e_q",
+            "value": 0.25
+          },
+          {
+            "index": 19,
+            "param_name": "e_gain",
+            "value": 0.0
+          },
+          {
+            "index": 20,
+            "param_name": "f_mode",
+            "value": 1.0
+          },
+          {
+            "index": 21,
+            "param_name": "f_freq",
+            "value": 1000.0
+          },
+          {
+            "index": 22,
+            "param_name": "f_q",
+            "value": 0.25
+          },
+          {
+            "index": 23,
+            "param_name": "f_gain",
+            "value": 0.0
+          },
+          {
+            "index": 24,
+            "param_name": "g_mode",
+            "value": 1.0
+          },
+          {
+            "index": 25,
+            "param_name": "g_freq",
+            "value": 2000.0
+          },
+          {
+            "index": 26,
+            "param_name": "g_q",
+            "value": 0.25
+          },
+          {
+            "index": 27,
+            "param_name": "g_gain",
+            "value": 0.0
+          },
+          {
+            "index": 28,
+            "param_name": "h_mode",
+            "value": 1.0
+          },
+          {
+            "index": 29,
+            "param_name": "h_freq",
+            "value": 4000.0
+          },
+          {
+            "index": 30,
+            "param_name": "h_q",
+            "value": 0.25
+          },
+          {
+            "index": 31,
+            "param_name": "h_gain",
+            "value": 0.0
+          },
+          {
+            "index": 32,
+            "param_name": "i_mode",
+            "value": 1.0
+          },
+          {
+            "index": 33,
+            "param_name": "i_freq",
+            "value": 8000.0
+          },
+          {
+            "index": 34,
+            "param_name": "i_q",
+            "value": 0.25
+          },
+          {
+            "index": 35,
+            "param_name": "i_gain",
+            "value": 0.0
+          },
+          {
+            "index": 36,
+            "param_name": "j_mode",
+            "value": 1.0
+          },
+          {
+            "index": 37,
+            "param_name": "j_freq",
+            "value": 16000.0
+          },
+          {
+            "index": 38,
+            "param_name": "j_q",
+            "value": 0.25
+          },
+          {
+            "index": 39,
+            "param_name": "j_gain",
+            "value": 0.0
+          },
+          {
+            "index": 40,
+            "param_name": "k_mode",
+            "value": -1.0
+          },
+          {
+            "index": 41,
+            "param_name": "k_freq",
+            "value": 18000.0
+          },
+          {
+            "index": 42,
+            "param_name": "k_q",
+            "value": 0.25
+          },
+          {
+            "index": 43,
+            "param_name": "k_gain",
+            "value": 0.0
+          },
+          {
+            "index": 44,
+            "param_name": "l_mode",
+            "value": -1.0
+          },
+          {
+            "index": 45,
+            "param_name": "l_freq",
+            "value": 20000.0
+          },
+          {
+            "index": 46,
+            "param_name": "l_q",
+            "value": 0.25
+          },
+          {
+            "index": 47,
+            "param_name": "l_gain",
+            "value": 0.0
+          }
+        ],
+        "EQLevel": 1,
+        "EQStat": "Off",
+        "Name": "",
+        "channelMode": "Stereo",
+        "pluginURI": "http://moddevices.com/plugins/caps/EqNp",
+        "source_name": "xxxx",
+        "status": "OK"
+      },
+      "summary": "Read the new style per-source EQ bands for a source (PEQ)"
+    },
+    {
+      "command": "EQGetSourceModes",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=EQGetSourceModes",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "json",
+      "body": [
+        {
+          "EQStat": "Off",
+          "Name": "Bass Booster",
+          "NameL": "Bass Booster",
+          "NameR": "Bass Booster",
+          "channelMode": "Stereo",
+          "pluginURI": "http://moddevices.com/plugins/caps/Eq10HP",
+          "source_name": "wifi"
+        },
+        {
+          "EQStat": "Off",
+          "Name": "",
+          "NameL": "",
+          "NameR": "",
+          "channelMode": "Stereo",
+          "pluginURI": "http://moddevices.com/plugins/caps/Eq10HP",
+          "source_name": "line-in"
+        },
+        {
+          "EQStat": "Off",
+          "Name": "",
+          "NameL": "",
+          "NameR": "",
+          "channelMode": "Stereo",
+          "pluginURI": "http://moddevices.com/plugins/caps/Eq10HP",
+          "source_name": "bluetooth"
+        },
+        {
+          "EQStat": "Off",
+          "Name": "Flat",
+          "NameL": "Flat",
+          "NameR": "Flat",
+          "channelMode": "Stereo",
+          "pluginURI": "http://moddevices.com/plugins/caps/Eq10HP",
+          "source_name": "optical"
+        }
+      ],
+      "summary": "Get the EQ source modes"
+    },
+    {
+      "command": "EQGetLV2Band:http://moddevices.com/plugins/caps/Eq10HP",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=EQGetLV2Band:http://moddevices.com/plugins/caps/Eq10HP",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "json",
+      "body": {
+        "EQBand": [
+          {
+            "index": 0,
+            "param_name": "band31hz",
+            "value": 0.0
+          },
+          {
+            "index": 1,
+            "param_name": "band63hz",
+            "value": 0.0
+          },
+          {
+            "index": 2,
+            "param_name": "band125hz",
+            "value": 0.0
+          },
+          {
+            "index": 3,
+            "param_name": "band250hz",
+            "value": 0.0
+          },
+          {
+            "index": 4,
+            "param_name": "band500hz",
+            "value": 0.0
+          },
+          {
+            "index": 5,
+            "param_name": "band1khz",
+            "value": 0.0
+          },
+          {
+            "index": 6,
+            "param_name": "band2khz",
+            "value": 0.0
+          },
+          {
+            "index": 7,
+            "param_name": "band4khz",
+            "value": 0.0
+          },
+          {
+            "index": 8,
+            "param_name": "band8khz",
+            "value": 0.0
+          },
+          {
+            "index": 9,
+            "param_name": "band16khz",
+            "value": 0.0
+          }
+        ],
+        "EQLevel": 1,
+        "EQStat": "Off",
+        "Name": "xxxx",
+        "channelMode": "Stereo",
+        "pluginURI": "http://moddevices.com/plugins/caps/Eq10HP",
+        "source_name": "xxxxxxx",
+        "status": "OK"
+      },
+      "summary": "Read the old-style LV2 band for a plugin, no source specified (GEQ)"
+    },
+    {
+      "command": "EQGetLV2Band:http://moddevices.com/plugins/caps/EqNp",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=EQGetLV2Band:http://moddevices.com/plugins/caps/EqNp",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "json",
+      "body": {
+        "EQBand": [
+          {
+            "index": 0,
+            "param_name": "a_mode",
+            "value": 1.0
+          },
+          {
+            "index": 1,
+            "param_name": "a_freq",
+            "value": 31.25
+          },
+          {
+            "index": 2,
+            "param_name": "a_q",
+            "value": 0.25
+          },
+          {
+            "index": 3,
+            "param_name": "a_gain",
+            "value": 0.0
+          },
+          {
+            "index": 4,
+            "param_name": "b_mode",
+            "value": 1.0
+          },
+          {
+            "index": 5,
+            "param_name": "b_freq",
+            "value": 62.5
+          },
+          {
+            "index": 6,
+            "param_name": "b_q",
+            "value": 0.25
+          },
+          {
+            "index": 7,
+            "param_name": "b_gain",
+            "value": 0.0
+          },
+          {
+            "index": 8,
+            "param_name": "c_mode",
+            "value": 1.0
+          },
+          {
+            "index": 9,
+            "param_name": "c_freq",
+            "value": 125.0
+          },
+          {
+            "index": 10,
+            "param_name": "c_q",
+            "value": 0.25
+          },
+          {
+            "index": 11,
+            "param_name": "c_gain",
+            "value": 0.0
+          },
+          {
+            "index": 12,
+            "param_name": "d_mode",
+            "value": 1.0
+          },
+          {
+            "index": 13,
+            "param_name": "d_freq",
+            "value": 250.0
+          },
+          {
+            "index": 14,
+            "param_name": "d_q",
+            "value": 0.25
+          },
+          {
+            "index": 15,
+            "param_name": "d_gain",
+            "value": 0.0
+          },
+          {
+            "index": 16,
+            "param_name": "e_mode",
+            "value": 1.0
+          },
+          {
+            "index": 17,
+            "param_name": "e_freq",
+            "value": 500.0
+          },
+          {
+            "index": 18,
+            "param_name": "e_q",
+            "value": 0.25
+          },
+          {
+            "index": 19,
+            "param_name": "e_gain",
+            "value": 0.0
+          },
+          {
+            "index": 20,
+            "param_name": "f_mode",
+            "value": 1.0
+          },
+          {
+            "index": 21,
+            "param_name": "f_freq",
+            "value": 1000.0
+          },
+          {
+            "index": 22,
+            "param_name": "f_q",
+            "value": 0.25
+          },
+          {
+            "index": 23,
+            "param_name": "f_gain",
+            "value": 0.0
+          },
+          {
+            "index": 24,
+            "param_name": "g_mode",
+            "value": 1.0
+          },
+          {
+            "index": 25,
+            "param_name": "g_freq",
+            "value": 2000.0
+          },
+          {
+            "index": 26,
+            "param_name": "g_q",
+            "value": 0.25
+          },
+          {
+            "index": 27,
+            "param_name": "g_gain",
+            "value": 0.0
+          },
+          {
+            "index": 28,
+            "param_name": "h_mode",
+            "value": 1.0
+          },
+          {
+            "index": 29,
+            "param_name": "h_freq",
+            "value": 4000.0
+          },
+          {
+            "index": 30,
+            "param_name": "h_q",
+            "value": 0.25
+          },
+          {
+            "index": 31,
+            "param_name": "h_gain",
+            "value": 0.0
+          },
+          {
+            "index": 32,
+            "param_name": "i_mode",
+            "value": 1.0
+          },
+          {
+            "index": 33,
+            "param_name": "i_freq",
+            "value": 8000.0
+          },
+          {
+            "index": 34,
+            "param_name": "i_q",
+            "value": 0.25
+          },
+          {
+            "index": 35,
+            "param_name": "i_gain",
+            "value": 0.0
+          },
+          {
+            "index": 36,
+            "param_name": "j_mode",
+            "value": 1.0
+          },
+          {
+            "index": 37,
+            "param_name": "j_freq",
+            "value": 16000.0
+          },
+          {
+            "index": 38,
+            "param_name": "j_q",
+            "value": 0.25
+          },
+          {
+            "index": 39,
+            "param_name": "j_gain",
+            "value": 0.0
+          },
+          {
+            "index": 40,
+            "param_name": "k_mode",
+            "value": -1.0
+          },
+          {
+            "index": 41,
+            "param_name": "k_freq",
+            "value": 18000.0
+          },
+          {
+            "index": 42,
+            "param_name": "k_q",
+            "value": 0.25
+          },
+          {
+            "index": 43,
+            "param_name": "k_gain",
+            "value": 0.0
+          },
+          {
+            "index": 44,
+            "param_name": "l_mode",
+            "value": -1.0
+          },
+          {
+            "index": 45,
+            "param_name": "l_freq",
+            "value": 20000.0
+          },
+          {
+            "index": 46,
+            "param_name": "l_q",
+            "value": 0.25
+          },
+          {
+            "index": 47,
+            "param_name": "l_gain",
+            "value": 0.0
+          }
+        ],
+        "EQLevel": 1,
+        "EQStat": "Off",
+        "Name": "",
+        "channelMode": "Stereo",
+        "pluginURI": "http://moddevices.com/plugins/caps/EqNp",
+        "source_name": "xxxxxxx",
+        "status": "OK"
+      },
+      "summary": "Read the old-style LV2 band for a plugin, no source specified (PEQ)"
+    },
+    {
+      "command": "EQGetLV2SourceBand:http://moddevices.com/plugins/caps/Eq10HP:wifi",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=EQGetLV2SourceBand:http://moddevices.com/plugins/caps/Eq10HP:wifi",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "json",
+      "body": {
+        "status": "Failed"
+      },
+      "summary": "Read the old-style per-source EQ bands for a source (GEQ) — unconfirmed param format"
+    },
+    {
+      "command": "EQGetLV2SourceBand:http://moddevices.com/plugins/caps/EqNp:wifi",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=EQGetLV2SourceBand:http://moddevices.com/plugins/caps/EqNp:wifi",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "json",
+      "body": {
+        "status": "Failed"
+      },
+      "summary": "Read the old-style per-source EQ bands for a source (PEQ) — unconfirmed param format"
+    },
+    {
+      "command": "RoomCorrGetMode",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=RoomCorrGetMode",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "json",
+      "body": {
+        "EQBand": [
+          {
+            "index": 0,
+            "param_name": "a_mode",
+            "value": 1.0
+          },
+          {
+            "index": 1,
+            "param_name": "a_freq",
+            "value": 57.0
+          },
+          {
+            "index": 2,
+            "param_name": "a_q",
+            "value": 2.69
+          },
+          {
+            "index": 3,
+            "param_name": "a_gain",
+            "value": 6.7
+          },
+          {
+            "index": 4,
+            "param_name": "b_mode",
+            "value": 1.0
+          },
+          {
+            "index": 5,
+            "param_name": "b_freq",
+            "value": 89.0
+          },
+          {
+            "index": 6,
+            "param_name": "b_q",
+            "value": 5.09
+          },
+          {
+            "index": 7,
+            "param_name": "b_gain",
+            "value": -2.99
+          },
+          {
+            "index": 8,
+            "param_name": "c_mode",
+            "value": 1.0
+          },
+          {
+            "index": 9,
+            "param_name": "c_freq",
+            "value": 146.0
+          },
+          {
+            "index": 10,
+            "param_name": "c_q",
+            "value": 7.09
+          },
+          {
+            "index": 11,
+            "param_name": "c_gain",
+            "value": -4.65
+          },
+          {
+            "index": 12,
+            "param_name": "d_mode",
+            "value": 1.0
+          },
+          {
+            "index": 13,
+            "param_name": "d_freq",
+            "value": 212.0
+          },
+          {
+            "index": 14,
+            "param_name": "d_q",
+            "value": 6.2
+          },
+          {
+            "index": 15,
+            "param_name": "d_gain",
+            "value": -7.53
+          },
+          {
+            "index": 16,
+            "param_name": "e_mode",
+            "value": 1.0
+          },
+          {
+            "index": 17,
+            "param_name": "e_freq",
+            "value": 260.0
+          },
+          {
+            "index": 18,
+            "param_name": "e_q",
+            "value": 4.97
+          },
+          {
+            "index": 19,
+            "param_name": "e_gain",
+            "value": 3.91
+          },
+          {
+            "index": 20,
+            "param_name": "f_mode",
+            "value": 1.0
+          },
+          {
+            "index": 21,
+            "param_name": "f_freq",
+            "value": 799.0
+          },
+          {
+            "index": 22,
+            "param_name": "f_q",
+            "value": 2.78
+          },
+          {
+            "index": 23,
+            "param_name": "f_gain",
+            "value": 2.48
+          },
+          {
+            "index": 24,
+            "param_name": "g_mode",
+            "value": 1.0
+          },
+          {
+            "index": 25,
+            "param_name": "g_freq",
+            "value": 937.0
+          },
+          {
+            "index": 26,
+            "param_name": "g_q",
+            "value": 6.59
+          },
+          {
+            "index": 27,
+            "param_name": "g_gain",
+            "value": -4.49
+          },
+          {
+            "index": 28,
+            "param_name": "h_mode",
+            "value": 1.0
+          },
+          {
+            "index": 29,
+            "param_name": "h_freq",
+            "value": 1347.0
+          },
+          {
+            "index": 30,
+            "param_name": "h_q",
+            "value": 4.43
+          },
+          {
+            "index": 31,
+            "param_name": "h_gain",
+            "value": 3.74
+          },
+          {
+            "index": 32,
+            "param_name": "i_mode",
+            "value": 1.0
+          },
+          {
+            "index": 33,
+            "param_name": "i_freq",
+            "value": 1709.0
+          },
+          {
+            "index": 34,
+            "param_name": "i_q",
+            "value": 3.25
+          },
+          {
+            "index": 35,
+            "param_name": "i_gain",
+            "value": -2.89
+          },
+          {
+            "index": 36,
+            "param_name": "j_mode",
+            "value": 1.0
+          },
+          {
+            "index": 37,
+            "param_name": "j_freq",
+            "value": 2344.0
+          },
+          {
+            "index": 38,
+            "param_name": "j_q",
+            "value": 5.18
+          },
+          {
+            "index": 39,
+            "param_name": "j_gain",
+            "value": 3.73
+          },
+          {
+            "index": 40,
+            "param_name": "k_mode",
+            "value": -1.0
+          },
+          {
+            "index": 41,
+            "param_name": "k_freq",
+            "value": 18000.0
+          },
+          {
+            "index": 42,
+            "param_name": "k_q",
+            "value": 0.25
+          },
+          {
+            "index": 43,
+            "param_name": "k_gain",
+            "value": 0.0
+          },
+          {
+            "index": 44,
+            "param_name": "l_mode",
+            "value": -1.0
+          },
+          {
+            "index": 45,
+            "param_name": "l_freq",
+            "value": 20000.0
+          },
+          {
+            "index": 46,
+            "param_name": "l_q",
+            "value": 0.25
+          },
+          {
+            "index": 47,
+            "param_name": "l_gain",
+            "value": 0.0
+          }
+        ],
+        "EQLevel": 2,
+        "EQStat": "Off",
+        "Name": "",
+        "channelMode": "Stereo",
+        "pluginURI": "http://moddevices.com/plugins/caps/EqNp",
+        "source_name": "xxxxxxx",
+        "status": "OK"
+      },
+      "summary": "Get the current room correction mode"
+    },
+    {
+      "command": "getChannelBalance",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getChannelBalance",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "json",
+      "body": 0.0,
+      "summary": "Get left/right channel balance"
+    },
+    {
+      "command": "getChannelMode",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getChannelMode",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "json",
+      "body": 0,
+      "summary": "Get channel mode"
+    },
+    {
+      "command": "getSubLPF",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getSubLPF",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "json",
+      "body": {
+        "cross": 80.0,
+        "level": 0.0,
+        "main_filter": 1,
+        "mix_sub": 1,
+        "output_mode": 1,
+        "phase": 0.0,
+        "status": 0,
+        "sub_delay": 0.0,
+        "sub_filter": 1
+      },
+      "summary": "Get subwoofer LPF"
+    },
+    {
+      "command": "getMRMSubLPF:0.0.0.0",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getMRMSubLPF:0.0.0.0",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "json",
+      "body": {
+        "devList": [
+          {
+            "SubLPF": {
+              "cross": 80.0,
+              "level": 0.0,
+              "main_filter": 1,
+              "mix_sub": 1,
+              "phase": 0.0,
+              "status": 0,
+              "sub_filter": 1
+            },
+            "type": "wireless",
+            "uuid": "xxxxxxxxxxxxxxxxxxxxxxxx"
+          }
+        ],
+        "version": "1.0"
+      },
+      "summary": "Get multi-room sub LPF for a slave (placeholder IP; needs a real slave to return real data)"
+    },
+    {
+      "command": "getAudioOutMax32bit",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getAudioOutMax32bit",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "json",
+      "body": 1,
+      "summary": "Get audio output maximum 32-bit support"
+    },
+    {
+      "command": "getAudioOutputVrmsSupportList",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getAudioOutputVrmsSupportList",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "text",
+      "body": "unknown command",
+      "unsupported": true,
+      "summary": "Get list of audio outputs that support VRMS"
+    },
+    {
+      "command": "getAuxAutoSenseEnable",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getAuxAutoSenseEnable",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "json",
+      "body": 0,
+      "summary": "Get AUX auto-sense enable status"
+    },
+    {
+      "command": "getAuxInMaxCap",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getAuxInMaxCap",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "text",
+      "body": "96000:16",
+      "summary": "Get AUX input maximum capacity"
+    },
+    {
+      "command": "getCoaxOutMaxCap",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getCoaxOutMaxCap",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "text",
+      "body": "48000:16:0",
+      "summary": "Get the maximum capabilities of the coaxial output"
+    },
+    {
+      "command": "getDigitalFilterType",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getDigitalFilterType",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "json",
+      "body": 6,
+      "summary": "Get current digital filter type"
+    },
+    {
+      "command": "getDigitalFilterTypeSupportList",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getDigitalFilterTypeSupportList",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "json",
+      "body": [
+        {
+          "args": [
+            "amixer cset name='AK2 DigiFilt' 0"
+          ],
+          "index": 1,
+          "value": "Sharp Roll-Off Filter"
+        },
+        {
+          "args": [
+            "amixer cset name='AK2 DigiFilt' 1"
+          ],
+          "index": 2,
+          "value": "Slow Roll-Off Filter"
+        },
+        {
+          "args": [
+            "amixer cset name='AK2 DigiFilt' 2"
+          ],
+          "index": 3,
+          "value": "Short Delay Sharp Roll-Off Filter"
+        },
+        {
+          "args": [
+            "amixer cset name='AK2 DigiFilt' 3"
+          ],
+          "index": 4,
+          "value": "Short Delay Slow Roll-Off Filter"
+        },
+        {
+          "args": [
+            "amixer cset name='AK2 DigiFilt' 4"
+          ],
+          "index": 5,
+          "value": "Super Slow Roll-Off Filter(NOS)"
+        },
+        {
+          "args": [
+            "amixer cset name='AK2 DigiFilt' 5"
+          ],
+          "index": 6,
+          "value": "Low Dispersion Short Delay Filter"
+        }
+      ],
+      "summary": "Get list of supported digital filter types"
+    },
+    {
+      "command": "getHDMIAutoSenseEnable",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getHDMIAutoSenseEnable",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "text",
+      "body": "unknown command",
+      "unsupported": true,
+      "summary": "Get HDMI auto-sense enable"
+    },
+    {
+      "command": "getLineInMaxCap",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getLineInMaxCap",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "text",
+      "body": "unknown command",
+      "unsupported": true,
+      "summary": "Get LINE IN maximum capacity"
+    },
+    {
+      "command": "getNewAudioOutputHardwareMode",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getNewAudioOutputHardwareMode",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "json",
+      "body": {
+        "audiocast": "0",
+        "hardware": "2",
+        "source": "0"
+      },
+      "summary": "Get audio output mode"
+    },
+    {
+      "command": "getOutputDigitalFilterTypeSupportList",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getOutputDigitalFilterTypeSupportList",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "text",
+      "body": "unknown command",
+      "unsupported": true,
+      "summary": "Get list of supported output digital filter types"
+    },
+    {
+      "command": "getOutputVoltage",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getOutputVoltage",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "json",
+      "body": 1,
+      "summary": "Get output voltage"
+    },
+    {
+      "command": "getOutputDigitalFilterType:AUDIO_OUTPUT_COAX_MODE",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getOutputDigitalFilterType:AUDIO_OUTPUT_COAX_MODE",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "text",
+      "body": "unknown command",
+      "unsupported": true,
+      "summary": "Get digital filter for COAX output (should be 0)"
+    },
+    {
+      "command": "getOutputDigitalFilterType:AUDIO_OUTPUT_SPDIF_MODE",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getOutputDigitalFilterType:AUDIO_OUTPUT_SPDIF_MODE",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "text",
+      "body": "unknown command",
+      "unsupported": true,
+      "summary": "Get digital filter for SPDIF output (should be 0)"
+    },
+    {
+      "command": "getOutputDigitalFilterType:AUDIO_OUTPUT_AUX_MODE",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getOutputDigitalFilterType:AUDIO_OUTPUT_AUX_MODE",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "text",
+      "body": "unknown command",
+      "unsupported": true,
+      "summary": "Get digital filter for main analog output"
+    },
+    {
+      "command": "getOutputDigitalFilterType:AUDIO_OUTPUT_PHONE_JACK_MODE",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getOutputDigitalFilterType:AUDIO_OUTPUT_PHONE_JACK_MODE",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "text",
+      "body": "unknown command",
+      "unsupported": true,
+      "summary": "Get digital filter for headphone analog output"
+    },
+    {
+      "command": "getOutputDigitalFilterType:AUDIO_OUTPUT_UAC_CARD_MODE",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getOutputDigitalFilterType:AUDIO_OUTPUT_UAC_CARD_MODE",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "text",
+      "body": "unknown command",
+      "unsupported": true,
+      "summary": "Get digital filter for USB output (should be 0)"
+    },
+    {
+      "command": "getSpdifAutoSenseEnable",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getSpdifAutoSenseEnable",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "json",
+      "body": 1,
+      "summary": "Get SPDIF auto-sense enable status"
+    },
+    {
+      "command": "getSpdifInNoiseRemove",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getSpdifInNoiseRemove",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "json",
+      "body": 0,
+      "summary": "Get SPDIF input noise removal status"
+    },
+    {
+      "command": "getSpdifOutMaxCap",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getSpdifOutMaxCap",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "text",
+      "body": "192000:16:0",
+      "summary": "Get SPDIF output maximum capabilities"
+    },
+    {
+      "command": "getSpdifOutSwitchDelayMs",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getSpdifOutSwitchDelayMs",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "json",
+      "body": 0,
+      "summary": "Get SPDIF sample rate switch latency"
+    },
+    {
+      "command": "getUacOutMaxCap",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getUacOutMaxCap",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "text",
+      "body": "unknown command",
+      "unsupported": true,
+      "summary": "Get UAC output maximum capacity"
+    },
+    {
+      "command": "getSoundCardModeSupportList",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getSoundCardModeSupportList",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "text",
+      "body": "unknown command",
+      "unsupported": true,
+      "summary": "Get sound card mode support list"
+    },
+    {
+      "command": "GetAirplayExtraDelay",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=GetAirplayExtraDelay",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "json",
+      "body": {
+        "AirplayExtraDelay": -10
+      },
+      "summary": "Get AirPlay extra delay"
+    },
+    {
+      "command": "GetFadeFeature",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=GetFadeFeature",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "json",
+      "body": {
+        "FadeFeature": 1
+      },
+      "summary": "Get fade in/out feature status"
+    },
+    {
+      "command": "GetSyncPlayExtraDelay",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=GetSyncPlayExtraDelay",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "json",
+      "body": {
+        "SyncPlayExtraDelay": 7.0
+      },
+      "summary": "Get sync play extra delay (multiroom audio sync timing)"
+    },
+    {
+      "command": "PHONO_MODE_SWITCH_GET",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=PHONO_MODE_SWITCH_GET",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "text",
+      "body": "unknown command",
+      "unsupported": true,
+      "summary": "Get phono mode switch state"
+    },
+    {
+      "command": "getActiveSoundCardOutputMode",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getActiveSoundCardOutputMode",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "text",
+      "body": "unknown command",
+      "unsupported": true,
+      "summary": "Get the active sound card output mode"
+    },
+    {
+      "command": "getAutoSenseEnable",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getAutoSenseEnable",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "json",
+      "body": 0,
+      "summary": "Get auto-sense enable status"
+    },
+    {
+      "command": "getAuxVoltageSupportList",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getAuxVoltageSupportList",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "json",
+      "body": [
+        {
+          "args": [
+            "amixer cset name='AK2 GainControl' 2",
+            "amixer cset name='AK2 Play Volume' 245"
+          ],
+          "index": 1,
+          "value": "1000mV"
+        },
+        {
+          "args": [
+            "amixer cset name='AK2 GainControl' 0",
+            "amixer cset name='AK2 Play Volume' 255"
+          ],
+          "index": 2,
+          "value": "2000mV"
+        },
+        {
+          "args": [
+            "amixer cset name='AK2 GainControl' 2",
+            "amixer cset name='AK2 Play Volume' 241"
+          ],
+          "index": 3,
+          "value": "800mV"
+        },
+        {
+          "args": [
+            "amixer cset name='AK2 GainControl' 2",
+            "amixer cset name='AK2 Play Volume' 233"
+          ],
+          "index": 4,
+          "value": "500mV"
+        },
+        {
+          "args": [
+            "amixer cset name='AK2 GainControl' 2",
+            "amixer cset name='AK2 Play Volume' 217"
+          ],
+          "index": 5,
+          "value": "200mV"
+        }
+      ],
+      "summary": "Get auxiliary voltage support list"
+    },
+    {
+      "command": "getCecPowerCtrl",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getCecPowerCtrl",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "text",
+      "body": "unknown command",
+      "unsupported": true,
+      "summary": "Get HDMI-CEC power control status"
+    },
+    {
+      "command": "getDigitalInputAudioTypeSupport",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getDigitalInputAudioTypeSupport",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "text",
+      "body": "0x1",
+      "summary": "Get supported digital input audio types"
+    },
+    {
+      "command": "getInputModeSupportList",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getInputModeSupportList",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "text",
+      "body": "unknown command",
+      "unsupported": true,
+      "summary": "Get list of supported input modes"
+    },
+    {
+      "command": "getLMPFilterCapability",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getLMPFilterCapability",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "json",
+      "body": {
+        "version": "1.1"
+      },
+      "summary": "Get LMP filter capability"
+    },
+    {
+      "command": "getMQAReceiverCap",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getMQAReceiverCap",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "json",
+      "body": 1,
+      "summary": "Get MQA receiver capacity"
+    },
+    {
+      "command": "getMainSubExtraDelay",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getMainSubExtraDelay",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "text",
+      "body": "unknown command",
+      "unsupported": true,
+      "summary": "Get main/sub extra delay (multiroom audio sync timing)"
+    },
+    {
+      "command": "getModeRename",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getModeRename",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "text",
+      "body": "Failed",
+      "unsupported": true,
+      "summary": "Get input mode rename information"
+    },
+    {
+      "command": "getPlayModeGainConfig",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getPlayModeGainConfig",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "json",
+      "body": {
+        "config": [
+          {
+            "gain": "0.0",
+            "mode": 10,
+            "name": "wifi"
+          },
+          {
+            "gain": "0.0",
+            "mode": 41,
+            "name": "bluetooth"
+          },
+          {
+            "gain": "4.4",
+            "mode": 40,
+            "name": "line-in"
+          },
+          {
+            "gain": "0.0",
+            "mode": 43,
+            "name": "optical"
+          }
+        ],
+        "enable": 1,
+        "max_gain": "10.0",
+        "min_gain": "-10.0"
+      },
+      "summary": "Get play mode gain configuration"
+    },
+    {
+      "command": "getPlayModeVolumeEnable",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getPlayModeVolumeEnable",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "json",
+      "body": 1,
+      "summary": "Get play mode volume enable"
+    },
+    {
+      "command": "getPlayModeVolumeValue",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getPlayModeVolumeValue",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "json",
+      "body": [
+        {
+          "active": 0,
+          "mode": 10,
+          "name": "wifi",
+          "stored": 1,
+          "volume": 43
+        },
+        {
+          "active": 0,
+          "mode": 40,
+          "name": "line-in",
+          "stored": 1,
+          "volume": 93
+        },
+        {
+          "active": 1,
+          "mode": 43,
+          "name": "optical",
+          "stored": 1,
+          "volume": 8
+        }
+      ],
+      "summary": "Get play mode volume value"
+    },
+    {
+      "command": "getSoftMute",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getSoftMute",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "text",
+      "body": "unknown command",
+      "unsupported": true,
+      "summary": "Get soft mute status"
+    },
+    {
+      "command": "get_button_volume_step",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=get_button_volume_step",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "text",
+      "body": "unknown command",
+      "unsupported": true,
+      "summary": "Get the volume step of the buttons"
+    },
+    {
+      "command": "get_remote_volume_step",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=get_remote_volume_step",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "json",
+      "body": {
+        "remote_volume_step": 2,
+        "status": "OK"
+      },
+      "summary": "Get the remote volume step"
+    },
+    {
+      "command": "Button_Enable_GET",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=Button_Enable_GET",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "json",
+      "body": 1,
+      "summary": "Get button enable status"
+    },
+    {
+      "command": "LED_SWITCH_GET",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=LED_SWITCH_GET",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "json",
+      "body": 0,
+      "summary": "Get LED switch status"
+    },
+    {
+      "command": "Reload_Button_GET",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=Reload_Button_GET",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "json",
+      "body": {
+        "buttons": [
+          {
+            "index": "play/pause",
+            "value": "play/pause"
+          },
+          {
+            "index": "VolumeUp",
+            "value": "VolumeUp"
+          },
+          {
+            "index": "VolumeDown",
+            "value": "VolumeDown"
+          },
+          {
+            "index": "smartButton",
+            "value": "smartButton"
+          },
+          {
+            "index": "factoryreset",
+            "value": "factoryreset"
+          },
+          {
+            "index": "wpssetup",
+            "value": "wpssetup"
+          },
+          {
+            "index": "btpair",
+            "value": "btpair"
+          }
+        ],
+        "version": "1.0"
+      },
+      "summary": "Reload button status"
+    },
+    {
+      "command": "getblediscoveryresult",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getblediscoveryresult",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "json",
+      "body": {
+        "num": 0,
+        "scan_status": 0
+      },
+      "summary": "Get BLE discovery result"
+    },
+    {
+      "command": "multiroom:getSlaveList",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=multiroom:getSlaveList",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "json",
+      "body": {
+        "group_type": -1,
+        "slaves": 0,
+        "surround": 0,
+        "wmrm_version": "4.3"
+      },
+      "summary": "Get a list of LinkPlay available"
+    },
+    {
+      "command": "multiroom:getnamegrouplist",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=multiroom:getnamegrouplist",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "json",
+      "body": {
+        "current_group_id": "",
+        "grouplist": [
+          {
+            "channel": -1,
+            "group_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+            "group_name": "WiiM Pro Plus + 0",
+            "group_type": 1,
+            "slavelist": [],
+            "update_time": "1779520116"
+          }
+        ]
+      },
+      "summary": "Get the list of group names in multi-room mode"
+    },
+    {
+      "command": "multiroom:ConfigGet:leadtime",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=multiroom:ConfigGet:leadtime",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "json",
+      "body": {
+        "leadtime": "xxx",
+        "status": "OK"
+      },
+      "summary": "Multi-room get lead time"
+    },
+    {
+      "command": "multiroom:ConfigGet:realtime_cache_limit",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=multiroom:ConfigGet:realtime_cache_limit",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "json",
+      "body": {
+        "realtime_cache_limit": "800",
+        "status": "OK"
+      },
+      "summary": "Get the real-time cache limit"
+    },
+    {
+      "command": "multiroom:subwooferGetPairInfo",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=multiroom:subwooferGetPairInfo",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "json",
+      "body": {
+        "subwoofer": []
+      },
+      "summary": "Multi-room subwoofer get pair info"
+    },
+    {
+      "command": "getblehidstatus",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getblehidstatus",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "json",
+      "body": {
+        "battery": 90,
+        "doubleclickdisable": 0,
+        "error": 0,
+        "mac": "xx:xx:xx:xx:xx:xx",
+        "name": "xxxx xxxxx xxxxxx",
+        "powerstatus": 0,
+        "rssi": -60,
+        "status": "connected",
+        "ver": ""
+      },
+      "summary": "Get BLE HID status"
+    },
+    {
+      "command": "getbtstatus",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getbtstatus",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "json",
+      "body": {
+        "a2dp_sink": {
+          "link_state": "disconnected",
+          "name": "",
+          "pairing": 0
+        },
+        "server": 68,
+        "status": 6
+      },
+      "summary": "Get Bluetooth status"
+    },
+    {
+      "command": "getbtpairstatus",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getbtpairstatus",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "json",
+      "body": {
+        "result": 0
+      },
+      "summary": "Get Bluetooth pairing status"
+    },
+    {
+      "command": "getbthistory",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getbthistory",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "json",
+      "body": {
+        "num": 0,
+        "scan_status": 0
+      },
+      "summary": "Get paired Bluetooth devices"
+    },
+    {
+      "command": "getbtPairDevStat",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getbtPairDevStat",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "text",
+      "body": "unknown command",
+      "unsupported": true,
+      "summary": "Get Bluetooth pair device status"
+    },
+    {
+      "command": "getbtdiscoveryresult",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getbtdiscoveryresult",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "json",
+      "body": {
+        "num": 0,
+        "scan_status": 0
+      },
+      "summary": "Get Bluetooth (classic) device scan result — distinct from getblediscoveryresult (BLE)"
+    },
+    {
+      "command": "getDebugInfo",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getDebugInfo",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "json",
+      "body": {
+        "a01controller_crash": "0",
+        "alexa_response_status": "0",
+        "asr_language": "en_us",
+        "asr_ongoing": "0",
+        "asr_pause_request": "0",
+        "asr_ready": "x",
+        "asr_region": "en_us",
+        "asr_tts_crash": "0",
+        "bt_play_status": "1",
+        "capture_play_status": "2",
+        "connecting_type": "0",
+        "device_status": "0",
+        "ezlink_active": "0",
+        "gapless": "0",
+        "imuzop_pid": "0",
+        "mcu_crash": "0",
+        "pause_flag_for_alexa": "0",
+        "play_mode": "43",
+        "play_status": "0",
+        "plm_notify_flag": "0",
+        "power_ticks": "201775094",
+        "priv_languages": "4588",
+        "process_deadlock": "x",
+        "retail_mode": "0",
+        "slave": "0",
+        "slave_default_latency": "0",
+        "slave_latency": "7000",
+        "slave_num": "0",
+        "slave_playing": "0",
+        "slave_status": "0",
+        "smplay_skip_silence": "0",
+        "spotify_play_status": "2",
+        "system_ready": "x",
+        "time_sync_ready": "x",
+        "upnp_action_lost0": "0",
+        "upnp_action_lost1": "0",
+        "upnp_action_lost2": "0",
+        "upnp_action_lost3": "0",
+        "upnp_action_remain0": "0",
+        "upnp_action_remain1": "0",
+        "upnp_action_remain2": "0",
+        "upnp_action_remain3": "0",
+        "upnp_action_total0": "28",
+        "upnp_action_total1": "29",
+        "upnp_action_total2": "29",
+        "upnp_action_total3": "29",
+        "wifi_abort_date": ""
+      },
+      "summary": "Get device debug information"
+    },
+    {
+      "command": "getDeviceNameChangeable",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getDeviceNameChangeable",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "text",
+      "body": "OK",
+      "summary": "Get device name changeable status"
+    },
+    {
+      "command": "getHwErrorInfo",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getHwErrorInfo",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "json",
+      "body": {
+        "badBlockNum": 4,
+        "ethError": 0,
+        "flashSpaceError": 0,
+        "mfiChipError": 0,
+        "soundCardHwError": {
+          "ak4493": 0
+        },
+        "totalBlockNum": 2000
+      },
+      "summary": "Get hardware error information"
+    },
+    {
+      "command": "getFirmwareVersion",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getFirmwareVersion",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "text",
+      "body": "unknown command",
+      "unsupported": true,
+      "summary": "Get firmware version"
+    },
+    {
+      "command": "getFeatureCapbility",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getFeatureCapbility",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "text",
+      "body": "unknown command",
+      "unsupported": true,
+      "summary": "Get feature capability"
+    },
+    {
+      "command": "getNetwork",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getNetwork",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "text",
+      "body": "unknown command",
+      "unsupported": true,
+      "summary": "Get the network configuration"
+    },
+    {
+      "command": "getNetworkHealth",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getNetworkHealth",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "json",
+      "body": {
+        "disconnectedCount": 1,
+        "ethDhcpTime": 2,
+        "ethDisconnectedCount": 0,
+        "ethIsStaticIp": 0,
+        "ethNotReady": 0,
+        "lastDisconnectedMsg": "",
+        "lastDisconnectedTime": 1,
+        "pingCheckFailedCount": 0,
+        "wlanAbnormalRebootTimes": 0,
+        "wlanBand": 0,
+        "wlanConnectTime": 0,
+        "wlanDhcpTime": 0,
+        "wlanHistoryNum": 0,
+        "wlanIpChanged": 0,
+        "wlanIsStaticIp": 0,
+        "wlanRoamingOn": 0
+      },
+      "summary": "Get network health status"
+    },
+    {
+      "command": "wlanGetConnectState",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=wlanGetConnectState",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "text",
+      "body": "FAIL",
+      "summary": "Get the connection status"
+    },
+    {
+      "command": "GetCurrentWirelessConnect",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=GetCurrentWirelessConnect",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "text",
+      "body": "unknown command",
+      "unsupported": true,
+      "summary": "Get current wireless connection information"
+    },
+    {
+      "command": "streamServicesCapability",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=streamServicesCapability",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "json",
+      "body": {
+        "encrypt": "1.0",
+        "streamServices": [
+          {
+            "id": "Prime",
+            "quality": [
+              "SD",
+              "HD",
+              "UHD"
+            ],
+            "version": "1.4"
+          },
+          {
+            "id": "Tidal",
+            "quality": [
+              "LOW",
+              "HIGH",
+              "LOSSLESS",
+              "HI_RES"
+            ],
+            "replayGain": true,
+            "version": "2.3"
+          },
+          {
+            "id": "newTuneIn",
+            "version": "1.2"
+          },
+          {
+            "id": "Rhapsody",
+            "version": "1.1"
+          },
+          {
+            "id": "SoundMachine",
+            "version": "1.2"
+          },
+          {
+            "brand": "WiiM",
+            "hw": "WiiM Pro",
+            "id": "Deezer2",
+            "quality": [
+              "LOW",
+              "MEDIUM",
+              "HIGH",
+              "LOSSLESS"
+            ],
+            "version": "1.1"
+          },
+          {
+            "id": "Qobuz",
+            "quality": [
+              "5",
+              "6",
+              "7",
+              "27"
+            ],
+            "replayGain": true,
+            "version": "2.2"
+          },
+          {
+            "id": "iHeartRadio",
+            "version": "1.0"
+          },
+          {
+            "id": "iHeart",
+            "version": "1.0"
+          },
+          {
+            "id": "Pandora2",
+            "quality": [
+              "Low",
+              "Medium",
+              "High"
+            ],
+            "version": "1.1"
+          },
+          {
+            "id": "vTuner",
+            "version": "1.1"
+          },
+          {
+            "id": "CalmRadio",
+            "quality": [
+              "64",
+              "128",
+              "192",
+              "320"
+            ],
+            "version": "1.1"
+          },
+          {
+            "id": "SoundCloud",
+            "version": "1.3"
+          },
+          {
+            "id": "Plex",
+            "replayGain": true,
+            "version": "1.4"
+          },
+          {
+            "id": "KKBOX",
+            "quality": [
+              "aac_320_dash_cenc",
+              "flac_16_dash_cenc",
+              "flac_24_dash_cenc"
+            ],
+            "version": "1.0"
+          },
+          {
+            "id": "RadioParadise2",
+            "version": "1.0"
+          },
+          {
+            "id": "HotMix",
+            "version": "1.0"
+          },
+          {
+            "active": true,
+            "configurable": true,
+            "id": "SpotifyConnect",
+            "version": "1.3"
+          },
+          {
+            "active": true,
+            "configurable": true,
+            "id": "TidalConnect",
+            "version": "1.0"
+          },
+          {
+            "active": true,
+            "configurable": true,
+            "id": "AVS_MRM",
+            "version": "1.0"
+          },
+          {
+            "active": true,
+            "configurable": true,
+            "id": "Squeezelite",
+            "version": "1.2"
+          },
+          {
+            "active": false,
+            "configurable": true,
+            "id": "Roon",
+            "version": "1.0"
+          },
+          {
+            "active": false,
+            "configurable": true,
+            "id": "Soundtrack",
+            "version": "1.0"
+          },
+          {
+            "active": false,
+            "configurable": true,
+            "id": "QobuzConnect",
+            "version": "1.0"
+          },
+          {
+            "active": false,
+            "configurable": true,
+            "id": "AudioCast",
+            "version": "1.0"
+          },
+          {
+            "id": "Samba",
+            "version": "1.0"
+          },
+          {
+            "brand": "WiiM",
+            "id": "YouTubeMusic",
+            "model": "Pro Plus",
+            "version": "1.0"
+          }
+        ],
+        "version": "1.6"
+      },
+      "summary": "Get streaming services capabilities"
+    },
+    {
+      "command": "getbatteryval",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getbatteryval",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "text",
+      "body": "unknown command",
+      "unsupported": true,
+      "summary": "Get battery value (battery-powered models only)"
+    },
+    {
+      "command": "getAlarmClock:0",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getAlarmClock:0",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "json",
+      "body": {
+        "enable": "0"
+      },
+      "summary": "Get alarm clock configuration for slot n"
+    },
+    {
+      "command": "getAlarmClock:1",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getAlarmClock:1",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "json",
+      "body": {
+        "enable": "0"
+      },
+      "summary": "Get alarm clock configuration for slot n"
+    },
+    {
+      "command": "getAlarmClock:2",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getAlarmClock:2",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "json",
+      "body": {
+        "enable": "0"
+      },
+      "summary": "Get alarm clock configuration for slot n"
+    },
+    {
+      "command": "getWeatherInfo",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getWeatherInfo",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "text",
+      "body": "unknown command",
+      "unsupported": true,
+      "summary": "Get weather info"
+    },
+    {
+      "command": "getLightOperationBrightConfig",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=getLightOperationBrightConfig",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "text",
+      "body": "unknown command",
+      "unsupported": true,
+      "summary": "Get light operation brightness configuration (WiiM Ultra screen)"
+    },
+    {
+      "command": "get_ui_config",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=get_ui_config",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "text",
+      "body": "unknown command",
+      "unsupported": true,
+      "summary": "Get UI config"
+    },
+    {
+      "command": "get_ui_wallpaper_list",
+      "url": "https://xx.x.x.xx:443/httpapi.asp?command=get_ui_wallpaper_list",
+      "attempts": 1,
+      "outcome": "ok",
+      "http_status": 200,
+      "format": "text",
+      "body": "unknown command",
+      "unsupported": true,
+      "summary": "Get UI wallpaper list"
+    }
+  ],
+  "skipped_unsafe": [
+    "EQLoad:Flat",
+    "EQv2Load:{\"pluginURI\":\"http://moddevices.com/plugins/caps/Eq10HP\",\"Name\":\"Flat\"}",
+    "EQv2Load:{\"pluginURI\":\"http://moddevices.com/plugins/caps/EqNp\",\"Name\":\"Flat\"}",
+    "EQv2SourceLoad:{\"pluginURI\":\"http://moddevices.com/plugins/caps/Eq10HP\",\"source_name\":\"wifi\",\"Name\":\"Flat\"}",
+    "EQv2SourceLoad:{\"pluginURI\":\"http://moddevices.com/plugins/caps/EqNp\",\"source_name\":\"wifi\",\"Name\":\"Flat\"}"
+  ],
+  "skipped_not_destructive": [],
+  "upnp": {
+    "ssdp_response": "HTTP/1.1 200 OK\r\nCONNECTION: keep-alive\r\nCACHE-CONTROL: max-age=1800\r\nDATE: Wed, 22 Jul 2026 08:28:05 GMT\r\nEXT:\r\nLOCATION: http://xx.x.x.xx:49152/description.xml\r\nBOOTID.UPNP.ORG: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx\r\nSERVER: Linux\r\nST: urn:schemas-upnp-org:device:MediaRenderer:1\r\nUSN: uuid:xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx::urn:schemas-upnp-org:device:MediaRenderer:1\r\n\r\n",
+    "location": "http://xx.x.x.xx:49152/description.xml",
+    "description_url": "http://xx.x.x.xx:49152/description.xml",
+    "description": {
+      "format": "xml",
+      "body": "<?xml version=\"1.0\"?>\r\n<root xmlns=\"urn:schemas-upnp-org:device-1-0\" xmlns:dlna=\"urn:schemas-dlna-org:device-1-0\">\r\n<specVersion>\r\n<major>1</major>\r\n<minor>0</minor>\r\n</specVersion>\r\n<device>\r\n<dlna:X_DLNADOC>DMR-1.50</dlna:X_DLNADOC>\r\n<deviceType>urn:schemas-upnp-org:device:MediaRenderer:1</deviceType>\r\n<friendlyName>WiiM Pro Plus</friendlyName>\r\n<manufacturer>Linkplay Technology Inc.</manufacturer>\r\n<manufacturerURL>https://wiimhome.com</manufacturerURL>\r\n<modelDescription>WiiM Pro Plus Receiver</modelDescription>\r\n<modelName>WiiM Pro Plus Receiver</modelName>\r\n<modelURL>https://wiimhome.com</modelURL>\r\n<UDN>xxxx:xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx</UDN>\r\n<modelNumber>V01-Apr 23 2026\r\n</modelNumber>\r\n<serialNumber>00001</serialNumber>\r\n<ssidName>xxxx xxx xxxx-xxxx</ssidName>\r\n<uuid>xxxxxxxxxxxxxxxxxxxxxxxx</uuid>\r\n<qq:X_QPlay_SoftwareCapability xmlns:qq=\"http://www.tencent.com\">QPlay:2</qq:X_QPlay_SoftwareCapability>\r\n<iconList>\r\n<icon>\r\n<mimetype>image/png</mimetype>\r\n<width>48</width>\r\n<height>48</height>\r\n<depth>24</depth>\r\n<url>/upnp/grender-48x48.png</url>\r\n</icon>\r\n<icon>\r\n<mimetype>image/png</mimetype>\r\n<width>120</width>\r\n<height>120</height>\r\n<depth>24</depth>\r\n<url>/upnp/grender-120x120.png</url>\r\n</icon>\r\n<icon>\r\n<mimetype>image/jpeg</mimetype>\r\n<width>48</width>\r\n<height>48</height>\r\n<depth>24</depth>\r\n<url>/upnp/grender-48x48.jpg</url>\r\n</icon>\r\n<icon>\r\n<mimetype>image/jpeg</mimetype>\r\n<width>120</width>\r\n<height>120</height>\r\n<depth>24</depth>\r\n<url>/upnp/grender-120x120.jpg</url>\r\n</icon>\r\n</iconList>\r\n<serviceList>\r\n<service>\r\n<serviceType>urn:schemas-upnp-org:service:AVTransport:1</serviceType>\r\n<serviceId>urn:upnp-org:serviceId:AVTransport</serviceId>\r\n<SCPDURL>/upnp/rendertransportSCPD.xml</SCPDURL>\r\n<controlURL>/upnp/control/rendertransport1</controlURL>\r\n<eventSubURL>/upnp/event/rendertransport1</eventSubURL>\r\n</service>\r\n<service>\r\n<serviceType>urn:schemas-upnp-org:service:ConnectionManager:1</serviceType>\r\n<serviceId>urn:upnp-org:serviceId:ConnectionManager</serviceId>\r\n<SCPDURL>/upnp/renderconnmgrSCPD.xml</SCPDURL>\r\n<controlURL>/upnp/control/renderconnmgr1</controlURL>\r\n<eventSubURL>/upnp/event/renderconnmgr1</eventSubURL>\r\n</service>\r\n<service>\r\n<serviceType>urn:schemas-upnp-org:service:RenderingControl:1</serviceType>\r\n<serviceId>urn:upnp-org:serviceId:RenderingControl</serviceId>\r\n<SCPDURL>/upnp/rendercontrolSCPD.xml</SCPDURL>\r\n<controlURL>/upnp/control/rendercontrol1</controlURL>\r\n<eventSubURL>/upnp/event/rendercontrol1</eventSubURL>\r\n</service>\r\n<service>\r\n<serviceType>urn:schemas-wiimu-com:service:PlayQueue:1</serviceType>\r\n<serviceId>urn:wiimu-com:serviceId:PlayQueue</serviceId>\r\n<SCPDURL>/upnp/PlayQueueSCPD.xml</SCPDURL>\r\n<controlURL>/upnp/control/PlayQueue1</controlURL>\r\n<eventSubURL>/upnp/event/PlayQueue1</eventSubURL>\r\n</service>\r\n<service>\r\n<serviceType>urn:schemas-tencent-com:service:QPlay:1</serviceType>\r\n<serviceId>urn:tencent-com:serviceId:QPlay</serviceId>\r\n<SCPDURL>/upnp/QPlaySCPD.xml</SCPDURL>\r\n<controlURL>/upnp/control/QPlay1</controlURL>\r\n<eventSubURL>/upnp/event/QPlay1</eventSubURL>\r\n</service>\r\n</serviceList>\r\n</device>\r\n</root>\r\n"
+    },
+    "friendly_name": "WiiM Pro Plus",
+    "model_name": "WiiM Pro Plus Receiver",
+    "udn": "xxxx:xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+    "service_types": [
+      "urn:schemas-upnp-org:service:AVTransport:1",
+      "urn:schemas-upnp-org:service:ConnectionManager:1",
+      "urn:schemas-upnp-org:service:RenderingControl:1",
+      "urn:schemas-wiimu-com:service:PlayQueue:1",
+      "urn:schemas-tencent-com:service:QPlay:1"
+    ],
+    "has_playqueue": true,
+    "has_qplay": true,
+    "has_content_directory": false,
+    "play_queue_scpd": {
+      "format": "xml",
+      "body": "<?xml version=\"1.0\"?>\r\n<scpd xmlns=\"urn:schemas-upnp-org:service-1-0\">\r\n<specVersion>\r\n<major>1</major>\r\n<minor>0</minor>\r\n</specVersion>\r\n<actionList>\r\n<action>\r\n<name>CreateQueue</name>\r\n<argumentList>\r\n<argument>\r\n<name>QueueContext</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueContext</relatedStateVariable>\r\n</argument>\r\n</argumentList>\r\n</action>\r\n<action>\r\n<name>ReplaceQueue</name>\r\n<argumentList>\r\n<argument>\r\n<name>QueueContext</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueContext</relatedStateVariable>\r\n</argument>\r\n</argumentList>\r\n</action>\r\n<action>\r\n<name>DeleteQueue</name>\r\n<argumentList>\r\n<argument>\r\n<name>QueueName</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueName</relatedStateVariable>\r\n</argument>\r\n</argumentList>\r\n</action>\r\n<action>\r\n<name>BackUpQueue</name>\r\n<argumentList>\r\n<argument>\r\n<name>QueueContext</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueContext</relatedStateVariable>\r\n</argument>\r\n</argumentList>\r\n</action>\r\n<action>\r\n<name>AppendQueue</name>\r\n<argumentList>\r\n<argument>\r\n<name>QueueContext</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueContext</relatedStateVariable>\r\n</argument>\r\n</argumentList>\r\n</action>\r\n<action>\r\n<name>BrowseQueue</name>\r\n<argumentList>\r\n<argument>\r\n<name>QueueName</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueName</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>QueueContext</name>\r\n<direction>out</direction>\r\n<relatedStateVariable>QueueContext</relatedStateVariable>\r\n</argument>\r\n</argumentList>\r\n</action>\r\n<action>\r\n<name>BrowseQueueEx</name>\r\n<argumentList>\r\n<argument>\r\n<name>QueueName</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueName</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>TrackIndex</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>CurrentIndex</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>TrackNums</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>TrackNums</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>QueueContext</name>\r\n<direction>out</direction>\r\n<relatedStateVariable>QueueContext</relatedStateVariable>\r\n</argument>\r\n</argumentList>\r\n</action>\r\n<action>\r\n<name>SetQueueLoopMode</name>\r\n<argumentList>\r\n<argument>\r\n<name>LoopMode</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>LoopMode</relatedStateVariable>\r\n</argument>\r\n</argumentList>\r\n</action>\r\n<action>\r\n<name>GetQueueLoopMode</name>\r\n<argumentList>\r\n<argument>\r\n<name>LoopMode</name>\r\n<direction>out</direction>\r\n<relatedStateVariable>LoopMode</relatedStateVariable>\r\n</argument>\r\n</argumentList>\r\n</action>\r\n<action>\r\n<name>SetQueuePolicy</name>\r\n<argumentList>\r\n<argument>\r\n<name>QueueName</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueName</relatedStateVariable>\r\n</argument>\r\n</argumentList>\r\n</action>\r\n<action>\r\n<name>PlayQueueWithIndex</name>\r\n<argumentList>\r\n<argument>\r\n<name>QueueName</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueName</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>Index</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>CurrentIndex</relatedStateVariable>\r\n</argument>\r\n</argumentList>\r\n</action>\r\n<action>\r\n<name>AppendTracksInQueue</name>\r\n<argumentList>\r\n<argument>\r\n<name>QueueContext</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueContext</relatedStateVariable>\r\n</argument>\r\n</argumentList>\r\n</action>\r\n<action>\r\n<name>RemoveTracksInQueue</name>\r\n<argumentList>\r\n<argument>\r\n<name>QueueName</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueContext</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>RangStart</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>CurrentIndex</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>RangEnd</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>CurrentIndex</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>Action</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>Action</relatedStateVariable>\r\n</argument>\r\n</argumentList>\r\n</action>\r\n<action>\r\n<name>MoveTracksInQueue</name>\r\n<argumentList>\r\n<argument>\r\n<name>QueueName</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueName</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>IndexList</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>IndexList</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>ToIndex</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>ToIndex</relatedStateVariable>\r\n</argument>\r\n</argumentList>\r\n</action>\r\n<action>\r\n<name>AppendTracksInQueueEx</name>\r\n<argumentList>\r\n<argument>\r\n<name>QueueContext</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueContext</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>Direction</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>CurrentIndex</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>StartIndex</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>CurrentIndex</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>Play</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>CurrentIndex</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>Action</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>Action</relatedStateVariable>\r\n</argument>\r\n</argumentList>\r\n</action>\r\n<action>\r\n<name>SetKeyMapping</name>\r\n<argumentList>\r\n<argument>\r\n<name>QueueContext</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueContext</relatedStateVariable>\r\n</argument>\r\n</argumentList>\r\n</action>\r\n<action>\r\n<name>GetKeyMapping</name>\r\n<argumentList>\r\n<argument>\r\n<name>QueueContext</name>\r\n<direction>out</direction>\r\n<relatedStateVariable>QueueContext</relatedStateVariable>\r\n</argument>\r\n</argumentList>\r\n</action>\r\n<action>\r\n<name>GetQueueOnline</name>\r\n<argumentList>\r\n<argument>\r\n<name>QueueName</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueName</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>QueueID</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueID</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>QueueType</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueType</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>Queuelimit</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>CurrentIndex</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>QueueAutoInsert</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueAutoInsert</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>QueueContext</name>\r\n<direction>out</direction>\r\n<relatedStateVariable>QueueContext</relatedStateVariable>\r\n</argument>\r\n</argumentList>\r\n</action>\r\n<action>\r\n<name>SearchQueueOnline</name>\r\n<argumentList>\r\n<argument>\r\n<name>QueueName</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueName</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>SearchKey</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueID</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>Queuelimit</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>CurrentIndex</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>QueueContext</name>\r\n<direction>out</direction>\r\n<relatedStateVariable>QueueContext</relatedStateVariable>\r\n</argument>\r\n</argumentList>\r\n</action>\r\n<action>\r\n<name>SetQueueRecord</name>\r\n<argumentList>\r\n<argument>\r\n<name>QueueName</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueName</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>QueueID</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueID</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>Action</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueType</relatedStateVariable>\r\n</argument>\r\n</argumentList>\r\n</action>\r\n<action>\r\n<name>SetSongsRecord</name>\r\n<argumentList>\r\n<argument>\r\n<name>QueueName</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueName</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>SongID</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueID</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>Action</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueType</relatedStateVariable>\r\n</argument>\r\n</argumentList>\r\n</action>\r\n<action>\r\n<name>UserRegister</name>\r\n<argumentList>\r\n<argument>\r\n<name>QueueName</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueName</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>UserName</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueID</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>PassWord</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueType</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>Result</name>\r\n<direction>out</direction>\r\n<relatedStateVariable>Result</relatedStateVariable>\r\n</argument>\r\n</argumentList>\r\n</action>\r\n<action>\r\n<name>UserLogin</name>\r\n<argumentList>\r\n<argument>\r\n<name>AccountSource</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueName</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>UserName</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueID</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>PassWord</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueType</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>SavePass</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueuePolicy</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>Code</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>Code</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>Proxy</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>Proxy</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>Result</name>\r\n<direction>out</direction>\r\n<relatedStateVariable>Result</relatedStateVariable>\r\n</argument>\r\n</argumentList>\r\n</action>\r\n<action>\r\n<name>UserLogout</name>\r\n<argumentList>\r\n<argument>\r\n<name>AccountSource</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueName</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>Result</name>\r\n<direction>out</direction>\r\n<relatedStateVariable>Result</relatedStateVariable>\r\n</argument>\r\n</argumentList>\r\n</action>\r\n<action>\r\n<name>GetUserInfo</name>\r\n<argumentList>\r\n<argument>\r\n<name>AccountSource</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueName</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>RefreshToken</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>Code</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>Result</name>\r\n<direction>out</direction>\r\n<relatedStateVariable>Result</relatedStateVariable>\r\n</argument>\r\n</argumentList>\r\n</action>\r\n<action>\r\n<name>GetUserAccountHistory</name>\r\n<argumentList>\r\n<argument>\r\n<name>AccountSource</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueName</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>Number</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>CurrentIndex</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>Result</name>\r\n<direction>out</direction>\r\n<relatedStateVariable>Result</relatedStateVariable>\r\n</argument>\r\n</argumentList>\r\n</action>\r\n<action>\r\n<name>SetUserFavorites</name>\r\n<argumentList>\r\n<argument>\r\n<name>AccountSource</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueName</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>Action</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>Code</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>MediaType</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueType</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>MediaID</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueID</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>MediaContext</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueContext</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>Result</name>\r\n<direction>out</direction>\r\n<relatedStateVariable>Result</relatedStateVariable>\r\n</argument>\r\n</argumentList>\r\n</action>\r\n<action>\r\n<name>GetUserFavorites</name>\r\n<argumentList>\r\n<argument>\r\n<name>AccountSource</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueName</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>MediaType</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueType</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>Filter</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueType</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>Result</name>\r\n<direction>out</direction>\r\n<relatedStateVariable>Result</relatedStateVariable>\r\n</argument>\r\n</argumentList>\r\n</action>\r\n<action>\r\n<name>GetQueueIndex</name>\r\n<argumentList>\r\n<argument>\r\n<name>QueueName</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueName</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>CurrentIndex</name>\r\n<direction>out</direction>\r\n<relatedStateVariable>CurrentIndex</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>PreloadingIndex</name>\r\n<direction>out</direction>\r\n<relatedStateVariable>CurrentIndex</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>CurrentPage</name>\r\n<direction>out</direction>\r\n<relatedStateVariable>CurrentPage</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>TrackNums</name>\r\n<direction>out</direction>\r\n<relatedStateVariable>TrackNums</relatedStateVariable>\r\n</argument>\r\n</argumentList>\r\n</action>\r\n<action>\r\n<name>SetSpotifyPreset</name>\r\n<argumentList>\r\n<argument>\r\n<name>KeyIndex</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>CurrentIndex</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>Result</name>\r\n<direction>out</direction>\r\n<relatedStateVariable>Result</relatedStateVariable>\r\n</argument>\r\n</argumentList>\r\n</action>\r\n<action>\r\n<name>DeleteActionQueue</name>\r\n<argumentList>\r\n<argument>\r\n<name>PressType</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>CurrentIndex</relatedStateVariable>\r\n</argument>\r\n</argumentList>\r\n</action>\r\n<action>\r\n<name>GetBasicUserInfo</name>\r\n<argumentList>\r\n<argument>\r\n<name>Result</name>\r\n<direction>out</direction>\r\n<relatedStateVariable>Result</relatedStateVariable>\r\n</argument>\r\n</argumentList>\r\n</action>\r\n<action>\r\n<name>TakePlayControl</name>\r\n<argumentList>\r\n<argument>\r\n<name>Result</name>\r\n<direction>out</direction>\r\n<relatedStateVariable>Result</relatedStateVariable>\r\n</argument>\r\n</argumentList>\r\n</action>\r\n<action>\r\n<name>SetRating</name>\r\n<argumentList>\r\n<argument>\r\n<name>Source</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueName</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>TrackID</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueType</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>Rating</name>\r\n<direction>in</direction>\r\n<relatedStateVariable>QueueID</relatedStateVariable>\r\n</argument>\r\n<argument>\r\n<name>Result</name>\r\n<direction>out</direction>\r\n<relatedStateVariable>Result</relatedStateVariable>\r\n</argument>\r\n</argumentList>\r\n</action>\r\n</actionList>\r\n<serviceStateTable>\r\n<stateVariable sendEvents=\"yes\">\r\n<name>LastChange</name>\r\n<dataType>string</dataType>\r\n</stateVariable>\r\n<stateVariable sendEvents=\"no\">\r\n<name>QueueName</name>\r\n<dataType>string</dataType>\r\n</stateVariable>\r\n<stateVariable sendEvents=\"no\">\r\n<name>QueueContext</name>\r\n<dataType>string</dataType>\r\n</stateVariable>\r\n<stateVariable sendEvents=\"no\">\r\n<name>CurrentIndex</name>\r\n<dataType>ui4</dataType>\r\n</stateVariable>\r\n<stateVariable sendEvents=\"no\">\r\n<name>CurrentPage</name>\r\n<dataType>ui4</dataType>\r\n</stateVariable>\r\n<stateVariable sendEvents=\"no\">\r\n<name>QueuePolicy</name>\r\n<dataType>ui4</dataType>\r\n</stateVariable>\r\n<stateVariable sendEvents=\"no\">\r\n<name>LoopMode</name>\r\n<dataType>ui4</dataType>\r\n</stateVariable>\r\n<stateVariable sendEvents=\"no\">\r\n<name>QueueID</name>\r\n<dataType>string</dataType>\r\n</stateVariable>\r\n<stateVariable sendEvents=\"no\">\r\n<name>QueueType</name>\r\n<dataType>string</dataType>\r\n</stateVariable>\r\n<stateVariable sendEvents=\"no\">\r\n<name>QueueAutoInsert</name>\r\n<dataType>string</dataType>\r\n</stateVariable>\r\n<stateVariable sendEvents=\"no\">\r\n<name>Result</name>\r\n<dataType>string</dataType>\r\n</stateVariable>\r\n<stateVariable sendEvents=\"no\">\r\n<name>Code</name>\r\n<dataType>string</dataType>\r\n</stateVariable>\r\n<stateVariable sendEvents=\"no\">\r\n<name>Proxy</name>\r\n<dataType>string</dataType>\r\n</stateVariable>\r\n<stateVariable sendEvents=\"no\">\r\n<name>TrackNums</name>\r\n<dataType>ui4</dataType>\r\n</stateVariable>\r\n<stateVariable sendEvents=\"no\">\r\n<name>IndexList</name>\r\n<dataType>string</dataType>\r\n</stateVariable>\r\n<stateVariable sendEvents=\"no\">\r\n<name>ToIndex</name>\r\n<dataType>ui4</dataType>\r\n</stateVariable>\r\n<stateVariable sendEvents=\"no\">\r\n<name>Action</name>\r\n<dataType>string</dataType>\r\n</stateVariable>\r\n</serviceStateTable>\r\n</scpd>\r\n"
+    },
+    "actions": [
+      {
+        "service": "urn:schemas-upnp-org:service:AVTransport:1",
+        "action": "GetTransportInfo",
+        "control_url": "http://xx.x.x.xx:49152/upnp/control/rendertransport1",
+        "outcome": "ok",
+        "http_status": 200,
+        "response": {
+          "format": "xml",
+          "body": "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\"><s:Body>\n<u:GetTransportInfoResponse xmlns:u=\"urn:schemas-upnp-org:service:AVTransport:1\">\r\n<CurrentTransportState>PAUSED_PLAYBACK</CurrentTransportState>\r\n<CurrentTransportStatus>OK</CurrentTransportStatus>\r\n<CurrentSpeed>1</CurrentSpeed>\r\n</u:GetTransportInfoResponse>\r\n</s:Body> </s:Envelope>"
+        }
+      },
+      {
+        "service": "urn:schemas-upnp-org:service:AVTransport:1",
+        "action": "GetPositionInfo",
+        "control_url": "http://xx.x.x.xx:49152/upnp/control/rendertransport1",
+        "outcome": "ok",
+        "http_status": 200,
+        "response": {
+          "format": "xml",
+          "body": "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\"><s:Body>\n<u:GetPositionInfoResponse xmlns:u=\"urn:schemas-upnp-org:service:AVTransport:1\">\r\n<Track>0</Track>\r\n<TrackDuration>00:00:00</TrackDuration>\r\n<TrackMetaData>&lt;?xml version=&quot;1.0&quot; encoding=&quot;UTF-8&quot;?&gt;\r\n&lt;DIDL-Lite xmlns:dc=&quot;http://purl.org/dc/elements/1.1/&quot; xmlns:upnp=&quot;urn:schemas-upnp-org:metadata-1-0/upnp/&quot; xmlns:song=&quot;www.wiimu.com/song/&quot; xmlns=&quot;urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/&quot;&gt;\r\n&lt;upnp:class&gt;object.item.audioItem.musicTrack&lt;/upnp:class&gt;\r\n&lt;item id=&quot;0&quot;&gt;\r\n&lt;song:subid&gt;&lt;/song:subid&gt;\r\n&lt;song:description&gt;&lt;/song:description&gt;\r\n&lt;song:id&gt;0&lt;/song:id&gt;\r\n&lt;song:coding_f&gt;LPCM&lt;/song:coding_f&gt;\r\n&lt;song:singerid&gt;0&lt;/song:singerid&gt;\r\n&lt;song:albumid&gt;0&lt;/song:albumid&gt;\r\n&lt;res protocolInfo=&quot;http-get:*:audio/mpeg:DLNA.ORG_PN=MP3;DLNA.ORG_OP=01;&quot; duration=&quot;00:00:00.000&quot;&gt;optical&lt;/res&gt;\r\n&lt;dc:title&gt;&lt;/dc:title&gt;\r\n&lt;dc:creator&gt;&lt;/dc:creator&gt;\r\n&lt;upnp:artist&gt;&lt;/upnp:artist&gt;\r\n&lt;upnp:album&gt;&lt;/upnp:album&gt;\r\n&lt;upnp:albumArtURI&gt;&lt;/upnp:albumArtURI&gt;\r\n&lt;/item&gt;\r\n&lt;/DIDL-Lite&gt;\r\n</TrackMetaData>\r\n<TrackURI>optical</TrackURI>\r\n<RelTime>00:00:00</RelTime>\r\n<AbsTime>NOT_IMPLEMENTED</AbsTime>\r\n<RelCount>2147483647</RelCount>\r\n<AbsCount>2147483647</AbsCount>\r\n</u:GetPositionInfoResponse>\r\n</s:Body> </s:Envelope>"
+        }
+      },
+      {
+        "service": "urn:schemas-upnp-org:service:AVTransport:1",
+        "action": "GetMediaInfo",
+        "control_url": "http://xx.x.x.xx:49152/upnp/control/rendertransport1",
+        "outcome": "ok",
+        "http_status": 200,
+        "response": {
+          "format": "xml",
+          "body": "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\"><s:Body>\n<u:GetMediaInfoResponse xmlns:u=\"urn:schemas-upnp-org:service:AVTransport:1\">\r\n<NrTracks>0</NrTracks>\r\n<MediaDuration>00:00:00</MediaDuration>\r\n<CurrentURI>optical</CurrentURI>\r\n<CurrentURIMetaData>&lt;?xml version=&quot;1.0&quot; encoding=&quot;UTF-8&quot;?&gt;\r\n&lt;DIDL-Lite xmlns:dc=&quot;http://purl.org/dc/elements/1.1/&quot; xmlns:upnp=&quot;urn:schemas-upnp-org:metadata-1-0/upnp/&quot; xmlns:song=&quot;www.wiimu.com/song/&quot; xmlns=&quot;urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/&quot;&gt;\r\n&lt;upnp:class&gt;object.item.audioItem.musicTrack&lt;/upnp:class&gt;\r\n&lt;item id=&quot;0&quot;&gt;\r\n&lt;song:subid&gt;&lt;/song:subid&gt;\r\n&lt;song:description&gt;&lt;/song:description&gt;\r\n&lt;song:id&gt;0&lt;/song:id&gt;\r\n&lt;song:coding_f&gt;LPCM&lt;/song:coding_f&gt;\r\n&lt;song:singerid&gt;0&lt;/song:singerid&gt;\r\n&lt;song:albumid&gt;0&lt;/song:albumid&gt;\r\n&lt;res protocolInfo=&quot;http-get:*:audio/mpeg:DLNA.ORG_PN=MP3;DLNA.ORG_OP=01;&quot; duration=&quot;00:00:00.000&quot;&gt;optical&lt;/res&gt;\r\n&lt;dc:title&gt;&lt;/dc:title&gt;\r\n&lt;dc:creator&gt;&lt;/dc:creator&gt;\r\n&lt;upnp:artist&gt;&lt;/upnp:artist&gt;\r\n&lt;upnp:album&gt;&lt;/upnp:album&gt;\r\n&lt;upnp:albumArtURI&gt;&lt;/upnp:albumArtURI&gt;\r\n&lt;/item&gt;\r\n&lt;/DIDL-Lite&gt;\r\n</CurrentURIMetaData>\r\n<NextURI></NextURI>\r\n<NextURIMetaData></NextURIMetaData>\r\n<TrackSource></TrackSource>\r\n<PlayMedium>OPTICAL</PlayMedium>\r\n<RecordMedium>NOT_IMPLEMENTED</RecordMedium>\r\n<WriteStatus>NOT_IMPLEMENTED</WriteStatus>\r\n</u:GetMediaInfoResponse>\r\n</s:Body> </s:Envelope>"
+        }
+      },
+      {
+        "service": "urn:schemas-upnp-org:service:AVTransport:1",
+        "action": "GetInfoEx",
+        "control_url": "http://xx.x.x.xx:49152/upnp/control/rendertransport1",
+        "outcome": "ok",
+        "http_status": 200,
+        "response": {
+          "format": "xml",
+          "body": "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\"><s:Body>\n<u:GetInfoExResponse xmlns:u=\"urn:schemas-upnp-org:service:AVTransport:1\">\r\n<CurrentTransportState>PAUSED_PLAYBACK</CurrentTransportState>\r\n<CurrentTransportStatus>OK</CurrentTransportStatus>\r\n<CurrentSpeed>1</CurrentSpeed>\r\n<Track>0</Track>\r\n<TrackDuration>00:00:00</TrackDuration>\r\n<TrackMetaData>&lt;?xml version=&quot;1.0&quot; encoding=&quot;UTF-8&quot;?&gt;\r\n&lt;DIDL-Lite xmlns:dc=&quot;http://purl.org/dc/elements/1.1/&quot; xmlns:upnp=&quot;urn:schemas-upnp-org:metadata-1-0/upnp/&quot; xmlns:song=&quot;www.wiimu.com/song/&quot; xmlns=&quot;urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/&quot;&gt;\r\n&lt;upnp:class&gt;object.item.audioItem.musicTrack&lt;/upnp:class&gt;\r\n&lt;item id=&quot;0&quot;&gt;\r\n&lt;song:subid&gt;&lt;/song:subid&gt;\r\n&lt;song:description&gt;&lt;/song:description&gt;\r\n&lt;song:id&gt;0&lt;/song:id&gt;\r\n&lt;song:coding_f&gt;LPCM&lt;/song:coding_f&gt;\r\n&lt;song:singerid&gt;0&lt;/song:singerid&gt;\r\n&lt;song:albumid&gt;0&lt;/song:albumid&gt;\r\n&lt;res protocolInfo=&quot;http-get:*:audio/mpeg:DLNA.ORG_PN=MP3;DLNA.ORG_OP=01;&quot; duration=&quot;00:00:00.000&quot;&gt;optical&lt;/res&gt;\r\n&lt;dc:title&gt;&lt;/dc:title&gt;\r\n&lt;dc:creator&gt;&lt;/dc:creator&gt;\r\n&lt;upnp:artist&gt;&lt;/upnp:artist&gt;\r\n&lt;upnp:album&gt;&lt;/upnp:album&gt;\r\n&lt;upnp:albumArtURI&gt;&lt;/upnp:albumArtURI&gt;\r\n&lt;/item&gt;\r\n&lt;/DIDL-Lite&gt;\r\n</TrackMetaData>\r\n<TrackURI>optical</TrackURI>\r\n<RelTime>00:00:00</RelTime>\r\n<AbsTime>NOT_IMPLEMENTED</AbsTime>\r\n<RelCount>2147483647</RelCount>\r\n<AbsCount>2147483647</AbsCount>\r\n<CurrentVolume>8</CurrentVolume>\r\n<CurrentMute>0</CurrentMute>\r\n<CurrentChannel>0</CurrentChannel>\r\n<LoopMode>4</LoopMode>\r\n<PlayType>43</PlayType>\r\n<SlaveFlag>0</SlaveFlag>\r\n<MasterUUID></MasterUUID>\r\n<SlaveList>{&quot;group_type&quot;:-1,&quot;slaves&quot;:0,&quot;surround&quot;:0,&quot;wmrm_version&quot;:&quot;4.3&quot;}</SlaveList>\r\n<PlayMedium>OPTICAL</PlayMedium>\r\n<TrackSource></TrackSource>\r\n<InternetAccess>1</InternetAccess>\r\n<VerUpdateFlag>0</VerUpdateFlag>\r\n<VerUpdateStatus>20</VerUpdateStatus>\r\n<BatteryFlag>0</BatteryFlag>\r\n<BatteryPercent>0</BatteryPercent>\r\n<AlarmFlag>0</AlarmFlag>\r\n<TimeStamp>201777355</TimeStamp>\r\n<SubNum>2</SubNum>\r\n<SpotifyActive>0</SpotifyActive>\r\n</u:GetInfoExResponse>\r\n</s:Body> </s:Envelope>"
+        }
+      },
+      {
+        "service": "urn:schemas-upnp-org:service:AVTransport:1",
+        "action": "GetCurrentTransportActions",
+        "control_url": "http://xx.x.x.xx:49152/upnp/control/rendertransport1",
+        "outcome": "ok",
+        "http_status": 200,
+        "response": {
+          "format": "xml",
+          "body": "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\"><s:Body>\n<u:GetCurrentTransportActionsResponse xmlns:u=\"urn:schemas-upnp-org:service:AVTransport:1\">\r\n<Actions>Play,Stop</Actions>\r\n</u:GetCurrentTransportActionsResponse>\r\n</s:Body> </s:Envelope>"
+        }
+      },
+      {
+        "service": "urn:schemas-upnp-org:service:RenderingControl:1",
+        "action": "GetVolume",
+        "control_url": "http://xx.x.x.xx:49152/upnp/control/rendercontrol1",
+        "outcome": "ok",
+        "http_status": 200,
+        "response": {
+          "format": "xml",
+          "body": "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\"><s:Body>\n<u:GetVolumeResponse xmlns:u=\"urn:schemas-upnp-org:service:RenderingControl:1\">\r\n<CurrentVolume>8</CurrentVolume>\r\n</u:GetVolumeResponse>\r\n</s:Body> </s:Envelope>"
+        }
+      },
+      {
+        "service": "urn:schemas-upnp-org:service:RenderingControl:1",
+        "action": "GetMute",
+        "control_url": "http://xx.x.x.xx:49152/upnp/control/rendercontrol1",
+        "outcome": "ok",
+        "http_status": 200,
+        "response": {
+          "format": "xml",
+          "body": "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\"><s:Body>\n<u:GetMuteResponse xmlns:u=\"urn:schemas-upnp-org:service:RenderingControl:1\">\r\n<CurrentMute>0</CurrentMute>\r\n</u:GetMuteResponse>\r\n</s:Body> </s:Envelope>"
+        }
+      },
+      {
+        "service": "urn:schemas-upnp-org:service:RenderingControl:1",
+        "action": "GetControlDeviceInfo",
+        "control_url": "http://xx.x.x.xx:49152/upnp/control/rendercontrol1",
+        "outcome": "ok",
+        "http_status": 200,
+        "response": {
+          "format": "xml",
+          "body": "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\"><s:Body>\n<u:GetControlDeviceInfoResponse xmlns:u=\"urn:schemas-upnp-org:service:RenderingControl:1\">\r\n<MultiType>1</MultiType>\r\n<PlayMode>43</PlayMode>\r\n<Router></Router>\r\n<Ssid>xxxx xxx xxxx-xxxx</Ssid>\r\n<SlaveMask>0</SlaveMask>\r\n<CurrentVolume>8</CurrentVolume>\r\n<CurrentMute>0</CurrentMute>\r\n<CurrentChannel>0</CurrentChannel>\r\n<SlaveList>{&quot;group_type&quot;:-1,&quot;slaves&quot;:0,&quot;surround&quot;:0,&quot;wmrm_version&quot;:&quot;4.3&quot;}</SlaveList>\r\n<Status>{&quot;AP_MAC&quot;:&quot;xx:xx:xx:xx:xx:xx&quot;,&quot;BSSID&quot;:&quot;&quot;,&quot;BTMAC&quot;:&quot;xx:xx:xx:xx:xx:xx&quot;,&quot;BleRemoteBatterylevel&quot;:&quot;90&quot;,&quot;BleRemoteConnected&quot;:&quot;1&quot;,&quot;BleRemoteControl&quot;:&quot;1&quot;,&quot;BleRemoteException&quot;:&quot;0&quot;,&quot;BleRemoteNewVersion&quot;:&quot;&quot;,&quot;BleRemoteRSSI&quot;:&quot;-60&quot;,&quot;BleRemoteVersion&quot;:&quot;&quot;,&quot;BleRemote_dev_state&quot;:&quot;normal&quot;,&quot;BleRemote_has_new&quot;:&quot;0&quot;,&quot;BleRemote_power_status&quot;:&quot;0&quot;,&quot;BleRemote_update_checked_counter&quot;:&quot;0&quot;,&quot;DeviceName&quot;:&quot;xxxx xxx xxxx&quot;,&quot;EQVersion&quot;:&quot;4.3&quot;,&quot;EQ_support&quot;:&quot;Eq10HP_ver_2.0&quot;,&quot;ETH_MAC&quot;:&quot;xx:xx:xx:xx:xx:xx&quot;,&quot;FW_Release_version&quot;:&quot;&quot;,&quot;GroupName&quot;:&quot;xxxx xxx xxxx&quot;,&quot;HiFiSRC_version&quot;:&quot;1.1&quot;,&quot;InitialConfiguration&quot;:&quot;1&quot;,&quot;MAC&quot;:&quot;xx:xx:xx:xx:xx:xx&quot;,&quot;ModuleColorNumber&quot;:&quot;0&quot;,&quot;ModuleColorString&quot;:&quot;&quot;,&quot;NewVer&quot;:&quot;0&quot;,&quot;PCB_version&quot;:&quot;3&quot;,&quot;RSSI&quot;:&quot;0&quot;,&quot;Release&quot;:&quot;20260423&quot;,&quot;VersionUpdate&quot;:&quot;0&quot;,&quot;WifiChannel&quot;:&quot;0&quot;,&quot;alexa_beta_enable&quot;:&quot;0&quot;,&quot;alexa_force_beta_cfg&quot;:&quot;0&quot;,&quot;alexa_ver&quot;:&quot;20180604&quot;,&quot;apcli0&quot;:&quot;x.x.x.x&quot;,&quot;app_timezone_id&quot;:&quot;Asia/Jerusalem&quot;,&quot;audio_channel_config&quot;:&quot;1.0&quot;,&quot;audiocast&quot;:&quot;1&quot;,&quot;autoSenseVersion&quot;:&quot;1.0&quot;,&quot;avs_timezone_id&quot;:&quot;Asia/Jerusalem&quot;,&quot;battery&quot;:&quot;0&quot;,&quot;battery_percent&quot;:&quot;0&quot;,&quot;ble_active&quot;:&quot;0&quot;,&quot;build&quot;:&quot;release&quot;,&quot;cap1&quot;:&quot;0x40000400&quot;,&quot;capability&quot;:&quot;0x20084808&quot;,&quot;cast_enable&quot;:1,&quot;cast_usage_report&quot;:0,&quot;communication_port&quot;:&quot;8819&quot;,&quot;date&quot;:&quot;2026:07:22&quot;,&quot;dsp_ver&quot;:&quot;&quot;,&quot;dsp_ver_new&quot;:&quot;&quot;,&quot;essid&quot;:&quot;&quot;,&quot;eth0&quot;:&quot;xx.x.x.xx&quot;,&quot;eth2&quot;:&quot;x.x.x.x&quot;,&quot;expired&quot;:&quot;0&quot;,&quot;external&quot;:&quot;0x0&quot;,&quot;firmware&quot;:&quot;Linkplay.4.8.814734&quot;,&quot;group&quot;:&quot;0&quot;,&quot;hardware&quot;:&quot;AmlogicA113&quot;,&quot;hideSSID&quot;:&quot;x&quot;,&quot;internet&quot;:&quot;1&quot;,&quot;kernel_verinfo&quot;:&quot;#1 SMP PREEMPT Wed Jul 9 10:56:01 CST 2025&quot;,&quot;language&quot;:&quot;en_us&quot;,&quot;languages&quot;:&quot;0x11ec&quot;,&quot;lbc_support&quot;:&quot;0&quot;,&quot;max_volume&quot;:&quot;100&quot;,&quot;mcu_ver&quot;:&quot;0&quot;,&quot;mcu_ver_new&quot;:&quot;0&quot;,&quot;mqtt_support&quot;:&quot;1&quot;,&quot;netstat&quot;:&quot;0&quot;,&quot;new_iheart_podcast&quot;:&quot;1&quot;,&quot;new_tunein_preset_and_alarm&quot;:&quot;1&quot;,&quot;ota_api_ver&quot;:&quot;3.0&quot;,&quot;ota_interface_ver&quot;:&quot;2.0&quot;,&quot;plm_support&quot;:&quot;0x700016&quot;,&quot;power_mode&quot;:&quot;-1&quot;,&quot;preset_key&quot;:&quot;12&quot;,&quot;priv_prj&quot;:&quot;WiiM_Pro_Plus&quot;,&quot;privacy_mode&quot;:&quot;0&quot;,&quot;project&quot;:&quot;WiiM_Pro_Plus&quot;,&quot;project_build_name&quot;:&quot;xxxx_xxx_xxxx&quot;,&quot;prompt_status&quot;:&quot;1&quot;,&quot;public_https_version&quot;:&quot;1.0&quot;,&quot;ra0&quot;:&quot;xx.xx.xx.xxx&quot;,&quot;region&quot;:&quot;unknown&quot;,&quot;securemode&quot;:&quot;1&quot;,&quot;security&quot;:&quot;https/2.0&quot;,&quot;security_capabilities&quot;:{&quot;aes_ver&quot;:&quot;1.0&quot;,&quot;ver&quot;:&quot;1.0&quot;},&quot;security_version&quot;:&quot;3.0&quot;,&quot;service_version&quot;:&quot;1.0&quot;,&quot;set_play_mode_enable&quot;:&quot;1&quot;,&quot;set_play_mode_gain&quot;:&quot;1&quot;,&quot;silence_ota_flag&quot;:&quot;0&quot;,&quot;ssid&quot;:&quot;xxxx xxx xxxx-xxxx&quot;,&quot;streams&quot;:&quot;0xedf33fd&quot;,&quot;streams_all&quot;:&quot;0xedf33fd&quot;,&quot;temp_uuid&quot;:&quot;xxxxxxxxxxxxxxxx&quot;,&quot;tidal_version&quot;:&quot;2.0&quot;,&quot;time&quot;:&quot;08:28:05&quot;,&quot;tz&quot;:&quot;3.0&quot;,&quot;tz_info_ver&quot;:&quot;1.0&quot;,&quot;uart_pass_port&quot;:&quot;0&quot;,&quot;uboot_verinfo&quot;:&quot;&quot;,&quot;update_check_count&quot;:&quot;59&quot;,&quot;upnp_uuid&quot;:&quot;xxxx:xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx&quot;,&quot;upnp_version&quot;:&quot;1005&quot;,&quot;uuid&quot;:&quot;xxxxxxxxxxxxxxxxxxxxxxxx&quot;,&quot;volume_control&quot;:&quot;0&quot;,&quot;web_firmware_update_hide&quot;:&quot;0&quot;,&quot;wlanDataRate&quot;:&quot;0&quot;,&quot;wlanFreq&quot;:&quot;0&quot;,&quot;wlanNoise&quot;:&quot;0&quot;,&quot;wlanSnr&quot;:&quot;0&quot;,&quot;wmrm_capability&quot;:63,&quot;wmrm_sub_ver&quot;:&quot;7&quot;,&quot;wmrm_version&quot;:&quot;4.3&quot;}</Status>\r\n</u:GetControlDeviceInfoResponse>\r\n</s:Body> </s:Envelope>"
+        }
+      },
+      {
+        "service": "urn:schemas-wiimu-com:service:PlayQueue:1",
+        "action": "BrowseQueue",
+        "control_url": "http://xx.x.x.xx:49152/upnp/control/PlayQueue1",
+        "outcome": "ok",
+        "http_status": 200,
+        "response": {
+          "format": "xml",
+          "body": "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\"><s:Body>\n<u:BrowseQueueResponse xmlns:u=\"urn:schemas-wiimu-com:service:PlayQueue:1\">\r\n<QueueContext>&lt;?xml version=&quot;1.0&quot;?&gt;\r\n&lt;PlayQueue&gt;\r\n&lt;TotalQueue&gt;0&lt;/TotalQueue&gt;\r\n&lt;/PlayQueue&gt;\r\n</QueueContext>\r\n</u:BrowseQueueResponse>\r\n</s:Body> </s:Envelope>"
+        }
+      },
+      {
+        "service": "urn:schemas-wiimu-com:service:PlayQueue:1",
+        "action": "BrowseQueueEx",
+        "control_url": "http://xx.x.x.xx:49152/upnp/control/PlayQueue1",
+        "outcome": "ok",
+        "http_status": 200,
+        "response": {
+          "format": "xml",
+          "body": "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\"><s:Body>\n<u:BrowseQueueExResponse xmlns:u=\"urn:schemas-wiimu-com:service:PlayQueue:1\"></u:BrowseQueueExResponse>\r\n</s:Body> </s:Envelope>"
+        }
+      },
+      {
+        "service": "urn:schemas-wiimu-com:service:PlayQueue:1",
+        "action": "GetQueueLoopMode",
+        "control_url": "http://xx.x.x.xx:49152/upnp/control/PlayQueue1",
+        "outcome": "ok",
+        "http_status": 200,
+        "response": {
+          "format": "xml",
+          "body": "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\"><s:Body>\n<u:GetQueueLoopModeResponse xmlns:u=\"urn:schemas-wiimu-com:service:PlayQueue:1\">\r\n<LoopMode>4</LoopMode>\r\n</u:GetQueueLoopModeResponse>\r\n</s:Body> </s:Envelope>"
+        }
+      },
+      {
+        "service": "urn:schemas-wiimu-com:service:PlayQueue:1",
+        "action": "GetKeyMapping",
+        "control_url": "http://xx.x.x.xx:49152/upnp/control/PlayQueue1",
+        "outcome": "ok",
+        "http_status": 200,
+        "response": {
+          "format": "xml",
+          "body": "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\"><s:Body>\n<u:GetKeyMappingResponse xmlns:u=\"urn:schemas-wiimu-com:service:PlayQueue:1\">\r\n<QueueContext>&lt;?xml version=&quot;1.0&quot;?&gt;\r\n&lt;KeyList&gt;\r\n&lt;ListName&gt;KeyMappingQueue&lt;/ListName&gt;\r\n&lt;MaxNumber&gt;33&lt;/MaxNumber&gt;\r\n&lt;Key0&gt;&lt;/Key0&gt;\r\n&lt;Key1&gt;\r\n&lt;RoutineId&gt;00000000641e7c3b&lt;/RoutineId&gt;\r\n&lt;Loop&gt;0&lt;/Loop&gt;\r\n&lt;Shuffle&gt;0&lt;/Shuffle&gt;\r\n&lt;/Key1&gt;\r\n&lt;Key2&gt;\r\n&lt;RoutineId&gt;0000000036df8ae2&lt;/RoutineId&gt;\r\n&lt;Loop&gt;0&lt;/Loop&gt;\r\n&lt;Shuffle&gt;0&lt;/Shuffle&gt;\r\n&lt;/Key2&gt;\r\n&lt;Key3&gt;\r\n&lt;RoutineId&gt;000000006cad58b0&lt;/RoutineId&gt;\r\n&lt;Loop&gt;0&lt;/Loop&gt;\r\n&lt;Shuffle&gt;0&lt;/Shuffle&gt;\r\n&lt;/Key3&gt;\r\n&lt;Key4&gt;\r\n&lt;RoutineId&gt;Empty&lt;/RoutineId&gt;\r\n&lt;/Key4&gt;\r\n&lt;Key5&gt;\r\n&lt;RoutineId&gt;Empty&lt;/RoutineId&gt;\r\n&lt;/Key5&gt;\r\n&lt;Key6&gt;\r\n&lt;RoutineId&gt;Empty&lt;/RoutineId&gt;\r\n&lt;/Key6&gt;\r\n&lt;Key7&gt;\r\n&lt;RoutineId&gt;Empty&lt;/RoutineId&gt;\r\n&lt;/Key7&gt;\r\n&lt;Key8&gt;\r\n&lt;RoutineId&gt;Empty&lt;/RoutineId&gt;\r\n&lt;/Key8&gt;\r\n&lt;Key9&gt;\r\n&lt;RoutineId&gt;Empty&lt;/RoutineId&gt;\r\n&lt;/Key9&gt;\r\n&lt;Key10&gt;\r\n&lt;RoutineId&gt;Empty&lt;/RoutineId&gt;\r\n&lt;/Key10&gt;\r\n&lt;Key11&gt;\r\n&lt;RoutineId&gt;Empty&lt;/RoutineId&gt;\r\n&lt;/Key11&gt;\r\n&lt;Key12&gt;\r\n&lt;RoutineId&gt;Empty&lt;/RoutineId&gt;\r\n&lt;/Key12&gt;\r\n&lt;Key13&gt;\r\n&lt;RoutineId&gt;Empty&lt;/RoutineId&gt;\r\n&lt;/Key13&gt;\r\n&lt;Key14&gt;\r\n&lt;RoutineId&gt;Empty&lt;/RoutineId&gt;\r\n&lt;/Key14&gt;\r\n&lt;Key15&gt;\r\n&lt;RoutineId&gt;Empty&lt;/RoutineId&gt;\r\n&lt;/Key15&gt;\r\n&lt;Key16&gt;\r\n&lt;RoutineId&gt;Empty&lt;/RoutineId&gt;\r\n&lt;/Key16&gt;\r\n&lt;Key17&gt;\r\n&lt;RoutineId&gt;Empty&lt;/RoutineId&gt;\r\n&lt;/Key17&gt;\r\n&lt;Key18&gt;\r\n&lt;RoutineId&gt;Empty&lt;/RoutineId&gt;\r\n&lt;/Key18&gt;\r\n&lt;Key19&gt;\r\n&lt;RoutineId&gt;Empty&lt;/RoutineId&gt;\r\n&lt;/Key19&gt;\r\n&lt;Key20&gt;\r\n&lt;RoutineId&gt;Empty&lt;/RoutineId&gt;\r\n&lt;/Key20&gt;\r\n&lt;Key21&gt;\r\n&lt;RoutineId&gt;Empty&lt;/RoutineId&gt;\r\n&lt;/Key21&gt;\r\n&lt;Key22&gt;\r\n&lt;RoutineId&gt;Empty&lt;/RoutineId&gt;\r\n&lt;/Key22&gt;\r\n&lt;Key23&gt;\r\n&lt;RoutineId&gt;Empty&lt;/RoutineId&gt;\r\n&lt;/Key23&gt;\r\n&lt;Key24&gt;\r\n&lt;RoutineId&gt;Empty&lt;/RoutineId&gt;\r\n&lt;/Key24&gt;\r\n&lt;Key25&gt;\r\n&lt;RoutineId&gt;Empty&lt;/RoutineId&gt;\r\n&lt;/Key25&gt;\r\n&lt;Key26&gt;\r\n&lt;RoutineId&gt;Empty&lt;/RoutineId&gt;\r\n&lt;/Key26&gt;\r\n&lt;Key27&gt;\r\n&lt;RoutineId&gt;Empty&lt;/RoutineId&gt;\r\n&lt;/Key27&gt;\r\n&lt;Key28&gt;\r\n&lt;RoutineId&gt;Empty&lt;/RoutineId&gt;\r\n&lt;/Key28&gt;\r\n&lt;Key29&gt;\r\n&lt;RoutineId&gt;Empty&lt;/RoutineId&gt;\r\n&lt;/Key29&gt;\r\n&lt;Key30&gt;\r\n&lt;RoutineId&gt;Empty&lt;/RoutineId&gt;\r\n&lt;/Key30&gt;\r\n&lt;Key31&gt;\r\n&lt;RoutineId&gt;Empty&lt;/RoutineId&gt;\r\n&lt;/Key31&gt;\r\n&lt;Key32&gt;\r\n&lt;RoutineId&gt;Empty&lt;/RoutineId&gt;\r\n&lt;/Key32&gt;\r\n&lt;Key33&gt;&lt;/Key33&gt;\r\n&lt;/KeyList&gt;\r\n</QueueContext>\r\n</u:GetKeyMappingResponse>\r\n</s:Body> </s:Envelope>"
+        }
+      },
+      {
+        "service": "urn:schemas-wiimu-com:service:PlayQueue:1",
+        "action": "GetQueueOnline",
+        "control_url": "http://xx.x.x.xx:49152/upnp/control/PlayQueue1",
+        "outcome": "http_error",
+        "http_status": 500
+      },
+      {
+        "service": "urn:schemas-wiimu-com:service:PlayQueue:1",
+        "action": "GetUserInfo",
+        "control_url": "http://xx.x.x.xx:49152/upnp/control/PlayQueue1",
+        "outcome": "http_error",
+        "http_status": 500
+      },
+      {
+        "service": "urn:schemas-wiimu-com:service:PlayQueue:1",
+        "action": "GetUserAccountHistory",
+        "control_url": "http://xx.x.x.xx:49152/upnp/control/PlayQueue1",
+        "outcome": "http_error",
+        "http_status": 500
+      },
+      {
+        "service": "urn:schemas-wiimu-com:service:PlayQueue:1",
+        "action": "GetUserFavorites",
+        "control_url": "http://xx.x.x.xx:49152/upnp/control/PlayQueue1",
+        "outcome": "http_error",
+        "http_status": 500
+      },
+      {
+        "service": "urn:schemas-wiimu-com:service:PlayQueue:1",
+        "action": "GetQueueIndex",
+        "control_url": "http://xx.x.x.xx:49152/upnp/control/PlayQueue1",
+        "outcome": "http_error",
+        "http_status": 500
+      },
+      {
+        "service": "urn:schemas-wiimu-com:service:PlayQueue:1",
+        "action": "GetBasicUserInfo",
+        "control_url": "http://xx.x.x.xx:49152/upnp/control/PlayQueue1",
+        "outcome": "ok",
+        "http_status": 200,
+        "response": {
+          "format": "xml",
+          "body": "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\"><s:Body>\n<u:GetBasicUserInfoResponse xmlns:u=\"urn:schemas-wiimu-com:service:PlayQueue:1\">\r\n<Result>{&quot;streamServices&quot;:[{&quot;id&quot;:&quot;Pandora2&quot;},{&quot;id&quot;:&quot;Prime&quot;},{&quot;id&quot;:&quot;Rhapsody&quot;},{&quot;id&quot;:&quot;iHeartRadio&quot;},{&quot;id&quot;:&quot;iHeart&quot;},{&quot;id&quot;:&quot;Deezer2&quot;},{&quot;id&quot;:&quot;SoundCloud&quot;},{&quot;id&quot;:&quot;CalmRadio&quot;},{&quot;id&quot;:&quot;SoundMachine&quot;},{&quot;id&quot;:&quot;Tidal&quot;,&quot;showName&quot;:&quot;togoxo4589@5nek.com&quot;,&quot;userId&quot;:&quot;208551564&quot;},{&quot;id&quot;:&quot;Qobuz&quot;},{&quot;id&quot;:&quot;newTuneIn&quot;},{&quot;id&quot;:&quot;Plex&quot;},{&quot;id&quot;:&quot;KKBOX&quot;},{&quot;id&quot;:&quot;RadioParadise2&quot;},{&quot;id&quot;:&quot;YouTubeMusic&quot;}],&quot;version&quot;:&quot;1.0&quot;}</Result>\r\n</u:GetBasicUserInfoResponse>\r\n</s:Body> </s:Envelope>"
+        }
+      }
+    ]
+  },
+  "tcpuart": {
+    "connect_error": "Connection refused (os error 111)",
+    "commands": []
+  }
+}
