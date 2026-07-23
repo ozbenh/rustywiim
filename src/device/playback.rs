@@ -513,6 +513,18 @@ pub fn mode_from_play_medium(play_medium: &str) -> Option<i32> {
         // "unrecognized"), unlike `SONGLIST-NETWORK`'s own on-demand
         // counterpart.
         "STATION-NETWORK" => Some(10),
+        // Confirmed via a real capture (`WiiM_Ultra_20260706_075502.tunein.json`,
+        // a TuneIn session, `TrackSource: "newTuneIn"`): `GetInfoEx`'s own
+        // `PlayType` is `10` whenever `PlayMedium` is `RADIO-NETWORK`, the
+        // same generic bucket `SONGLIST-NETWORK`/`STATION-NETWORK` already
+        // use — this was missing from this table entirely despite being a
+        // long-established, fully-handled medium everywhere else in this
+        // module (`decode_source_name_upnp()`, `PLAY_MEDIUMS_CTRL`,
+        // `decode_transport_caps_upnp()`), so every GENA NOTIFY for a
+        // TuneIn/radio session logged a spurious "unrecognized
+        // PlaybackStorageMedium" warning despite the medium being entirely
+        // recognized elsewhere.
+        "RADIO-NETWORK" => Some(10),
         _ => None, // unrecognized — not a confirmed value, let the caller decide
     }
 }
@@ -1173,6 +1185,13 @@ mod tests {
         // Confirmed via three real Pandora captures — see
         // `mode_from_play_medium()`'s own comment for the specific files.
         assert_eq!(mode_from_play_medium_fallback("STATION-NETWORK"), 10);
+        // Confirmed via a real TuneIn capture — see `mode_from_play_medium()`'s
+        // own comment. Regression test: this was missing from the table
+        // entirely (fell through to `None`/generic `10`-via-fallback only),
+        // spuriously logging every TuneIn/radio GENA NOTIFY as an
+        // "unrecognized PlaybackStorageMedium" despite this medium being
+        // fully handled everywhere else in this module.
+        assert_eq!(mode_from_play_medium("RADIO-NETWORK"), Some(10));
         assert_eq!(mode_from_play_medium_fallback("SOME_FUTURE_SERVICE"), 10);
         assert_eq!(mode_from_play_medium("SOME_FUTURE_SERVICE"), None);
         assert_eq!(mode_from_play_medium("TIDAL_CONNECT"), Some(32));
