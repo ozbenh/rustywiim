@@ -568,8 +568,9 @@ pub(super) fn wire_maximize_tracking(inner: &Rc<DeviceWindowInner>) {
 /// silently resets to some *other*, unrelated value on its own — no
 /// corresponding call anywhere in this codebase, triggered by something as
 /// small as a focus change to a different window. Root-caused via a
-/// standalone repro tool (`src/bin/repro_minisize.rs`, kept for future
-/// reference) across many tested variants: it's not GTK reconciling toward
+/// standalone repro tool (`src/experiments/repro_minisize.rs`, kept for
+/// future reference, no longer built) across many tested variants: it's
+/// not GTK reconciling toward
 /// whatever `size_request` holds (a mismatched *or* absent `size_request`
 /// both still reproduce it, snapping to some transitional mid-resize size
 /// instead of any deliberately-set value), and it's not about avoiding a
