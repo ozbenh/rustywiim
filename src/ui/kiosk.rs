@@ -186,7 +186,22 @@ pub(crate) struct KioskWindow {
     /// `has_touchscreen()` says so — `animate_controls()`'s own idle-based
     /// cursor show/hide is skipped entirely while this is set, so activity
     /// never re-shows the cursor the way it would on a mouse-driven setup.
+    /// Also read by whatever opens the EQ/Settings windows (still plain
+    /// toplevels, not overlays within this window, so they don't inherit
+    /// this window's own cursor) to hide their cursor too — see
+    /// `should_hide_cursor()`.
     cursor_permanently_hidden: Cell<bool>,
+    /// How many EQ/Settings windows are currently open while this Kiosk
+    /// window is around — auto-hide and the screensaver are both
+    /// inhibited outright while this is nonzero, the same as
+    /// `any_popover_open()`'s reasoning: those windows are still plain
+    /// separate toplevels for now (see `external_window_opened()`'s own
+    /// doc comment), so time spent in one used to run right past Kiosk's
+    /// own idle timers — closing back to Kiosk could land on a black
+    /// screensaver, or hidden chrome, despite the user having been
+    /// actively working the whole time. A count, not a bool, since EQ and
+    /// Settings can in principle both be open at once.
+    external_windows_open: Cell<u32>,
 }
 
 /// Kiosk mode is read at a distance (a fullscreen display, not a desktop
@@ -389,6 +404,7 @@ impl KioskWindow {
             last_logged_status: RefCell::new(None),
             inhibit_cookie: Cell::new(None),
             cursor_permanently_hidden: Cell::new(false),
+            external_windows_open: Cell::new(0),
         });
 
         if config::with(|cfg| cfg.kiosk_hide_cursor_on_touch) && has_touchscreen() {
@@ -1022,14 +1038,53 @@ impl KioskWindow {
             || self.bound.borrow().as_ref().is_some_and(|b| b.view.volume().popover().is_visible())
     }
 
+    /// Call when an EQ or Settings window opens while this Kiosk window
+    /// is around — pair with `external_window_closed()` (typically from
+    /// that window's own `connect_destroy()`) once it closes. Both
+    /// windows are still plain independent toplevels for now (EQ's own
+    /// window-construction comment explains why — cage, the Pi kiosk
+    /// compositor, doesn't map a `transient_for` child at all), not
+    /// overlays layered within this window the way a future version might
+    /// do instead — see `tick_idle_checks()`'s doc comment for what this
+    /// actually fixes in the meantime.
+    pub(crate) fn external_window_opened(&self) {
+        self.external_windows_open.set(self.external_windows_open.get() + 1);
+    }
+
+    pub(crate) fn external_window_closed(self: &Rc<Self>) {
+        self.external_windows_open.set(self.external_windows_open.get().saturating_sub(1));
+        // Otherwise the idle clock kept accumulating the whole time that
+        // window was open (ticks were merely skipped, not reset — see
+        // `tick_idle_checks()`), so returning to Kiosk could immediately
+        // re-trigger auto-hide/the screensaver on the very next ~1s tick —
+        // same reasoning as the popover-closed handlers' own
+        // `note_activity()` call.
+        if self.external_windows_open.get() == 0 {
+            self.note_activity("external-window-closed");
+        }
+    }
+
+    /// Whether whatever's opening an EQ/Settings window right now should
+    /// also hide its own cursor — the same touch-screen check `new()`
+    /// already resolved once for this window itself (see
+    /// `cursor_permanently_hidden`'s own doc comment), reused here since
+    /// those windows don't otherwise inherit anything from this one.
+    pub(crate) fn should_hide_cursor(&self) -> bool {
+        self.cursor_permanently_hidden.get()
+    }
+
     /// The ~1s idle-check tick: auto-hides the chrome buttons after
     /// `AUTO_HIDE_IDLE`, and triggers the screensaver once the bound
     /// device has gone `kiosk_screensaver_timeout_secs` without `Playing`.
-    /// Both skipped entirely while a popover is open — see
-    /// `any_popover_open()`.
+    /// Both skipped entirely while a popover is open (`any_popover_open()`)
+    /// or an EQ/Settings window is (`external_windows_open`) — confirmed
+    /// live: without the latter, leaving an EQ/Settings window open long
+    /// enough let Kiosk's own idle timers run the whole time, so closing
+    /// back to it could land on a black screensaver (or hidden chrome)
+    /// despite the user having been actively working the whole time.
     fn tick_idle_checks(self: &Rc<Self>) {
-        if self.any_popover_open() {
-            crate::ui::dbg_ui("kiosk tick: skipped, a popover is open");
+        if self.any_popover_open() || self.external_windows_open.get() > 0 {
+            crate::ui::dbg_ui("kiosk tick: skipped, a popover or external window is open");
             return;
         }
         let idle = self.activity_at.get().elapsed();

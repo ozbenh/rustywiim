@@ -281,10 +281,27 @@ impl AppState {
         let win_clone  = s.window_ref().clone();
         let weak_self  = Rc::downgrade(self_rc);
         let close_uuid = ds_uuid.clone();
+        // Kiosk's own screensaver/auto-hide idle timers used to keep
+        // running the whole time Settings was open (still a plain
+        // separate toplevel, not an overlay within Kiosk's own window),
+        // so closing back to Kiosk could land on a black screensaver (or
+        // hidden chrome) despite the user having been actively working
+        // in Settings — see `KioskWindow::external_window_opened()`'s own
+        // doc comment. Also hides Settings' own cursor to match, on a
+        // touch screen where Kiosk already permanently hides its own.
+        if let Some(kiosk) = self_rc.kiosk_win.borrow().as_ref() {
+            kiosk.external_window_opened();
+            if kiosk.should_hide_cursor() {
+                s.window_ref().set_cursor_from_name(Some("none"));
+            }
+        }
         s.window_ref().connect_close_request(move |win| {
             dbg_state(&format!("settings: closed for {:?}", close_uuid));
             if let Some(state) = weak_self.upgrade() {
                 state.settings_reg.borrow_mut().retain(|w| w.window_ref() != &win_clone);
+                if let Some(kiosk) = state.kiosk_win.borrow().as_ref() {
+                    kiosk.external_window_closed();
+                }
             }
             // Explicit, rather than relying on close()'s default handler to
             // do it — this is what actually frees the page widgets
