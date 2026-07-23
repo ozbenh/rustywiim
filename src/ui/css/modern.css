@@ -24,6 +24,18 @@ window.player-window headerbar {
     border-bottom: 1px solid rgba(255, 255, 255, 0.08);
 }
 
+/* Settings/EQ: a plain opaque gradient (same stops as ArtBackground's own
+   no-art fallback), not a real ArtBackground + Overlay — that approach
+   (matching the main window's own) was tried and reverted; see
+   panel.rs's/settings.rs's window-construction comment for the full
+   story (rounded corners, content-driven min size, and a genuine
+   transparent hole through to the desktop under System/Dark all broke).
+   This just paints over the window's existing default background, so
+   none of that structure needs to change. */
+window.modern-bg-window {
+    background-image: linear-gradient(135deg, #0a0a0a 0%, #171c21 55%, #232b33 100%);
+}
+
 /* Floating card panels — "panel-card" (presets/output side panel) and
    "controls-card" (seek bar + transport buttons) are always structurally
    present (see widgets.rs) but only styled here. Artwork, title/artist/

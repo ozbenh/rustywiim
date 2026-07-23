@@ -173,6 +173,13 @@ menubutton.mini-restore-btn > button:hover { background-color: rgba(127, 127, 12
    explicitly rather than relying on inheritance at all) sidesteps the
    question of the exact mechanism either way. */
 window.kiosk-window { background-color: @window_bg_color; color: @window_fg_color; }
+/* Settings/EQ ("modern-bg-window", see modern.css's own gradient rule for
+   these under RustyWiiM Modern) — this stylesheet's lack of a plain
+   `window { background-color }` fallback (see the comment above) hit
+   these decorated windows too, the same way it hit Kiosk's undecorated
+   one: confirmed live, transparent under System theme with the desktop
+   showing through. Same fix, same reasoning. */
+window.modern-bg-window { background-color: @window_bg_color; color: @window_fg_color; }
 /* Kiosk mode's device-name button, top-right overlay: text + outline only,
    no fill, so it reads as a floating label rather than a normal button
    until hovered. Vertical margin only, like `.kiosk-sidebar-btn` below —

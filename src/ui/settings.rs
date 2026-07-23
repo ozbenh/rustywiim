@@ -260,12 +260,35 @@ impl SettingsWindow {
             Some(i) => format!("Settings ({})", i.device_name),
             None    => "Settings".to_string(),
         };
+
+        // "modern-bg-window" is a plain CSS background-image gradient
+        // under RustyWiiM Modern (modern.css) — a real `ArtBackground` +
+        // `Overlay` (the main window's own approach) was tried first and
+        // reverted: making a bare `gtk::Overlay` the window's *direct*
+        // content, instead of `adw::ToolbarView`, lost the window's
+        // rounded corners and its content-driven minimum size, and (once
+        // `ArtBackground` hides itself outside Modern) left a genuinely
+        // transparent hole clean through to the desktop under
+        // System/Dark themes — libadwaita windows use an alpha-capable
+        // surface for their CSD shadows/rounded corners, so an unpainted
+        // region really is a hole, not just a visual gap (confirmed live;
+        // same root cause `344e9ca` "Fix transparent background with
+        // modern theme" already hit for `ArtBackground` itself). A plain
+        // CSS gradient keeps this window's structure/content exactly as
+        // it was otherwise.
         let window = adw::Window::builder()
             .title(&initial_title)
             .default_width(720)
             .default_height(520)
             .modal(false)
             .build();
+        // `.add_css_class()` *after* construction, not `.css_classes([...])`
+        // in the builder above — see `EqPanel::present()`'s identical fix
+        // for the full story (the builder property replaces the whole
+        // class list, wiping out the `background`/`csd` classes
+        // GTK/libadwaita set up during construction, which is what was
+        // actually breaking this window's rounded corners all along).
+        window.add_css_class("modern-bg-window");
         window.set_content(Some(&toolbar_view));
 
         if let Some(ref d) = ds {
