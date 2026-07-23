@@ -1169,7 +1169,11 @@ impl KioskWindow {
             return;
         }
         let idle = self.activity_at.get().elapsed();
-        let auto_hide = config::with(|cfg| cfg.kiosk_auto_hide_controls);
+        // The active theme can veto auto-hide outright (e.g. RustyWiiM
+        // Wood's physical-looking controls — see ThemeTunables' doc
+        // comment) regardless of the user's own setting.
+        let auto_hide = config::with(|cfg| cfg.kiosk_auto_hide_controls)
+            && !crate::ui::current_tunables().disable_kiosk_auto_hide;
         crate::ui::dbg_ui(&format!(
             "kiosk tick: idle={:.1}s auto_hide={auto_hide} controls_visible={} screensaver_active={}",
             idle.as_secs_f64(), self.controls_visible.get(), self.screensaver_active.get()

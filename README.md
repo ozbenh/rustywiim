@@ -60,6 +60,21 @@ On the following distributions:
  
 See below how to send me data to help support other devices if you own them.
 
+## Acknowledgments ##
+
+So this project ows a lot to [pywiim](https://github.com/mjcumming/pywiim) whose source code provided a massive wealth of information about the various Linkplay APIs and various quirks between devices and families. A lot of the original probing/detection/capabilities code was initially a direct translation from pywiim into Rust. Thanks Michael !
+
+Other mines of information and ideas have been
+[WiiM-Dashboard](https://github.com/illianoaoi/Wiim-Dashboard) and the [gthibo's fork](https://github.com/gthibo/Wiim-Dashboard) for which I shamelessly borrowed some graphics and ideas !
+
+Other sources of inspiration (both graphical or technical) have been:
+
+ * Linkplay's own HA integration
+ * [WiiM-Now-Playing](https://github.com/cvdlinden/wiim-now-playing")
+ * [linkplay-cli](https://github.com/ramikg/linkplay-cli)
+
+Thanks everyone, and keep up the good work !
+
 ## Pre-built packages ##
 
 See [Releases page](https://github.com/ozbenh/rustywiim/releases)

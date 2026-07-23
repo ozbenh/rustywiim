@@ -45,9 +45,25 @@ fn default_mini_modern() -> bool { true }
 /// (`DeviceConfig::gena_enabled`) GENA toggles default on — GENA only ever
 /// starts a session when *both* are true (see `resolved_gena_enabled()`).
 fn default_gena_enabled() -> bool { true }
-/// Matches the accent colour hardcoded in dark.css before it became
-/// user-configurable, so existing users see no visual change by default.
-fn default_accent_color() -> String { "#4ecdc4".to_string() }
+/// Per-theme default accent color, used whenever `Config::accent_color` is
+/// `None` (the user hasn't explicitly overridden it via Settings' "Override
+/// accent color" switch). `RustyWiiM`/`RustyWiiMModern` keep the teal that
+/// was hardcoded in dark.css before the accent became configurable at all,
+/// so existing users see no visual change by default. `RustyWiiMWood` uses
+/// a bright orange, `#ff8000` (Ben's pick, 2026-07-24) — a teal accent
+/// doesn't suit a warm walnut theme. gthibo/Wiim-Dashboard's own "Rust"
+/// token (`--primary: #B3441E`, see THEMING.md) was the first default
+/// tried here, sourced from the reference for traceability, but Ben
+/// preferred a brighter, more saturated orange in practice.
+/// System/SystemLight/SystemDark never read this (Settings greys the
+/// accent controls out for them; those themes use Adwaita's own accent
+/// instead), so they're folded into the catch-all rather than listed.
+pub fn default_accent_for_theme(theme: ThemeMode) -> &'static str {
+    match theme {
+        ThemeMode::RustyWiiMWood => "#ff8000",
+        _                        => "#4ecdc4",
+    }
+}
 fn default_devlist_song_info() -> bool { true }
 /// Matches `ScrollFadeLabel::SPEED_DEFAULT`.
 fn default_scroll_speed() -> f64 { 0.6 }
@@ -78,6 +94,12 @@ pub enum ThemeMode {
     #[serde(rename = "rusty_wiim_modern")]
     #[default]
     RustyWiiMModern,
+    /// RustyWiiM Wood: a CSS-only "hi-fi hardware" reskin experiment (walnut
+    /// wood-grain background, beveled gradient/box-shadow controls in place
+    /// of flat buttons) — see THEMING.md for the design write-up and the
+    /// reference material it's modeled on.
+    #[serde(rename = "rusty_wiim_wood")]
+    RustyWiiMWood,
 }
 
 /// Kiosk mode's "Inhibit System Screensaver" setting — see
@@ -267,13 +289,17 @@ pub struct Config {
     /// toggle is greyed out otherwise). Defaults on.
     #[serde(default = "default_mini_modern")]
     pub mini_modern: bool,
-    /// Highlight/accent colour (hex, e.g. "#4ecdc4") used for song progress,
-    /// playback status, the play/pause button, and the side-panel toggle.
-    /// Only meaningful for the two RustyWiiM themes (classic and Modern);
-    /// the Settings control is greyed out for System/Light/Dark, which use
-    /// Adwaita's own accent colour instead.
-    #[serde(default = "default_accent_color")]
-    pub accent_color: String,
+    /// Highlight/accent colour override (hex, e.g. "#4ecdc4") used for song
+    /// progress, playback status, the play/pause button, and the side-panel
+    /// toggle. `None` (the default — Settings' "Override accent color"
+    /// switch off) means "use the active theme's own default", resolved via
+    /// `default_accent_for_theme()` rather than a single fixed value, so
+    /// each RustyWiiM-family theme can suit its own palette until the user
+    /// explicitly picks one. Only meaningful for the RustyWiiM-family themes
+    /// at all; the Settings control is greyed out for System/Light/Dark,
+    /// which use Adwaita's own accent colour instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accent_color: Option<String>,
     /// Marquee scroll speed for title/artist/album text (`ScrollFadeLabel`'s
     /// `speed` property, pixels/tick). User-adjustable in Settings'
     /// Appearance page.
@@ -368,7 +394,7 @@ impl Default for Config {
             discovery_window_height: 0,
             animations: default_animations(),
             mini_modern: default_mini_modern(),
-            accent_color: default_accent_color(),
+            accent_color: None,
             scroll_speed: default_scroll_speed(),
             mini_stale_pixel_workaround: false,
             devlist_song_info: default_devlist_song_info(),
@@ -586,7 +612,7 @@ pub fn reset_ui_settings() {
         cfg.theme = ThemeMode::default();
         cfg.mini_modern = default_mini_modern();
         cfg.animations = default_animations();
-        cfg.accent_color = default_accent_color();
+        cfg.accent_color = None;
         cfg.scroll_speed = default_scroll_speed();
     });
 }

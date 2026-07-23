@@ -20,13 +20,22 @@ use super::{art_background, scroll_fade_label, APP_ID};
 
 // ── CSS ───────────────────────────────────────────────────────────────────────
 
-const SYSTEM_CSS: &str = include_str!("css/system.css");
-const DARK_CSS: &str   = include_str!("css/dark.css");
+const SYSTEM_CSS: &str = include_str!("themes/system/system.css");
+const DARK_CSS: &str   = include_str!("themes/dark/dark.css");
 // RustyWiiM Modern layers its own overrides (card panels, divider styling,
 // etc.) on top of the classic dark palette rather than duplicating it.
 const MODERN_CSS: &str = concat!(
-    include_str!("css/dark.css"),
-    include_str!("css/modern.css"),
+    include_str!("themes/dark/dark.css"),
+    include_str!("themes/modern/modern.css"),
+);
+// RustyWiiM Wood: same "overrides on top of dark.css" layering as Modern
+// (see THEMING.md) — a CSS-only reskin, no new widgets. Its background/
+// panel textures are `url("resource:///...")` references resolved against
+// the embedded icon GResource bundle (see `init_icon_resource()`'s doc
+// comment on load-order below), not loaded via `include_bytes!` here.
+const WOOD_CSS: &str = concat!(
+    include_str!("themes/dark/dark.css"),
+    include_str!("themes/wood/wood.css"),
 );
 
 thread_local! {
@@ -37,8 +46,118 @@ fn theme_css(theme: ThemeMode) -> &'static str {
     match theme {
         ThemeMode::RustyWiiM       => DARK_CSS,
         ThemeMode::RustyWiiMModern => MODERN_CSS,
+        ThemeMode::RustyWiiMWood   => WOOD_CSS,
         _                          => SYSTEM_CSS,
     }
+}
+
+// ── Tunables ─────────────────────────────────────────────────────────────────
+//
+// Behavioral (and, since FlipCover's theme-drawn artwork frame, small
+// theme-authored data) values a theme needs Rust code — not just CSS — to
+// know about. Two distinct reasons a value ends up here instead of in CSS:
+// CSS alone can make an *already-decided-to-run* behavior invisible, but
+// only Rust deciding not to run it at all avoids the cost of running it
+// (see `update_art_background_visibility()`'s doc comment above for the
+// same point about `queue_draw`/measure-and-snapshot cost) — e.g.
+// `disable_kiosk_auto_hide`; or the drawing itself is Rust-side GSK code,
+// not CSS, and needs its colors from somewhere — e.g. `frame_*` (GTK CSS's
+// only queryable-from-Rust "custom property" channel, `@define-color` +
+// `StyleContext::lookup_color()`, is deprecated since GTK 4.10 — this
+// crate targets 4.12 — so theme.yaml is the mechanism for this case too,
+// not a GTK CSS feature).
+//
+// Each theme's `theme.yaml` (absent = every field defaults) is
+// `include_str!`'d and parsed once per theme switch into `CURRENT_TUNABLES`
+// (below), not on every access — `FlipCover::snapshot()` reads tunables on
+// every repaint (including every frame of a flip/fade transition), so
+// unlike `resolved_accent_color()`'s "cheap enough to just recompute"
+// choice, re-parsing YAML there really would be per-frame cost, not a one-
+// off. Bundled at build time today like every other Tier-1 theme asset;
+// deliberately real standalone files rather than a Rust match/struct
+// literal so a future runtime-loaded theme pack (Tier 2, see THEMING.md)
+// can bring its own `theme.yaml` with no code changes here beyond
+// swapping `include_str!` for `std::fs::read_to_string()`.
+
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub(crate) struct ThemeTunables {
+    /// Suppress Kiosk mode's idle auto-hide for this theme's controls,
+    /// regardless of the user's own `kiosk_auto_hide_controls`/
+    /// `kiosk_auto_hide_all_controls` settings — for a theme whose
+    /// transport controls are styled to look like permanent physical
+    /// hardware (knobs/buttons), fading them out on idle reads as broken
+    /// hardware, not an intentional affordance.
+    pub disable_kiosk_auto_hide: bool,
+    /// Artwork frame colors for `FlipCover`'s theme-drawn raised-edge
+    /// frame (`flip_cover.rs`'s `draw_theme_frame()`) — CSS color strings
+    /// (`gdk::RGBA::parse()`-compatible, e.g. `"rgba(255, 220, 180, 0.35)"`),
+    /// not structured color values, so `theme.yaml` stays a plain data
+    /// file with no bespoke color syntax of its own. All three `None`
+    /// (every theme but Wood today) means no frame is drawn at all —
+    /// `FlipCover` doesn't get a hardcoded fallback color, since "this
+    /// theme has no opinion" and "this theme wants an invisible frame"
+    /// need to be distinguishable, and only the former is meant here.
+    pub frame_highlight: Option<String>,
+    pub frame_shadow:    Option<String>,
+    pub frame_glow:      Option<String>,
+}
+
+const WOOD_TUNABLES_YAML: &str = include_str!("themes/wood/theme.yaml");
+
+fn tunables_yaml(theme: ThemeMode) -> Option<&'static str> {
+    match theme {
+        ThemeMode::RustyWiiMWood => Some(WOOD_TUNABLES_YAML),
+        _                        => None,
+    }
+}
+
+/// `theme`'s tunables, parsed fresh from its `theme.yaml` (see the module
+/// doc comment above) — `ThemeTunables::default()` for a theme with no
+/// file, or if the file fails to parse (a malformed *bundled* theme.yaml
+/// is a build-time authoring mistake to fix, not something that should be
+/// able to crash a running app — logged via `eprintln!` since this has no
+/// dedicated debug flag of its own, unlike `--debug=` gated tracing
+/// elsewhere in this codebase, on the expectation that it's rare enough
+/// not to warrant one). Not the hot-path accessor — see `current_tunables()`.
+fn theme_tunables(theme: ThemeMode) -> ThemeTunables {
+    let Some(yaml) = tunables_yaml(theme) else { return ThemeTunables::default() };
+    match serde_yaml::from_str(yaml) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("theme.rs: bad theme.yaml for {theme:?}, using defaults: {e}");
+            ThemeTunables::default()
+        }
+    }
+}
+
+thread_local! {
+    static CURRENT_TUNABLES: RefCell<ThemeTunables> = RefCell::new(ThemeTunables::default());
+}
+
+/// Re-parses `theme`'s `theme.yaml` into `CURRENT_TUNABLES` — called
+/// alongside every CSS-provider reload (`init_css()`/`apply_theme()`,
+/// below) since a tunables change is always a theme-switch, never
+/// independent of one (unlike the accent color, which can change without
+/// a theme switch, so has no equivalent cache).
+fn refresh_tunables(theme: ThemeMode) {
+    CURRENT_TUNABLES.with(|c| *c.borrow_mut() = theme_tunables(theme));
+}
+
+/// The active theme's tunables — cheap (a `Clone` of a few small fields,
+/// no parsing), safe to call from a hot path like `FlipCover::snapshot()`.
+pub(crate) fn current_tunables() -> ThemeTunables {
+    CURRENT_TUNABLES.with(|c| c.borrow().clone())
+}
+
+/// The effective accent color for `theme`: the user's override
+/// (`config.accent_color`) if the "Override accent color" switch in
+/// Settings is on, otherwise `theme`'s own built-in default — see
+/// `config::default_accent_for_theme()`'s doc comment for why that's a
+/// per-theme table rather than one fixed fallback.
+fn resolved_accent_color(theme: ThemeMode) -> String {
+    config::with(|cfg| cfg.accent_color.clone())
+        .unwrap_or_else(|| config::default_accent_for_theme(theme).to_string())
 }
 
 /// Build the full stylesheet for `theme`: a `@define-color` for the
@@ -79,6 +198,7 @@ fn apply_color_scheme(theme: ThemeMode) {
         ThemeMode::SystemDark      => adw::ColorScheme::ForceDark,
         ThemeMode::RustyWiiM       => adw::ColorScheme::ForceDark,
         ThemeMode::RustyWiiMModern => adw::ColorScheme::ForceDark,
+        ThemeMode::RustyWiiMWood   => adw::ColorScheme::ForceDark,
     };
     adw::StyleManager::default().set_color_scheme(scheme);
 }
@@ -86,8 +206,9 @@ fn apply_color_scheme(theme: ThemeMode) {
 /// Initialise the CSS provider for the current process.  Must be called once.
 pub(super) fn init_css(theme: ThemeMode) {
     apply_color_scheme(theme);
-    let accent = config::with(|cfg| cfg.accent_color.clone());
+    let accent = resolved_accent_color(theme);
     reload_css_provider(&build_css(theme, &accent));
+    refresh_tunables(theme);
 }
 
 /// App-icon GResource bundle, compiled at build time by `build.rs` from
@@ -105,7 +226,11 @@ static ICON_RESOURCE_BYTES: &[u8] =
 
 /// Register the embedded icon resource and point GTK's default icon theme
 /// at it, so `application_icon`/`set_default_icon_name` can find `APP_ID`
-/// by name. Must be called once, after the GDK display is available.
+/// by name. Must be called once, after the GDK display is available, and
+/// before `init_css()` — GResource registration (`gio::resources_register`)
+/// is what makes `resource:///...` URIs resolvable at all, and the Wood
+/// theme's stylesheet references its texture assets that way (see
+/// `WOOD_CSS`'s doc comment).
 pub(super) fn init_icon_resource() {
     let resource = gio::Resource::from_data(&glib::Bytes::from_static(ICON_RESOURCE_BYTES))
         .expect("bad embedded GResource — rustywiim.gresource.xml/build.rs mismatch");
@@ -123,7 +248,7 @@ pub(super) fn init_icon_resource() {
 /// which only ever changes `config.accent_color` while the theme stays put.
 pub(crate) fn apply_accent_color() {
     let theme  = config::with(|cfg| cfg.theme);
-    let accent = config::with(|cfg| cfg.accent_color.clone());
+    let accent = resolved_accent_color(theme);
     reload_css_provider(&build_css(theme, &accent));
     for win in gtk::Window::list_toplevels() {
         queue_draw_recursive(&win);
@@ -210,8 +335,9 @@ pub(crate) fn update_art_background_visibility() {
 pub(crate) fn apply_theme(theme: ThemeMode) {
     apply_color_scheme(theme);
 
-    let accent = config::with(|cfg| cfg.accent_color.clone());
+    let accent = resolved_accent_color(theme);
     reload_css_provider(&build_css(theme, &accent));
+    refresh_tunables(theme);
 
     update_art_background_visibility();
 
@@ -281,6 +407,7 @@ const CYCLE_ORDER: &[ThemeMode] = &[
     ThemeMode::SystemDark,
     ThemeMode::RustyWiiM,
     ThemeMode::RustyWiiMModern,
+    ThemeMode::RustyWiiMWood,
 ];
 
 /// Advances `config.theme` to the next entry in `CYCLE_ORDER` (wrapping) and

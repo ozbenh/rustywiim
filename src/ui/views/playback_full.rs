@@ -451,6 +451,10 @@ impl PlaybackView {
         // It also renders both real art AND the fallback icon itself
         // (crossfading between them), so no separate art_stack/input_icon.
         let artwork = FlipCover::new();
+        // Opt in to a theme-drawn raised-edge frame around the artwork
+        // (inert unless the active theme defines it — see
+        // FlipCover::set_frame_enabled()'s doc comment).
+        artwork.set_frame_enabled(true);
         artwork.set_hexpand(true);
         artwork.set_vexpand(true);
 
@@ -527,10 +531,17 @@ impl PlaybackView {
         let eq_icon = gtk::Image::builder()
             .icon_name("rustywiim-equalizer-symbolic")
             .build();
+        // "eq-btn" alongside the generic Adwaita "circular"/"flat" pair:
+        // inert under System/Dark/Modern (none of their stylesheets
+        // reference it, same as panel-card/preset-tile staying inert
+        // outside the themes that style them), but lets wood.css give this
+        // button the same raised bevel as the volume/transport buttons
+        // next to it without also reshaping it under every other theme
+        // the way adding it to the existing ".vol-btn" class list would.
         let eq_btn = gtk::Button::builder()
             .child(&eq_icon)
             .tooltip_text("Equalizer")
-            .css_classes(["circular", "flat"])
+            .css_classes(["circular", "flat", "eq-btn"])
             .visible(false)
             .build();
         eq_btn.connect_clicked({

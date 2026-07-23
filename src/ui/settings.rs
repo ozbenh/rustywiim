@@ -398,6 +398,7 @@ const THEMES: &[(&str, Option<ThemeMode>)] = &[
     ("", None),
     ("RustyWiiM Dark", Some(ThemeMode::RustyWiiM)),
     ("RustyWiiM Modern", Some(ThemeMode::RustyWiiMModern)),
+    ("RustyWiiM Wood", Some(ThemeMode::RustyWiiMWood)),
 ];
 
 fn theme_index(mode: ThemeMode) -> u32 {
@@ -493,28 +494,91 @@ fn build_appearance_page() -> adw::PreferencesPage {
         config::update(|cfg| cfg.animations = row.is_active());
     });
 
-    let accent_hex = config::with(|cfg| cfg.accent_color.clone());
+    // "Override accent color" switch + "Accent color" swatch row, in that
+    // dependency order: the switch owns whether config.accent_color is
+    // Some/None at all (None = follow the active theme's own default,
+    // resolved fresh per theme via config::default_accent_for_theme() —
+    // see that function's doc comment for why each RustyWiiM-family theme
+    // wants a different one). Both rows share the same "is accent
+    // meaningful for this theme at all" family check dark.css/modern.css/
+    // wood.css all key off (System/Light/Dark use Adwaita's own accent).
+    //
+    // accent_row's own sensitivity is the *only* thing gating the swatch
+    // button inside it — GTK cascades INSENSITIVE state to descendants
+    // (same reason a disabled Box dims everything inside it), so setting
+    // it on the row dims the title/subtitle text *and* disables the
+    // button as one unit, rather than needing a second explicit
+    // accent_button.set_sensitive() call kept in sync by hand. Same
+    // pattern mini_modern_row already uses for its own "is this even
+    // applicable right now" gating below.
+    let is_rustywiim_family = |t: ThemeMode| {
+        matches!(t, ThemeMode::RustyWiiM | ThemeMode::RustyWiiMModern | ThemeMode::RustyWiiMWood)
+    };
+
+    let accent_override = config::with(|cfg| cfg.accent_color.is_some());
+    let accent_override_row = adw::SwitchRow::builder()
+        .title("Override accent color")
+        .subtitle("Off follows this theme's own default accent color")
+        .active(accent_override)
+        .sensitive(is_rustywiim_family(theme))
+        .build();
+
+    let effective_accent = config::with(|cfg| cfg.accent_color.clone())
+        .unwrap_or_else(|| config::default_accent_for_theme(theme).to_string());
     let accent_dialog = gtk::ColorDialog::new();
     let accent_button = gtk::ColorDialogButton::new(Some(accent_dialog));
-    if let Ok(rgba) = gtk::gdk::RGBA::parse(&accent_hex) {
+    if let Ok(rgba) = gtk::gdk::RGBA::parse(&effective_accent) {
         accent_button.set_rgba(&rgba);
     }
     accent_button.set_valign(gtk::Align::Center);
     let accent_row = adw::ActionRow::builder()
-        .title("Highlight color (RustyWiiM themes)")
+        .title("Accent color")
         .subtitle("Song progress, playback status, play/pause and panel toggle")
-        .sensitive(theme == ThemeMode::RustyWiiM || theme == ThemeMode::RustyWiiMModern)
+        .sensitive(is_rustywiim_family(theme) && accent_override)
         .build();
     accent_row.add_suffix(&accent_button);
+
+    accent_override_row.connect_active_notify(glib::clone!(#[weak] accent_button, #[weak] accent_row, move |row| {
+        if row.is_active() {
+            // Seed the swatch with whatever's currently showing (the
+            // theme's own default, since accent_color was None right up
+            // until this toggle) rather than some stale leftover value —
+            // config.accent_color was None, so this IS the value about to
+            // become the persisted override, not just a display nicety.
+            let theme = config::with(|cfg| cfg.theme);
+            let hex = config::default_accent_for_theme(theme).to_string();
+            if let Ok(rgba) = gtk::gdk::RGBA::parse(&hex) { accent_button.set_rgba(&rgba); }
+            config::update(|cfg| cfg.accent_color = Some(hex));
+        } else {
+            config::update(|cfg| cfg.accent_color = None);
+        }
+        accent_row.set_sensitive(row.is_active());
+        crate::ui::apply_accent_color();
+    }));
+
     accent_button.connect_rgba_notify(move |btn| {
         let hex = rgba_to_hex(&btn.rgba());
-        config::update(|cfg| cfg.accent_color = hex);
+        config::update(|cfg| cfg.accent_color = Some(hex));
         crate::ui::apply_accent_color();
     });
 
-    theme_row.connect_selected_notify(glib::clone!(#[weak] accent_row, move |row| {
+    theme_row.connect_selected_notify(glib::clone!(
+        #[weak] accent_row, #[weak] accent_override_row, #[weak] accent_button,
+        move |row| {
             let Some(theme) = THEMES.get(row.selected() as usize).and_then(|(_, m)| *m) else { return };
-            accent_row.set_sensitive(theme == ThemeMode::RustyWiiM || theme == ThemeMode::RustyWiiMModern);
+            let family_ok = is_rustywiim_family(theme);
+            accent_row.set_sensitive(family_ok && accent_override_row.is_active());
+            accent_override_row.set_sensitive(family_ok);
+            // No override on this theme: the swatch should reflect *this*
+            // theme's own default, not whatever the previous theme's
+            // default happened to be — purely cosmetic (apply_theme()
+            // already resolves the real CSS var correctly regardless of
+            // what the swatch displays), but a stale-looking color here
+            // would otherwise be confusing.
+            if !accent_override_row.is_active() {
+                let hex = config::default_accent_for_theme(theme);
+                if let Ok(rgba) = gtk::gdk::RGBA::parse(hex) { accent_button.set_rgba(&rgba); }
+            }
         }
     ));
 
@@ -549,17 +613,27 @@ fn build_appearance_page() -> adw::PreferencesPage {
         .valign(gtk::Align::Center)
         .build();
     reset_btn.connect_clicked(glib::clone!(
-        #[weak] theme_row, #[weak] mini_modern_row, #[weak] animations_row, #[weak] accent_button,
+        #[weak] theme_row, #[weak] mini_modern_row, #[weak] animations_row,
+        #[weak] accent_override_row, #[weak] accent_row, #[weak] accent_button,
         #[weak] scroll_speed_adj
        , move |_| {
             config::reset_ui_settings();
-            let (theme, mini_modern, animations, accent_color, speed) = config::with(|cfg| {
-                (cfg.theme, cfg.mini_modern, cfg.animations, cfg.accent_color.clone(), cfg.scroll_speed)
+            let (theme, mini_modern, animations, speed) = config::with(|cfg| {
+                (cfg.theme, cfg.mini_modern, cfg.animations, cfg.scroll_speed)
             });
             theme_row.set_selected(theme_index(theme));
             mini_modern_row.set_active(mini_modern);
             animations_row.set_active(animations);
-            if let Ok(rgba) = gtk::gdk::RGBA::parse(&accent_color) {
+            // reset_ui_settings() always clears accent_color to None — set
+            // the switch, the row's own sensitivity, and the swatch color
+            // all explicitly rather than relying on set_active(false)'s
+            // notify signal (which GTK only fires on an actual change, so
+            // it wouldn't run at all if the override was already off,
+            // leaving accent_row's dimming and the swatch color stale).
+            accent_override_row.set_active(false);
+            accent_row.set_sensitive(false); // override is always off right after a reset
+            let hex = config::default_accent_for_theme(theme);
+            if let Ok(rgba) = gtk::gdk::RGBA::parse(hex) {
                 accent_button.set_rgba(&rgba);
             }
             scroll_speed_adj.set_value(speed);
@@ -572,6 +646,7 @@ fn build_appearance_page() -> adw::PreferencesPage {
     group.add(&theme_row);
     group.add(&mini_modern_row);
     group.add(&animations_row);
+    group.add(&accent_override_row);
     group.add(&accent_row);
     group.add(&scroll_speed_row);
 

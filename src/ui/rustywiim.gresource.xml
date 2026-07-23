@@ -46,4 +46,19 @@
          comes up. -->
     <file alias="rustywiim-equalizer-symbolic.svg">icons/equalizer.svg</file>
   </gresource>
+  <!-- RustyWiiM Wood theme's background/panel textures — referenced from
+       themes/wood/wood.css as url("resource:///io/github/ozbenh/rustywiim/
+       themes/wood/..."), not include_bytes!'d directly (unlike the CSS
+       files themselves): CSS background-image needs a GIO-resolvable URI,
+       and this same GResource bundle is already registered process-wide by
+       init_icon_resource() before any theme CSS loads (see that function's
+       doc comment). Both are procedurally-generated SVGs (an feTurbulence
+       filter, not a bitmap — see wood-grain.svg's own comment/THEMING.md
+       for why), rasterized live by librsvg at whatever size GTK requests,
+       so there's no fixed-resolution tiling seam the way a bitmap texture
+       would have. No other theme has assets here yet. -->
+  <gresource prefix="/io/github/ozbenh/rustywiim/themes/wood">
+    <file alias="wood-grain.svg">themes/wood/wood-grain.svg</file>
+    <file alias="wood-panel.svg">themes/wood/wood-panel.svg</file>
+  </gresource>
 </gresources>

@@ -16,7 +16,7 @@ mod views;
 use device_window::DeviceWindow;
 pub(crate) use theme::{
     apply_accent_color, apply_theme, appearance_changed, broadcast_appearance_changed,
-    cycle_theme, update_art_background_visibility,
+    current_tunables, cycle_theme, update_art_background_visibility,
 };
 use theme::{init_css, init_icon_resource};
 
@@ -499,8 +499,11 @@ impl AppState {
             // something, so no need to check its return value here.
             config::update(|cfg| { cfg.migrate(); });
             let theme = config::with(|cfg| cfg.theme);
-            init_css(theme);
+            // Must run before init_css(): it registers the embedded
+            // GResource bundle, which is what makes the "resource:///..."
+            // URIs the Wood theme's stylesheet references actually resolve.
             init_icon_resource();
+            init_css(theme);
         }
 
         Self::install_quit_action(self_rc);

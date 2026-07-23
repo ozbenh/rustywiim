@@ -117,6 +117,10 @@ impl MiniPlaybackView {
         let _ = imp.art_bg.set(art_bg.cloned());
 
         let artwork = FlipCover::new();
+        // Opt in to a theme-drawn raised-edge frame around the artwork
+        // (inert unless the active theme defines it — see
+        // FlipCover::set_frame_enabled()'s doc comment).
+        artwork.set_frame_enabled(true);
         artwork.set_hexpand(false);
         artwork.set_vexpand(false);
         artwork.set_valign(Align::Center);

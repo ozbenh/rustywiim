@@ -71,6 +71,8 @@ fn main() {
     println!("cargo:rerun-if-changed=src/ui/icons/svc-iheartradio.svg");
     println!("cargo:rerun-if-changed=src/ui/icons/svc-tunein.svg");
     println!("cargo:rerun-if-changed=src/ui/icons/svc-amazon.svg");
+    println!("cargo:rerun-if-changed=src/ui/themes/wood/wood-grain.svg");
+    println!("cargo:rerun-if-changed=src/ui/themes/wood/wood-panel.svg");
     let out_dir = std::env::var("OUT_DIR").unwrap();
     let status = Command::new("glib-compile-resources")
         .args([
