@@ -141,6 +141,14 @@ You can pretty-print this file using `target/debug/wiim-capdump`. I would apprec
 * Kiosk mode doesn't have a way to manually add a device by IP address yet
 
 ## Changelog ##
+  * 0.10.4 - 2026-07-23
+    * Fix warnings when playing from a RADIO-NETWORK source
+	* And Kiosk setting to hide the mouse cursor on touch screens
+	* Don't auto-hide controls when the Settings window is open in Kiosk mode
+	* Close the settings window when it loses focus in Kiosk mode so we don't
+	  "lose" it behind the main Kiosk window when using cage.
+    * In modern theme, give a background gradient to Settings
+
   * 0.10.3 - 2026-07-22
     * A few more icons-related fix: Hi-Res logo (used by Qobuz) doesn't look
 	  "grey" on light themes, services logos are no longer constrainted to
