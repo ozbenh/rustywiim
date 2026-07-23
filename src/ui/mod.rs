@@ -290,7 +290,7 @@ impl AppState {
         // doc comment. Also hides Settings' own cursor to match, on a
         // touch screen where Kiosk already permanently hides its own.
         if let Some(kiosk) = self_rc.kiosk_win.borrow().as_ref() {
-            kiosk.external_window_opened();
+            kiosk.external_window_opened(s.window_ref());
             if kiosk.should_hide_cursor() {
                 s.window_ref().set_cursor_from_name(Some("none"));
             }
@@ -300,7 +300,7 @@ impl AppState {
             if let Some(state) = weak_self.upgrade() {
                 state.settings_reg.borrow_mut().retain(|w| w.window_ref() != &win_clone);
                 if let Some(kiosk) = state.kiosk_win.borrow().as_ref() {
-                    kiosk.external_window_closed();
+                    kiosk.external_window_closed(win);
                 }
             }
             // Explicit, rather than relying on close()'s default handler to

@@ -191,17 +191,19 @@ pub(crate) struct KioskWindow {
     /// this window's own cursor) to hide their cursor too — see
     /// `should_hide_cursor()`.
     cursor_permanently_hidden: Cell<bool>,
-    /// How many EQ/Settings windows are currently open while this Kiosk
-    /// window is around — auto-hide and the screensaver are both
-    /// inhibited outright while this is nonzero, the same as
-    /// `any_popover_open()`'s reasoning: those windows are still plain
-    /// separate toplevels for now (see `external_window_opened()`'s own
-    /// doc comment), so time spent in one used to run right past Kiosk's
-    /// own idle timers — closing back to Kiosk could land on a black
-    /// screensaver, or hidden chrome, despite the user having been
-    /// actively working the whole time. A count, not a bool, since EQ and
-    /// Settings can in principle both be open at once.
-    external_windows_open: Cell<u32>,
+    /// The EQ/Settings windows currently open while this Kiosk window is
+    /// around — auto-hide and the screensaver are both inhibited outright
+    /// while this is non-empty, the same as `any_popover_open()`'s
+    /// reasoning: those windows are still plain separate toplevels for
+    /// now (see `external_window_opened()`'s own doc comment), so time
+    /// spent in one used to run right past Kiosk's own idle timers —
+    /// closing back to Kiosk could land on a black screensaver, or hidden
+    /// chrome, despite the user having been actively working the whole
+    /// time. A `Vec`, not just a count, since EQ and Settings can in
+    /// principle both be open at once *and* this window needs the actual
+    /// handles to re-`present()` them — see the `is-active` handler in
+    /// `new()` for why.
+    external_windows: RefCell<Vec<adw::Window>>,
 }
 
 /// Kiosk mode is read at a distance (a fullscreen display, not a desktop
@@ -404,7 +406,7 @@ impl KioskWindow {
             last_logged_status: RefCell::new(None),
             inhibit_cookie: Cell::new(None),
             cursor_permanently_hidden: Cell::new(false),
-            external_windows_open: Cell::new(0),
+            external_windows: RefCell::new(Vec::new()),
         });
 
         if config::with(|cfg| cfg.kiosk_hide_cursor_on_touch) && has_touchscreen() {
@@ -412,6 +414,45 @@ impl KioskWindow {
             this.window.set_cursor_from_name(Some("none"));
             this.cursor_permanently_hidden.set(true);
         }
+
+        // Wayland gives a client no way to force itself to stay below
+        // another unrelated toplevel (no GTK4 equivalent of GTK3's
+        // set_keep_above/below at all) — the one real stacking hint,
+        // `transient_for`, is exactly what cage doesn't support (see
+        // `EqPanel::present()`'s own window-construction comment), so
+        // there's no way to keep an open EQ/Settings window genuinely on
+        // top of this one. Re-`present()`-ing them here instead was tried
+        // first and reverted: it raced this same window's own close
+        // request (closing EQ/Settings hands focus back to Kiosk, which
+        // fired this same handler and re-presented the window that was
+        // literally in the middle of closing, making it impossible to
+        // close them at all — confirmed live). Closing them instead has
+        // no such race — this window regaining focus unambiguously means
+        // the user is back in Kiosk, so an EQ/Settings window left open
+        // behind a fullscreen surface with no window switcher of its own
+        // isn't useful to keep around anyway.
+        this.window.connect_notify_local(Some("is-active"), {
+            let weak = Rc::downgrade(&this);
+            move |win, _| {
+                if !win.is_active() { return; }
+                let Some(this) = weak.upgrade() else { return };
+                // Collected into an owned `Vec` (cheap — `adw::Window`
+                // clones are just a refcount bump) *before* closing
+                // anything, rather than iterating the `Ref` guard
+                // directly: `w.close()` re-enters synchronously all the
+                // way to `external_window_closed()`, which needs its own
+                // `borrow_mut()` on this same `RefCell` — doing that while
+                // still inside this loop's own `.borrow()` panicked with
+                // "RefCell already borrowed" (confirmed live, a real
+                // crash — not just a bug report). Cloning first drops the
+                // borrow before any reentrant call happens.
+                let windows: Vec<adw::Window> = this.external_windows.borrow().clone();
+                for w in windows {
+                    crate::ui::dbg_ui("kiosk: regained focus, closing an open EQ/Settings window");
+                    w.close();
+                }
+            }
+        });
 
         // Always mode holds one inhibit for the whole session, independent
         // of any device binding — released in close(). Never/WhenPlaying
@@ -1046,20 +1087,28 @@ impl KioskWindow {
     /// compositor, doesn't map a `transient_for` child at all), not
     /// overlays layered within this window the way a future version might
     /// do instead — see `tick_idle_checks()`'s doc comment for what this
-    /// actually fixes in the meantime.
-    pub(crate) fn external_window_opened(&self) {
-        self.external_windows_open.set(self.external_windows_open.get() + 1);
+    /// actually fixes in the meantime. Also remembers `window` itself, so
+    /// this window's own `is-active` handler (wired in `new()`) can
+    /// re-`present()` it if Kiosk gets refocused over it — there is no
+    /// general "stay on top" mechanism on Wayland (the old GTK3
+    /// `set_keep_above()` doesn't exist in GTK4 at all), and `transient_for`
+    /// — the *one* real stacking relationship a client can ask for — is
+    /// exactly what cage doesn't support (see that same window-construction
+    /// comment), so re-presenting on the way back is the best available
+    /// fallback rather than a real fix.
+    pub(crate) fn external_window_opened(&self, window: &adw::Window) {
+        self.external_windows.borrow_mut().push(window.clone());
     }
 
-    pub(crate) fn external_window_closed(self: &Rc<Self>) {
-        self.external_windows_open.set(self.external_windows_open.get().saturating_sub(1));
+    pub(crate) fn external_window_closed(self: &Rc<Self>, window: &adw::Window) {
+        self.external_windows.borrow_mut().retain(|w| w != window);
         // Otherwise the idle clock kept accumulating the whole time that
         // window was open (ticks were merely skipped, not reset — see
         // `tick_idle_checks()`), so returning to Kiosk could immediately
         // re-trigger auto-hide/the screensaver on the very next ~1s tick —
         // same reasoning as the popover-closed handlers' own
         // `note_activity()` call.
-        if self.external_windows_open.get() == 0 {
+        if self.external_windows.borrow().is_empty() {
             self.note_activity("external-window-closed");
         }
     }
@@ -1077,13 +1126,13 @@ impl KioskWindow {
     /// `AUTO_HIDE_IDLE`, and triggers the screensaver once the bound
     /// device has gone `kiosk_screensaver_timeout_secs` without `Playing`.
     /// Both skipped entirely while a popover is open (`any_popover_open()`)
-    /// or an EQ/Settings window is (`external_windows_open`) — confirmed
+    /// or an EQ/Settings window is (`external_windows`) — confirmed
     /// live: without the latter, leaving an EQ/Settings window open long
     /// enough let Kiosk's own idle timers run the whole time, so closing
     /// back to it could land on a black screensaver (or hidden chrome)
     /// despite the user having been actively working the whole time.
     fn tick_idle_checks(self: &Rc<Self>) {
-        if self.any_popover_open() || self.external_windows_open.get() > 0 {
+        if self.any_popover_open() || !self.external_windows.borrow().is_empty() {
             crate::ui::dbg_ui("kiosk tick: skipped, a popover or external window is open");
             return;
         }
