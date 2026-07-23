@@ -57,6 +57,7 @@ fn default_kiosk_screensaver_enable() -> bool { true }
 /// Settings' own slider range is 10s-600s (10 minutes).
 fn default_kiosk_screensaver_timeout_secs() -> u32 { 30 }
 fn default_kiosk_screensaver_include_phys_inputs() -> bool { true }
+fn default_kiosk_hide_cursor_on_touch() -> bool { true }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -343,6 +344,16 @@ pub struct Config {
     /// Defaults on; only meaningful when `kiosk_screensaver_enable` is.
     #[serde(default = "default_kiosk_screensaver_include_phys_inputs")]
     pub kiosk_screensaver_include_phys_inputs: bool,
+    /// Permanently hides the mouse cursor in Kiosk mode when a touch
+    /// screen is detected (`kiosk::has_touchscreen()`), rather than only
+    /// while idle the way `kiosk_auto_hide_controls` does — a touch
+    /// screen's cursor has no real position to show (it only ever appears
+    /// at whatever point was last touched, or the corner on startup), so
+    /// unlike a mouse-driven setup there's no "not idle yet" state where
+    /// showing it is actually useful. Defaults on; a no-op on a
+    /// non-touch display (`has_touchscreen()` returns false).
+    #[serde(default = "default_kiosk_hide_cursor_on_touch")]
+    pub kiosk_hide_cursor_on_touch: bool,
 }
 
 impl Default for Config {
@@ -369,6 +380,7 @@ impl Default for Config {
             kiosk_screensaver_enable: default_kiosk_screensaver_enable(),
             kiosk_screensaver_timeout_secs: default_kiosk_screensaver_timeout_secs(),
             kiosk_screensaver_include_phys_inputs: default_kiosk_screensaver_include_phys_inputs(),
+            kiosk_hide_cursor_on_touch: default_kiosk_hide_cursor_on_touch(),
         }
     }
 }

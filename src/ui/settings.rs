@@ -692,6 +692,22 @@ fn build_kiosk_page(notify_kiosk_changed: Rc<dyn Fn(u32)>) -> adw::PreferencesPa
         }
     ));
 
+    // Only applied once, at `KioskWindow::new()` time (the cursor is either
+    // permanently hidden for the window's whole life or not) — no
+    // `notify_kiosk_changed` bit, unlike the rows above; takes effect the
+    // next time Kiosk mode is (re-)entered, same as a hand-edited
+    // `config.json` field not being picked up until restart.
+    let hide_cursor_touch = config::with(|cfg| cfg.kiosk_hide_cursor_on_touch);
+    let hide_cursor_touch_row = adw::SwitchRow::builder()
+        .title("Hide Cursor on Touch Screens")
+        .subtitle("Permanently hide the mouse cursor when a touch screen is detected, \
+                   rather than only while idle. Takes effect next time Kiosk mode is entered.")
+        .active(hide_cursor_touch)
+        .build();
+    hide_cursor_touch_row.connect_active_notify(move |row| {
+        config::update(|cfg| cfg.kiosk_hide_cursor_on_touch = row.is_active());
+    });
+
     let group = adw::PreferencesGroup::builder()
         .title("Kiosk")
         .build();
@@ -701,6 +717,7 @@ fn build_kiosk_page(notify_kiosk_changed: Rc<dyn Fn(u32)>) -> adw::PreferencesPa
     group.add(&screensaver_row);
     group.add(&timeout_row);
     group.add(&physical_input_row);
+    group.add(&hide_cursor_touch_row);
 
     let page = adw::PreferencesPage::new();
     page.add(&group);

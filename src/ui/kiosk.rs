@@ -182,6 +182,11 @@ pub(crate) struct KioskWindow {
     /// acquires/releases it around `Playing` transitions in
     /// `on_playback_changed()`; `Never` leaves this permanently `None`.
     inhibit_cookie: Cell<Option<u32>>,
+    /// Set once in `new()` when `kiosk_hide_cursor_on_touch` is on *and*
+    /// `has_touchscreen()` says so — `animate_controls()`'s own idle-based
+    /// cursor show/hide is skipped entirely while this is set, so activity
+    /// never re-shows the cursor the way it would on a mouse-driven setup.
+    cursor_permanently_hidden: Cell<bool>,
 }
 
 /// Kiosk mode is read at a distance (a fullscreen display, not a desktop
@@ -207,6 +212,19 @@ const CONTROLS_FADE_MS: u32 = 150;
 /// activity should feel instantly responsive).
 const SCREENSAVER_FADE_IN_MS: u32 = 800;
 const SCREENSAVER_FADE_OUT_MS: u32 = 200;
+
+/// Whether the default seat reports touch capability — the same check
+/// `src/experiments/check_touch.py` prototyped
+/// (`GdkDisplayManager`→default display→default seat→`SeatCapabilities`),
+/// ported to gtk4-rs. Drives `kiosk_hide_cursor_on_touch`: on a touch
+/// screen the pointer has no real position to show (it only ever jumps to
+/// wherever was last touched), so there's no "not idle yet" state where
+/// showing it is actually useful the way there is with a mouse.
+fn has_touchscreen() -> bool {
+    let Some(display) = gtk::gdk::DisplayManager::get().default_display() else { return false };
+    let Some(seat) = display.default_seat() else { return false };
+    seat.capabilities().contains(gtk::gdk::SeatCapabilities::TOUCH)
+}
 
 impl KioskWindow {
     pub(crate) fn new(
@@ -370,7 +388,14 @@ impl KioskWindow {
             screensaver_idle_since: Cell::new(None),
             last_logged_status: RefCell::new(None),
             inhibit_cookie: Cell::new(None),
+            cursor_permanently_hidden: Cell::new(false),
         });
+
+        if config::with(|cfg| cfg.kiosk_hide_cursor_on_touch) && has_touchscreen() {
+            crate::ui::dbg_ui("kiosk: touchscreen detected, permanently hiding cursor");
+            this.window.set_cursor_from_name(Some("none"));
+            this.cursor_permanently_hidden.set(true);
+        }
 
         // Always mode holds one inhibit for the whole session, independent
         // of any device binding — released in close(). Never/WhenPlaying
@@ -1039,7 +1064,12 @@ impl KioskWindow {
         // Cursor visibility rides along with the chrome — "none" is a
         // real CSS3 cursor value GTK4 honors (hides it entirely), not a
         // theme lookup that can fail; no fade, it's binary either way.
-        self.window.set_cursor_from_name(if show { None } else { Some("none") });
+        // Skipped entirely when the cursor is permanently hidden (touch
+        // screen detected) — otherwise this "showing" branch would
+        // re-reveal it on every activity tick, fighting that setting.
+        if !self.cursor_permanently_hidden.get() {
+            self.window.set_cursor_from_name(if show { None } else { Some("none") });
+        }
 
         // Two statements, not `if let Some(a) = ...borrow_mut().take() { a.skip(); }`
         // — see toggle_sidebar()'s identical comment for why that single-
