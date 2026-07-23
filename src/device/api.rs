@@ -423,6 +423,21 @@ pub struct DeviceInfo {
     /// "4.2" → Gen2+.  Used for Gen1 detection in capability profiles.
     #[serde(default)]
     pub wmrm_version: String,
+    /// Present (non-empty) on devices with the LV2 EQ system, e.g.
+    /// `"Eq10HP_ver_2.0"` — a connect-time hint used by
+    /// `capabilities::eq_hint()` to decide whether the EQ editor button is
+    /// worth showing at all, before any dedicated EQ probe. Confirmed
+    /// absent on some WiiM units running older firmware even when
+    /// `getStatusEx` otherwise looks normal (real Mini capture,
+    /// `Linkplay.4.6.819436`) — its absence doesn't rule out EQ support,
+    /// it's just a positive-only signal.
+    #[serde(default, rename = "EQ_support")]
+    pub eq_support: String,
+    /// EQ subsystem version, e.g. `"4.3"` — present alongside `eq_support`
+    /// on the same devices. Not currently interpreted beyond "non-empty",
+    /// carried for future use.
+    #[serde(default, rename = "EQVersion")]
+    pub eq_version: String,
     /// Whether a BLE remote is currently paired/present: "1"/"0". Absent
     /// entirely on devices with no BLE remote hardware.
     #[serde(default, rename = "BleRemoteConnected")]
@@ -532,6 +547,58 @@ pub struct AudioOutputStatus {
     pub hardware: String,
     #[serde(default)]
     pub source: String,
+}
+
+/// `GetAcousticCapability`'s response. See
+/// `WiimClient::get_acoustic_capability()`'s doc comment for why the
+/// several other real sub-blocks aren't modeled.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct AcousticCapability {
+    #[serde(default, rename = "EQBlock")]
+    pub eq_block: EqBlockInfo,
+    #[serde(default, rename = "PEQ")]
+    pub peq: PeqInfo,
+    /// Presence-only signal (contents are just `{"Version":"1.0"}`, never
+    /// consumed) — confirmed live (2026-07-23, real WiiM Ultra MITM
+    /// capture of the official app) that this top-level key's mere
+    /// presence, *not* an `EQBlock.Blocks` entry, is what actually
+    /// indicates headphone-output EQ support: the same capture's
+    /// `EQBlock.Blocks` only ever listed `"EQ"`/`"RC"`, never
+    /// `"HeadphoneEQ"`, even while the device was actively being edited
+    /// through the headphone-output EQ screen. Corrects
+    /// `EqBlockEntry`'s own doc comment, which guessed the opposite
+    /// (`"HeadphoneEQ" believed possible... inside a Blocks list"`) before
+    /// this was confirmed either way.
+    #[serde(default, rename = "HeadphoneEQ")]
+    pub headphone_eq: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct EqBlockInfo {
+    #[serde(default, rename = "Blocks")]
+    pub blocks: Vec<EqBlockEntry>,
+}
+
+/// One `EQBlock.Blocks` entry — `kind` is the authoritative "does this
+/// layer exist on this device" signal for the layers it actually lists
+/// (confirmed real values: `"EQ"`, `"RC"`) — but `"HeadphoneEQ"` is
+/// *not* one of them; see `AcousticCapability::headphone_eq`'s own doc
+/// comment for that layer's real signal instead.
+#[derive(Debug, Clone, Deserialize)]
+pub struct EqBlockEntry {
+    #[serde(default)]
+    pub id: i64,
+    #[serde(default, rename = "type")]
+    pub kind: String,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct PeqInfo {
+    /// This device's actual filter-mode vocabulary, e.g.
+    /// `["OFF","LS","PK","HS","LP","HP"]` on a real Ultra — never assume
+    /// a fixed set.
+    #[serde(default, rename = "Filters")]
+    pub filters: Vec<String>,
 }
 
 /// Decoded Bluetooth A2DP sink status obtained from `getbtstatus`'s
@@ -797,6 +864,7 @@ fn fixup_player_status(st: &mut PlayerStatus) {
 pub struct WiimClient {
     http: Client,
     base: String,
+    ip: String,
     status_cmd: Arc<Mutex<Option<String>>>,
 }
 
@@ -808,10 +876,25 @@ impl WiimClient {
         debug_info(&format!("connecting to {ip}: {}", tls.description()));
         let http = build_reqwest_client(tls, Duration::from_secs(5));
         let base = api_base_url(ip, tls);
-        Self { http, base, status_cmd: Arc::new(Mutex::new(None)) }
+        Self { http, base, ip: ip.to_string(), status_cmd: Arc::new(Mutex::new(None)) }
     }
 
-    async fn cmd(&self, command: &str) -> anyhow::Result<String> {
+    /// The plain `ip` this client was constructed with (may include an
+    /// embedded port for test targets, e.g. `wiim-simulator`) — used as
+    /// the per-connection identifier in `--debug=eq` tracing, matching
+    /// `DeviceState::ip()`'s own role for `--debug=state`/`--debug=gena`.
+    pub fn ip(&self) -> &str {
+        &self.ip
+    }
+
+    /// `pub(crate)`, not private: `device::eq::lv2` builds its own raw EQ
+    /// command strings (rather than api.rs growing one dedicated method
+    /// per EQ command — the LV2 command family is large and mostly
+    /// mechanical JSON payloads, a poor fit for hand-written per-command
+    /// wrappers) and needs to send them through this same retry/transport
+    /// logic — still not `pub` outside this crate; every *other* command
+    /// stays behind its own real method here.
+    pub(crate) async fn cmd(&self, command: &str) -> anyhow::Result<String> {
         const MAX_RETRIES: u32 = 3;
         let url = format!("{}?command={}", self.base, command);
         for attempt in 0..=MAX_RETRIES {
@@ -951,6 +1034,41 @@ impl WiimClient {
         match serde_json::from_str(&text) {
             Ok(v)  => ApiOutcome::Ok(v),
             Err(_) => ApiOutcome::Failed,
+        }
+    }
+
+    /// `GetAcousticCapability` — a device-reported EQ/acoustics capability
+    /// descriptor, confirmed WiiM-specific (works on a real Ultra/Mini;
+    /// `pywiim`'s own device table shows it unsupported on Arylic/
+    /// Up2Stream). Only the two fields
+    /// `capabilities::resolve_eq_profile()` actually consumes are
+    /// modeled — `EQBlock.Blocks` (the authoritative layer list) and
+    /// `PEQ.Filters` (this device's filter-mode vocabulary) — the several
+    /// other sub-blocks in the real response (`RC.LevelMatch`, `SubLPF`,
+    /// `MainProtect`, `Evaluation`, `OutputDelay`) are untraced and
+    /// deliberately not modeled until something needs them.
+    /// `ApiOutcome::Unsupported` for **both** a literal "unknown command"
+    /// reply and a parsed `{"status":"Failed"}` body — confirmed live on
+    /// a real WiiM Mini (some WiiM firmware genuinely lacks this specific
+    /// endpoint despite otherwise-working EQ) — this is a permanent,
+    /// not-worth-retrying answer either way, unlike a transient `Failed`.
+    pub async fn get_acoustic_capability(&self) -> ApiOutcome<AcousticCapability> {
+        let text = match self.cmd("GetAcousticCapability").await {
+            Ok(t)  => t,
+            Err(_) => return ApiOutcome::Failed,
+        };
+        if is_unsupported_text(&text) {
+            return ApiOutcome::Unsupported;
+        }
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
+            return ApiOutcome::Failed;
+        };
+        if v.get("status").and_then(|s| s.as_str()) == Some("Failed") {
+            return ApiOutcome::Unsupported;
+        }
+        match serde_json::from_value(v) {
+            Ok(cap) => ApiOutcome::Ok(cap),
+            Err(_)  => ApiOutcome::Failed,
         }
     }
 
@@ -1339,5 +1457,82 @@ mod tests {
         let cap = load_capture("WiiM_Mini_20260708_045125.json");
         let text = capture_body_text(&cap, "getAudioInputCapbility");
         assert!(parse_audio_input_capability(&text).is_none());
+    }
+
+    /// Real WiiM Ultra `GetAcousticCapability` response: `EQBlock.Blocks`
+    /// lists `"EQ"`/`"RC"`, `PEQ.Filters` has all six confirmed tokens.
+    #[test]
+    fn acoustic_capability_parses_wiim_ultra() {
+        let cap = load_capture("WiiM_Ultra_20260723_020535.EQTest.json");
+        let text = capture_body_text(&cap, "GetAcousticCapability");
+        let parsed: AcousticCapability = serde_json::from_str(&text).expect("parsing AcousticCapability");
+        let block_types: Vec<&str> = parsed.eq_block.blocks.iter().map(|b| b.kind.as_str()).collect();
+        assert_eq!(block_types, vec!["EQ", "RC"]);
+        assert_eq!(parsed.peq.filters, vec!["OFF", "LS", "PK", "HS", "LP", "HP"]);
+    }
+
+    /// `pywiim`'s own documented example (`WIIM_DISCOVERED_APIS.md`, a
+    /// different WiiM model — no capture file for this one exists, hence
+    /// hand-transcribed rather than loaded from a fixture): a top-level
+    /// `RC` sub-block is present, but `EQBlock.Blocks` contains **only**
+    /// `{"id":1,"type":"EQ"}` — this is exactly the "top-level presence
+    /// isn't the same signal as `Blocks`" case `resolve_eq_profile()`
+    /// must get right.
+    #[test]
+    fn acoustic_capability_pywiim_example_rc_present_but_not_in_blocks() {
+        let text = r#"{
+            "Version": "1.0",
+            "GEQ": {"Version": "1.0"},
+            "PEQ": {"Version": "1.0", "Filters": ["OFF", "LS", "PK", "HS", "LP", "HP"]},
+            "RC": {"Version": "1.0"},
+            "HeadphoneEQ": {"Version": "1.0"},
+            "SubLPF": {"Version": "1.0"},
+            "Evaluation": {"Version": "1.1"},
+            "EQBlock": {"Version": "1.0", "Blocks": [{"id": 1, "type": "EQ"}]}
+        }"#;
+        let parsed: AcousticCapability = serde_json::from_str(text).expect("parsing AcousticCapability");
+        let block_types: Vec<&str> = parsed.eq_block.blocks.iter().map(|b| b.kind.as_str()).collect();
+        assert_eq!(block_types, vec!["EQ"], "RC's top-level presence must not appear in Blocks here");
+        assert!(parsed.headphone_eq.is_some());
+    }
+
+    /// Real WiiM Ultra, live MITM capture of the official app editing its
+    /// headphone-output EQ screen (2026-07-23) — confirms
+    /// `AcousticCapability::headphone_eq` against an actual device
+    /// response, not just `pywiim`'s documented example above.
+    /// `EQBlock.Blocks` only ever listed `"EQ"`/`"RC"` throughout that
+    /// entire session, including while headphone EQ was being actively
+    /// edited — `HeadphoneEQ`'s top-level presence really is the only
+    /// signal, never a `Blocks` entry. `OutputDelay` (a real sub-block
+    /// this codebase doesn't model at all) is included verbatim to
+    /// confirm it's silently and harmlessly ignored via `#[serde(default)]`
+    /// rather than needing its own field.
+    #[test]
+    fn acoustic_capability_real_ultra_headphone_eq_mitm_capture() {
+        let text = r#"{"Version":"1.0","GEQ":{"Version":"1.0"},"PEQ":{"Version":"1.0","Filters":["OFF","LS","PK","HS","LP","HP"]},"RC":{"Version":"1.0"},"HeadphoneEQ":{"Version":"1.0"},"SubLPF":{"Version":"1.0"},"Evaluation":{"Version":"1.1"},"EQBlock":{"Version":"1.0","Blocks":[{"id":1,"type":"EQ"},{"id":2,"type":"RC"}]},"OutputDelay":{"Version":"1.0","PerOutputDelay":false,"EnableMicroDelay":true,"MinDelayUs":-1000000,"MaxDelayUs":1000000,"StepDelayUs":100}}"#;
+        let parsed: AcousticCapability = serde_json::from_str(text).expect("parsing AcousticCapability");
+        let block_types: Vec<&str> = parsed.eq_block.blocks.iter().map(|b| b.kind.as_str()).collect();
+        assert_eq!(block_types, vec!["EQ", "RC"]);
+        assert!(parsed.headphone_eq.is_some());
+    }
+
+    /// Real WiiM Mini capture: `GetAcousticCapability` returns
+    /// `{"status":"Failed"}` — this firmware simply lacks the endpoint.
+    /// Confirms the classification path in `get_acoustic_capability()`
+    /// (parsed JSON with a `Failed` status, not a plain "unknown command"
+    /// string) — same real body used interactively against a live Mini.
+    #[test]
+    fn acoustic_capability_mini_status_failed_is_not_a_capability() {
+        let cap = load_capture("WiiM_Mini_20260723_020506.EQTest.json");
+        let text = capture_body_text(&cap, "GetAcousticCapability");
+        let v: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+        assert_eq!(v.get("status").and_then(|s| s.as_str()), Some("Failed"));
+        // A bare `AcousticCapability` parse would "succeed" here (every
+        // field is `#[serde(default)]`) but produce an empty/meaningless
+        // result — `get_acoustic_capability()` must check for `status:
+        // Failed` *before* attempting this parse, which is exactly why
+        // that check exists ahead of the `serde_json::from_value` call.
+        let parsed: AcousticCapability = serde_json::from_str(&text).expect("parses, but meaninglessly");
+        assert!(parsed.eq_block.blocks.is_empty());
     }
 }

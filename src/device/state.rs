@@ -129,6 +129,7 @@ use super::api::{
     PresetEntry, PresetFetchOutcome, TlsMode, WiimClient, TLS_MODE,
 };
 use super::capabilities::{self, DeviceCapabilities};
+use super::eq;
 use super::gena::{
     self, parse_av_transport_event, parse_play_queue_event, parse_rendering_control_event,
     GenaSession, NotifyPayload,
@@ -576,6 +577,19 @@ struct Inner {
     client:          Option<WiimClient>,
     device_info:     Option<DeviceInfo>,
     capabilities:    Option<DeviceCapabilities>,
+    /// Lazily resolved on first EQ editor open, then cached for the
+    /// connection's lifetime — deliberately not fetched/refreshed by any
+    /// poll: the EQ editor reads state once when opened and edits from
+    /// there, it never watches for or reconciles changes made by another
+    /// controller (the WiiM app, a second window) while open. `None` here
+    /// means "not yet resolved," not "confirmed absent" — see
+    /// `eq_profile_unavailable` for that.
+    eq_profile:            Option<Arc<capabilities::EqProfile>>,
+    /// Set once a resolution attempt comes back with nothing (no EQ
+    /// reachable at all) — distinct from `eq_profile` being `None` merely
+    /// because nobody's asked yet, same shape as `PresetSource`'s
+    /// `Unknown` vs. `Unavailable` split.
+    eq_profile_unavailable: bool,
     /// UPnP `AVTransport` client, lazily discovered once any field group in
     /// `access` resolves to `AccessMethod::UpnpPolled` (see
     /// `ensure_upnp_client`/`recompute_access`). `None` until discovery
@@ -887,6 +901,8 @@ impl Default for Inner {
             client:          None,
             device_info:     None,
             capabilities:    None,
+            eq_profile:            None,
+            eq_profile_unavailable: false,
             upnp_client:      None,
             upnp_discovery_in_flight: false,
             playback:        PlaybackState::default(),
@@ -3921,6 +3937,51 @@ impl DeviceState {
 
     pub fn capabilities(&self) -> Option<DeviceCapabilities> {
         self.imp().inner.borrow().capabilities.clone()
+    }
+
+    /// Coarse, connect-time signal for whether the EQ editor button is
+    /// worth showing at all (see `capabilities::eq_hint()`) — not the
+    /// full `EqProfile`, which is resolved separately and lazily.
+    pub fn eq_hint(&self) -> Option<capabilities::EqHint> {
+        self.imp().inner.borrow().capabilities.as_ref().map(|c| c.eq_hint)
+    }
+
+    /// The fully-resolved EQ picture, if `store_eq_profile()` has been
+    /// called with `Some` for this connection. `None` here doesn't mean
+    /// "no EQ" — check `eq_unavailable()` for that; it just means nobody
+    /// has resolved it yet (most connections, most of the time, per the
+    /// lazy-probing design).
+    pub fn eq_profile(&self) -> Option<Arc<capabilities::EqProfile>> {
+        self.imp().inner.borrow().eq_profile.clone()
+    }
+
+    /// `true` once a resolution attempt has confirmed there's no EQ
+    /// reachable on this device at all.
+    pub fn eq_unavailable(&self) -> bool {
+        self.imp().inner.borrow().eq_profile_unavailable
+    }
+
+    /// Store the result of a `resolve_eq_profile()` call — `None` marks
+    /// this connection as confirmed to have no reachable EQ (see
+    /// `eq_unavailable()`); `Some` caches the resolved profile for the
+    /// rest of the connection's lifetime. Never called speculatively —
+    /// the host panel is the one place that resolves and stores this, on
+    /// first open.
+    pub fn store_eq_profile(&self, profile: Option<Arc<capabilities::EqProfile>>) {
+        let mut inner = self.imp().inner.borrow_mut();
+        inner.eq_profile_unavailable = profile.is_none();
+        inner.eq_profile = profile;
+    }
+
+    /// `Some` only once both a connected client and a resolved
+    /// `EqProfile` exist — the one thing a host panel actually needs to
+    /// do any EQ I/O. `None` otherwise (not yet resolved, confirmed
+    /// unavailable, or the device isn't currently connected at all).
+    pub fn eq_session(&self) -> Option<eq::EqSession> {
+        let inner = self.imp().inner.borrow();
+        let client = inner.client.clone()?;
+        let profile = inner.eq_profile.clone()?;
+        Some(eq::EqSession::new(client, profile))
     }
 
     /// Canonical playback state, independent of which backend populated it.

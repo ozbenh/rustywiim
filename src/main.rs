@@ -209,6 +209,7 @@ fn main() -> glib::ExitCode {
                     }
                     "ui"        => { ui::DEBUG_UI.store(true, Ordering::Relaxed); }
                     "config"    => { config::DEBUG_CONFIG.store(true, Ordering::Relaxed); }
+                    "eq"        => { device::eq::DEBUG_EQ.store(true, Ordering::Relaxed); }
                     "all"       => {
                         device::api::DEBUG.store(true, Ordering::Relaxed);
                         device::state::DEBUG_STATE.store(true, Ordering::Relaxed);
@@ -218,6 +219,7 @@ fn main() -> glib::ExitCode {
                         device::gena::DEBUG_GENA.store(true, Ordering::Relaxed);
                         ui::DEBUG_UI.store(true, Ordering::Relaxed);
                         config::DEBUG_CONFIG.store(true, Ordering::Relaxed);
+                        device::eq::DEBUG_EQ.store(true, Ordering::Relaxed);
                         if verbose {
                             device::api::DEBUG_VERBOSE.store(true, Ordering::Relaxed);
                             device::upnp::DEBUG_UPNP_VERBOSE.store(true, Ordering::Relaxed);
@@ -225,7 +227,7 @@ fn main() -> glib::ExitCode {
                         }
                     }
                     other => {
-                        eprintln!("rustywiim: unknown debug token {:?} (valid: api, state, device, discovery, upnp, gena, ui, config, all)", other);
+                        eprintln!("rustywiim: unknown debug token {:?} (valid: api, state, device, discovery, upnp, gena, ui, config, eq, all)", other);
                     }
                 }
             }

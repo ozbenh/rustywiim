@@ -8,6 +8,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use super::api::{ApiOutcome, DeviceInfo, OutputEntry, WiimClient};
+use super::eq::{self, PeqBandMode};
 use super::playback::AccessMethod;
 
 pub static DEBUG_DEVICE: AtomicBool = AtomicBool::new(false);
@@ -895,9 +896,9 @@ static LINKPLAY_PROFILES: [DeviceProfile; 1] = [
 // ── Capabilities ──────────────────────────────────────────────────────────────
 
 /// Which source device presets actually come from — learned at runtime,
-/// not a static per-vendor guess (unlike most other fields
-/// `static_playback_caps()` computes), and persisted on `DeviceCapabilities`
-/// for the connection's lifetime once determined, so a confirmed-
+/// not a static per-vendor guess (unlike `family`, which is), and
+/// persisted on `DeviceCapabilities` for the connection's lifetime once
+/// determined, so a confirmed-
 /// unsupported HTTP `getPresetInfo` doesn't get retried every single
 /// slow-poll cycle forever. Every device starts at `Unknown` regardless of
 /// vendor: trying costs one extra round trip on first connect, then
@@ -921,6 +922,17 @@ pub enum PresetSource {
     Unavailable,
 }
 
+/// See `eq_hint()`'s doc comment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EqHint {
+    /// WiiM family, or a non-empty `EQ_support` string — worth probing on
+    /// demand.
+    Likely,
+    /// Nothing suggests HTTP EQ. Still probed once if the user somehow
+    /// reaches the editor anyway, but the button is hidden.
+    Unlikely,
+}
+
 #[derive(Debug, Clone)]
 pub struct DeviceCapabilities {
     pub device_id:          DeviceId,
@@ -940,10 +952,11 @@ pub struct DeviceCapabilities {
     /// so it lives on `Inner` instead (`Inner::preset_probe_failures`).
     /// `DeviceCapabilities` only ever records the final, resolved source.
     preset_source:          PresetSource,
-    pub supports_eq:        bool,
-    /// Parametric EQ.  Cannot be determined statically; starts `false` and
-    /// must be updated after a successful runtime probe.
-    pub supports_peq:       bool,
+    /// Coarse, connect-time-only signal for whether the EQ editor button
+    /// is worth showing at all — see `eq_hint()`. The full `EqProfile`
+    /// (which mechanisms/layers actually exist) is resolved separately,
+    /// lazily, on first editor open — not stored here.
+    pub eq_hint:            EqHint,
     /// Resolved output list — from a live `getSoundCardModeSupportList`
     /// probe if the device supports it, else the static per-model fallback
     /// (`get_default_outputs()`). Empty/harmless until `detect_capabilities()`
@@ -1088,7 +1101,7 @@ impl DeviceCapabilities {
         let model = device_id.profile().model_name
             .map(|s| s.to_string())
             .unwrap_or_else(|| model_name_fallback(&project_lc, &info.device_name));
-        let (supports_eq, supports_peq) = static_playback_caps(device_id);
+        let eq_hint = eq_hint(vendor, &info.eq_support);
 
         // Base input list — static, from plm_support + per-model profile.
         // Just the starting point: `detect_capabilities()` prefers the
@@ -1103,7 +1116,7 @@ impl DeviceCapabilities {
         let caps = Self {
             device_id, vendor, model, family,
             uses_wifi_direct,
-            preset_source: PresetSource::Unknown, supports_eq, supports_peq,
+            preset_source: PresetSource::Unknown, eq_hint,
             inputs, firmware_warning,
             // Harmless placeholders — only `detect_capabilities()` (the real
             // probing entry point) sets these to something meaningful.
@@ -1120,8 +1133,8 @@ impl DeviceCapabilities {
 
             dbg(&format!("model: {:?}  wifi_direct: {}",
                 caps.model, caps.uses_wifi_direct));
-            dbg(&format!("capabilities: preset_source={:?}  eq={}  peq={}",
-                caps.preset_source, caps.supports_eq, caps.supports_peq));
+            dbg(&format!("capabilities: preset_source={:?}  eq_hint={:?}",
+                caps.preset_source, caps.eq_hint));
             if let Some(w) = caps.firmware_warning {
                 dbg(&format!("firmware_warning: {w:?}"));
             }
@@ -1334,6 +1347,471 @@ async fn detect_inputs(client: &WiimClient, caps: &mut DeviceCapabilities) {
     }
 }
 
+// ── EQ capability model ───────────────────────────────────────────────────────
+//
+// A device's EQ capability isn't one flat flag (the old
+// `supports_eq`/`supports_peq` above) — it's an open list of *layers* (a
+// per-source layer, room correction, ...), each with its own *scope*
+// (global vs. per-source), offering one or more *mechanisms* (graphic EQ,
+// parametric EQ, tone control), each independently reached over its own
+// *transport* (HTTP, in one of two command generations, or TCP-UART).
+// `EqProfile` is resolved lazily (not here, not from `getStatusEx` alone
+// — see `eq_hint()` above for the cheap connect-time approximation this
+// struct deliberately doesn't attempt) by `resolve_eq_profile()` below;
+// the types here are what that function (and the `device/eq/` module
+// that consumes them) build and pass around.
+
+/// Which HTTP command family a mechanism speaks — only meaningful when
+/// its transport is `Http`. A device might support only one generation;
+/// detection tries both, never assumes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EqGeneration {
+    /// Legacy global-only `EQ*`/`EQGetList`/`EQLoad`/`EQGetStat`/`EQGetBand`.
+    Legacy,
+    /// Newer per-source-aware LV2 family (`EQv2*`/`EQGetLV2*Ex`/`EQChangeSourceFX`).
+    Lv2,
+}
+
+/// How *one mechanism* is reached — per-mechanism, not per-device: a
+/// single device can have one mechanism over TCP-UART and another over
+/// HTTP at the same time (confirmed plausible on the Arylic S10+, which
+/// has both a TCP-UART-only tone control history and — untraced but
+/// likely HTTP — an 8-band GEQ).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EqTransport {
+    Http(EqGeneration),
+    /// Reached over the TCP-UART pass-through (`device::tcpuart`,
+    /// `UART-PROTOCOL.md`) — confirmed the only path to Audio Pro C5's
+    /// tone control. Not implemented — this variant exists so the
+    /// capability model has a place to grow into. Vendor-specific wire
+    /// encoding underneath (Arylic's documented scheme and Audio Pro's
+    /// captured scheme are already known to differ) is a
+    /// `device/eq/tcpuart/`-internal detail, not carried here.
+    TcpUart,
+}
+
+/// A per-*layer* property, not device-wide: the WiiM Ultra's main `EQ`
+/// layer is `PerSource`, but its `RC` (room correction) layer is
+/// `Global` (no `source_name` parameter on `RoomCorrGet`) — on the same
+/// device.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EqScope { Global, PerSource }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EqKind {
+    Graphic,
+    Parametric,
+    /// Bass/treble, sometimes +mid — a distinct parameter shape (one
+    /// gain value per named band, no freq/Q/filter-mode at all), not
+    /// "PEQ/GEQ with fewer bands."
+    ToneControl,
+}
+
+/// One EQ mechanism available for a given layer. `bands` is
+/// runtime-detected, never a constant — GEQ/PEQ/tone-control band counts
+/// all differ, even on the same device (WiiM Ultra: 10-band GEQ,
+/// 12-band-wire/10-band-exposed PEQ).
+#[derive(Debug, Clone, PartialEq)]
+pub struct EqMechanism {
+    pub kind:      EqKind,
+    pub transport: EqTransport,
+    pub bands:     u8,
+    /// Independent left/right channel PEQ (`channelMode: "L/R"`) vs.
+    /// shared Stereo bands — a capability, not just an opportunistic wire
+    /// shape to decode, so the host panel/editor widget know whether to
+    /// offer the choice at all. **Confirmed PEQ-only**: the official app
+    /// never offers Stereo-vs-L/R for GEQ at all (Ben, live) — this
+    /// codebase's own resolution of this field sets it `false`
+    /// unconditionally for `EqKind::Graphic` accordingly.
+    ///
+    /// For PEQ specifically: originally assumed "new, recent-firmware
+    /// only" (Ben's initial expectation), but a live test against a real
+    /// WiiM Mini on old firmware (`Linkplay.4.6.819436`,
+    /// `GetAcousticCapability` itself unsupported — about as bare an EQ
+    /// capability profile as seen) showed `EQSetChannelMode` to `"L/R"`
+    /// succeeding and producing real `EQBandL`/`EQBandR` data, same as on
+    /// a real Ultra. No device has yet been seen where a PEQ
+    /// `EQSetChannelMode` call is actually *rejected* — so defaulting to
+    /// `true` for PEQ looks like a reasonably safe default in practice, not
+    /// just a hedge against an unconfirmed edge case, though still no
+    /// affirmative detection signal (`GetAcousticCapability` sub-field,
+    /// firmware-version rule) has been found either way. Believed
+    /// LV2-generation-only regardless; unconfirmed for Legacy.
+    pub supports_lr_channels: bool,
+    /// Which `super::eq::PeqBandMode` filter types this specific device
+    /// actually offers (from `GetAcousticCapability`'s `PEQ.Filters`
+    /// where available) — empty for `Graphic`/`ToneControl` mechanisms.
+    /// Confirmed fallback for devices without `GetAcousticCapability`
+    /// (live WiiM Mini, same firmware as this repo's Mini captures):
+    /// `Off`/`LowShelf`/`Peak`/`HighShelf` only, no `LowPass`/`HighPass`.
+    pub filters: Vec<super::eq::PeqBandMode>,
+}
+
+/// Which layer this is — open-ended and device-reported (see
+/// `GetAcousticCapability`'s `EQBlock.Blocks`), not a fixed pair. `Other`
+/// is the escape hatch for a future/unrecognized block `type` string, so
+/// this codebase can still say "a layer exists here, we don't know how to
+/// edit it yet" rather than silently dropping it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EqLayerKind {
+    /// The main per-source layer (`Blocks` type `"EQ"`).
+    Source,
+    /// Room correction (`Blocks` type `"RC"`) — confirmed always Parametric.
+    RoomCorrection,
+    /// Confirmed live (2026-07-23, real WiiM Ultra MITM capture of the
+    /// official app, headphone-output EQ screen): *not* signaled via
+    /// `EQBlock.Blocks` at all (that list only ever contained `"EQ"`/
+    /// `"RC"`, even mid-edit) — instead `GetAcousticCapability`'s own
+    /// top-level `HeadphoneEQ` key's mere presence
+    /// (`AcousticCapability::headphone_eq`) is the real signal. The
+    /// actual wire access is `EQLevel: 2` (a parameter this codebase
+    /// doesn't send yet at all) with `source_name` set to the *output*
+    /// mode token (`"AUDIO_OUTPUT_PHONE_JACK_MODE"`, the same vocabulary
+    /// `getSoundCardModeSupportList`'s own `mode` field uses) rather than
+    /// an input source name — real mechanism/band population for this
+    /// layer isn't implemented yet, only its existence is detected.
+    HeadphoneEq,
+    /// A `Blocks` entry this codebase doesn't have a named variant for
+    /// yet — carries the raw device-reported type string.
+    Other(String),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct EqLayer {
+    pub kind:       EqLayerKind,
+    pub scope:      EqScope,
+    /// Which mechanisms this layer can switch between — WiiM Ultra's
+    /// `Source` layer: `[Graphic, Parametric]` (mutually exclusive, Off
+    /// is the third implicit state). Its `RC` layer: `[Parametric]` only.
+    pub mechanisms: Vec<EqMechanism>,
+}
+
+/// The full, lazily-resolved EQ picture for one device connection. See
+/// `resolve_eq_profile()` (added in a later step) for how this gets
+/// built; nothing here is computed by `from_device_info()` — that's
+/// exactly why this isn't a field on `DeviceCapabilities` the way
+/// `eq_hint` is.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EqProfile {
+    /// Every layer this device exposes — an open list (see module doc
+    /// comment): a device can have more layers than just `Source` +
+    /// `RoomCorrection`, and this codebase shouldn't need a code change
+    /// every time a new one turns up.
+    pub layers: Vec<EqLayer>,
+}
+
+/// Resolves the full EQ picture for a live connection. `None` means no
+/// EQ mechanism was reachable at all. **Never called eagerly at connect
+/// time** — most device-window opens never touch the EQ editor at all,
+/// so probing it unconditionally would waste a round trip on every
+/// connection. The host panel calls this once, on first editor open, and
+/// caches the result via `DeviceState::store_eq_profile()`.
+///
+/// `Blocks` decides *whether* room correction exists — `RoomCorrGet` is
+/// only probed (to learn the mechanism's real band count; `Blocks`
+/// alone confirms existence but never carries a band count) when
+/// `Blocks` **positively** lists `"RC"`, not merely "didn't say no."
+/// This used to be the other way around (skip the probe only on an
+/// explicit "no," otherwise try it speculatively) — confirmed live
+/// (2026-07-23, a WiiM Mini with no working `GetAcousticCapability` at
+/// all) that this produces a real false positive: on a device using
+/// WiiM's older RC implementation (where turning on Room Correction
+/// overwrote the same PEQ storage a manual profile lives in, rather
+/// than the newer firmware's genuinely separate, co-existing RC layer),
+/// `RoomCorrGet` still returns a normal-looking, non-empty response —
+/// it's just quietly aliasing to whatever the active source's regular
+/// PEQ already holds, not a real distinct profile. Every device seen so
+/// far with a *positive* `"RC"` `Blocks` entry (a real Ultra/Pro/Pro
+/// Plus) does have a genuine separate RC layer; requiring that signal
+/// rather than merely the absence of a denial avoids reporting a
+/// Room Correction layer that doesn't actually do anything distinct.
+pub async fn resolve_eq_profile(client: &WiimClient, vendor: Vendor) -> Option<EqProfile> {
+    let ip = client.ip();
+    super::eq::dbg(ip, "resolve_eq_profile: probing capability");
+    let acoustic = client.get_acoustic_capability().await;
+    super::eq::dbg(ip, &format!("resolve_eq_profile: GetAcousticCapability -> {}", match &acoustic {
+        ApiOutcome::Ok(cap) => format!("Ok, blocks={:?} filters={:?}",
+            cap.eq_block.blocks.iter().map(|b| &b.kind).collect::<Vec<_>>(), cap.peq.filters),
+        ApiOutcome::Unsupported => "Unsupported".to_string(),
+        ApiOutcome::Failed => "Failed".to_string(),
+    }));
+    let (blocks, mut filters): (Vec<String>, Vec<PeqBandMode>) = match &acoustic {
+        ApiOutcome::Ok(cap) => (
+            cap.eq_block.blocks.iter().map(|b| b.kind.clone()).collect(),
+            cap.peq.filters.iter().map(|f| filter_token_to_mode(f)).collect(),
+        ),
+        ApiOutcome::Unsupported | ApiOutcome::Failed => (Vec::new(), Vec::new()),
+    };
+    let have_blocks = matches!(acoustic, ApiOutcome::Ok(_));
+    if filters.is_empty() {
+        // Confirmed fallback (live WiiM Mini, no `GetAcousticCapability`):
+        // Off/LowShelf/Peak/HighShelf only — see `EqMechanism::filters`'s
+        // doc comment.
+        filters = vec![PeqBandMode::Off, PeqBandMode::LowShelf, PeqBandMode::Peak, PeqBandMode::HighShelf];
+    }
+
+    // Probe both plugin URIs against "wifi" (present on every per-source
+    // capture on hand) to confirm they answer and learn the wire band count.
+    let mut source_mechanisms = Vec::new();
+    for kind in [EqKind::Graphic, EqKind::Parametric] {
+        let Some(raw_bands) = probe_lv2_band_count(client, kind).await else {
+            super::eq::dbg(ip, &format!("resolve_eq_profile: {kind:?} not detected, skipping"));
+            continue;
+        };
+        // WiiM PEQ is wire-12-band but the app only ever shows 10 (the
+        // last two, k/l, are reserved — never touched). GEQ has no such
+        // gap; non-WiiM gets whatever the wire reports.
+        let bands = if vendor == Vendor::WiiM && kind == EqKind::Parametric {
+            raw_bands.min(10)
+        } else {
+            raw_bands
+        };
+        super::eq::dbg(ip, &format!("resolve_eq_profile: {kind:?} detected, {raw_bands} wire band(s), exposing {bands}"));
+        source_mechanisms.push(EqMechanism {
+            kind,
+            transport: EqTransport::Http(EqGeneration::Lv2),
+            bands,
+            // Confirmed live (Ben): the official app never offers
+            // Stereo-vs-L/R for GEQ at all, only PEQ — `EqKind::Graphic`
+            // is always Stereo. See `EqMechanism::supports_lr_channels`'s
+            // own doc comment for how the *PEQ* side of this was
+            // confirmed (works on both an old and a recent-firmware
+            // device tested so far).
+            supports_lr_channels: kind == EqKind::Parametric,
+            filters: if kind == EqKind::Parametric { filters.clone() } else { Vec::new() },
+        });
+    }
+
+    let source_scope = if probe_source_modes(client).await { EqScope::PerSource } else { EqScope::Global };
+    super::eq::dbg(ip, &format!("resolve_eq_profile: source scope = {source_scope:?}"));
+
+    let mut layers = Vec::new();
+    if !source_mechanisms.is_empty() {
+        layers.push(EqLayer { kind: EqLayerKind::Source, scope: source_scope, mechanisms: source_mechanisms });
+    } else if eq::legacy::probe(client).await {
+        // Neither LV2 plugin answered — confirm the older generation
+        // exists at all. No real band editing yet (see
+        // `device/eq/legacy.rs`) — `bands: 0` is an honest "unknown."
+        layers.push(EqLayer {
+            kind: EqLayerKind::Source,
+            scope: source_scope,
+            mechanisms: vec![EqMechanism {
+                kind: EqKind::Graphic,
+                transport: EqTransport::Http(EqGeneration::Legacy),
+                bands: 0,
+                supports_lr_channels: false,
+                filters: Vec::new(),
+            }],
+        });
+    }
+
+    let blocks_say_no_rc = have_blocks && !blocks.iter().any(|b| b == "RC");
+    if !blocks_say_no_rc {
+        if let Some(rc_bands) = probe_room_correction(client).await {
+            let bands = if vendor == Vendor::WiiM { rc_bands.min(10) } else { rc_bands };
+            layers.push(EqLayer {
+                kind: EqLayerKind::RoomCorrection,
+                scope: EqScope::Global,
+                mechanisms: vec![EqMechanism {
+                    kind: EqKind::Parametric,
+                    transport: EqTransport::Http(EqGeneration::Lv2),
+                    bands,
+                    supports_lr_channels: false,
+                    filters: filters.clone(),
+                }],
+            });
+        }
+    }
+
+    // Any other `Blocks` entry (an unrecognized type — confirmed live
+    // `"HeadphoneEQ"` is never one of these, see its own arm below) —
+    // recorded as a bare layer, no mechanism population yet: this pass
+    // only implements editing for the `Source`/`RoomCorrection` layers
+    // above.
+    for kind_str in &blocks {
+        match kind_str.as_str() {
+            "EQ" | "RC" => {} // handled above
+            other => layers.push(EqLayer {
+                kind: EqLayerKind::Other(other.to_string()), scope: EqScope::Global, mechanisms: Vec::new(),
+            }),
+        }
+    }
+
+    // HeadphoneEQ's own top-level key presence, not a `Blocks` entry —
+    // see `EqLayerKind::HeadphoneEq`'s own doc comment. Bare layer only,
+    // same as the "unrecognized Blocks entry" case above: real mechanism/
+    // band access (`EQLevel: 2`) isn't implemented yet.
+    if let ApiOutcome::Ok(cap) = &acoustic {
+        if cap.headphone_eq.is_some() {
+            super::eq::dbg(ip, "resolve_eq_profile: HeadphoneEQ present");
+            layers.push(EqLayer { kind: EqLayerKind::HeadphoneEq, scope: EqScope::Global, mechanisms: Vec::new() });
+        }
+    }
+
+    if layers.is_empty() {
+        super::eq::dbg(ip, "resolve_eq_profile: no EQ layer found");
+        None
+    } else {
+        super::eq::dbg(ip, &format!("resolve_eq_profile: {} layer(s): {:?}",
+            layers.len(), layers.iter().map(|l| &l.kind).collect::<Vec<_>>()));
+        Some(EqProfile { layers })
+    }
+}
+
+fn filter_token_to_mode(token: &str) -> PeqBandMode {
+    match token {
+        "OFF" => PeqBandMode::Off,
+        "LS"  => PeqBandMode::LowShelf,
+        "PK"  => PeqBandMode::Peak,
+        "HS"  => PeqBandMode::HighShelf,
+        "LP"  => PeqBandMode::LowPass,
+        "HP"  => PeqBandMode::HighPass,
+        other => PeqBandMode::Other(other.to_string()),
+    }
+}
+
+async fn probe_lv2_band_count(client: &WiimClient, kind: EqKind) -> Option<u8> {
+    let ip = client.ip();
+    let cmd = eq::lv2::cmd_get_source_band(kind, "wifi");
+    let text = match client.cmd(&cmd).await {
+        Ok(t) => t,
+        Err(e) => {
+            super::eq::dbg(ip, &format!("probe_lv2_band_count({kind:?}): command failed: {e}"));
+            return None;
+        }
+    };
+    let body = match eq::lv2::classify(&text) {
+        ApiOutcome::Ok(body) => body,
+        ApiOutcome::Unsupported => {
+            super::eq::dbg(ip, &format!("probe_lv2_band_count({kind:?}): unsupported"));
+            return None;
+        }
+        ApiOutcome::Failed => {
+            super::eq::dbg(ip, &format!("probe_lv2_band_count({kind:?}): failed response: {text:.200}"));
+            return None;
+        }
+    };
+    let v: serde_json::Value = match serde_json::from_str(body) {
+        Ok(v) => v,
+        Err(e) => {
+            super::eq::dbg(ip, &format!("probe_lv2_band_count({kind:?}): JSON parse error: {e}"));
+            return None;
+        }
+    };
+    // The wire response is `EQBand` only while this mechanism is in
+    // Stereo mode; a device whose PEQ/GEQ currently happens to be in L/R
+    // (split-channel) mode instead reports `EQBandL`/`EQBandR` — same
+    // shape `eq::lv2::parse_state()` already handles for the real read
+    // path. Confirmed live (2026-07-23, a WiiM Ultra whose PEQ was
+    // already in L/R mode): this probe only ever checked `EQBand`, so it
+    // silently treated "this device's PEQ happens to be in L/R mode right
+    // now" as "this device has no PEQ mechanism at all" — Off/GEQ still
+    // showed, but PEQ was missing from the mechanism toggle entirely,
+    // while an otherwise-identical Ultra in Stereo mode showed it fine.
+    let arr = match v.get("EQBand").and_then(|b| b.as_array()) {
+        Some(arr) => arr,
+        None => match v.get("EQBandL").and_then(|b| b.as_array()) {
+            Some(arr) => arr,
+            None => {
+                super::eq::dbg(ip, &format!(
+                    "probe_lv2_band_count({kind:?}): no EQBand/EQBandL array in response: {body:.200}"));
+                return None;
+            }
+        },
+    };
+    let count = match kind {
+        EqKind::Graphic     => eq::lv2::parse_graphic_bands(arr, 26).len(),
+        EqKind::Parametric  => eq::lv2::parse_parametric_bands(arr, 26).len(),
+        EqKind::ToneControl => return None,
+    };
+    if count == 0 {
+        super::eq::dbg(ip, &format!("probe_lv2_band_count({kind:?}): EQBand array present but decoded to 0 bands"));
+    }
+    (count > 0).then_some(count as u8)
+}
+
+async fn probe_source_modes(client: &WiimClient) -> bool {
+    let ip = client.ip();
+    let text = match client.cmd(&eq::lv2::cmd_get_source_modes()).await {
+        Ok(t) => t,
+        Err(e) => {
+            super::eq::dbg(ip, &format!("probe_source_modes: command failed: {e}"));
+            return false;
+        }
+    };
+    match eq::lv2::classify(&text) {
+        ApiOutcome::Ok(body) => match eq::lv2::parse_source_modes(body) {
+            Ok(v) if !v.is_empty() => true,
+            Ok(_) => {
+                super::eq::dbg(ip, "probe_source_modes: parsed OK but empty");
+                false
+            }
+            Err(e) => {
+                super::eq::dbg(ip, &format!("probe_source_modes: parse error: {e}"));
+                false
+            }
+        },
+        ApiOutcome::Unsupported => {
+            super::eq::dbg(ip, "probe_source_modes: unsupported");
+            false
+        }
+        ApiOutcome::Failed => {
+            super::eq::dbg(ip, &format!("probe_source_modes: failed response: {text:.200}"));
+            false
+        }
+    }
+}
+
+async fn probe_room_correction(client: &WiimClient) -> Option<u8> {
+    let ip = client.ip();
+    let text = match client.cmd(&eq::lv2::cmd_get_room_corr()).await {
+        Ok(t) => t,
+        Err(e) => {
+            super::eq::dbg(ip, &format!("probe_room_correction: command failed: {e}"));
+            return None;
+        }
+    };
+    let body = match eq::lv2::classify(&text) {
+        ApiOutcome::Ok(body) => body,
+        ApiOutcome::Unsupported => {
+            super::eq::dbg(ip, "probe_room_correction: unsupported");
+            return None;
+        }
+        ApiOutcome::Failed => {
+            super::eq::dbg(ip, &format!("probe_room_correction: failed response: {text:.200}"));
+            return None;
+        }
+    };
+    let v: serde_json::Value = match serde_json::from_str(body) {
+        Ok(v) => v,
+        Err(e) => {
+            super::eq::dbg(ip, &format!("probe_room_correction: JSON parse error: {e}"));
+            return None;
+        }
+    };
+    // Same L/R-mode wire shape as `probe_lv2_band_count()` — see its
+    // comment; applied here too even though room correction is currently
+    // assumed Stereo-only (`EqMechanism::supports_lr_channels: false` on
+    // that layer), since that assumption is explicitly documented as
+    // unconfirmed rather than verified.
+    let arr = match v.get("EQBand").and_then(|b| b.as_array()) {
+        Some(arr) => arr,
+        None => match v.get("EQBandL").and_then(|b| b.as_array()) {
+            Some(arr) => arr,
+            None => {
+                super::eq::dbg(ip, &format!(
+                    "probe_room_correction: no EQBand/EQBandL array in response: {body:.200}"));
+                return None;
+            }
+        },
+    };
+    let count = eq::lv2::parse_parametric_bands(arr, 26).len();
+    if count == 0 {
+        super::eq::dbg(ip, "probe_room_correction: EQBand array present but decoded to 0 bands");
+    }
+    (count > 0).then_some(count as u8)
+}
+
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
 /// Normalise the raw `project` field to lowercase with spaces/hyphens → underscores.
@@ -1496,25 +1974,17 @@ fn model_name_fallback(project: &str, device_name: &str) -> String {
         .join(" ")
 }
 
-/// Static capability defaults for (supports_eq, supports_peq).
-/// Matches pywiim's detect_device_capabilities() per-vendor branches.
-/// PEQ is always `false` here — it requires a runtime probe. Presets have no
-/// static per-vendor guess any more — every device starts at
-/// `PresetSource::Unknown` and self-determines HTTP vs. UPnP vs. unavailable
-/// at runtime (see `PresetSource`'s doc comment).
-fn static_playback_caps(device_id: DeviceId) -> (bool, bool) {
-    match device_id.vendor() {
-        Vendor::WiiM => (true, false),
-
-        Vendor::AudioPro => match device_id {
-            DeviceId::AudioProMkII => (false, false),
-            DeviceId::AudioProWGen => (true,  false),
-            _                      => (false, false),
-        },
-
-        Vendor::Arylic => (false, false),
-        Vendor::IEast => (false, false),
-        Vendor::LinkPlayGeneric => (false, false),
+/// Whether `vendor`/`eq_support` (the `getStatusEx` `EQ_support` field, via
+/// `DeviceInfo::eq_support`) suggest this device is worth showing the EQ
+/// editor button for at all. Deliberately coarse — a connect-time-only
+/// signal with zero extra round trips, not a claim about which EQ
+/// mechanisms/layers actually exist; the real answer (`EqProfile`) is
+/// resolved lazily, on first editor open, by `resolve_eq_profile()`.
+fn eq_hint(vendor: Vendor, eq_support: &str) -> EqHint {
+    if vendor == Vendor::WiiM || !eq_support.is_empty() {
+        EqHint::Likely
+    } else {
+        EqHint::Unlikely
     }
 }
 
@@ -1786,6 +2256,45 @@ mod tests {
         assert_eq!(mode_to_input_source(60), "line-in");
         assert_eq!(mode_to_input_source(44), "RCA");
         assert_ne!(mode_to_input_source(44), mode_to_input_source(40));
+    }
+
+    #[test]
+    fn eq_hint_rule() {
+        // WiiM family is always Likely, regardless of EQ_support.
+        assert_eq!(eq_hint(Vendor::WiiM, ""), EqHint::Likely);
+        assert_eq!(eq_hint(Vendor::WiiM, "Eq10HP_ver_2.0"), EqHint::Likely);
+        // Non-WiiM with a non-empty EQ_support is still Likely — the
+        // signal is about the field, not the vendor, once present.
+        assert_eq!(eq_hint(Vendor::Arylic, "Eq10HP_ver_2.0"), EqHint::Likely);
+        // Non-WiiM with nothing reported is Unlikely.
+        assert_eq!(eq_hint(Vendor::Arylic, ""), EqHint::Unlikely);
+        assert_eq!(eq_hint(Vendor::AudioPro, ""), EqHint::Unlikely);
+        assert_eq!(eq_hint(Vendor::IEast, ""), EqHint::Unlikely);
+        assert_eq!(eq_hint(Vendor::LinkPlayGeneric, ""), EqHint::Unlikely);
+    }
+
+    /// Real captures with EQ genuinely engaged (a saved "Test" PEQ preset) —
+    /// both report a non-empty `EQ_support`/`EQVersion` from `getStatusEx`,
+    /// confirming `DeviceInfo`'s new fields parse real wire data, not just
+    /// the shape of the struct.
+    #[test]
+    fn eq_support_fields_parse_from_real_captures() {
+        for (filename, expected_support) in [
+            ("WiiM_Ultra_20260723_020535.EQTest.json", "Eq10HP_ver_2.0"),
+            ("WiiM_Mini_20260723_020506.EQTest.json", "EqNp_ver_3.0"),
+        ] {
+            let cap = load_capture(filename);
+            let body = cap.commands.iter()
+                .find(|c| c.command == "getStatusEx")
+                .unwrap_or_else(|| panic!("{filename} has no getStatusEx"))
+                .body.clone()
+                .unwrap_or_else(|| panic!("{filename}'s getStatusEx has no body"));
+            let info: DeviceInfo = serde_json::from_value(body).expect("parsing DeviceInfo");
+            assert_eq!(info.eq_support, expected_support, "{filename}");
+            assert_eq!(info.eq_version, "4.3", "{filename}");
+            let caps = DeviceCapabilities::from_device_info(&info);
+            assert_eq!(caps.eq_hint, EqHint::Likely, "{filename}");
+        }
     }
 
     /// Real WiiM Mini unit (project "Muzo_Mini", hardware "ALLWINNER-R328")
