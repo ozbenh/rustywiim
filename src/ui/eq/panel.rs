@@ -1091,9 +1091,10 @@ fn on_preset_delete_requested(inner: &Rc<Inner>, name: String) {
     let Some(kind) = *inner.current_kind.borrow() else { return };
     let Some(session) = inner.session.borrow().clone() else { return };
     eq_dbg(&inner.ds.ip(), &format!("panel: deleting preset {name:?} for {kind:?}"));
+    let name2 = name.clone();
     run_async(inner, move || {
         let session = session.clone();
-        let name = name.clone();
+        let name = name2.clone();
         async move { session.delete_preset(kind, &name).await }
     }, move |inner, result| {
         if let Err(e) = &result {
@@ -1102,6 +1103,22 @@ fn on_preset_delete_requested(inner: &Rc<Inner>, name: String) {
             return;
         }
         inner.preset_cache.borrow_mut().retain(|(k, _)| *k != kind);
+        // If the deleted preset was the currently-active one, the button
+        // must fall back to "Custom" — it no longer names anything real.
+        // Same `if let` temporary-extension gotcha as the save/rename
+        // handlers above: bind the owned `EqState` first, then drop the
+        // `.borrow()` before `.borrow_mut()` further down.
+        let state = cache_get_state(&inner.mech_cache.borrow(), kind);
+        if let Some(state) = state {
+            if eq_state_active_preset(&state).as_deref() == Some(name.as_str()) {
+                let cleared = match state {
+                    EqState::Graphic { bands, .. } => EqState::Graphic { bands, active_preset: None },
+                    EqState::Parametric { bands, .. } => EqState::Parametric { bands, active_preset: None },
+                    EqState::Off => EqState::Off,
+                };
+                cache_put_state(&mut inner.mech_cache.borrow_mut(), kind, cleared);
+            }
+        }
         refresh_preset_picker(inner);
     });
 }
