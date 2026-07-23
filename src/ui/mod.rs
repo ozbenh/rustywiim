@@ -6,6 +6,7 @@ mod flip_cover;
 mod icons;
 mod kiosk;
 pub(crate) mod menu;
+mod prompt_entry;
 mod scroll_fade_label;
 mod device_window;
 mod theme;

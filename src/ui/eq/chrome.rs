@@ -571,14 +571,16 @@ pub mod preset_picker_imp {
     use glib::subclass::Signal;
     use gtk::glib;
 
-    use super::is_valid_preset_name;
-
     #[derive(Default)]
     pub struct EqPresetPicker {
         pub(super) button:      OnceCell<gtk::Button>,
         pub(super) popover:     OnceCell<gtk::Popover>,
         pub(super) list:        OnceCell<gtk::ListBox>,
-        pub(super) save_entry:  OnceCell<gtk::Entry>,
+        /// Sensitive only while the current state is "Custom" (no inline
+        /// entry any more — clicking this opens the shared name-prompt
+        /// window, the same one `show_rename_dialog()` uses, via
+        /// `super::show_preset_name_prompt()`).
+        pub(super) save_button: OnceCell<gtk::Button>,
         /// Row index -> device-reported preset name (empty string marks
         /// the non-activatable separator row) — read live by the single
         /// `row_activated` handler connected once in `EqPresetPicker::new()`,
@@ -637,84 +639,43 @@ pub mod preset_picker_imp {
 
             content.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
 
+            // Sensitive only while the current state is "Custom" — see
+            // `super::preset_is_custom()` — kept in sync by `set_presets()`/
+            // `set_active()`, the same two places that already decide the
+            // main button's own "Custom" label. Opens the shared
+            // name-prompt window on click (`super::show_preset_name_prompt()`,
+            // also used by `show_rename_dialog()` below) rather than an
+            // inline entry, so both flows share one implementation.
+            let save_button = gtk::Button::builder().label("Save as Preset…").sensitive(false).build();
             let save_row = gtk::Box::new(gtk::Orientation::Horizontal, 4);
-            let save_entry = gtk::Entry::builder()
-                .placeholder_text("New preset name…")
-                .hexpand(true)
-                .build();
-            // Starts insensitive (matching the entry's own initial empty,
-            // therefore invalid, state) — `connect_changed` below is what
-            // keeps this in sync with `is_valid_preset_name()` as
-            // the user types, same check `save_preset()`/`rename_preset()`
-            // themselves enforce, so an invalid name never reaches the
-            // device path at all rather than failing there.
-            let save_button = gtk::Button::builder().label("Save").sensitive(false).build();
-            save_row.append(&save_entry);
+            save_row.set_halign(gtk::Align::End);
             save_row.append(&save_button);
             content.append(&save_row);
-
-            // ".error" is a real libadwaita class (a generic accent-color
-            // override, not entry/row-specific) — reused here on a plain
-            // `Label` for the red validation message, same as the entry's
-            // own "error" outline below.
-            let save_error_label = gtk::Label::builder()
-                .css_classes(["error", "caption"])
-                .halign(gtk::Align::Start)
-                .label("Only letters, numbers, and underscores allowed")
-                .visible(false)
-                .build();
-            content.append(&save_error_label);
-
-            save_entry.connect_changed({
-                let save_button = save_button.clone();
-                let save_error_label = save_error_label.clone();
-                move |entry| {
-                    let text = entry.text();
-                    let valid = is_valid_preset_name(&text);
-                    save_button.set_sensitive(valid);
-                    if valid || text.is_empty() {
-                        entry.remove_css_class("error");
-                        save_error_label.set_visible(false);
-                    } else {
-                        entry.add_css_class("error");
-                        save_error_label.set_visible(true);
-                    }
-                }
-            });
 
             let popover = gtk::Popover::new();
             popover.set_child(Some(&content));
             popover.set_parent(&button);
 
-            let weak = self.obj().downgrade();
             save_button.connect_clicked({
-                let weak = weak.clone();
-                let save_entry = save_entry.clone();
+                let weak = self.obj().downgrade();
                 move |_| {
                     let Some(this) = weak.upgrade() else { return };
-                    let name = save_entry.text().to_string();
-                    if !is_valid_preset_name(&name) { return; }
                     this.imp().popover.get().unwrap().popdown();
-                    save_entry.set_text("");
-                    this.emit_by_name::<()>("preset-save-requested", &[&name]);
-                }
-            });
-            save_entry.connect_activate({
-                let weak = weak.clone();
-                move |entry| {
-                    let Some(this) = weak.upgrade() else { return };
-                    let name = entry.text().to_string();
-                    if !is_valid_preset_name(&name) { return; }
-                    this.imp().popover.get().unwrap().popdown();
-                    entry.set_text("");
-                    this.emit_by_name::<()>("preset-save-requested", &[&name]);
+                    let weak = weak.clone();
+                    super::show_preset_name_prompt(
+                        "Save Preset", "Preset name:", "", "Save",
+                        move |name| {
+                            let Some(this) = weak.upgrade() else { return };
+                            this.emit_by_name::<()>("preset-save-requested", &[&name]);
+                        },
+                    );
                 }
             });
 
             self.button.set(button).ok();
             self.popover.set(popover).ok();
             self.list.set(list).ok();
-            self.save_entry.set(save_entry).ok();
+            self.save_button.set(save_button).ok();
         }
 
         fn dispose(&self) {
@@ -850,6 +811,7 @@ impl EqPresetPicker {
         if let Some(label) = button.child().and_downcast::<gtk::Label>() {
             stabilize_label_width(&label, hardwired.iter().chain(custom.iter()).map(String::as_str).chain(std::iter::once("Custom")));
         }
+        imp.save_button.get().unwrap().set_sensitive(preset_is_custom(active, dirty));
         *imp.checkmarks.borrow_mut() = checkmarks;
         self.apply_checkmarks();
     }
@@ -866,6 +828,7 @@ impl EqPresetPicker {
         imp.dirty.set(dirty);
         let button = imp.button.get().unwrap();
         button.set_label(if dirty { "Custom" } else { active.unwrap_or("Custom") });
+        imp.save_button.get().unwrap().set_sensitive(preset_is_custom(active, dirty));
         self.apply_checkmarks();
     }
 
@@ -941,6 +904,15 @@ fn stabilize_label_width(label: &gtk::Label, candidates: impl Iterator<Item = im
     label.set_xalign(0.0);
 }
 
+/// Whether the preset picker's own button currently reads "Custom" —
+/// `dirty`, or no `active` match at all (see `set_presets()`'s own doc
+/// comment on why those are the same state from the button's
+/// perspective). The "Save as Preset…" button is sensitive under exactly
+/// this condition: there's something genuinely unsaved to offer saving.
+fn preset_is_custom(active: Option<&str>, dirty: bool) -> bool {
+    dirty || active.is_none()
+}
+
 fn list_row_label(text: &str) -> gtk::Label {
     gtk::Label::builder()
         .use_markup(true)
@@ -1002,10 +974,9 @@ fn wire_preset_row_icons(edit_btn: &gtk::Button, delete_btn: &gtk::Button, host:
     edit_btn.connect_clicked({
         let weak = host.downgrade();
         let name = name.to_string();
-        move |btn| {
+        move |_| {
             let Some(this) = weak.upgrade() else { return };
-            let Some(root) = btn.root() else { return };
-            show_rename_dialog(&root, &this, &name);
+            show_rename_dialog(&this, &name);
         }
     });
     delete_btn.connect_clicked({
@@ -1019,58 +990,56 @@ fn wire_preset_row_icons(edit_btn: &gtk::Button, delete_btn: &gtk::Button, host:
     });
 }
 
-fn show_rename_dialog(root: &gtk::Root, host: &EqPresetPicker, old_name: &str) {
-    let Ok(window) = root.clone().downcast::<gtk::Window>() else { return };
-    let entry = gtk::Entry::builder().text(old_name).activates_default(true).build();
-    let error_label = gtk::Label::builder()
-        .css_classes(["error", "caption"])
-        .halign(gtk::Align::Start)
-        .label("Only letters, numbers, and underscores allowed")
-        .visible(false)
-        .build();
-    let extra = gtk::Box::new(gtk::Orientation::Vertical, 4);
-    extra.append(&entry);
-    extra.append(&error_label);
-
-    let dialog = adw::AlertDialog::builder()
-        .heading("Rename Preset")
-        .close_response("cancel")
-        .build();
-    dialog.add_response("cancel", "Cancel");
-    dialog.add_response("rename", "Rename");
-    dialog.set_response_appearance("rename", adw::ResponseAppearance::Suggested);
-    dialog.set_default_response(Some("rename"));
-    dialog.set_extra_child(Some(&extra));
-
-    entry.connect_changed({
-        let dialog = dialog.clone();
-        move |entry| {
-            let text = entry.text();
-            let valid = is_valid_preset_name(&text);
-            dialog.set_response_enabled("rename", valid);
-            if valid || text.is_empty() {
-                entry.remove_css_class("error");
-                error_label.set_visible(false);
-            } else {
-                entry.add_css_class("error");
-                error_label.set_visible(true);
-            }
-        }
-    });
-
-    dialog.connect_response(None, {
-        let weak = host.downgrade();
-        let old_name = old_name.to_string();
-        move |_dlg, response| {
-            if response != "rename" { return; }
+fn show_rename_dialog(host: &EqPresetPicker, old_name: &str) {
+    let weak = host.downgrade();
+    let old_name = old_name.to_string();
+    show_preset_name_prompt(
+        "Rename Preset", "New name:", &old_name.clone(), "Rename",
+        move |new_name| {
+            if new_name == old_name { return; } // nothing to do, not an error
             let Some(this) = weak.upgrade() else { return };
-            let new_name = entry.text().to_string();
-            if !is_valid_preset_name(&new_name) || new_name == old_name { return; }
             this.imp().popover.get().unwrap().popdown();
             this.emit_by_name::<()>("preset-rename-requested", &[&old_name, &new_name]);
+        },
+    );
+}
+
+/// The shared prompt behind both "Save as Preset…" and the per-row rename
+/// button — the only differences between the two are the title/prompt
+/// text, whatever starts in the entry, the Ok button's label, and what
+/// happens with the result; the actual entry/validation/Ok-Cancel UI is
+/// entirely `PromptEntry`'s own. Hosted in a plain window for now (see
+/// `prompt_entry::present_prompt_window()`'s own doc comment for why that
+/// might change later) — deliberately not an `adw::AlertDialog`:
+/// `PromptEntry` already has its own Ok/Cancel buttons, so wrapping it in
+/// one would just duplicate that same chrome.
+fn show_preset_name_prompt(
+    title: &str, prompt: &str, initial_text: &str, ok_label: &str,
+    on_confirmed: impl Fn(String) + 'static,
+) {
+    let entry = crate::ui::prompt_entry::PromptEntry::new();
+    entry.set_prompt(prompt);
+    entry.set_text(initial_text);
+    entry.set_ok_label(ok_label);
+    entry.set_keyboard_type(crate::ui::prompt_entry::KeyboardType::AlphaUnderscore);
+    entry.set_validator(|text| {
+        if is_valid_preset_name(text) { None }
+        else { Some("Only letters, numbers, and underscores allowed".to_string()) }
+    });
+
+    let window = crate::ui::prompt_entry::present_prompt_window(title, &entry);
+
+    entry.connect_confirmed({
+        let window = window.clone();
+        move |_, text| {
+            on_confirmed(text);
+            window.close();
         }
     });
-    dialog.present(Some(&window));
+    entry.connect_cancelled({
+        let window = window.clone();
+        move |_| window.close()
+    });
 }
 
 fn show_delete_confirm(root: &gtk::Root, host: &EqPresetPicker, name: &str) {
