@@ -54,6 +54,9 @@ struct Inner {
     channel_toggle:   EqChannelToggle,
     channel_picker:   EqChannelPicker,
     preset_picker:    EqPresetPicker,
+    /// "Save…" — sits between `preset_picker` and `reset_btn`, sensitive
+    /// only while the current state is "Custom" (see `update_save_btn()`).
+    save_btn:         gtk::Button,
     reset_btn:        gtk::Button,
     /// Wrapper `gtk::Box`es pairing `source_picker`/`preset_picker` with
     /// their "Source:"/"Preset:" label — visibility is toggled on these,
@@ -183,7 +186,19 @@ fn mechanism_supports_lr(inner: &Rc<Inner>, kind: EqKind) -> bool {
 /// fetch (to show the device's own reported preset name again).
 fn update_preset_button(inner: &Rc<Inner>, kind: EqKind) {
     let active = cache_get_state(&inner.mech_cache.borrow(), kind).and_then(|s| eq_state_active_preset(&s));
-    inner.preset_picker.set_active(active.as_deref(), is_dirty(inner, kind));
+    let dirty = is_dirty(inner, kind);
+    inner.preset_picker.set_active(active.as_deref(), dirty);
+    update_save_btn(inner, active.as_deref(), dirty);
+}
+
+/// `save_btn` ("Save…", next to the preset picker itself, before Reset —
+/// deliberately not inside the preset popover any more) is sensitive only
+/// while the current state is "Custom": `dirty`, or no `active` match at
+/// all (see `EqPresetPicker::set_presets()`'s own doc comment on why
+/// those are the same state from the button's perspective) — there's
+/// nothing new to offer saving otherwise.
+fn update_save_btn(inner: &Rc<Inner>, active: Option<&str>, dirty: bool) {
+    inner.save_btn.set_sensitive(dirty || active.is_none());
 }
 
 pub(crate) struct EqPanel {
@@ -220,6 +235,10 @@ impl EqPanel {
         let channel_picker = EqChannelPicker::new();
         channel_picker.set_visible(false);
         let preset_picker = EqPresetPicker::new();
+        // Real ellipsis (U+2026), not three dots — matches this codebase's
+        // other "opens a further prompt" labels. Starts insensitive: no
+        // target/kind is selected yet, so there's nothing to save.
+        let save_btn = gtk::Button::builder().label("Save…").sensitive(false).build();
         let reset_btn = gtk::Button::builder().label("Reset").build();
 
         // Two rows. Each cluster's own visibility (toggled at every
@@ -266,6 +285,7 @@ impl EqPanel {
         let preset_inner = gtk::Box::new(gtk::Orientation::Horizontal, 10);
         preset_inner.append(&preset_label);
         preset_inner.append(&preset_picker);
+        preset_inner.append(&save_btn);
         preset_inner.append(&reset_btn);
         let preset_cluster = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         preset_cluster.append(&preset_inner);
@@ -381,6 +401,7 @@ impl EqPanel {
             channel_toggle,
             channel_picker,
             preset_picker,
+            save_btn,
             reset_btn,
             source_cluster,
             preset_cluster,
@@ -443,10 +464,6 @@ impl EqPanel {
             let inner = inner.clone();
             move |_, name| on_preset_selected(&inner, name)
         });
-        inner.preset_picker.connect_preset_save_requested({
-            let inner = inner.clone();
-            move |_, name| on_preset_save_requested(&inner, name)
-        });
         inner.preset_picker.connect_preset_rename_requested({
             let inner = inner.clone();
             move |_, old, new| on_preset_rename_requested(&inner, old, new)
@@ -466,6 +483,16 @@ impl EqPanel {
         inner.reset_btn.connect_clicked({
             let inner = inner.clone();
             move |_| on_reset_clicked(&inner)
+        });
+        inner.save_btn.connect_clicked({
+            let inner = inner.clone();
+            move |_| {
+                let inner = inner.clone();
+                crate::ui::eq::chrome::show_preset_name_prompt(
+                    "Save Preset", "Preset name:", "", "Save",
+                    move |name| on_preset_save_requested(&inner, name),
+                );
+            }
         });
     }
 
@@ -762,6 +789,7 @@ fn refresh_preset_picker(inner: &Rc<Inner>) {
     let cached = cache_get_presets(&inner.preset_cache.borrow(), kind);
     if let Some(list) = cached {
         inner.preset_picker.set_presets(&list.hardwired, &list.custom, active.as_deref(), dirty);
+        update_save_btn(inner, active.as_deref(), dirty);
         inner.preset_cluster.set_visible(true);
         return;
     }
@@ -776,7 +804,9 @@ fn refresh_preset_picker(inner: &Rc<Inner>) {
         match result {
             Ok(list) => {
                 let active = cache_get_state(&inner.mech_cache.borrow(), kind).and_then(|s| eq_state_active_preset(&s));
-                inner.preset_picker.set_presets(&list.hardwired, &list.custom, active.as_deref(), is_dirty(inner, kind));
+                let dirty = is_dirty(inner, kind);
+                inner.preset_picker.set_presets(&list.hardwired, &list.custom, active.as_deref(), dirty);
+                update_save_btn(inner, active.as_deref(), dirty);
                 cache_put_presets(&mut inner.preset_cache.borrow_mut(), kind, list);
                 inner.preset_cluster.set_visible(true);
             }
@@ -1013,6 +1043,7 @@ fn on_preset_save_requested(inner: &Rc<Inner>, name: String) {
         if !list.custom.contains(&name) { list.custom.push(name.clone()); }
         cache_put_presets(&mut inner.preset_cache.borrow_mut(), kind, list.clone());
         inner.preset_picker.set_presets(&list.hardwired, &list.custom, Some(&name), false);
+        update_save_btn(inner, Some(&name), false);
         inner.preset_cluster.set_visible(true);
     });
 }

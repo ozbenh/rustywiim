@@ -576,11 +576,6 @@ pub mod preset_picker_imp {
         pub(super) button:      OnceCell<gtk::Button>,
         pub(super) popover:     OnceCell<gtk::Popover>,
         pub(super) list:        OnceCell<gtk::ListBox>,
-        /// Sensitive only while the current state is "Custom" (no inline
-        /// entry any more — clicking this opens the shared name-prompt
-        /// window, the same one `show_rename_dialog()` uses, via
-        /// `super::show_preset_name_prompt()`).
-        pub(super) save_button: OnceCell<gtk::Button>,
         /// Row index -> device-reported preset name (empty string marks
         /// the non-activatable separator row) — read live by the single
         /// `row_activated` handler connected once in `EqPresetPicker::new()`,
@@ -637,45 +632,13 @@ pub mod preset_picker_imp {
                 .build();
             content.append(&scroll);
 
-            content.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
-
-            // Sensitive only while the current state is "Custom" — see
-            // `super::preset_is_custom()` — kept in sync by `set_presets()`/
-            // `set_active()`, the same two places that already decide the
-            // main button's own "Custom" label. Opens the shared
-            // name-prompt window on click (`super::show_preset_name_prompt()`,
-            // also used by `show_rename_dialog()` below) rather than an
-            // inline entry, so both flows share one implementation.
-            let save_button = gtk::Button::builder().label("Save as Preset…").sensitive(false).build();
-            let save_row = gtk::Box::new(gtk::Orientation::Horizontal, 4);
-            save_row.set_halign(gtk::Align::End);
-            save_row.append(&save_button);
-            content.append(&save_row);
-
             let popover = gtk::Popover::new();
             popover.set_child(Some(&content));
             popover.set_parent(&button);
 
-            save_button.connect_clicked({
-                let weak = self.obj().downgrade();
-                move |_| {
-                    let Some(this) = weak.upgrade() else { return };
-                    this.imp().popover.get().unwrap().popdown();
-                    let weak = weak.clone();
-                    super::show_preset_name_prompt(
-                        "Save Preset", "Preset name:", "", "Save",
-                        move |name| {
-                            let Some(this) = weak.upgrade() else { return };
-                            this.emit_by_name::<()>("preset-save-requested", &[&name]);
-                        },
-                    );
-                }
-            });
-
             self.button.set(button).ok();
             self.popover.set(popover).ok();
             self.list.set(list).ok();
-            self.save_button.set(save_button).ok();
         }
 
         fn dispose(&self) {
@@ -687,7 +650,6 @@ pub mod preset_picker_imp {
             SIGNALS.get_or_init(|| {
                 vec![
                     Signal::builder("preset-selected").param_types([String::static_type()]).build(),
-                    Signal::builder("preset-save-requested").param_types([String::static_type()]).build(),
                     Signal::builder("preset-rename-requested")
                         .param_types([String::static_type(), String::static_type()]).build(),
                     Signal::builder("preset-delete-requested").param_types([String::static_type()]).build(),
@@ -811,7 +773,6 @@ impl EqPresetPicker {
         if let Some(label) = button.child().and_downcast::<gtk::Label>() {
             stabilize_label_width(&label, hardwired.iter().chain(custom.iter()).map(String::as_str).chain(std::iter::once("Custom")));
         }
-        imp.save_button.get().unwrap().set_sensitive(preset_is_custom(active, dirty));
         *imp.checkmarks.borrow_mut() = checkmarks;
         self.apply_checkmarks();
     }
@@ -828,7 +789,6 @@ impl EqPresetPicker {
         imp.dirty.set(dirty);
         let button = imp.button.get().unwrap();
         button.set_label(if dirty { "Custom" } else { active.unwrap_or("Custom") });
-        imp.save_button.get().unwrap().set_sensitive(preset_is_custom(active, dirty));
         self.apply_checkmarks();
     }
 
@@ -843,15 +803,6 @@ impl EqPresetPicker {
 
     pub(crate) fn connect_preset_selected<F: Fn(&Self, String) + 'static>(&self, f: F) -> glib::SignalHandlerId {
         self.connect_local("preset-selected", false, move |args| {
-            let this = args[0].get::<Self>().unwrap();
-            let token = args[1].get::<String>().unwrap();
-            f(&this, token);
-            None
-        })
-    }
-
-    pub(crate) fn connect_preset_save_requested<F: Fn(&Self, String) + 'static>(&self, f: F) -> glib::SignalHandlerId {
-        self.connect_local("preset-save-requested", false, move |args| {
             let this = args[0].get::<Self>().unwrap();
             let token = args[1].get::<String>().unwrap();
             f(&this, token);
@@ -902,15 +853,6 @@ fn stabilize_label_width(label: &gtk::Label, candidates: impl Iterator<Item = im
     label.set_width_chars(max);
     label.set_max_width_chars(max);
     label.set_xalign(0.0);
-}
-
-/// Whether the preset picker's own button currently reads "Custom" —
-/// `dirty`, or no `active` match at all (see `set_presets()`'s own doc
-/// comment on why those are the same state from the button's
-/// perspective). The "Save as Preset…" button is sensitive under exactly
-/// this condition: there's something genuinely unsaved to offer saving.
-fn preset_is_custom(active: Option<&str>, dirty: bool) -> bool {
-    dirty || active.is_none()
 }
 
 fn list_row_label(text: &str) -> gtk::Label {
@@ -1004,16 +946,16 @@ fn show_rename_dialog(host: &EqPresetPicker, old_name: &str) {
     );
 }
 
-/// The shared prompt behind both "Save as Preset…" and the per-row rename
-/// button — the only differences between the two are the title/prompt
-/// text, whatever starts in the entry, the Ok button's label, and what
-/// happens with the result; the actual entry/validation/Ok-Cancel UI is
-/// entirely `PromptEntry`'s own. Hosted in a plain window for now (see
-/// `prompt_entry::present_prompt_window()`'s own doc comment for why that
-/// might change later) — deliberately not an `adw::AlertDialog`:
-/// `PromptEntry` already has its own Ok/Cancel buttons, so wrapping it in
-/// one would just duplicate that same chrome.
-fn show_preset_name_prompt(
+/// The shared prompt behind both `panel.rs`'s top-bar "Save…" button and
+/// the per-row rename button here — the only differences between the two
+/// are the title/prompt text, whatever starts in the entry, the Ok
+/// button's label, and what happens with the result; the actual
+/// entry/validation/Ok-Cancel UI is entirely `PromptEntry`'s own. Hosted in
+/// a plain window for now (see `prompt_entry::present_prompt_window()`'s
+/// own doc comment for why that might change later) — deliberately not an
+/// `adw::AlertDialog`: `PromptEntry` already has its own Ok/Cancel buttons,
+/// so wrapping it in one would just duplicate that same chrome.
+pub(crate) fn show_preset_name_prompt(
     title: &str, prompt: &str, initial_text: &str, ok_label: &str,
     on_confirmed: impl Fn(String) + 'static,
 ) {
