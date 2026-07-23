@@ -87,6 +87,7 @@ use gtk::{Align, Box as GtkBox, Label, Orientation};
 use crate::device::{api, capabilities};
 use crate::device::state::DeviceState;
 use crate::ui::icons::IconSet;
+use super::common;
 
 glib::wrapper! {
     pub struct InputOutputView(ObjectSubclass<imp::InputOutputView>)
@@ -114,10 +115,7 @@ impl InputOutputView {
         let factory = gtk::SignalListItemFactory::new();
         factory.connect_setup(|_, obj| {
             let Some(item) = obj.downcast_ref::<gtk::ListItem>() else { return };
-            let hbox = GtkBox::builder()
-                .orientation(Orientation::Horizontal).spacing(6).build();
-            hbox.append(&gtk::Image::builder().pixel_size(16).build());
-            hbox.append(&Label::builder().halign(Align::Start).build());
+            let (hbox, _, _) = common::icon_label_row(16);
             item.set_child(Some(&hbox));
         });
         factory.connect_bind({
@@ -179,10 +177,7 @@ impl InputOutputView {
         let factory = gtk::SignalListItemFactory::new();
         factory.connect_setup(|_, obj| {
             let Some(item) = obj.downcast_ref::<gtk::ListItem>() else { return };
-            let hbox = GtkBox::builder()
-                .orientation(Orientation::Horizontal).spacing(6).build();
-            hbox.append(&gtk::Image::builder().pixel_size(16).build());
-            hbox.append(&Label::builder().halign(Align::Start).build());
+            let (hbox, _, _) = common::icon_label_row(16);
             item.set_child(Some(&hbox));
         });
         factory.connect_bind({

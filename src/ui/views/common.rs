@@ -152,6 +152,22 @@ pub(crate) fn vol_icon(muted: bool, vol: f64) -> &'static str {
     else { "audio-volume-high-symbolic" }
 }
 
+// ── Icon + label rows ───────────────────────────────────────────────────────
+
+/// An icon + label row, shared by `InputOutputView`'s input/output
+/// dropdown factories and `ui::eq::chrome`'s source picker, so all three
+/// read the same (icon size, spacing) rather than drifting independently.
+/// Returns direct handles to the image/label so callers can update them
+/// without re-traversing children afterward.
+pub(crate) fn icon_label_row(icon_pixel_size: i32) -> (gtk::Box, gtk::Image, gtk::Label) {
+    let hbox = gtk::Box::builder().orientation(gtk::Orientation::Horizontal).spacing(6).build();
+    let image = gtk::Image::builder().pixel_size(icon_pixel_size).build();
+    let label = gtk::Label::builder().halign(gtk::Align::Start).build();
+    hbox.append(&image);
+    hbox.append(&label);
+    (hbox, image, label)
+}
+
 // ── Loop helpers ──────────────────────────────────────────────────────────────
 
 pub(crate) fn apply_shuffle_ui(btn: &gtk::Button, on: bool) {

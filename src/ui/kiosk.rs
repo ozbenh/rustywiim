@@ -263,8 +263,18 @@ impl KioskWindow {
             .application(app)
             .title("RustyWiiM")
             .decorated(false)
-            .css_classes(["kiosk-window"])
             .build();
+        // `.add_css_class()` *after* construction, not `.css_classes([...])`
+        // in the builder above — the builder property calls
+        // `gtk_widget_set_css_classes()`, which *replaces* the widget's
+        // whole class list rather than adding to it, wiping out whatever
+        // GTK/libadwaita set up during construction (`background`, and —
+        // on a decorated window — `csd`; harmless here specifically since
+        // this window is `decorated(false)` and fullscreen, so `csd`/
+        // rounding were never relevant, but the same bug confirmed live
+        // to break rounding on Settings/EQ's own windows — see
+        // `EqPanel::present()`'s identical fix for the full story).
+        window.add_css_class("kiosk-window");
 
         // ArtBackground is the overlay's main (measured) child — same
         // shape as DeviceWindow's own window_overlay — with hexpand/vexpand
@@ -814,6 +824,28 @@ impl KioskWindow {
         // Views start inactive (views/mod.rs's shared contract) — this is
         // what actually performs the initial render.
         view.set_active(true);
+
+        // EQ editor entry point — device_window/mod.rs wires the same
+        // `configure-eq` signal for its own windows; Kiosk mode's
+        // `PlaybackView` emits the identical signal but had nothing
+        // connected to it at all here, so the button did nothing (no
+        // panel ever appeared) — confirmed live.
+        view.connect_configure_eq({
+            let icons = Rc::clone(&self.icons);
+            let ds = ds.clone();
+            let weak = Rc::downgrade(self);
+            move |_| {
+                let window = crate::ui::eq::panel::EqPanel::present(&icons, &ds);
+                if let Some(this) = weak.upgrade() {
+                    this.external_window_opened(&window);
+                    if this.should_hide_cursor() {
+                        window.set_cursor_from_name(Some("none"));
+                    }
+                    let window_for_close = window.clone();
+                    window.connect_destroy(move |_| this.external_window_closed(&window_for_close));
+                }
+            }
+        });
 
         self.sidebar_paned.set_end_child(Some(&view));
 

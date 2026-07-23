@@ -738,6 +738,18 @@ fn wire_mini_chrome(inner: &Rc<DeviceWindowInner>) {
         });
         inner.mini.root.add_controller(gesture);
     }
+
+    // ── EQ editor ────────────────────────────────────────────────────────────
+    // The button lives in `PlaybackView` (next to `VolumeControl`); this
+    // window is just what answers its `configure-eq` request, per
+    // `views/mod.rs`'s "views ask, never know what the host is" contract.
+    inner.playback.borrow().connect_configure_eq({
+        let i = Rc::downgrade(&inner);
+        move |_| {
+            let Some(i) = i.upgrade() else { return };
+            crate::ui::eq::panel::EqPanel::present(&i.icons, &i.ds);
+        }
+    });
 }
 
 /// The window-scoped actions (win.close/win.devices/win.about/

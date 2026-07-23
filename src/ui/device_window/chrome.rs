@@ -74,6 +74,9 @@ pub(super) fn build_header(
         .build();
     header.pack_end(&mini_btn);
 
+    // The EQ button lives next to `VolumeControl` in `views/playback_full.rs`
+    // instead, not here.
+
     // margin_top clears the header bar's own height (it's overlaid on the
     // window's whole content area, below the header row — see the doc
     // comment above) so it lands in open content space, not on top of the

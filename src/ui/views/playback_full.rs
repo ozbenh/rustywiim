@@ -64,6 +64,18 @@ pub mod imp {
         pub(super) shuffle:  OnceCell<gtk::Button>,
         pub(super) repeat:   OnceCell<gtk::Button>,
         pub(super) volume:   OnceCell<VolumeControl>,
+        /// Next to `volume`, on its left. Visibility follows
+        /// `DeviceState::eq_hint()`, updated in `refresh()`/
+        /// `render_offline()` alongside everything else that's
+        /// connection/capability-dependent.
+        pub(super) eq_btn:   OnceCell<gtk::Button>,
+        /// `eq_btn`'s icon as an explicit child `gtk::Image`, not a plain
+        /// `icon_name` button (same reason `VolumeControl`'s own icon is
+        /// an explicit `pixel_size`-set child, per that struct's own
+        /// comment) — so `WideRight`'s per-screen-size scaling can resize
+        /// it to match the transport/volume icons instead of staying
+        /// fixed at its small default while they scale up around it.
+        pub(super) eq_icon:  OnceCell<gtk::Image>,
         /// The widget `fade_group()` fades for Kiosk's "All Controls"
         /// auto-hide — *not* necessarily the visible card itself. In
         /// WideRight it's `transport`, which genuinely is the whole
@@ -91,9 +103,11 @@ pub mod imp {
             SIGNALS.get_or_init(|| {
                 vec![
                     // Host request: open equalizer configuration for this
-                    // view's device. No emitter yet (the EQ button doesn't
-                    // exist) — declared so hosts can wire it up as soon as
-                    // one does.
+                    // view's device — emitted by the EQ button next to
+                    // `volume`; the host (device_window) is what actually
+                    // owns presenting `ui::eq::panel::EqPanel`, per this
+                    // codebase's "views ask, never know what the host is"
+                    // convention (see `views/mod.rs`'s doc comment).
                     Signal::builder("configure-eq").build(),
                 ]
             })
@@ -227,6 +241,7 @@ fn round_to_even(v: f64) -> i32 {
 fn apply_wide_right_scale(
     class: &str, provider: &gtk::CssProvider,
     title_group: &GtkBox, status_group: &GtkBox, service_group: &GtkBox, volume: &VolumeControl,
+    eq_icon: &gtk::Image, volume_cluster: &GtkBox,
     service: &ServiceLabel, quality_badge: &QualityBadge,
     h: i32,
 ) {
@@ -327,6 +342,17 @@ fn apply_wide_right_scale(
     // live, it otherwise stays fixed at its small default while the other
     // transport icons scale up around it, reading as noticeably tinier.
     volume.set_icon_pixel_size(transport_icon);
+    // Same fix, same reason — the EQ button sat right next to `volume` at
+    // its small fixed default size while everything around it scaled up,
+    // confirmed live as visibly mismatched in Kiosk mode.
+    eq_icon.set_pixel_size(transport_icon);
+    // The gap between the EQ button and volume was a fixed 4px (set at
+    // construction) — same class of bug as everything else in this
+    // function: it read fine at the icon's small default size but stayed
+    // stuck at 4px while the icons around it scaled up to ~100px in Kiosk
+    // mode, so the two buttons read as glued together. A fraction of `h`
+    // instead, same as `service_gap` above.
+    volume_cluster.set_spacing((h * 0.045).round().max(8.0) as i32);
 
     // The seek bar's own trough thickness — `.seek-scale trough`'s base
     // rule (dark.css/system.css) hardcodes `min-height: 4px`, the one
@@ -492,6 +518,33 @@ impl PlaybackView {
 
         let volume = VolumeControl::new(ds, false);
 
+        // EQ editor entry point, next to volume, on its left — hidden
+        // until `refresh()` learns this device's `EqHint`. Emits
+        // `configure-eq` rather than opening the panel directly: this
+        // view doesn't know what its host is (see `views/mod.rs`'s doc
+        // comment) — `device_window` is what actually presents
+        // `ui::eq::panel::EqPanel`.
+        let eq_icon = gtk::Image::builder()
+            .icon_name("rustywiim-equalizer-symbolic")
+            .build();
+        let eq_btn = gtk::Button::builder()
+            .child(&eq_icon)
+            .tooltip_text("Equalizer")
+            .css_classes(["circular", "flat"])
+            .visible(false)
+            .build();
+        eq_btn.connect_clicked({
+            let weak = self.downgrade();
+            move |_| {
+                let Some(obj) = weak.upgrade() else { return };
+                obj.emit_by_name::<()>("configure-eq", &[]);
+            }
+        });
+        let volume_cluster = GtkBox::builder()
+            .orientation(Orientation::Horizontal).spacing(4).build();
+        volume_cluster.append(&eq_btn);
+        volume_cluster.append(&volume);
+
         // ── Assembly (previously build_right_pane()) ──────────────────────
         // Transport buttons are centred.
         let transport = GtkBox::builder()
@@ -549,7 +602,7 @@ impl PlaybackView {
                 // CenterBox's center widget), volume sits in the end slot.
                 let controls_row = gtk::CenterBox::new();
                 controls_row.set_center_widget(Some(&transport));
-                controls_row.set_end_widget(Some(&volume));
+                controls_row.set_end_widget(Some(&volume_cluster));
 
                 // Service name on the left edge of the controls row,
                 // vertically aligned with the transport buttons — an
@@ -777,11 +830,11 @@ impl PlaybackView {
                 // seek bar itself, which is a separate row underneath
                 // (avoids colliding with `dur`'s own right-aligned slot in
                 // `time_row`).
-                volume.set_halign(Align::End);
-                volume.set_valign(Align::End);
+                volume_cluster.set_halign(Align::End);
+                volume_cluster.set_valign(Align::End);
                 let top_row_overlay = gtk::Overlay::new();
                 top_row_overlay.set_child(Some(&top_row));
-                top_row_overlay.add_overlay(&volume);
+                top_row_overlay.add_overlay(&volume_cluster);
 
                 // Seek scale full width; position/status/duration sit on
                 // their own row underneath it — a CenterBox, same as
@@ -870,6 +923,7 @@ impl PlaybackView {
                 let apply_for_screen = glib::clone!(
                     #[strong] art_overlay, #[strong] text_col,
                     #[strong] title_group, #[strong] status_group, #[strong] service_group, #[strong] volume,
+                    #[strong] eq_icon, #[strong] volume_cluster,
                     #[strong] service, #[strong] quality_badge,
                     #[strong] title, #[strong] artist, #[strong] album,
                     #[strong] band_row, #[strong] controls_col, #[strong] top_row,
@@ -884,6 +938,7 @@ impl PlaybackView {
                         text_col.set_size_request(-1, side);
                         apply_wide_right_scale(
                             &class, &provider, &title_group, &status_group, &service_group, &volume,
+                            &eq_icon, &volume_cluster,
                             &service, &quality_badge, side,
                         );
                         // Forces both faces of each SwipeText to recompute
@@ -1049,6 +1104,8 @@ impl PlaybackView {
         imp.shuffle.set(shuffle).unwrap();
         imp.repeat.set(repeat).unwrap();
         imp.volume.set(volume).unwrap();
+        imp.eq_btn.set(eq_btn).unwrap();
+        imp.eq_icon.set(eq_icon).unwrap();
 
         // ── DeviceState subscriptions ─────────────────────────────────────
         let id = ds.connect_playback_changed({
@@ -1108,22 +1165,35 @@ impl PlaybackView {
         self.imp().volume.get().unwrap().clone()
     }
 
+    /// Host hookup for the EQ button's request — see this file's own
+    /// signal doc comment and `views/mod.rs`'s "views ask, never know
+    /// what the host is" convention.
+    pub(crate) fn connect_configure_eq<F: Fn(&Self) + 'static>(&self, f: F) -> glib::SignalHandlerId {
+        self.connect_local("configure-eq", false, move |args| {
+            let this = args[0].get::<Self>().unwrap();
+            f(&this);
+            None
+        })
+    }
+
     /// Widgets that fade together under Kiosk mode's "All Controls"
     /// auto-hide: the transport buttons (shuffle/prev/play/next/repeat,
     /// grouped as one widget — see `controls_card`'s own doc comment for
-    /// what that actually is per layout), volume (listed explicitly since
-    /// WideRight positions it outside that widget), and the plain status
-    /// text ("Playing"/"Paused"/...). Deliberately *not* the seek bar, the
-    /// card's own translucent background, or the service/quality badges —
-    /// none of those should fade, in either layout (confirmed live: an
-    /// earlier version that restructured Classic's card to pull the seek
-    /// bar out of it visibly shrank/shifted the card even when nothing
-    /// was fading, which is what this now avoids).
+    /// what that actually is per layout), volume and the EQ button (listed
+    /// explicitly since WideRight positions both outside that widget), and
+    /// the plain status text ("Playing"/"Paused"/...). Deliberately *not*
+    /// the seek bar, the card's own translucent background, or the
+    /// service/quality badges — none of those should fade, in either
+    /// layout (confirmed live: an earlier version that restructured
+    /// Classic's card to pull the seek bar out of it visibly shrank/shifted
+    /// the card even when nothing was fading, which is what this now
+    /// avoids).
     pub(crate) fn fade_group(&self) -> Vec<gtk::Widget> {
         let imp = self.imp();
         vec![
             imp.controls_card.get().unwrap().clone(),
             imp.volume.get().unwrap().clone().upcast(),
+            imp.eq_btn.get().unwrap().clone().upcast(),
             imp.status.get().unwrap().clone().upcast(),
         ]
     }
@@ -1133,6 +1203,8 @@ impl PlaybackView {
         let Some(ds) = self.imp().ds.get() else { return };
         if ds.device_info().is_some() {
             self.apply_mask(playback_changed::ALL);
+            self.imp().eq_btn.get().unwrap()
+                .set_visible(ds.eq_hint() == Some(crate::device::capabilities::EqHint::Likely));
         } else {
             self.render_offline();
         }
@@ -1159,6 +1231,7 @@ impl PlaybackView {
         imp.artwork.get().unwrap().clear();
         if let Some(Some(bg)) = imp.art_bg.get() { bg.clear(); }
         imp.bt_pair.get().unwrap().set_visible(false);
+        imp.eq_btn.get().unwrap().set_visible(false);
         for btn in [
             imp.btn_play.get(), imp.btn_prev.get(), imp.btn_next.get(),
             imp.shuffle.get(), imp.repeat.get(),

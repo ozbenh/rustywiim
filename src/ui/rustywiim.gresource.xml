@@ -38,5 +38,12 @@
     <!-- These two are genuine "-symbolic" icons -->
     <file alias="rustywiim-enter-kiosk-symbolic.svg">icons/enter-kiosk.svg</file>
     <file alias="rustywiim-exit-kiosk-symbolic.svg">icons/exit-kiosk.svg</file>
+    <!-- EQ editor button — svgrepo.com source ("equalizer" mark),
+         recolored to the "#2e3436" symbolic placeholder fill, same
+         convention as every other icon above. License terms for this
+         specific asset not independently re-verified here — check
+         svgrepo.com's own page for it before any redistribution concern
+         comes up. -->
+    <file alias="rustywiim-equalizer-symbolic.svg">icons/equalizer.svg</file>
   </gresource>
 </gresources>
