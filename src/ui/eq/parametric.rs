@@ -68,8 +68,23 @@ pub mod imp {
             outer.set_margin_end(16);
 
             let curve = gtk::DrawingArea::new();
-            curve.set_size_request(-1, 160);
+            // 160 -> 184 (+15%, Ben's ask, all themes) — more room to see
+            // and drag band handles precisely.
+            curve.set_size_request(-1, 184);
             curve.add_css_class("peq-curve");
+            // Extra horizontal inset on top of `outer`'s own 16px side
+            // margins, specifically for this widget — themes that give
+            // ".peq-curve" a real bevel/border (RustyWiiM Wood; every
+            // other theme leaves it unstyled, so this is a few harmless
+            // extra px of blank margin there) need more breathing room
+            // between that box's own edge and the window edge than a
+            // plain unboxed DrawingArea did, so the box itself — and the
+            // dB/frequency axis labels drawn inside it, which already
+            // reserve their own separate inset via LEFT_MARGIN/
+            // BOTTOM_MARGIN below — don't read as flush against the
+            // window edge.
+            curve.set_margin_start(12);
+            curve.set_margin_end(12);
             outer.append(&curve);
             self.curve.set(curve).ok();
 

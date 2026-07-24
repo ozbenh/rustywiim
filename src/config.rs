@@ -50,14 +50,7 @@ fn default_gena_enabled() -> bool { true }
 /// accent color" switch). `RustyWiiM`/`RustyWiiMModern` keep the teal that
 /// was hardcoded in dark.css before the accent became configurable at all,
 /// so existing users see no visual change by default. `RustyWiiMWood` uses
-/// a bright orange, `#ff8000` (Ben's pick, 2026-07-24) — a teal accent
-/// doesn't suit a warm walnut theme. gthibo/Wiim-Dashboard's own "Rust"
-/// token (`--primary: #B3441E`, see THEMING.md) was the first default
-/// tried here, sourced from the reference for traceability, but Ben
-/// preferred a brighter, more saturated orange in practice.
-/// System/SystemLight/SystemDark never read this (Settings greys the
-/// accent controls out for them; those themes use Adwaita's own accent
-/// instead), so they're folded into the catch-all rather than listed.
+/// a bright orange, `#ff8000`.
 pub fn default_accent_for_theme(theme: ThemeMode) -> &'static str {
     match theme {
         ThemeMode::RustyWiiMWood => "#ff8000",
@@ -96,8 +89,7 @@ pub enum ThemeMode {
     RustyWiiMModern,
     /// RustyWiiM Wood: a CSS-only "hi-fi hardware" reskin experiment (walnut
     /// wood-grain background, beveled gradient/box-shadow controls in place
-    /// of flat buttons) — see THEMING.md for the design write-up and the
-    /// reference material it's modeled on.
+    /// of flat buttons).
     #[serde(rename = "rusty_wiim_wood")]
     RustyWiiMWood,
 }

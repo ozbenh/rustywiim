@@ -27,6 +27,7 @@ tar = "0.4"
 tiny_http = { version = "0.12", default-features = false, features = ["ssl-openssl"] }
 rcgen = "0.14"
 resvg = { version = "0.47", default-features = false }
+pangocairo = "0.20"
 
 [package.metadata.deb]
 maintainer = "Benjamin Herrenschmidt <benh@kernel.crashing.org>"

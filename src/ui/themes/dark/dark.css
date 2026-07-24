@@ -57,13 +57,23 @@ window { background-color: #0a0a0a; }
     border: none; border-radius: 50%; box-shadow: none;
 }
 .transport-btn:hover { background-color: #2a2a2a; }
-.play-btn {
+/* ".play-btn-old-gtk4" alongside ".play-btn": on GTK 4.14-4.18 (Ubuntu
+   24.04 — see PlaybackView::pick_play_btn_css()) the play button carries
+   that class name instead of "play-btn", as a workaround for a separate
+   box-shadow rendering bug on that GTK range (wood.css needs the two to
+   diverge there — see its own ".play-btn-old-gtk4" comment). This theme
+   never needed that divergence (its ".play-btn" is already `box-shadow:
+   none`), so both names just share this one rule — confirmed live: with
+   only ".play-btn" here, an old-GTK4 system got no rule at all for this
+   button under this theme and fell through to libadwaita's own
+   "suggested-action" styling (the OS accent color, not this app's own). */
+.play-btn, .play-btn-old-gtk4 {
     min-width: 44px; min-height: 44px;
     padding: 0; -gtk-icon-size: 20px;
     background-color: @rustywiim_accent; color: #0a0a0a;
     border: none; border-radius: 50%; box-shadow: none;
 }
-.play-btn:hover { background-color: lighter(@rustywiim_accent); }
+.play-btn:hover, .play-btn-old-gtk4:hover { background-color: lighter(@rustywiim_accent); }
 /* Brief keyboard-shortcut acknowledgement — views::common::flash_button() adds
    "key-flash" for ~200ms. Compound (two-class) selectors so these
    deterministically outrank the plain .transport-btn/.play-btn background
@@ -75,7 +85,7 @@ window { background-color: #0a0a0a; }
 .transport-btn.key-flash, .mini-transport-btn.key-flash {
     background-color: @rustywiim_accent; color: #0a0a0a;
 }
-.play-btn.key-flash, .mini-play-btn.key-flash {
+.play-btn.key-flash, .play-btn-old-gtk4.key-flash, .mini-play-btn.key-flash {
     background-color: lighter(@rustywiim_accent);
 }
 .loop-btn     { min-width: 36px; min-height: 36px; padding: 0; -gtk-icon-size: 16px; background-color: transparent; color: #909090; }

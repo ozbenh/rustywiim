@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="600" viewBox="0 0 960 600" preserveAspectRatio="none">
+  <!-- RustyWiiM Wood theme: main window/kiosk background — a walnut gradient
+       with a procedurally-generated grain, not a photographic/bitmap texture.
+       feTurbulence (SVG's built-in Perlin/fractal-noise primitive) generates
+       the grain live at whatever size the renderer asks for, so there's no
+       tiling seam and no upscale blur the way a fixed-size bitmap would have.
+       baseFrequency="0.006 0.25" is deliberately asymmetric — a much lower
+       frequency in x than y — which is what stretches the noise into long
+       horizontal fibers instead of an isotropic blotchy speckle.
+
+       Filter parameters and the soft-light compositing approach (turbulence
+       -> alpha-only grain shape -> blended over a color base) are taken from
+       github.com/gthibo/Wiim-Dashboard's "Showa Hi-Fi Counter" fork
+       (src/app/layout.tsx's `cabinetGrain` filter, MIT-licensed at time of
+       writing). preserveAspectRatio="none" so GTK's background-image stretches
+       it to fill the target area (see wood.css rather than fitting/cropping
+       to this file's own 960x600 viewBox, which is otherwise an arbitrary
+       canvas size, not a fixed output resolution.
+
+       This comment deliberately sits AFTER the opening <svg> tag, not before
+       it (past-tense lesson, not a hypothetical): a long comment between the
+       XML prologue and the root element pushed the literal `<svg` text past
+       whatever byte-count the image-format sniffer used by this app's actual
+       runtime SVG loader (GTK4/glycin, not the `resvg` Rust crate this app
+       uses elsewhere for icons — different code path entirely, confirmed by
+       loading this file through `gdk::Texture::from_filename()` directly,
+       the same primitive GTK's own CSS `url()` loading uses) peeks at for
+       type detection — confirmed failing with "Unrecognized image file
+       format" with the comment before the tag, fixed by moving it here. -->
+  <defs>
+    <!-- Flat walnut-dark base (gthibo's own "background"/"walnut-dark" CSS
+         token, #2A1804) — deliberately NOT a bright-to-dark gradient like
+         this file's first version had. Their actual body background is
+         this flat dark color with two separate *reduced-opacity* washes on
+         top (see linWash/radWash below, same formula as their globals.css:
+         a radial-gradient at 0.55 opacity fading to transparent at 60%,
+         plus a top-down linear-gradient at 0.35 opacity fading to
+         transparent at 40%, both over a flat dark base) — most of the
+         visible area stays close to this dark flat color, with warmth
+         concentrated near the top/top-left rather than spread evenly
+         top-to-bottom. Ben's "too dark... like the WiiM-Dashboard
+         screenshots" note is this exact mismatch. -->
+    <linearGradient id="linWash" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%"  stop-color="#3B2306" stop-opacity="0.35"/>
+      <stop offset="40%" stop-color="#3B2306" stop-opacity="0"/>
+    </linearGradient>
+    <radialGradient id="radWash" cx="18%" cy="-10%" r="110%">
+      <stop offset="0%"  stop-color="#3B2306" stop-opacity="0.55"/>
+      <stop offset="60%" stop-color="#3B2306" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="grain" x="-10%" y="-10%" width="120%" height="120%">
+      <feTurbulence type="fractalNoise" baseFrequency="0.006 0.25" numOctaves="5" seed="3" stitchTiles="stitch" result="noise"/>
+      <feColorMatrix in="noise" type="matrix"
+        values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 1 0" result="noiseA"/>
+      <feComponentTransfer in="noiseA" result="noiseA2">
+        <feFuncA type="linear" slope="0.72" intercept="0"/>
+      </feComponentTransfer>
+      <feFlood flood-color="#000000" result="blackFlood"/>
+      <feComposite in="blackFlood" in2="noiseA2" operator="in" result="grain"/>
+      <feBlend in="grain" in2="SourceGraphic" mode="soft-light"/>
+    </filter>
+  </defs>
+  <!-- Grain applied to the flat base only (a single solid color, not a
+       gradient) — the filter chain itself is unchanged/proven from
+       testing, and the two washes are layered on top afterward as plain
+       (unfiltered) translucent fills, which sidesteps re-verifying the
+       filter's behavior against a gradient input; see wood-panel.svg's own
+       comment for the precision cliff hit last time this filter was fed
+       something other than a flat, healthy-alpha input. -->
+  <rect width="100%" height="100%" fill="#2A1804"/>
+  <rect width="100%" height="100%" fill="#2A1804" filter="url(#grain)"/>
+  <rect width="100%" height="100%" fill="url(#linWash)"/>
+  <rect width="100%" height="100%" fill="url(#radWash)"/>
+</svg>

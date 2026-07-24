@@ -322,7 +322,7 @@ impl DeviceWindowInner {
             })
         };
         let new_view = views::playback_full::PlaybackView::new(
-            &self.ds, &self.icons, Some(&self.art_bg), new_layout, size_source, 1.0,
+            &self.ds, &self.icons, Some(&self.art_bg), new_layout, size_source, 1.0, false,
         );
         new_view.set_active(!*self.mini_mode.borrow());
         self.paned.set_end_child(Some(&new_view));
@@ -429,7 +429,7 @@ impl DeviceWindow {
         // the sidebar's width).
         let playback = views::playback_full::PlaybackView::new(
             &ds, &icons, Some(&art_bg), views::playback_full::PlaybackLayout::Classic,
-            Rc::new(|| None), 1.0,
+            Rc::new(|| None), 1.0, false,
         );
         let (mini, _mini_root) = build_mini_window(&ds, &icons);
 

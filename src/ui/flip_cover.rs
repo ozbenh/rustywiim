@@ -335,13 +335,30 @@ pub mod imp {
 
             let rect = content_rect(paintable, fixed_size, w, h);
             let outline = gsk::RoundedRect::from_rect(rect, 0.0);
-            // Same three shadow layers/offsets/blur as the CSS box-shadow
-            // this replaces (see wood.css's own comment on the theme.yaml
-            // frame colors) — inset highlight (light catching the top/left
-            // raised edge), inset shadow (bottom/right), outer glow (lifts
-            // the whole frame off whatever's behind it).
-            snapshot.append_inset_shadow(&outline, &highlight, 1.0, 1.0, 0.0, 0.0);
-            snapshot.append_inset_shadow(&outline, &shadow, -1.0, -1.0, 0.0, 0.0);
+            // Inset highlight (light catching the top/left raised edge),
+            // inset shadow (bottom/right), outer glow (lifts the whole
+            // frame off whatever's behind it).
+            //
+            // History, for reverting: shipped first at a plain hard-edged
+            // 1px band (offset 1.0/1.0 and -1.0/-1.0, 0 blur). Ben asked to
+            // try it bigger ("~doubled the offset, be ready to revert") —
+            // that made a real, pre-existing problem much more visible
+            // rather than just "too heavy": an inset shadow composites
+            // *over* the artwork itself, so a flat, hard-edged, fairly
+            // opaque band reads as an ugly smudge wherever the album art is
+            // already light near that edge — thin (1px) it was easy to
+              // miss, thick (2.5px) it wasn't. A true gradient-colored edge
+            // (a stroked-path + linear/conic gradient overlay, GSK supports
+            // it via push_stroke()/append_conic_gradient()) would need real
+            // visual tuning this sandbox can't do — used *blur* on the
+            // existing inset shadows instead, which is a much simpler
+            // change and addresses both complaints at once: a blurred inset
+            // shadow falls off smoothly from the edge rather than a hard
+            // band, which both reads as "gradient-like" and is far gentler
+            // wherever it lands over light artwork, since there's no hard
+            // edge for a brightness mismatch to be obvious against.
+            snapshot.append_inset_shadow(&outline, &highlight, 1.0, 1.0, 0.0, 4.0);
+            snapshot.append_inset_shadow(&outline, &shadow, -1.0, -1.0, 0.0, 4.0);
             snapshot.append_outset_shadow(&outline, &glow, 0.0, 6.0, 0.0, 14.0);
         }
     }

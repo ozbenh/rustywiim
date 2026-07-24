@@ -28,11 +28,11 @@ const MODERN_CSS: &str = concat!(
     include_str!("themes/dark/dark.css"),
     include_str!("themes/modern/modern.css"),
 );
-// RustyWiiM Wood: same "overrides on top of dark.css" layering as Modern
-// (see THEMING.md) — a CSS-only reskin, no new widgets. Its background/
-// panel textures are `url("resource:///...")` references resolved against
-// the embedded icon GResource bundle (see `init_icon_resource()`'s doc
-// comment on load-order below), not loaded via `include_bytes!` here.
+// RustyWiiM Wood: same "overrides on top of dark.css" layering as Modern.
+// Its background panel textures are `url("resource:///...")` references
+// resolved against the embedded icon GResource bundle (see
+// `init_icon_resource()`'s doc comment on load-order below), not loaded
+// via `include_bytes!` here.
 const WOOD_CSS: &str = concat!(
     include_str!("themes/dark/dark.css"),
     include_str!("themes/wood/wood.css"),
@@ -60,7 +60,7 @@ fn theme_css(theme: ThemeMode) -> &'static str {
 // only Rust deciding not to run it at all avoids the cost of running it
 // (see `update_art_background_visibility()`'s doc comment above for the
 // same point about `queue_draw`/measure-and-snapshot cost) — e.g.
-// `disable_kiosk_auto_hide`; or the drawing itself is Rust-side GSK code,
+// `kiosk_keep_transport_visible`; or the drawing itself is Rust-side GSK code,
 // not CSS, and needs its colors from somewhere — e.g. `frame_*` (GTK CSS's
 // only queryable-from-Rust "custom property" channel, `@define-color` +
 // `StyleContext::lookup_color()`, is deprecated since GTK 4.10 — this
@@ -75,20 +75,24 @@ fn theme_css(theme: ThemeMode) -> &'static str {
 // choice, re-parsing YAML there really would be per-frame cost, not a one-
 // off. Bundled at build time today like every other Tier-1 theme asset;
 // deliberately real standalone files rather than a Rust match/struct
-// literal so a future runtime-loaded theme pack (Tier 2, see THEMING.md)
-// can bring its own `theme.yaml` with no code changes here beyond
-// swapping `include_str!` for `std::fs::read_to_string()`.
+// literal so a future runtime-loaded theme pack can bring its own `theme.yaml`
+// with no code changes here beyond swapping `include_str!`
+// for `std::fs::read_to_string()`.
 
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub(crate) struct ThemeTunables {
-    /// Suppress Kiosk mode's idle auto-hide for this theme's controls,
-    /// regardless of the user's own `kiosk_auto_hide_controls`/
-    /// `kiosk_auto_hide_all_controls` settings — for a theme whose
-    /// transport controls are styled to look like permanent physical
-    /// hardware (knobs/buttons), fading them out on idle reads as broken
-    /// hardware, not an intentional affordance.
-    pub disable_kiosk_auto_hide: bool,
+    /// Exempt this theme's transport controls (`PlaybackView::fade_group()`
+    /// — transport buttons, volume, EQ) specifically from Kiosk's idle
+    /// auto-hide, even when the user's own `kiosk_auto_hide_all_controls`
+    /// is on — for a theme whose controls are styled to look like
+    /// permanent physical hardware (knobs/buttons), fading them out on
+    /// idle reads as broken hardware, not an intentional affordance.
+    /// Deliberately narrower than an earlier version of this flag, which
+    /// vetoed Kiosk's auto-hide entirely: the top buttons (device-select/
+    /// sidebar/exit/settings) and the bottom status bar still auto-hide
+    /// normally regardless of this — only the transport group opts out.
+    pub kiosk_keep_transport_visible: bool,
     /// Artwork frame colors for `FlipCover`'s theme-drawn raised-edge
     /// frame (`flip_cover.rs`'s `draw_theme_frame()`) — CSS color strings
     /// (`gdk::RGBA::parse()`-compatible, e.g. `"rgba(255, 220, 180, 0.35)"`),
@@ -101,6 +105,43 @@ pub(crate) struct ThemeTunables {
     pub frame_highlight: Option<String>,
     pub frame_shadow:    Option<String>,
     pub frame_glow:      Option<String>,
+    /// Whether Kiosk mode's WideRight layout groups the seek bar, service/
+    /// quality row, and transport controls into one shared card (styled
+    /// like the normal device window's own `.controls-card`) instead of
+    /// its default arrangement (transport in its own small card; service
+    /// and seek bar loose, uncarded, elsewhere in the column). A plain
+    /// bool rather than a "style1"/"style2" enum for now — only one
+    /// alternative arrangement exists to choose; generalize to an enum if
+    /// a second one is ever actually built, not preemptively. Read once,
+    /// at `PlaybackView` construction time (`playback_full.rs`) — a
+    /// structural widget-tree choice, not something a live CSS reload can
+    /// re-apply the way color/behavior tunables can, so switching themes
+    /// live doesn't restructure an already-built view; it takes effect
+    /// the next time one is constructed (e.g. Kiosk's own device switch).
+    pub kiosk_boxed_controls: bool,
+    /// Wraps Kiosk mode's WideRight title/artist/album column in a "VFD"
+    /// (vacuum-fluorescent-display) panel: `wood.css`'s own `.vfd-panel`
+    /// class handles the panel's background/border/scanlines (ordinary CSS,
+    /// no Rust involvement), but the glowing-text look behind title/artist/
+    /// album is real GSK blur layering in `ScrollFadeLabel`
+    /// (`ScrollFadeLabel::set_glow()`) — a manually-rendered widget gets no
+    /// CSS `text-shadow` for free, the same reason `drop_shadow` already
+    /// exists there. Off by default (every theme but Wood) so this is
+    /// opt-in, not something a theme has to explicitly disable. Read once
+    /// at `PlaybackView` construction, same "not live-reactive" contract as
+    /// `kiosk_boxed_controls` above — and, like that field, only ever
+    /// actually built when the *caller* also says it's Kiosk (`is_kiosk` in
+    /// `PlaybackView::new()`), so Wood's normal-mode WideRight toggle
+    /// (`device_window`'s own "L") stays unaffected.
+    pub vfd_panel: bool,
+    /// Phosphor glow color behind title/artist/album text when `vfd_panel`
+    /// is on — `gdk::RGBA::parse()`-compatible, same convention as
+    /// `frame_*` above. `None` (the default) means no glow is drawn even if
+    /// `vfd_panel` is on; artist/album get a dimmer version of this same
+    /// color (see `playback_full.rs`'s WideRight branch), not a second
+    /// configured color, matching a real VFD's single tube color at two
+    /// brightnesses.
+    pub vfd_glow_color: Option<String>,
 }
 
 const WOOD_TUNABLES_YAML: &str = include_str!("themes/wood/theme.yaml");

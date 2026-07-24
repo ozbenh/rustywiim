@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="600" viewBox="0 0 960 600" preserveAspectRatio="none">
+  <!-- RustyWiiM Wood theme: panel/card face texture (panel-card,
+       controls-card, preset-tile, mini-outer) — same grain recipe as
+       wood-grain.svg (see that file's comment for the technique and where
+       it's from), but a distinct, more neutral near-black base rather than
+       a darker copy of the walnut shelf color. This matches gthibo's own
+       design intent, not a guess: their panels/cards use a plain flat
+       "static" token (#1C1A17, a neutral warm-grey near-black, not walnut-
+       tinted) with only a barely-perceptible grain overlay — the actual
+       "raised panel proud of the walnut cabinet" read in their reference
+       comes from a box-shadow bevel (see wood.css's ".panel-card"/
+       ".controls-card" rules), not from this texture. Kept the wood grain
+       here rather than dropping to a flat fill for continuity with the
+       cabinet surface it sits on, just visibly darker/flatter than it.
+
+       Darkening this down to "near-black" by shrinking the grain layer's
+       own alpha (instead of the plain overlay approach below) hit a real
+       rendering bug in this app's actual GTK/glycin SVG loader: below
+       roughly slope=0.3 the feComposite/feBlend chain produced hard flat
+       horizontal color bands (visibly different flat tints per ~60-120px
+       stripe) instead of continuous grain — confirmed via
+       gdk::Texture::from_filename(), the same primitive GTK's CSS url()
+       loading uses, so it's not an artifact specific to some other tool.
+       Almost certainly 8-bit intermediate-surface banding/quantization
+       from blending premultiplied alpha that's too close to zero, not a
+       structural noise-tiling issue (stitchTiles made no difference).
+       Fix: keep the grain layer's own alpha in the same healthy range
+       wood-grain.svg uses (proven clean), and darken the *result* with a
+       plain flat semi-opaque rect instead — ordinary alpha compositing at
+       a large, stable alpha value, no filter math, no precision cliff. -->
+  <defs>
+    <linearGradient id="base" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#221c15"/>
+      <stop offset="100%" stop-color="#15110c"/>
+    </linearGradient>
+    <filter id="grain" x="-10%" y="-10%" width="120%" height="120%">
+      <feTurbulence type="fractalNoise" baseFrequency="0.006 0.25" numOctaves="5" seed="3" stitchTiles="stitch" result="noise"/>
+      <feColorMatrix in="noise" type="matrix"
+        values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 1 0" result="noiseA"/>
+      <feComponentTransfer in="noiseA" result="noiseA2">
+        <feFuncA type="linear" slope="0.72" intercept="0"/>
+      </feComponentTransfer>
+      <feFlood flood-color="#000000" result="blackFlood"/>
+      <feComposite in="blackFlood" in2="noiseA2" operator="in" result="grain"/>
+      <feBlend in="grain" in2="SourceGraphic" mode="soft-light"/>
+    </filter>
+  </defs>
+  <rect width="100%" height="100%" fill="url(#base)" filter="url(#grain)"/>
+  <!-- Flat darkening wash — ordinary alpha compositing (see comment above
+       for why this, not a smaller filter alpha, is what makes it darker). -->
+  <rect width="100%" height="100%" fill="#050402" fill-opacity="0.5"/>
+</svg>

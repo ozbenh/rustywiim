@@ -53,10 +53,9 @@
        and this same GResource bundle is already registered process-wide by
        init_icon_resource() before any theme CSS loads (see that function's
        doc comment). Both are procedurally-generated SVGs (an feTurbulence
-       filter, not a bitmap — see wood-grain.svg's own comment/THEMING.md
-       for why), rasterized live by librsvg at whatever size GTK requests,
-       so there's no fixed-resolution tiling seam the way a bitmap texture
-       would have. No other theme has assets here yet. -->
+       filter, not a bitmap, rasterized live by librsvg at whatever size GTK
+       requests, so there's no fixed-resolution tiling seam the way a bitmap
+       texture would have. No other theme has assets here yet. -->
   <gresource prefix="/io/github/ozbenh/rustywiim/themes/wood">
     <file alias="wood-grain.svg">themes/wood/wood-grain.svg</file>
     <file alias="wood-panel.svg">themes/wood/wood-panel.svg</file>

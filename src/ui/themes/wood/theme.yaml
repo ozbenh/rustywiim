@@ -1,0 +1,58 @@
+# RustyWiiM Wood theme tunables — behavior and Rust-drawn presentation data
+# CSS alone can't express (see ThemeTunables in ui/theme.rs. CSS can hide an
+# element visually, but only Rust code deciding not to run a behavior in the
+# first place avoids the CPU cost; and some drawing — FlipCover's artwork
+# frame below — is real GSK Rust code, not CSS, so its colors have to come from
+# somewhere Rust can read without relying on GTK CSS's deprecated
+# @define-color/lookup_color() custom-property mechanism).
+#
+# Bundled into the binary at build time today (include_str! in theme.rs),
+# same as every other Tier-1 theme's assets — nothing here is loaded from
+# disk at runtime yet. Kept as a real standalone file rather than a Rust
+# literal specifically so a future runtime-loaded theme pack can bring its
+# own theme.yaml with zero code changes: the loader already treats "parse
+# this theme's tunables from a string" as the whole job, and swapping
+# include_str! for std::fs::read_to_string() at that point is the only
+#change needed.
+
+# Wood's transport/play/volume controls are meant to look like permanent
+# physical hardware (buttons, knobs) — fading them out via Kiosk's idle
+# auto-hide reads as broken hardware, not an intentional UI affordance, so
+# this theme exempts just that group. The top buttons (device-select/
+# sidebar/exit/settings) and the bottom status bar still auto-hide
+# normally — this is narrower than an earlier version of this flag, which
+# vetoed Kiosk's auto-hide outright.
+kiosk_keep_transport_visible: true
+
+# FlipCover's raised-edge artwork frame (see flip_cover.rs's
+# draw_theme_frame()) — a bright top/left inset edge fading to a darker
+# bottom/right inset edge (light catching a physical raised frame around
+# the cover), plus a soft outer glow so the artwork visibly lifts off the
+# shelf behind it. gdk::RGBA::parse()-compatible CSS color strings, same
+# syntax as any other color value in this theme's own wood.css. Omitting
+# any one of the three (rather than all three) disables the frame
+# entirely — see ThemeTunables' own doc comment for why that's deliberate.
+frame_highlight: "rgba(255, 220, 180, 0.35)"
+frame_shadow: "rgba(0, 0, 0, 0.5)"
+frame_glow: "rgba(0, 0, 0, 0.5)"
+
+# Kiosk mode's WideRight layout: group seek bar + service/quality + transport
+# controls into one shared card (styled like the normal device window's own
+# glassy ".controls-card"), instead of the default "transport in its own
+# small card, seek/service loose elsewhere" arrangement.
+kiosk_boxed_controls: true
+
+# Kiosk mode's WideRight title/artist/album column: wrap it in a "VFD"
+# (vacuum-fluorescent-display) panel (wood.css's own .vfd-panel) with a
+# phosphor-glow text effect instead of Wood's normal warm cream/tan track-*
+# colors. vfd_glow_color is the tube's lit color (gdk::RGBA::parse()-
+# compatible) — amber/orange (matching this theme's own #ff8000 default
+# accent, config::default_accent_for_theme()) rather than a traditional
+# teal/cyan VFD tube, so it reads as part of Wood's own warm palette instead
+# of a foreign color dropped into it.
+vfd_panel: true
+# Toned down from an earlier (255, 140, 30, 0.9) — confirmed live, combined
+# with the near-opaque text fill (wood.css's own .vfd-panel .track-* rule)
+# and the glow's own layered blur, it read as blown-out/overexposed rather
+# than a lit tube.
+vfd_glow_color: "rgba(255, 140, 30, 0.65)"

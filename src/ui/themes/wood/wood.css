@@ -1,0 +1,465 @@
+/* RustyWiiM Wood theme overrides — layered on top of dark.css, same
+   "override, don't restate" pattern modern.css uses (only loads at all when
+   Wood is the active theme, so plain selectors here never leak elsewhere).
+
+/* ── Background textures ─────────────────────────────────────────────────
+   Both SVGs are embedded in the app's own GResource bundle (see
+   rustywiim.gresource.xml) and loaded via a resource:// URI rather than a
+   real filesystem path, so this works identically for a packaged install
+   and a bare `cargo run`. wood-grain (walnut-toned) is the outer shelf/
+   cabinet surface; wood-panel (a distinct, more neutral near-black) is the
+   panel/card material — same cabinet-vs-faceplate material contrast
+   gthibo's own reference uses, with the actual "raised, proud of the
+   cabinet" read coming from each panel's box-shadow bevel below, not from
+   which texture it uses.
+
+   background-size: 100% 100% (not the default `auto`, and not `cover`)
+   stretches the render to exactly fill the element regardless of its own
+   960x600 viewBox — paired with each SVG's own preserveAspectRatio="none",
+   which is what makes librsvg stretch non-uniformly instead of fitting/
+   cropping to that aspect ratio. no-repeat rather than dark.css's usual
+   tiling: unlike a bitmap texture, there's no fixed tile size to repeat at
+   all — the noise is regenerated live at whatever size is requested, so
+   one continuous stretch covers any window size with no seam, cheaper
+   than tiling many copies of a bitmap would be. */
+window {
+    background-color: #2A1804;
+    background-image: url("resource:///io/github/ozbenh/rustywiim/themes/wood/wood-grain.svg");
+    background-repeat: no-repeat;
+    background-size: 100% 100%;
+}
+
+/* panel-card/controls-card are structurally always present (widgets.rs)
+   but only styled here (dark.css leaves them inert, same as it leaves
+   them for Modern to style) — raised panels PROUD of the walnut cabinet,
+   not recessed into it (an earlier version of this file used an inset-only
+   shadow, reading as a routed recess — wrong per the actual reference).
+   Bevel recipe translated directly from gthibo's own ".glass" CSS
+   (globals.css): an inset highlight hugging the top edge (light from
+   above), a two-stop inset shadow at the bottom (a tight stop + a softer,
+   wider one — approximates a rounded bevel's quick-then-easing falloff
+   with only two shadow layers), and a crisp *un-blurred* 1px black ring
+   (not a soft drop shadow) separating the panel from the walnut it sits
+   on. Order matters: the inset bevel shadows before the outer ring, so the
+   ring frames the lit panel rather than the other way round. */
+.panel-card, .controls-card, .controls-card-boxed, .peq-curve {
+    background-color: rgba(15, 11, 8, 0.85);
+    background-image: url("resource:///io/github/ozbenh/rustywiim/themes/wood/wood-panel.svg");
+    background-repeat: no-repeat;
+    background-size: 100% 100%;
+    border: 1px solid rgba(0, 0, 0, 0.5);
+    border-radius: 6px;
+    box-shadow: inset 0 5px 5px -6px rgba(255, 255, 255, 0.4),
+                inset 0 -3px 3px -2px rgba(0, 0, 0, 0.65),
+                inset 0 -7px 9px -5px rgba(0, 0, 0, 0.45),
+                0 0 0 1px rgba(0, 0, 0, 0.6);
+}
+.panel-card { padding: 8px; margin-bottom: 8px; margin-left: 10px; }
+.controls-card, .controls-card-boxed { padding: 12px; }
+/* PEQ curve view (ui/eq/parametric.rs): the same "dark glass" bevel as
+   the Kiosk/device-window control cards above, on the frequency-response
+   plot specifically — that widget already paints nothing of its own
+   background (`draw_peq_curve()`'s own comment: "leaving the Cairo
+   surface untouched lets the widget's real CSS background... show
+   through"), specifically so a theme could do exactly this without any
+   Rust change to the drawing code itself. More padding than the other
+   cards (16px vs 8-12px) — this box also has to leave room for the dB/
+   frequency axis labels drawn *inside* its own canvas (LEFT_MARGIN/
+   BOTTOM_MARGIN in parametric.rs, a separate, smaller inset those labels
+   already reserved for themselves regardless of theme), so needs more
+   breathing room between the bevel's own border and the plot before
+   those labels start looking cramped against it. GTK accounts for CSS
+   padding when sizing a DrawingArea's content box, so this padding
+   automatically shrinks what `draw_peq_curve()` receives as its own
+   width/height — no coordinate math needed on that side to match. */
+.peq-curve { padding: 16px; }
+/* Kiosk's own small transport-only card (Ben's ask): no box behind the
+   transport row there at all — the buttons already carry their own
+   individual bevels (below), and this specific card read as one box too
+   many stacked in front of the wood-grain background. Kiosk-scoped, not
+   global: Classic's .controls-card still bundles the seek bar into the
+   same card, so this doesn't touch it there.
+
+   Only ever matches when `kiosk_boxed_controls` is off: on, transport
+   never gets ".controls-card" at all (it's ".controls-card-boxed"
+   instead, sharing the base bevel recipe above but a distinct class name
+   specifically so *this* rule can't also strip it — see that class's own
+   construction-site comment in playback_full.rs). Off, this is exactly
+   the same lone transport card it always was, and this rule still
+   applies to it as before. */
+window.kiosk-window .controls-card {
+    background-color: transparent;
+    background-image: none;
+    border: none;
+    box-shadow: none;
+    padding: 0;
+}
+
+/* ── Artwork frame ────────────────────────────────────────────────────────
+   Not styled here at all — NOT ".art-frame" (that overlay box is sized to
+   the whole widget, which in the WideRight/Kiosk layout is significantly
+   wider than the actual square artwork it wraps; a CSS box-shadow on it
+   framed empty letterbox space, not the image). Fixed by moving the frame
+   into FlipCover's own snapshot() instead (flip_cover.rs's
+   draw_theme_frame()), which already knows the artwork's exact drawn rect
+   regardless of how much extra space the layout gave the widget — GTK CSS
+   has no selector that could express "snug to this widget's own painted
+   content, not its allocated box." The frame's colors live in this
+   theme's theme.yaml (frame_highlight/frame_shadow/frame_glow), not here —
+   see ThemeTunables' doc comment in theme.rs for why (GTK CSS's
+   @define-color + lookup_color() being deprecated since 4.10). */
+
+/* ── Text palette ─────────────────────────────────────────────────────────
+   dark.css's near-white/grey palette is tuned for a flat black background;
+   against a warm wood surface it reads as clinical/cold, so this shifts
+   every text class to a matching warm cream/tan family. Deliberately keeps
+   dark.css's font-size/weight/min-height untouched — only color changes. */
+.track-title  { color: #f0e2c8; }
+.track-artist { color: #c2a980; }
+.track-album  { color: #8c765a; }
+.quality-label, .device-info { color: #8c765a; }
+.service-name { color: #a8916e; }
+.dim-label    { color: #e6d7ba; }
+.section-label { color: #a08a68; }
+.net-icon { color: #a08a68; }
+
+/* ── Transport controls ──────────────────────────────────────────────────
+   Play button: concentric metal ring with a glowing center.
+   reduces entirely to a radial-gradient + blurred box-shadow glow,
+   Uses @rustywiim_accent (the existing, user-configurable highlight
+   color shared by every RustyWiiM-family theme) as the glow
+   color rather than a hardcoded amber, so a user's chosen accent still
+   means something under Wood instead of being silently ignored. */
+.play-btn {
+    background-image: radial-gradient(circle at 35% 32%,
+        lighter(@rustywiim_accent) 0%,
+        @rustywiim_accent 45%,
+        darker(@rustywiim_accent) 100%);
+    border: 1px solid rgba(0, 0, 0, 0.5);
+    box-shadow: 0 0 10px alpha(@rustywiim_accent, 0.5),
+                inset 0 1px 1px rgba(255, 255, 255, 0.4),
+                inset 0 -2px 2px rgba(0, 0, 0, 0.35);
+}
+.play-btn-old-gtk4 {
+    background-image: radial-gradient(circle at 35% 32%,
+        lighter(@rustywiim_accent) 0%,
+        @rustywiim_accent 45%,
+        darker(@rustywiim_accent) 100%);
+    border: 1px solid rgba(0, 0, 0, 0.5);
+    /* Keep inset shadows on the main element: Workaround for Ubuntu 24.04 bug */
+    box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.4),
+                inset 0 -2px 2px rgba(0, 0, 0, 0.35);
+}
+.play-btn:hover {
+    background-image: radial-gradient(circle at 35% 32%,
+        lighter(lighter(@rustywiim_accent)) 0%,
+        lighter(@rustywiim_accent) 45%,
+        @rustywiim_accent 100%);
+}
+
+/* Transport/loop/volume/EQ buttons: all opaque now (Ben's ask — transport/
+   loop used to get a much fainter, mostly-transparent bevel than volume/
+   EQ, on the assumption they always sat on a card background; no longer a
+   safe assumption once a card isn't guaranteed underneath them). A real
+   semi-opaque base fill (not just transparent + a faint gradient) plus a
+   soft outer drop shadow is what actually reads as a solid raised knob
+   proud of whatever's behind it, card or bare wood-grain, rather than a
+   faint smudge that only worked layered over a card's own background. */
+.transport-btn, .loop-btn, .bt-pair-btn, .vol-btn, .eq-btn {
+    background-color: rgba(35, 24, 14, 0.82);
+    background-image: linear-gradient(160deg,
+        rgba(255, 220, 180, 0.16) 0%, rgba(0, 0, 0, 0.35) 100%);
+    box-shadow: inset 0 1px 0 rgba(255, 220, 180, 0.16),
+                inset 0 -1px 1px rgba(0, 0, 0, 0.55),
+                0 2px 4px rgba(0, 0, 0, 0.45);
+}
+.transport-btn:hover, .loop-btn:hover, .bt-pair-btn:hover, .vol-btn:hover, .eq-btn:hover {
+    background-image: linear-gradient(160deg,
+        rgba(255, 220, 180, 0.24) 0%, rgba(0, 0, 0, 0.3) 100%);
+}
+.bt-pair-btn { border-color: rgba(255, 205, 145, 0.25); }
+.bt-pair-btn:hover { color: #f0e2c8; }
+/* .eq-btn is otherwise plain Adwaita "circular" (dark.css's own .vol-btn
+   rule below sets a 6px rounded-rect, not circular — border-radius: 6px
+   here outranks "circular"'s own THEME-priority round shape the same
+   provider-priority-beats-specificity way every other override in this
+   codebase does), which reads as more round and narrower than the
+   volume button next to it. Same border-radius/padding formula as
+   .vol-btn (dark.css) so the two match in rounding style — deliberately
+   NOT the same min-width: .vol-btn is sized for an icon-plus-percentage
+   label, .eq-btn is icon-only and should stay visibly narrower. */
+.eq-btn {
+    border-radius: 6px;
+    padding: 0 8px;
+    min-width: 0;
+}
+/* A bit wider still in Kiosk specifically (Ben's ask: ~10% wider in
+   normal mode over the original 6px-a-side padding above, ~20% in
+   Kiosk) — this app can't measure its own rendered button width from
+   here to hit an exact percentage against the icon's actual intrinsic
+   size, so both are a hand-tuned padding approximation of the ask, not a
+   computed value; nudge further if they read off in practice. Higher
+   specificity than the plain .eq-btn rule above (extra type + class
+   selector), not just file order, so it reliably wins regardless of
+   where either rule sits in this file. */
+window.kiosk-window .eq-btn {
+    padding: 0 12px;
+    /* Pulls it closer to the volume control next to it (Ben's ask) —
+       volume_cluster's Box "spacing" property (playback_full.rs) isn't
+       itself CSS-styleable, so a negative margin on this side is the
+       lever instead; same negative-margin technique modern.css already
+       uses on .preset-tile for its own tighter-than-Rust-spacing case.
+       margin-right, not the logical "margin-end": GTK CSS only has the
+       physical margin-left/-right/-top/-bottom properties, no logical
+       -start/-end variants the way web CSS does. eq_btn sits to the left
+       of volume in volume_cluster's horizontal Box, so its trailing edge
+       is its right side. */
+    margin-right: -3px;
+}
+window.kiosk-window .vol-btn {
+    padding: 0 10px;
+}
+
+/* ── Sliders/troughs ──────────────────────────────────────────────────────
+   dark.css's flat #2a2a2a trough reads as a UI-grey bar on a wood panel;
+   darkened further and given an inset shadow so it reads as a routed
+   groove instead. Highlight fill is left alone — dark.css's own
+   `trough highlight { background-color: @rustywiim_accent }` rule already
+   applies here unchanged (this file loads after it, but never overrides
+   it), so the accent-colored fill still shows through the groove. */
+.seek-scale trough, .vol-pop trough, .mini-vol-pop trough, .devlist-vol-pop trough {
+    background-color: #0c0703;
+    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.6);
+}
+
+/* ── Presets ──────────────────────────────────────────────────────────────
+   Same panel texture as panel-card/controls-card above, but the flatter
+   ".control-tile" bevel from the same reference (globals.css) instead of
+   ".glass" — a much fainter 1px top highlight/bottom shade rather than the
+   wide bright bevel above: at this small a tile size, the full ".glass"
+   treatment reads as pillowed/rounded rather than a flat raised face (the
+   same reason the reference itself keeps two separate bevel recipes,
+   scaled to element size, not one bevel reused everywhere). Brightens the
+   ring on hover as the one piece of direct feedback (the art thumbnail
+   itself already carries most of the visual weight, unlike the EQ/
+   transport controls above which have none of their own). */
+.preset-tile {
+    background-color: rgba(15, 11, 8, 0.85);
+    background-image: url("resource:///io/github/ozbenh/rustywiim/themes/wood/wood-panel.svg");
+    background-repeat: no-repeat;
+    background-size: 100% 100%;
+    border: 1px solid rgba(0, 0, 0, 0.5);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06),
+                inset 0 -1px 0 rgba(0, 0, 0, 0.35),
+                0 0 0 1px rgba(0, 0, 0, 0.4);
+}
+.preset-tile:hover {
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06),
+                inset 0 -1px 0 rgba(0, 0, 0, 0.35),
+                0 0 0 1px rgba(255, 205, 145, 0.3);
+}
+.preset-name  { color: #b39a7a; }
+.preset-badge { color: #1a1002; background-color: #a2875f; }
+
+/* ── Mini window ──────────────────────────────────────────────────────────
+   Same panel texture and ".glass" raised bevel as panel-card/controls-card
+   above; mini-main-row keeps dark.css's opaque background (it exists
+   purely to force a repaint over a stale-GPU-pixel glitch, not for its
+   color — see dark.css's own comment on it), just recolored to match this
+   theme's palette instead of being left flat black. */
+window.mini-window .mini-outer {
+    background-color: #15110c;
+    background-image: url("resource:///io/github/ozbenh/rustywiim/themes/wood/wood-panel.svg");
+    background-repeat: no-repeat;
+    background-size: 100% 100%;
+    border: 1px solid rgba(0, 0, 0, 0.5);
+    box-shadow: inset 0 5px 5px -6px rgba(255, 255, 255, 0.4),
+                inset 0 -3px 3px -2px rgba(0, 0, 0, 0.65),
+                inset 0 -7px 9px -5px rgba(0, 0, 0, 0.45),
+                0 0 0 1px rgba(0, 0, 0, 0.6);
+}
+window.mini-window .mini-main-row { background-color: #15110c; }
+.mini-title        { color: #f0e2c8; }
+.mini-artist       { color: #c2a980; }
+.mini-status-label { color: #8c765a; }
+.mini-device-label { color: #a08a68; }
+.mini-restore-btn, menubutton.mini-restore-btn > button { color: #a08a68; }
+.mini-restore-btn:hover, menubutton.mini-restore-btn > button:hover { color: #f0e2c8; }
+
+.mini-play-btn {
+    background-image: radial-gradient(circle at 35% 32%,
+        lighter(@rustywiim_accent) 0%,
+        @rustywiim_accent 45%,
+        darker(@rustywiim_accent) 100%);
+    box-shadow: 0 0 6px alpha(@rustywiim_accent, 0.5),
+                inset 0 1px 1px rgba(255, 255, 255, 0.4),
+                inset 0 -1px 1px rgba(0, 0, 0, 0.35);
+}
+.mini-transport-btn, .mini-vol-btn, .mini-bt-pair-btn {
+    background-image: linear-gradient(160deg,
+        rgba(255, 220, 180, 0.08) 0%, rgba(0, 0, 0, 0.28) 100%);
+}
+.mini-transport-btn:hover, .mini-vol-btn:hover, .mini-bt-pair-btn:hover {
+    background-image: linear-gradient(160deg,
+        rgba(255, 220, 180, 0.16) 0%, rgba(0, 0, 0, 0.22) 100%);
+}
+
+/* ── Marquee fade edges ──────────────────────────────────────────────────
+   Matches the window's own darkest wood-grain tone (the near-black end of
+   wood-grain.svg's palette, not a mid-tone average) rather than dark.css's
+   flat #0a0a0a — an approximation either way, since the fade can only ever
+   blend with one flat color while the real background behind it is a
+   texture, but the darkest tone leaves the least visible seam. */
+window.player-window .marquee-fade {
+    background-image: linear-gradient(to right,
+        #2A1804 0%, rgba(42, 24, 4, 0) 15%,
+        rgba(42, 24, 4, 0) 85%, #2A1804 100%);
+}
+window.mini-window .marquee-fade {
+    background-image: linear-gradient(to right,
+        #15110c 0%, rgba(21, 17, 12, 0) 15%,
+        rgba(21, 17, 12, 0) 85%, #15110c 100%);
+}
+
+/* ── VFD Kiosk display panel ──────────────────────────────────────────────
+   Ben's ask: Kiosk mode's WideRight title/artist/album column, styled after
+   a real vacuum-fluorescent display — three separate panels, one per line,
+   stacked vertically (experimental — playback_full.rs's WideRight branch
+   wraps `title.stack`/`artist.stack`/`album.stack` each in their own
+   `.vfd-panel` box rather than one panel around all three, so the group
+   reads as a stack of individual readouts and better fills the column's
+   vertical space) — only ever added at all when gated on both this theme's
+   `vfd_panel` tunable and Kiosk specifically, so this rule is otherwise
+   dead weight, same as every other theme-gated class in this file.
+   Deliberately the *exact* same material/bevel as .panel-card/.controls-card
+   above (same wood-panel texture, same inset-highlight/inset-shadow/outer-
+   ring recipe, same plain black border) rather than a distinct colored
+   "screen" outline — an earlier version gave this its own teal border plus
+   an outer teal glow, which read as a separate bezel stuck onto the wood
+   rather than a panel proud of it the same way every other card here is.
+   The only addition on top of that shared material is the horizontal
+   scanline mesh — the panel's sole background-image, a `repeating-linear-
+   gradient` (not a bitmap) standing in for a real VFD's visible refresh
+   lines. An earlier version tried a plain `linear-gradient` tiled via
+   `background-size`, matching the reference this look was modeled on —
+   confirmed live not to render at all; GTK's CSS engine doesn't reliably
+   tile a procedural gradient the way it tiles a `url()` bitmap.
+   `repeating-linear-gradient` is a distinct CSS function rather than a
+   repeat-tiling trick, and is what actually renders. Not layered together
+   with the wood-panel texture the other cards use either (a layered
+   `background-image: a, b` with matching comma-separated `background-
+   repeat`/`background-size` lists was also tried and also didn't render
+   both layers) — the flat `background-color` below stands in for that
+   texture instead. Every other "VFD" cue is the amber glowing text itself,
+   which isn't CSS at all — see ScrollFadeLabel::set_glow()/
+   ThemeTunables::vfd_glow_color — colored to match this theme's own accent
+   family (`#ff8000`, see config::default_accent_for_theme()) rather than a
+   traditional teal/cyan VFD tube, so it reads as part of this theme's warm
+   palette instead of a foreign color dropped into it. Kept a shade back
+   from full accent-orange and toned down from an earlier, near-white/
+   fully-opaque version that read as blown out rather than lit — see the
+   `.track-*` rule below and `vfd_glow_color`'s own value. */
+.vfd-panel {
+    background-color: rgba(15, 11, 8, 0.85);
+    background-image: repeating-linear-gradient(0deg,
+        rgba(0, 0, 0, 0) 0px, rgba(0, 0, 0, 0) 2px,
+        rgba(0, 0, 0, 0.35) 2px, rgba(0, 0, 0, 0.35) 4px);
+    border: 1px solid rgba(0, 0, 0, 0.5);
+    border-radius: 6px;
+    padding: 22px 24px;
+    margin-left: 12px;
+    box-shadow: inset 0 5px 5px -6px rgba(255, 255, 255, 0.4),
+                inset 0 -3px 3px -2px rgba(0, 0, 0, 0.65),
+                inset 0 -7px 9px -5px rgba(0, 0, 0, 0.45),
+                0 0 0 1px rgba(0, 0, 0, 0.6);
+}
+/* "Engraved into the wood" captions (EngravedLabel, playback_full.rs)
+   naming the panel below them — small, bold, uppercase, letter-spaced like
+   this theme's existing `.section-label` convention (dark.css). Only
+   font metrics matter here: `EngravedLabel` never reads the CSS `color`
+   (or anything else) — its glyph fill is always fully transparent, real
+   material showing through, delineated purely by the rasterized groove
+   line — so no color is set here at all. */
+.vfd-caption {
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    /* Matches .vfd-panel's own margin-left below it, so the caption's own
+       left edge lines up with the panel's rather than sitting flush left
+       while the panel starts 12px in. */
+    margin-left: 12px;
+}
+/* Overrides this file's own warm cream/tan `.track-*` colors (further up
+   this file) — more specific selector, so this wins regardless of source
+   order. One shared color for all three lines (title/artist/album differ
+   only in font-size, via playback_full.rs's per-screen scaling) rather than
+   a brightness gradient across them — the glow behind them (Rust-drawn,
+   see below) matches this uniformly too. An earlier version used a near-
+   white, fully-opaque `#ffd9a8` — confirmed live to read as blown-out
+   rather than lit, stacked on top of the glow's own three blurred layers
+   underneath it; this amber tone (closer to this theme's `#ff8000` accent
+   than to white) and a touch of transparency read as a tube actually lit,
+   not overexposed. */
+.vfd-panel .track-title,
+.vfd-panel .track-artist,
+.vfd-panel .track-album {
+    color: rgba(255, 180, 84, 0.92);
+    /* Experiment (Ben's suggestion): a real VFD's segments/dot-matrix read
+       as a fixed-pitch digital font, not a proportional UI typeface —
+       worth trying here since arbitrary real song/artist/album text (the
+       reason `wood-engrave-preview.rs`'s captions deliberately did NOT go
+       monospace) doesn't apply to this rule the same way; revert this one
+       line if it reads worse live than the normal display font. */
+    font-family: monospace;
+}
+
+/* Same VFD look on the bottom control/seek/quality bar's own readout text
+   (`.vfd-readout`, playback_full.rs's `boxed_card` — service name/quality
+   badge share the "service-name" class, the bitrate/depth/rate string is
+   "quality-label", pos/status/dur are "dim-label", the volume percentage
+   is "vol-level") — everything *except* the transport/volume/EQ buttons
+   sharing that same card, none of which carry any of these classes. Unlike
+   `.vfd-panel .track-*` above, these are plain `gtk::Label`s (not
+   `ScrollFadeLabel`), so a real CSS `text-shadow` actually renders here —
+   no Rust-drawn glow needed, this is the free case `ScrollFadeLabel::
+   set_glow()`'s own doc comment describes. */
+.vfd-readout .service-name,
+.vfd-readout .quality-label,
+.vfd-readout .dim-label,
+.vfd-readout .vol-level {
+    font-family: monospace;
+    color: rgba(255, 180, 84, 0.92);
+    text-shadow: 0 0 3px rgba(255, 140, 30, 0.55), 0 0 7px rgba(255, 140, 30, 0.3);
+}
+/* Same glow on the service/quality *icons* (ServiceLabel's BrandIcon,
+   QualityBadge's gtk::Image — shown instead of the text fallback whenever
+   IconSet has a real brand/quality mark) via the `.service-icon`/
+   `.quality-icon` marker classes (common.rs) — these are full-colour
+   images, not GTK "symbolic" recolourable icons, so there's no `color` to
+   retint them with the way the text rules above do. `filter:
+   drop-shadow(...)` instead: a real, GTK-supported CSS property (GTK's own
+   Adwaita stylesheet uses it identically on file-chooser thumbnails) that
+   glows around whatever the widget renders — works the same regardless of
+   the icon's own baked-in colours, unlike a `color`-based approach. Two
+   stacked drop-shadows (tight + wide), same "layered blur" idea as
+   `ScrollFadeLabel`'s Rust-drawn glow, just expressed as real CSS here
+   since these are plain image widgets. */
+.vfd-readout .service-icon,
+.vfd-readout .quality-icon {
+    filter: drop-shadow(0 0 2px rgba(255, 140, 30, 0.6))
+            drop-shadow(0 0 6px rgba(255, 140, 30, 0.35));
+}
+
+/* ── Kiosk mode ───────────────────────────────────────────────────────────
+   window { background-image/color } above already covers the kiosk window
+   itself (plain type selector, not scoped to .player-window). Just the two
+   floating outline buttons need recoloring off dark.css's neutral white-
+   alpha outline to match the warm palette. */
+.kiosk-device-btn, .kiosk-sidebar-btn {
+    border-color: rgba(255, 205, 145, 0.3);
+    color: rgba(240, 226, 200, 0.75);
+}
+.kiosk-device-btn:hover, .kiosk-sidebar-btn:hover {
+    background-color: rgba(255, 205, 145, 0.12);
+}

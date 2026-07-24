@@ -263,6 +263,12 @@ fn apply_wide_right_scale(
     let title_px  = round_to_even(h * 0.12);
     let artist_px = round_to_even(h * 0.0768);
     let album_px  = round_to_even(h * 0.064);
+    // Wood's VFD-panel captions ("Title"/"Artist"/"Album", EngravedLabel) —
+    // one shared size for all three (they're a row label, not a hierarchy
+    // like title/artist/album itself), a bit smaller than the album line
+    // per Ben's ask. Harmless to always compute/emit — the `.vfd-caption`
+    // selector below simply matches nothing when `vfd_panel` is off.
+    let caption_px = round_to_even(album_px as f64 * 0.85);
     // "Slightly smaller than the album name" per the design ask, then
     // reduced another ~20% (0.85 -> 0.68) — the whole badge read too big
     // in Kiosk mode. The icon's height (`BrandIcon::set_height()`, a
@@ -337,6 +343,13 @@ fn apply_wide_right_scale(
     let loop_btn       = transport_btn;
     let transport_icon = (transport_btn as f64 * 0.45).round() as i32;
     let play_icon      = (play_btn as f64 * 0.45).round() as i32;
+    // Volume/EQ a little shorter than the round transport buttons next to
+    // them (Ben's ask) — `.vol-btn` used to match `transport_btn` exactly
+    // (100%); `.eq-btn` had no explicit height rule here at all, so it
+    // was left to whatever Adwaita's own content-based button sizing gave
+    // it, inconsistent with volume right next to it. Both now share one
+    // explicit, slightly-reduced height instead.
+    let eq_vol_btn_h = (transport_btn as f64 * 0.8).round() as i32;
     // The volume button's own icon is a `pixel_size`-set child Image, not
     // an icon-name button `-gtk-icon-size` (below) could reach — confirmed
     // live, it otherwise stays fixed at its small default while the other
@@ -381,10 +394,23 @@ fn apply_wide_right_scale(
         String::new()
     };
 
+    // `.play-btn-old-gtk4` alongside `.play-btn` below: on GTK 4.14-4.18
+    // (Ubuntu 24.04 — see `PlaybackView::pick_play_btn_css()`) the play
+    // button carries "play-btn-old-gtk4" instead of "play-btn" (a separate
+    // workaround for a box-shadow rendering bug on that GTK range — see
+    // wood.css's own `.play-btn-old-gtk4` comment), so a rule naming only
+    // "play-btn" never matches it there at all. Confirmed live: with only
+    // the single selector, the button got no explicit min-width/min-
+    // height/icon-size in Kiosk's WideRight layout on Ubuntu 24.04 and
+    // collapsed to a sliver a few px wide (full height, since nothing else
+    // constrains its width) — fine in Classic, which never runs this
+    // per-instance CSS at all, and fine on a GTK new enough to still be
+    // "play-btn".
     provider.load_from_string(&format!(
         ".{class} .track-title {{ font-size: {title_px}px; }}\n\
          .{class} .track-artist {{ font-size: {artist_px}px; }}\n\
          .{class} .track-album {{ font-size: {album_px}px; }}\n\
+         .{class} .vfd-caption {{ font-size: {caption_px}px; }}\n\
          .{class} .service-name {{ font-size: {service_px}px; }}\n\
          .{class} .quality-label {{ font-size: {quality_line_px}px; }}\n\
          .{class} .dim-label {{ font-size: {status_px}px; }}\n\
@@ -393,8 +419,9 @@ fn apply_wide_right_scale(
          {card_padding_rule}\
          .{class} .transport-btn:not(.vol-mute-btn) {{ min-width: {transport_btn}px; min-height: {transport_btn}px; -gtk-icon-size: {transport_icon}px; }}\n\
          .{class} .loop-btn {{ min-width: {loop_btn}px; min-height: {loop_btn}px; -gtk-icon-size: {transport_icon}px; }}\n\
-         .{class} .play-btn {{ min-width: {play_btn}px; min-height: {play_btn}px; -gtk-icon-size: {play_icon}px; }}\n\
-         .{class} .vol-btn {{ min-height: {transport_btn}px; }}\n",
+         .{class} .play-btn, .{class} .play-btn-old-gtk4 {{ min-width: {play_btn}px; min-height: {play_btn}px; -gtk-icon-size: {play_icon}px; }}\n\
+         .{class} .vol-btn {{ min-height: {eq_vol_btn_h}px; }}\n\
+         .{class} .eq-btn {{ min-height: {eq_vol_btn_h}px; }}\n",
         half = seek_h / 2,
     ));
 }
@@ -425,18 +452,35 @@ impl PlaybackView {
     /// inflated minimum as a hard floor on how much the sidebar could take
     /// instead. Each host's own closure reports only what's genuinely
     /// available to *this view specifically*.
+    /// `is_kiosk` gates theme choices that are meant for Kiosk mode
+    /// specifically rather than any `WideRight` view (`KioskWindow` passes
+    /// `true`; `DeviceWindow`'s own "L" toggle passes `false`) — currently
+    /// just Wood's `vfd_panel` tunable (see `ThemeTunables`' own doc
+    /// comment): without this, that theme's normal-mode `WideRight` toggle
+    /// would pick up the VFD glow/panel too, which isn't wanted.
     pub(crate) fn new(
         ds: &DeviceState, icons: &Rc<IconSet>, art_bg: Option<&ArtBackground>, layout: PlaybackLayout,
-        size_source: Rc<dyn Fn() -> Option<(i32, i32)>>, text_speed_multiplier: f64,
+        size_source: Rc<dyn Fn() -> Option<(i32, i32)>>, text_speed_multiplier: f64, is_kiosk: bool,
     ) -> Self {
         let obj: Self = glib::Object::new();
-        obj.build(ds, icons, art_bg, layout, size_source, text_speed_multiplier);
+        obj.build(ds, icons, art_bg, layout, size_source, text_speed_multiplier, is_kiosk);
         obj
+    }
+
+    fn pick_play_btn_css() -> &'static str {
+        let major = gtk::major_version();
+        let minor = gtk::minor_version();
+
+        if major == 4 && (14..=18).contains(&minor) {
+            "play-btn-old-gtk4"
+        } else {
+            "play-btn"
+        }
     }
 
     fn build(
         &self, ds: &DeviceState, icons: &Rc<IconSet>, art_bg: Option<&ArtBackground>, layout: PlaybackLayout,
-        size_source: Rc<dyn Fn() -> Option<(i32, i32)>>, text_speed_multiplier: f64,
+        size_source: Rc<dyn Fn() -> Option<(i32, i32)>>, text_speed_multiplier: f64, is_kiosk: bool,
     ) {
         let imp = self.imp();
         imp.ds.set(ds.clone()).unwrap();
@@ -502,7 +546,7 @@ impl PlaybackView {
             .css_classes(["transport-btn", "circular", "flat"]).build();
         let btn_play = Button::builder()
             .icon_name("media-playback-start-symbolic")
-            .css_classes(["play-btn", "circular", "suggested-action"]).build();
+            .css_classes([PlaybackView::pick_play_btn_css(), "circular", "suggested-action"]).build();
         let btn_next = Button::builder()
             .icon_name("media-skip-forward-symbolic")
             .css_classes(["transport-btn", "circular", "flat"]).build();
@@ -685,6 +729,28 @@ impl PlaybackView {
                 self.set_child(Some(&right_pane));
             }
             PlaybackLayout::WideRight => {
+                // A theme can ask for a different internal arrangement of
+                // this same layout — currently just Wood's
+                // "kiosk_boxed_controls" (see ThemeTunables' own doc
+                // comment): seek bar + service/quality + transport grouped
+                // into one shared ".controls-card" (styled like the normal
+                // device window's own card), instead of the default
+                // "transport alone in a small card, seek/service loose
+                // elsewhere in the column" arrangement below. Read once
+                // here, not re-checked on a later theme switch — see that
+                // same doc comment for why this is a construction-time,
+                // not live-reactive, choice.
+                let tunables = crate::ui::current_tunables();
+                let boxed_controls = tunables.kiosk_boxed_controls;
+                // Wood's Kiosk-only VFD panel/glow (see ThemeTunables'
+                // `vfd_panel` doc comment) — gated on `is_kiosk` too, not
+                // just the tunable, so this theme's normal-mode WideRight
+                // toggle stays visually unaffected.
+                let vfd_panel = is_kiosk && tunables.vfd_panel;
+                let vfd_glow = vfd_panel
+                    .then(|| tunables.vfd_glow_color.as_deref().and_then(|s| gtk::gdk::RGBA::parse(s).ok()))
+                    .flatten();
+
                 // Volume moved out of the controls row entirely, to the
                 // outer right edge of the column (aligned with the seek
                 // bar's own right edge — see the `top_row_overlay` comment
@@ -694,13 +760,23 @@ impl PlaybackView {
                 // seek+transport group gets under RustyWiiM Modern (see
                 // modern.css's ".controls-card" — inert under System/Dark).
                 // Volume lives elsewhere in this layout (see above), so
-                // unlike Classic this card is just the transport row.
-                transport.add_css_class("controls-card");
-                self.imp().controls_card.set(transport.clone().upcast()).unwrap();
+                // unlike Classic this card is just the transport row —
+                // *unless* `boxed_controls` is on, in which case a single
+                // shared card further down (see below) takes over that
+                // role instead, and `transport` itself stays classless.
+                if !boxed_controls {
+                    transport.add_css_class("controls-card");
+                    self.imp().controls_card.set(transport.clone().upcast()).unwrap();
+                }
                 // Left-aligned like the rest of this column, not centered
                 // (the shared construction above centers it for the
-                // classic layout, where it sits under a centered artwork).
-                transport.set_halign(Align::Start);
+                // classic layout, where it sits under a centered artwork)
+                // — *unless* boxed, which puts transport in a CenterBox's
+                // center slot instead (below), matching Classic's own
+                // controls_row exactly; Center here is what makes it
+                // actually center within that cell rather than hugging
+                // its own left edge inside it.
+                transport.set_halign(if boxed_controls { Align::Center } else { Align::Start });
 
                 // Left-aligned, not centered under the artwork — the
                 // "wide-right-text" class (see dark.css/system.css) scales
@@ -708,6 +784,17 @@ impl PlaybackView {
                 title.set_center_when_fits(false);
                 artist.set_center_when_fits(false);
                 album.set_center_when_fits(false);
+                // Same glow color on all three lines — they already read as
+                // a clear hierarchy from `apply_wide_right_scale()`'s font
+                // sizing alone (title biggest, album smallest), so a second,
+                // brightness-based distinction on top of that was redundant
+                // (and inconsistent with wood.css's own `.vfd-panel .track-*`
+                // rule, which also gives all three the same fill color now).
+                if let Some(glow) = vfd_glow {
+                    title.set_glow(Some(glow.clone()));
+                    artist.set_glow(Some(glow.clone()));
+                    album.set_glow(Some(glow));
+                }
                 // `status` stays centered (default from its construction
                 // above) — it now lives under the seek row, same as
                 // Classic, not in this left-justified column at all.
@@ -723,9 +810,83 @@ impl PlaybackView {
                     .orientation(Orientation::Vertical)
                     .valign(Align::Start)
                     .build();
-                title_group.append(&title.stack);
-                title_group.append(&artist.stack);
-                title_group.append(&album.stack);
+                // Populated below only when `vfd_panel` is on — captured by
+                // `apply_for_screen` further down so the captions' font
+                // size can scale with everything else and restyle when it
+                // changes, same as `title`/`artist`/`album` themselves.
+                let mut vfd_captions: Vec<crate::ui::engraved_label::EngravedLabel> = Vec::new();
+                if vfd_panel {
+                    // Three separate backlit panels stacked vertically, one
+                    // per line, rather than one big panel wrapping all
+                    // three — experimental (Ben's ask): each line gets its
+                    // own outset "vfd-panel" box (wood.css), so the group
+                    // reads as a stack of individual readouts and better
+                    // fills the column's vertical space than one large box
+                    // with the same three lines just floating inside it.
+                    // `title_group`'s own spacing (set dynamically below by
+                    // `apply_wide_right_scale()`) is the gap between them.
+                    //
+                    // Each panel gets an "engraved into the wood" caption
+                    // above it (`EngravedLabel` — a plain static widget,
+                    // no scrolling/fading, unlike `ScrollFadeLabel`, which
+                    // stays scoped to the VFD glow/drop-shadow looks it
+                    // already has) naming the line below it, sitting
+                    // directly on the wood-grain window background (Wood's
+                    // own `ArtBackground` stays hidden under this theme —
+                    // see `update_art_background_visibility()` — so that
+                    // background is genuinely visible in the gap above
+                    // each panel, not painted over).
+                    //
+                    // `title_group`/each `group` are `vexpand`+`Fill`,
+                    // rather than the default `Start`, so the three
+                    // caption+panel groups stretch to cover the artwork's
+                    // full height between them instead of hugging the top
+                    // with empty space left below — the panel itself
+                    // stays `vexpand`+`Fill` too, with its stack
+                    // vertically centered inside whatever extra height
+                    // that gives it.
+                    title_group.set_valign(Align::Fill);
+                    title_group.set_vexpand(true);
+                    for (caption, stack) in [
+                        ("Title", &title.stack), ("Artist", &artist.stack), ("Album", &album.stack),
+                    ] {
+                        let cap = crate::ui::engraved_label::EngravedLabel::new(caption);
+                        cap.add_label_css_class("vfd-caption");
+                        cap.set_halign(Align::Start);
+                        vfd_captions.push(cap.clone());
+
+                        // `vexpand` too, not just `valign(Center)` — a
+                        // `GtkBox` only gives a child extra room to center
+                        // within if that child can actually expand into it;
+                        // without this the stack stays sized to its own
+                        // natural (small) height and the panel's real extra
+                        // space (from its own `vexpand` below) goes
+                        // unclaimed rather than centering the text inside
+                        // it, which read as the text sitting at the panel's
+                        // top edge instead of its middle.
+                        stack.set_valign(Align::Center);
+                        stack.set_vexpand(true);
+                        let panel = GtkBox::builder()
+                            .orientation(Orientation::Vertical)
+                            .valign(Align::Fill)
+                            .vexpand(true)
+                            .css_classes(["vfd-panel"])
+                            .build();
+                        panel.append(stack);
+
+                        let group = GtkBox::builder()
+                            .orientation(Orientation::Vertical)
+                            .vexpand(true)
+                            .build();
+                        group.append(&cap);
+                        group.append(&panel);
+                        title_group.append(&group);
+                    }
+                } else {
+                    title_group.append(&title.stack);
+                    title_group.append(&artist.stack);
+                    title_group.append(&album.stack);
+                }
 
                 // `bt_pair` beside the controls box rather than above it —
                 // frees up the column for a bigger title block. `status`
@@ -743,13 +904,24 @@ impl PlaybackView {
                 // both pinned to the bottom of their band via the grid
                 // below (valign(End) here just keeps them together as a
                 // unit; the actual "sits at the very bottom" comes from
-                // the band's own cell in text_col_grid).
+                // the band's own cell in text_col_grid). `boxed_controls`
+                // doesn't use this at all — transport goes into a
+                // CenterBox instead (below), matching Classic's own
+                // controls_row exactly (transport centered, volume/EQ at
+                // the end) — `status_group` isn't part of that either in
+                // Classic, so it gets its own small extra row in the card
+                // instead, below. Still built either way (see
+                // `controls_col`'s own comment on why an orphaned-but-
+                // real widget is fine) since `apply_for_screen` captures
+                // it unconditionally for its own spacing call.
                 let band_row = GtkBox::builder()
                     .orientation(Orientation::Horizontal)
                     .valign(Align::End)
                     .build();
-                band_row.append(&transport);
-                band_row.append(&status_group);
+                if !boxed_controls {
+                    band_row.append(&transport);
+                    band_row.append(&status_group);
+                }
 
                 // Service name + quality badge + bitrate/depth/rate
                 // string — moved between the artwork/text row and the seek
@@ -774,28 +946,49 @@ impl PlaybackView {
                 service_group.append(&service.widget);
                 service_group.append(&quality_badge.widget);
                 service_group.append(&quality);
+                // `controls_col`/`text_col_grid` still get built even when
+                // `boxed_controls` is on and neither ends up attached
+                // anywhere — both are captured by `apply_for_screen` below
+                // regardless of layout choice, so keeping them real (if
+                // unparented) objects avoids branching that closure too;
+                // setting properties on an unparented widget is harmless,
+                // it simply never renders.
                 let controls_col = GtkBox::builder()
                     .orientation(Orientation::Vertical)
                     .valign(Align::End)
                     .build();
-                controls_col.append(&band_row);
-
-                // Splits the column into an exact 2:1 ratio — title block
-                // vs. the controls band — regardless of how tall the text
-                // actually renders, via a homogeneous 3-row grid (title
-                // spans 2 rows, the band spans 1).
                 let text_col_grid = gtk::Grid::builder()
                     .row_homogeneous(true).hexpand(true).vexpand(true)
                     .build();
-                text_col_grid.attach(&title_group, 0, 0, 1, 2);
-                text_col_grid.attach(&controls_col, 0, 2, 1, 1);
-
                 let text_col = GtkBox::builder()
                     .orientation(Orientation::Vertical)
                     .hexpand(true).valign(Align::Start)
                     .css_classes(["wide-right-text"])
                     .build();
-                text_col.append(&text_col_grid);
+                // Wood's Kiosk-only VFD panel (see `vfd_panel` above) — each
+                // line gets its own outset backlit box now (`title_group`,
+                // above), not `text_col` as a whole, so nothing needs
+                // adding here.
+                // `boxed_controls`: transport moves into a shared card
+                // further down (built once seek_row exists, below) instead
+                // of nesting under title_group in this column at all — so
+                // `text_col` holds just the title block, no grid/split
+                // needed since there's no controls band height to reserve
+                // room for within it anymore. `controls_card` (the Kiosk
+                // auto-hide fade target) is set later, once the card's own
+                // CenterBox exists — see that construction's own comment.
+                if boxed_controls {
+                    text_col.append(&title_group);
+                } else {
+                    // Splits the column into an exact 2:1 ratio — title
+                    // block vs. the controls band — regardless of how tall
+                    // the text actually renders, via a homogeneous 3-row
+                    // grid (title spans 2 rows, the band spans 1).
+                    controls_col.append(&band_row);
+                    text_col_grid.attach(&title_group, 0, 0, 1, 2);
+                    text_col_grid.attach(&controls_col, 0, 2, 1, 1);
+                    text_col.append(&text_col_grid);
+                }
 
                 // The artwork is a fixed square, sized directly from the
                 // real screen dimensions (see compute_wide_right_art_side()
@@ -841,11 +1034,19 @@ impl PlaybackView {
                 // seek bar itself, which is a separate row underneath
                 // (avoids colliding with `dur`'s own right-aligned slot in
                 // `time_row`).
-                volume_cluster.set_halign(Align::End);
-                volume_cluster.set_valign(Align::End);
+                // `boxed_controls`: volume/EQ move down into the shared
+                // card instead (Classic's own controls_row end slot,
+                // replicated below — "just like they are in the main
+                // view," per Ben), so skip overlaying them here at all.
+                if !boxed_controls {
+                    volume_cluster.set_halign(Align::End);
+                    volume_cluster.set_valign(Align::End);
+                }
                 let top_row_overlay = gtk::Overlay::new();
                 top_row_overlay.set_child(Some(&top_row));
-                top_row_overlay.add_overlay(&volume_cluster);
+                if !boxed_controls {
+                    top_row_overlay.add_overlay(&volume_cluster);
+                }
 
                 // Seek scale full width; position/status/duration sit on
                 // their own row underneath it — a CenterBox, same as
@@ -856,9 +1057,22 @@ impl PlaybackView {
                 let time_row = gtk::CenterBox::new();
                 pos.set_halign(Align::Start);
                 dur.set_halign(Align::End);
-                time_row.set_start_widget(Some(&pos));
-                time_row.set_center_widget(Some(&status));
-                time_row.set_end_widget(Some(&dur));
+                // Wood's Kiosk-only VFD scanline (see `vfd_panel` above) —
+                // `VfdScanlineOverlay::wrap()` on each of pos/status/dur
+                // individually (not `time_row` as a whole) so each keeps
+                // its own halign inside the CenterBox rather than the
+                // overlay's own natural-size wrapping interfering with
+                // that. Inert outside Wood/Kiosk: `time_row.set_*_widget()`
+                // just takes the plain label directly otherwise.
+                if vfd_panel {
+                    time_row.set_start_widget(Some(&crate::ui::vfd_scanline_overlay::VfdScanlineOverlay::wrap(&pos)));
+                    time_row.set_center_widget(Some(&crate::ui::vfd_scanline_overlay::VfdScanlineOverlay::wrap(&status)));
+                    time_row.set_end_widget(Some(&crate::ui::vfd_scanline_overlay::VfdScanlineOverlay::wrap(&dur)));
+                } else {
+                    time_row.set_start_widget(Some(&pos));
+                    time_row.set_center_widget(Some(&status));
+                    time_row.set_end_widget(Some(&dur));
+                }
                 let seek_row = GtkBox::builder().orientation(Orientation::Vertical).spacing(2).build();
                 seek_row.append(&seek);
                 seek_row.append(&time_row);
@@ -868,21 +1082,138 @@ impl PlaybackView {
                     .valign(Align::Start)
                     .build();
                 content_block.append(&top_row_overlay);
-                // Sits between the artwork/text row and the seek bar (by
-                // request, 2026-07-21 — moved here from above the controls
-                // band, where it read as "floating" once "All Controls"
-                // could fade the band away from under it) — a real sibling
-                // of `top_row_overlay`/`seek_row`, so its own height (plus
-                // its and `seek_row`'s small margins below) is the only
-                // thing added to `content_block`'s total — both margins
-                // are kept deliberately tight (not the original generous
-                // gap) so that total stays close to what `content_block`
-                // used to need, since any growth here gets amplified
-                // ~10/9x by `vgrid`'s homogeneous-row math below and pushed
-                // the bottom status bar down when it wasn't (confirmed live
-                // via screenshot).
-                content_block.append(&service_group);
-                content_block.append(&seek_row);
+                // `boxed_controls`: seek bar, service/quality, and the
+                // transport band go into one shared card (styled like the
+                // normal device window's own ".controls-card", per Ben's
+                // ask — "it has some kind of glassy look") instead of
+                // service/seek sitting loose as direct children of
+                // `content_block` — same order requested: seek bar first,
+                // service/quality under it, transport at the bottom.
+                // `boxed_card` picks up its own margin-top in
+                // `apply_for_screen()` below (a bit further down from the
+                // artwork than the default arrangement's own gap, also by
+                // request) rather than reusing `service_group`/`seek_row`'s
+                // existing margins here, which were tuned for their old
+                // role as `content_block`'s own direct children, not as a
+                // card's internal padding — that Classic already handles
+                // via plain `spacing()` on its own equivalent card, not
+                // per-child margins, so this mirrors that instead.
+                let boxed_card = boxed_controls.then(|| {
+                    // Plain 8px, matching Classic's own equivalent card
+                    // (`controls_card.spacing(8)`) — not proportional to
+                    // screen size the way most of this layout's other
+                    // gaps are (`apply_for_screen()` below, which sets this
+                    // card's margin-top instead, but doesn't revisit this
+                    // internal spacing).
+                    // "controls-card-boxed", NOT "controls-card" — Kiosk's
+                    // own wood.css rule strips ".controls-card"'s box
+                    // entirely (the *other* half of this same request: no
+                    // card behind the transport-only row), and this needs
+                    // the opposite treatment, so it can't share that exact
+                    // class name even though it wants the same base bevel
+                    // styling otherwise (wood.css lists both selectors
+                    // together for that shared recipe).
+                    let card = GtkBox::builder()
+                        .orientation(Orientation::Vertical)
+                        .spacing(8)
+                        .css_classes(["controls-card-boxed"])
+                        .build();
+                    // Same VFD treatment (font + amber glow) as the three
+                    // panels above, on this card's own readout text — a
+                    // marker class only, gated the same way (`vfd_panel`,
+                    // itself already `is_kiosk`-gated), so Wood's normal-
+                    // mode WideRight toggle stays unaffected and every
+                    // other theme never adds it at all. Doesn't touch the
+                    // transport/volume/EQ *buttons* sharing this card —
+                    // wood.css's own `.vfd-readout` rule only targets the
+                    // text classes (service-name/quality-label/dim-label/
+                    // vol-level), which none of those buttons carry.
+                    if vfd_panel {
+                        card.add_css_class("vfd-readout");
+                    }
+                    card.append(&seek_row);
+                    // Transport centered, volume/EQ at the end — Classic's
+                    // own `controls_row` exactly (Ben: "EQ and volume also
+                    // move down into the box, just like they are in the
+                    // main view"). `service_group` as a floating overlay
+                    // at the start rather than the CenterBox's own start
+                    // slot, same reasoning as Classic's `controls_overlay`
+                    // (see that construction's own comment): a CenterBox
+                    // shrinks its start/end children to keep the center
+                    // one truly centered, which starves a start child of
+                    // width once transport+volume already fill most of
+                    // the row — an overlay child sizes off its own natural
+                    // size instead, floating in whatever room is actually
+                    // free at the row's left edge.
+                    let controls_row_boxed = gtk::CenterBox::new();
+                    controls_row_boxed.set_center_widget(Some(&transport));
+                    controls_row_boxed.set_end_widget(Some(&volume_cluster));
+                    let controls_overlay_boxed = gtk::Overlay::new();
+                    controls_overlay_boxed.set_child(Some(&controls_row_boxed));
+                    // Wood's Kiosk-only VFD scanline (see `vfd_panel`
+                    // above) — `service_group` (service name/icon, quality
+                    // badge/icon, bitrate string) wrapped in its own nested
+                    // `VfdScanlineOverlay::wrap()` first, so the dimming
+                    // layer sits directly on top of it specifically, not
+                    // the whole card; that wrapper then becomes the actual
+                    // overlay child here, at the exact same natural size/
+                    // position `service_group` alone would have had.
+                    if vfd_panel {
+                        controls_overlay_boxed.add_overlay(
+                            &crate::ui::vfd_scanline_overlay::VfdScanlineOverlay::wrap(&service_group),
+                        );
+                    } else {
+                        controls_overlay_boxed.add_overlay(&service_group);
+                    }
+                    // A few extra px on top of `card`'s own uniform
+                    // spacing(8) between children, specifically widening
+                    // the seek-bar-to-this-row gap and no other (Ben's
+                    // ask) — `card.spacing()` alone can't do that (it's
+                    // one value shared by every gap in the box), so this
+                    // is additive margin on just this child instead.
+                    // Doesn't touch the bottom status bar (remote/network
+                    // icons, kiosk.rs's own `StatusBarView`): that's a
+                    // fixed-size sibling of the whole playback view in
+                    // `content_holder`, not part of `content_block`/
+                    // `vgrid` at all, so nothing inside this card can
+                    // shift its position.
+                    controls_overlay_boxed.set_margin_top(8);
+                    card.append(&controls_overlay_boxed);
+                    // `status_group` (bt_pair) isn't part of Classic's own
+                    // controls_row either — usually invisible (no active
+                    // Bluetooth pairing), so its exact placement is low-
+                    // stakes; a plain extra row at the bottom of the card
+                    // rather than trying to squeeze it into the CenterBox
+                    // above, which is tuned for exactly two slots.
+                    card.append(&status_group);
+                    // Kiosk auto-hide's own fade target for the boxed
+                    // case: `controls_row_boxed` (transport+volume), not
+                    // the whole card (which also holds seek/service that
+                    // shouldn't fade) — the exact same widget Classic's
+                    // own `controls_row` already is for this same purpose,
+                    // see `controls_card`'s field doc comment.
+                    self.imp().controls_card.set(controls_row_boxed.clone().upcast()).unwrap();
+                    content_block.append(&card);
+                    card
+                });
+                if !boxed_controls {
+                    // Sits between the artwork/text row and the seek bar
+                    // (by request, 2026-07-21 — moved here from above the
+                    // controls band, where it read as "floating" once "All
+                    // Controls" could fade the band away from under it) —
+                    // a real sibling of `top_row_overlay`/`seek_row`, so
+                    // its own height (plus its and `seek_row`'s small
+                    // margins below) is the only thing added to
+                    // `content_block`'s total — both margins are kept
+                    // deliberately tight (not the original generous gap)
+                    // so that total stays close to what `content_block`
+                    // used to need, since any growth here gets amplified
+                    // ~10/9x by `vgrid`'s homogeneous-row math below and
+                    // pushed the bottom status bar down when it wasn't
+                    // (confirmed live via screenshot).
+                    content_block.append(&service_group);
+                    content_block.append(&seek_row);
+                }
 
                 // Pushes content_block down by 1/10 of the available
                 // height, proportionally rather than by a fixed pixel
@@ -939,7 +1270,8 @@ impl PlaybackView {
                     #[strong] title, #[strong] artist, #[strong] album,
                     #[strong] band_row, #[strong] controls_col, #[strong] top_row,
                     #[strong] content_block, #[strong] seek_row, #[strong] outer,
-                    #[strong] class, #[strong] provider,
+                    #[strong] class, #[strong] provider, #[strong] boxed_card,
+                    #[strong] vfd_captions,
                     move |screen_w: i32, screen_h: i32| {
                         let side = compute_wide_right_art_side(screen_w, screen_h);
                         crate::ui::dbg_ui(&format!(
@@ -961,6 +1293,9 @@ impl PlaybackView {
                         title.force_restyle();
                         artist.force_restyle();
                         album.force_restyle();
+                        for cap in &vfd_captions {
+                            cap.force_restyle();
+                        }
 
                         // All structural gaps/margins below are fractions
                         // of `side` too, for the same reason the font/
@@ -990,8 +1325,22 @@ impl PlaybackView {
                         // gap (directly below top_row_overlay) used to be
                         // on its own, before service_group existed here.
                         content_block.set_spacing(0);
-                        service_group.set_margin_top((s * 0.04).round() as i32);
-                        seek_row.set_margin_top((s * 0.1).round() as i32);
+                        if let Some(card) = &boxed_card {
+                            // `boxed_controls`: seek_row/service_group are
+                            // no longer direct children of `content_block`
+                            // (see its own construction comment) — their
+                            // margins above would just add unwanted extra
+                            // gaps *inside* the card, on top of its own
+                            // `spacing(8)`, so skip those and give the
+                            // *card itself* the "further down from the
+                            // artwork" gap instead (Ben's ask), still
+                            // proportional to screen size like everything
+                            // else here.
+                            card.set_margin_top((s * 0.08).round() as i32);
+                        } else {
+                            service_group.set_margin_top((s * 0.04).round() as i32);
+                            seek_row.set_margin_top((s * 0.1).round() as i32);
+                        }
                         let margin_h = wide_right_margin_h(side);
                         let margin_v = (s * 0.06).round() as i32;
                         outer.set_margin_start(margin_h);

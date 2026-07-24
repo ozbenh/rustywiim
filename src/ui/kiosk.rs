@@ -154,11 +154,24 @@ pub(crate) struct KioskWindow {
     controls_visible: Cell<bool>,
     controls_fade_anim: RefCell<Option<adw::TimedAnimation>>,
     /// The bound view's own fade group (`PlaybackView::fade_group()` —
-    /// transport buttons, volume, status text) plus the bottom status bar,
-    /// captured fresh on every `finish_bind()` (both are rebuilt each
-    /// time) — folded into the same fade as `top_left_group`/`device_btn`
-    /// when `kiosk_auto_hide_all_controls` is on, otherwise left untouched.
+    /// transport buttons, volume, status text), captured fresh on every
+    /// `finish_bind()` (rebuilt each time) — folded into the same fade as
+    /// `top_left_group`/`device_btn` when `kiosk_auto_hide_all_controls`
+    /// is on, *unless* the active theme's `kiosk_keep_transport_visible`
+    /// tunable says not to (RustyWiiM Wood's controls are styled to look
+    /// like permanent physical hardware — see `ThemeTunables`' own doc
+    /// comment in `theme.rs`). Split from `status_bar_widget` below
+    /// specifically so that opt-out can apply to just this group and not
+    /// the status bar too — see `animate_controls()`.
     extra_controls: RefCell<Vec<gtk::Widget>>,
+    /// The bottom status bar, captured fresh on every `finish_bind()`
+    /// (rebuilt each time, same as `extra_controls`) — folded into the
+    /// same fade as `top_left_group`/`device_btn` when
+    /// `kiosk_auto_hide_all_controls` is on, same as `extra_controls`, but
+    /// *not* subject to `kiosk_keep_transport_visible` — a theme wanting
+    /// its transport controls to stay always-visible doesn't necessarily
+    /// want the status bar to stay up too.
+    status_bar_widget: RefCell<Option<gtk::Widget>>,
 
     /// Solid-black overlay, last-added so it stacks above everything else.
     screensaver_overlay: gtk::Box,
@@ -409,6 +422,7 @@ impl KioskWindow {
             controls_visible: Cell::new(true),
             controls_fade_anim: RefCell::new(None),
             extra_controls: RefCell::new(Vec::new()),
+            status_bar_widget: RefCell::new(None),
             screensaver_overlay,
             screensaver_active: Cell::new(false),
             screensaver_fade_anim: RefCell::new(None),
@@ -600,6 +614,12 @@ impl KioskWindow {
                 if state.intersects(gtk::gdk::ModifierType::CONTROL_MASK | gtk::gdk::ModifierType::ALT_MASK) {
                     return glib::Propagation::Proceed;
                 }
+                // Any key counts as activity, before it's dispatched to
+                // whatever it actually does below — previously only mouse
+                // motion/clicks did, so a keyboard-only session (or just
+                // pressing a transport key) never reset the idle clock or
+                // brought hidden chrome back at all.
+                this.note_activity("key");
                 if !kiosk_only {
                     if let gtk::gdk::Key::k | gtk::gdk::Key::K = keyval {
                         exit_kiosk();
@@ -611,7 +631,26 @@ impl KioskWindow {
                     return glib::Propagation::Stop;
                 }
                 if let gtk::gdk::Key::t | gtk::gdk::Key::T = keyval {
+                    // The note_activity() call above already ran *before*
+                    // cycle_theme() below (it's unconditional, at the top
+                    // of this handler, ahead of every key's own dispatch)
+                    // — so it un-hid everything against whichever theme
+                    // was still active at that moment, the same one that
+                    // was used to hide it in the first place. That's what
+                    // avoids the stuck-widget bug this used to have: a
+                    // second, *post*-switch un-hide would need to know the
+                    // pre-switch target list to reliably fix anything a
+                    // pre-switch one already fixed for free.
                     crate::ui::cycle_theme();
+                    // Rebuilds the bound view fresh, *after* the switch —
+                    // needs the new theme's tunables (e.g. Wood's
+                    // kiosk_boxed_controls), not the old one, so this one
+                    // has to run after cycle_theme(), the opposite order
+                    // from the un-hide above. See rebuild_bound_view()'s
+                    // own doc comment for why a rebuild, not an in-place
+                    // patch, is what makes a structural theme choice take
+                    // effect immediately.
+                    this.rebuild_bound_view("key-theme-switch");
                     return glib::Propagation::Stop;
                 }
                 // Testing aid: shows the screensaver immediately, bypassing
@@ -814,7 +853,7 @@ impl KioskWindow {
             })
         };
         let view = PlaybackView::new(
-            &ds, &self.icons, Some(&self.art_bg), layout, size_source, KIOSK_SCROLL_SPEED_MULTIPLIER,
+            &ds, &self.icons, Some(&self.art_bg), layout, size_source, KIOSK_SCROLL_SPEED_MULTIPLIER, true,
         );
         // Fills sidebar_paned's end slot (art_bg is the main overlay child
         // driving the window's own size, per new()'s comment) — still
@@ -931,10 +970,12 @@ impl KioskWindow {
 
         // Captured fresh for `animate_controls()`'s `kiosk_auto_hide_all_controls`
         // case — view/status_bar are both rebuilt on every bind, so the
-        // old widgets would otherwise be stale/dangling.
-        let mut extra = view.fade_group();
-        extra.push(status_bar.clone().upcast());
-        *self.extra_controls.borrow_mut() = extra;
+        // old widgets would otherwise be stale/dangling. Kept as two
+        // separate fields, not one combined list — see their own doc
+        // comments for why (a theme can opt the transport group out of
+        // auto-hide without also opting the status bar out).
+        *self.extra_controls.borrow_mut() = view.fade_group();
+        *self.status_bar_widget.borrow_mut() = Some(status_bar.clone().upcast());
 
         // Same auto-hide/screensaver inhibition as the device-list popover
         // above (`any_popover_open()`) — connected fresh each bind since
@@ -983,8 +1024,29 @@ impl KioskWindow {
             PlaybackLayout::Classic => PlaybackLayout::WideRight,
             PlaybackLayout::WideRight => PlaybackLayout::Classic,
         });
-        // "L" always counts as activity regardless of what follows below.
-        self.note_activity("layout-toggle");
+        self.rebuild_bound_view("layout-toggle");
+    }
+
+    /// Tears down and rebuilds the currently-bound device's `PlaybackView`/
+    /// `StatusBarView` from scratch, reusing the same `DeviceState` — a
+    /// no-op if nothing is bound. Originally just `toggle_layout()`'s own
+    /// tail (still is, `self.layout` already flipped by the time this
+    /// runs there); reused as-is, not duplicated, for a theme switch too
+    /// (the "T" keystroke, and closing an external Settings window —
+    /// same two spots `note_activity()`'s own doc comment already
+    /// explains are the only places Kiosk can currently see a theme
+    /// change happen). A theme's structural choices — Wood's
+    /// `kiosk_boxed_controls`, currently the only one — are read once at
+    /// `PlaybackView` construction (see `ThemeTunables::
+    /// kiosk_boxed_controls`'s own doc comment for why that's not
+    /// something a live CSS reload alone can re-apply) — this is what
+    /// makes a switch actually take effect immediately instead of only on
+    /// the next *device* switch, without inventing a second, parallel
+    /// "patch the existing widget tree in place" mechanism to keep in
+    /// sync with `build()` by hand.
+    fn rebuild_bound_view(self: &Rc<Self>, activity_source: &str) {
+        // Always counts as activity regardless of what follows below.
+        self.note_activity(activity_source);
 
         // Not a device switch — reuses the same `ds`, so only its
         // playback-changed handler needs disconnecting (finish_bind()
@@ -1006,9 +1068,11 @@ impl KioskWindow {
         // `extra_controls` — force a real `animate_controls(true)` pass
         // over them (not just the `note_activity()` call above, which ran
         // against the *old*, about-to-be-discarded widgets) rather than
-        // trusting them to already be visible by default, so a layout
-        // switch mid-auto-hide can't leave some controls shown and others
-        // still faded out (confirmed live, 2026-07-21).
+        // trusting them to already be visible by default, so a rebuild
+        // mid-auto-hide can't leave some controls shown and others still
+        // faded out (confirmed live, 2026-07-21, originally for the
+        // layout-toggle case specifically — same mechanism, so the same
+        // risk applies here too).
         self.controls_visible.set(false);
         self.animate_controls(true);
     }
@@ -1128,8 +1192,22 @@ impl KioskWindow {
     /// exactly what cage doesn't support (see that same window-construction
     /// comment), so re-presenting on the way back is the best available
     /// fallback rather than a real fix.
-    pub(crate) fn external_window_opened(&self, window: &adw::Window) {
+    pub(crate) fn external_window_opened(self: &Rc<Self>, window: &adw::Window) {
         self.external_windows.borrow_mut().push(window.clone());
+        // Settings' own theme picker is reachable from whatever's opening
+        // here (Kiosk's own "Settings" button) — un-hide *before* it has
+        // a chance to change the theme, not after: `animate_controls()`
+        // (which this ultimately calls) always builds its fade target
+        // list against whichever theme is active *right now*, so showing
+        // everything against the theme that's still current when the
+        // window opens is what guarantees hide and show agree on the same
+        // target list — nothing can hide while an external window is open
+        // anyway (`tick_idle_checks()` skips outright), so this stays
+        // fully visible for the whole time regardless of what theme is
+        // active by the time it closes. Simpler and correct where a
+        // reactive "fix it up on close" would have to somehow recover
+        // which target list the *original* hide used.
+        self.note_activity("external-window-opened");
     }
 
     pub(crate) fn external_window_closed(self: &Rc<Self>, window: &adw::Window) {
@@ -1139,9 +1217,18 @@ impl KioskWindow {
         // `tick_idle_checks()`), so returning to Kiosk could immediately
         // re-trigger auto-hide/the screensaver on the very next ~1s tick —
         // same reasoning as the popover-closed handlers' own
-        // `note_activity()` call.
+        // `note_activity()` call (which `rebuild_bound_view()` below
+        // still does, as its own first step). A full rebuild, not just
+        // that: Settings' own theme picker is reachable from whatever was
+        // just closed (Kiosk's "Settings" button), and a structural theme
+        // choice (Wood's `kiosk_boxed_controls`) needs the view rebuilt to
+        // actually take effect — see `rebuild_bound_view()`'s own doc
+        // comment. `external_window_opened()`'s own call already handles
+        // the *visibility* side for whatever happened while it was open
+        // (nothing could auto-hide during that time anyway); this is
+        // specifically the structural side that call can't cover.
         if self.external_windows.borrow().is_empty() {
-            self.note_activity("external-window-closed");
+            self.rebuild_bound_view("external-window-closed");
         }
     }
 
@@ -1169,11 +1256,12 @@ impl KioskWindow {
             return;
         }
         let idle = self.activity_at.get().elapsed();
-        // The active theme can veto auto-hide outright (e.g. RustyWiiM
-        // Wood's physical-looking controls — see ThemeTunables' doc
-        // comment) regardless of the user's own setting.
-        let auto_hide = config::with(|cfg| cfg.kiosk_auto_hide_controls)
-            && !crate::ui::current_tunables().disable_kiosk_auto_hide;
+        // Top buttons (+ status bar, + transport controls unless the
+        // active theme opts them out — see animate_controls()) still
+        // auto-hide purely off the user's own setting; a theme no longer
+        // vetoes this outright the way an earlier version did, only the
+        // transport-controls portion specifically.
+        let auto_hide = config::with(|cfg| cfg.kiosk_auto_hide_controls);
         crate::ui::dbg_ui(&format!(
             "kiosk tick: idle={:.1}s auto_hide={auto_hide} controls_visible={} screensaver_active={}",
             idle.as_secs_f64(), self.controls_visible.get(), self.screensaver_active.get()
@@ -1219,14 +1307,21 @@ impl KioskWindow {
         if let Some(a) = old_anim { a.skip(); }
 
         // Base group (device-select + sidebar/exit) plus, when
-        // `kiosk_auto_hide_all_controls` is also on, the currently-bound
-        // view's transport buttons + volume control too — `extra_controls`
-        // is recaptured on every bind (see `finish_bind()`) since
-        // `PlaybackView` itself is rebuilt each time.
+        // `kiosk_auto_hide_all_controls` is also on, the status bar and
+        // (unless the active theme opts out — see extra_controls' own doc
+        // comment) the currently-bound view's transport buttons + volume
+        // control too. Both are recaptured on every bind (see
+        // `finish_bind()`) since `PlaybackView`/`StatusBarView` are
+        // rebuilt each time.
         let mut targets: Vec<gtk::Widget> =
             vec![self.top_left_group.clone().upcast(), self.top_right_group.clone().upcast()];
         if config::with(|cfg| cfg.kiosk_auto_hide_all_controls) {
-            targets.extend(self.extra_controls.borrow().iter().cloned());
+            if let Some(bar) = self.status_bar_widget.borrow().clone() {
+                targets.push(bar);
+            }
+            if !crate::ui::current_tunables().kiosk_keep_transport_visible {
+                targets.extend(self.extra_controls.borrow().iter().cloned());
+            }
         }
 
         if show {

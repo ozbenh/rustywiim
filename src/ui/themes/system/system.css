@@ -36,7 +36,11 @@
     padding: 0; -gtk-icon-size: 16px;
     border: none; border-radius: 50%; box-shadow: none;
 }
-.play-btn {
+/* ".play-btn-old-gtk4" alongside ".play-btn" — see dark.css's own comment
+   on the identical addition there: GTK 4.14-4.18 (Ubuntu 24.04) puts this
+   class on the button instead of "play-btn", and without a matching rule
+   here it got no sizing at all under this theme on that GTK range. */
+.play-btn, .play-btn-old-gtk4 {
     min-width: 44px; min-height: 44px;
     padding: 0; -gtk-icon-size: 20px;
     border: none; border-radius: 50%; box-shadow: none;
@@ -51,7 +55,7 @@
 .transport-btn.key-flash, .mini-transport-btn.key-flash {
     background-color: @accent_bg_color; color: @accent_fg_color;
 }
-.play-btn.key-flash, .mini-play-btn.key-flash {
+.play-btn.key-flash, .play-btn-old-gtk4.key-flash, .mini-play-btn.key-flash {
     background-color: @accent_bg_color; color: @accent_fg_color;
 }
 .loop-btn { min-width: 36px; min-height: 36px; padding: 0; -gtk-icon-size: 16px; opacity: 0.55; }

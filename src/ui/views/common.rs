@@ -78,6 +78,13 @@ impl SwipeText {
         self.b.set_center_when_fits(center);
     }
 
+    /// Set (or clear) both faces' phosphor-glow color — see
+    /// `ScrollFadeLabel::set_glow()`'s own doc comment.
+    pub(crate) fn set_glow(&self, color: Option<gtk::gdk::RGBA>) {
+        self.a.set_glow(color.clone());
+        self.b.set_glow(color);
+    }
+
     /// Forces both faces to recompute their style — see
     /// `ScrollFadeLabel::force_restyle()`'s own doc comment for why this is
     /// needed: whichever face is currently hidden doesn't reliably notice
@@ -246,6 +253,11 @@ impl ServiceLabel {
         let icon = BrandIcon::new();
         icon.set_height(27);
         icon.set_visible(false);
+        // Unconditional marker class (same pattern as "eq-btn"/"art-frame"
+        // elsewhere) — inert everywhere except wood.css's own
+        // `.vfd-readout .service-icon` rule (a `filter: drop-shadow(...)`
+        // glow, Kiosk's Wood VFD readout bar).
+        icon.add_css_class("service-icon");
         // "service-name-pill" (rounded-rect outline, same look as Kiosk
         // mode's device-name button) only on the text fallback — the icon
         // is a plain badge, no backdrop. `valign(Center)`: without it the
@@ -326,9 +338,14 @@ impl QualityBadge {
         // black/white pixels against the background too, turning the
         // logo's black decorative bits grey on light themes. Confirmed
         // live (2026-07-22, Ben): "the 'Dark' parts in it should be
-        // black, they tend to be grey on light themes instead."
+        // black, they tend to be grey on light themes instead." A distinct
+        // "quality-icon" marker class instead (same reasoning as
+        // `ServiceLabel`'s own "service-icon" — see its doc comment) — inert
+        // everywhere except wood.css's own `.vfd-readout .quality-icon`
+        // rule, a `filter: drop-shadow(...)` glow.
         let icon = gtk::Image::builder()
             .pixel_size(29).visible(false)
+            .css_classes(["quality-icon"])
             .build();
         let label = gtk::Label::builder()
             .css_classes([css_class, "service-name-pill"])

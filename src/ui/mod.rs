@@ -1,6 +1,7 @@
 mod art_background;
 mod brand_icon;
 pub mod devlist;
+mod engraved_label;
 mod eq;
 mod flip_cover;
 mod icons;
@@ -11,6 +12,8 @@ mod scroll_fade_label;
 mod device_window;
 mod theme;
 pub(crate) mod settings;
+mod vfd_scanline;
+mod vfd_scanline_overlay;
 mod views;
 
 use device_window::DeviceWindow;

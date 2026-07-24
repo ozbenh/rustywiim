@@ -85,6 +85,10 @@ pub mod imp {
         pub center_when_fits: Cell<bool>,
         // Optional drop shadow behind the text — off by default
         pub drop_shadow:      Cell<bool>,
+        // Optional colored phosphor-glow behind the text (Kiosk's Wood VFD
+        // panel) — mutually exclusive with drop_shadow in practice (see
+        // append_layout_shadowed()), takes precedence when both are set.
+        pub glow_color:       RefCell<Option<gtk::gdk::RGBA>>,
         // Set in size_allocate: width of one text copy + GAP gap.
         pub loop_width:       Cell<f32>,
         // Current horizontal scroll position in pixels.
@@ -106,6 +110,7 @@ pub mod imp {
                 text:             RefCell::new(String::new()),
                 center_when_fits: Cell::new(CENTER_WHEN_FITS_DEFAULT),
                 drop_shadow:      Cell::new(false),
+                glow_color:       RefCell::new(None),
                 loop_width:       Cell::new(0.0),
                 scroll_offset:    Cell::new(0.0),
                 layout_cache:     RefCell::new(None),
@@ -322,17 +327,33 @@ pub mod imp {
     }
 
     impl ScrollFadeLabel {
+        /// Three superimposed blurred copies behind the real text — tight
+        /// and near-opaque on top of a wide, soft outer halo — standing in
+        /// for a real VFD tube's phosphor bloom (`text-shadow`'s multi-layer
+        /// look, which this manually-rendered widget has no CSS equivalent
+        /// for). `(blur radius px, alpha multiplier)` per layer. Toned down
+        /// from an earlier (9.0, 0.35)/(4.0, 0.65)/(1.5, 0.95) — combined
+        /// with the near-opaque `color` fill drawn on top (see
+        /// `append_layout_shadowed()` below), that read as blown-out rather
+        /// than a lit tube; smaller radii and lower alphas throughout read
+        /// as a tighter, softer glow instead of a wide bright wash.
+        const GLOW_LAYERS: [(f64, f32); 3] = [(6.0, 0.20), (3.0, 0.35), (1.0, 0.55)];
+
         /// Draw `layout` at the snapshot's current (already-translated)
-        /// origin, with an optional soft drop shadow behind it when
-        /// `drop_shadow` is set. A plain gtk::Label gets CSS text-shadow for
-        /// free; this custom-rendered widget doesn't, so the shadow is drawn
-        /// manually as a blurred, offset dark copy underneath the real text.
+        /// origin, with an optional soft drop shadow or colored glow behind
+        /// it. A plain gtk::Label gets CSS text-shadow for free; this
+        /// custom-rendered widget doesn't, so both effects are drawn
+        /// manually as blurred copies underneath the real text.
         fn append_layout_shadowed(
             &self,
             snapshot: &gtk::Snapshot,
             layout: &gtk::pango::Layout,
             color: &gtk::gdk::RGBA,
         ) {
+            if let Some(glow) = self.glow_color.borrow().clone() {
+                self.append_glow(snapshot, layout, color, &glow);
+                return;
+            }
             if self.drop_shadow.get() {
                 let shadow = gtk::gdk::RGBA::new(0.0, 0.0, 0.0, 0.75);
                 snapshot.push_blur(2.0);
@@ -343,6 +364,38 @@ pub mod imp {
                 snapshot.pop();
             }
             snapshot.append_layout(layout, color);
+        }
+
+        /// The VFD glow look: the blurred halo layers plus the real text
+        /// fill, all drawn through one shared scanline alpha mask
+        /// (`crate::ui::vfd_scanline` — shared with `BrandIcon`/the
+        /// service/quality icon widgets, so all of Wood's Kiosk VFD
+        /// elements interlace identically) so the interlaced look isn't
+        /// just the panel background behind the text but the glowing text
+        /// itself too, matching a real VFD/CRT readout.
+        fn append_glow(
+            &self,
+            snapshot: &gtk::Snapshot,
+            layout: &gtk::pango::Layout,
+            color: &gtk::gdk::RGBA,
+            glow: &gtk::gdk::RGBA,
+        ) {
+            let (tw, th) = layout.pixel_size();
+            let (tw, th) = (tw as f32, th as f32);
+            let masked = th > 0.0;
+            if masked {
+                crate::ui::vfd_scanline::push_scanline_mask(snapshot, tw.max(1.0), th);
+            }
+            for (blur, alpha_mul) in Self::GLOW_LAYERS {
+                let layer = gtk::gdk::RGBA::new(glow.red(), glow.green(), glow.blue(), glow.alpha() * alpha_mul);
+                snapshot.push_blur(blur);
+                snapshot.append_layout(layout, &layer);
+                snapshot.pop();
+            }
+            snapshot.append_layout(layout, color);
+            if masked {
+                snapshot.pop(); // apply scanline mask to the glow + text above
+            }
         }
 
         fn create_layout(&self) -> gtk::pango::Layout {
@@ -491,6 +544,15 @@ impl ScrollFadeLabel {
     pub fn set_drop_shadow(&self, enabled: bool) {
         let imp = self.imp();
         imp.drop_shadow.set(enabled);
+        self.queue_draw();
+    }
+
+    /// Set (or clear) the colored phosphor-glow effect — Kiosk's Wood VFD
+    /// panel. Takes precedence over `drop_shadow` when both are set (see
+    /// `append_layout_shadowed()`); not a GLib property like `drop-shadow`
+    /// since nothing needs to bind/query it, just a plain Rust setter.
+    pub fn set_glow(&self, color: Option<gtk::gdk::RGBA>) {
+        self.imp().glow_color.replace(color);
         self.queue_draw();
     }
 }
