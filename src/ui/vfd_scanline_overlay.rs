@@ -65,8 +65,23 @@ impl VfdScanlineOverlay {
     /// same construction rather than each repeating the two-line dance.
     /// Returns the `Overlay` itself, usable anywhere `child` would have
     /// been (it's a real `gtk::Widget`).
+    ///
+    /// The returned `Overlay` itself is `can_target(false)` — confirmed
+    /// live this is needed, not just on the decorative overlay child: a
+    /// plain `gtk::Overlay` defaults to `halign`/`valign` `Fill`, so once
+    /// this wrapper becomes an overlay child of some *outer* `Overlay`
+    /// (e.g. `service_group` here sitting inside `controls_overlay_boxed`
+    /// alongside the transport/volume/EQ buttons), it gets allocated that
+    /// outer overlay's *entire* area, not just `child`'s own natural-size
+    /// corner the way `child` alone would have. Sitting on top in z-order
+    /// with its default `can_target(true)`, it silently ate clicks meant
+    /// for those buttons everywhere else in that shared space, even though
+    /// nothing wrapped here (labels/icons) is itself interactive. Safe to
+    /// disable targeting on the whole wrapper for exactly that reason —
+    /// every current caller only ever wraps non-interactive content.
     pub fn wrap(child: &impl IsA<gtk::Widget>) -> gtk::Overlay {
         let overlay = gtk::Overlay::new();
+        overlay.set_can_target(false);
         overlay.set_child(Some(child));
         overlay.add_overlay(&Self::new());
         overlay
