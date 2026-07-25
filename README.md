@@ -34,9 +34,9 @@ Licensed under the [MIT License](LICENSE).
 
 The application supports a standard window view and a mini-window view in a normal desktop environment. Additionally there is an experimental "kiosk" mode for fullscreen use (I use it on a Raspberry Pi with a touch screen).
 
-The app has fairly basic functionality for now: Display song info, artwork (with some animations), basic navigation buttons, volume/mute control, presets and input/outputs selection, BT pairing as a sink, that's about it for now. I have done plenty of API reverse engineering and am hoping to enrich the amount of control options over time, but for now it's focused on making what is there robust and useful.
+The app has some basic functionality and a growing amount of "more advanced" ones: Basic is of course display of song info, artwork (with some animations), navigation buttons, volume/mute control, loop/repeat mode. More advanced are preset view, play queue and input/outputs selection, BT pairing as a sink, PEQ/GEQ editor, that's about it for now. I have done plenty of API reverse engineering and am hoping to enrich the amount of control options over time, with things like per-input and output settings and other device configuration settings.
 
-It supports the system theme (including forcing light or dark) and two custom themes: Dark and Modern. Dark is a fairly classic dark backgroud with white controls and Modern uses "blurred artwork" as background and control into semi transparent boxes. Modern is the default.
+Visually it has a basic theming capability. It supports the system theme (including forcing light or dark) and three custom themes: Dark, Modern and "Wood". Dark is a fairly classic dark backgroud with white controls and Modern uses "blurred artwork" as background and control into semi transparent boxes. Modern is the default. "Wood" is an experiment in building some more advanced theming capabilities and involves some actual layout changes.
 
 This started as an exercise in using AI to program in Rust which I am not familiar with, so trying to both build experience with driving AI and learn a bit of Rust...
 
@@ -50,6 +50,8 @@ So far tested with:
  * WiiM Mini
  * WiiM Amp
  * WiiM Amp Ultra
+ * WiiM Pro
+ * WiiM Pro Plus
  * iEAST AudioCast
  * iEAST AudioCast Pro
  * AudioPro C5
@@ -154,7 +156,6 @@ You can pretty-print this file using `target/debug/wiim-capdump`. I would apprec
 
 ## Known issues ##
 
-* Kiosk mode doesn't have access to the settings dialog, and so on a touch screen (in absence of keyboard), there is no way to change themes. You can run in normal mode, change theme, then re-run in kiosk mode, or manually change the theme in `~/.config/rustywiim/config.json`. This will be fixed eventually (and I might add a command line argument to select the theme at launch)
 * Kiosk mode doesn't save much state unlike normal mode
 * Kiosk mode doesn't have a way to manually add a device by IP address yet
 
