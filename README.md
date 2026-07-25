@@ -18,12 +18,14 @@ Licensed under the [MIT License](LICENSE).
 <a href="pics/main-modern-queue.png"><img src="pics/thumbs/main-modern-queue.png" width="150" alt="Main window, modern theme with playqueue"></a>
 <a href="pics/mini-modern.png"><img src="pics/thumbs/mini-modern.png" width="150" alt="Mini window, modern theme"></a>
 <a href="pics/devlist.png"><img src="pics/thumbs/devlist.png" width="150" alt="Device list window"></a>
+<a href="pics/peq.png"><img src="pics/thumbs/peq.png" width="150" alt="Parametric Equalizer"></a>
 <a href="pics/settings.png"><img src="pics/thumbs/settings.png" width="150" alt="Settings dialog"></a>
 <a href="pics/settings-kiosk.png"><img src="pics/thumbs/settings-kiosk.png" width="150" alt="Settings dialog - Kiosk"></a>
 
 ### Kiosk mode (fullscreen) [Experimental]
 
 <a href="pics/kiosk-dark.png"><img src="pics/thumbs/kiosk-dark.png" width="150" alt="Kiosk mode, dark theme"></a>
+<a href="pics/kiosk-wood.png"><img src="pics/thumbs/kiosk-wood.png" width="150" alt="Kiosk mode, wood theme"></a>
 <a href="pics/kiosk-modern.png"><img src="pics/thumbs/kiosk-modern.png" width="150" alt="Kiosk mode, modern theme"></a>
 <a href="pics/kiosk-modern-no-controls.png"><img src="pics/thumbs/kiosk-modern-no-controls.png" width="150" alt="Kiosk mode, modern theme, controls hidden"></a>
 <a href="pics/kiosk-modern-devlist.png"><img src="pics/thumbs/kiosk-modern-devlist.png" width="150" alt="Kiosk mode, modern theme, device list"></a>
@@ -157,6 +159,12 @@ You can pretty-print this file using `target/debug/wiim-capdump`. I would apprec
 * Kiosk mode doesn't have a way to manually add a device by IP address yet
 
 ## Changelog ##
+  * 0.11.1 - 2026-07-25
+    * Fix some issues with Kiosk in Wood mode on some small screens. The
+	  kiosk layout engine will need to be completely redone by something
+	  with sanity (ie. not Sonnet 5) but that's for another day.
+    * Fixup screenshots
+
   * 0.11.0 - 2026-07-25
     * Add EQ editor for both PEQ and GEQ. Currently only tested/supported on
 	  WiiM devices. I also only have the latest firmware, so all the features
@@ -439,6 +447,8 @@ You can pretty-print this file using `target/debug/wiim-capdump`. I would apprec
 ![Screenshot](pics/kiosk-modern-devlist.png)
 **Device list window**
 ![Screenshot](pics/devlist.png)
+**Parametric Equalizer dialog**
+![Screenshot](pics/peq.png)
 **Settings dialog**
 ![Screenshot](pics/settings.png)
 **Settings dialog for kiosk mode**
