@@ -94,17 +94,101 @@ pub(super) fn build_header(
     (header, sidebar_btn, kiosk_btn, mini_btn, connecting_spinner)
 }
 
-pub(super) fn build_left_pane(
-    presets: &crate::ui::views::presets::PresetsView,
-    io:      &crate::ui::views::io::InputOutputView,
+/// Presets/Queue tab switch sits directly ahead of `left_pane`'s other
+/// content — deliberately *not* a separate reusable struct/module: this
+/// placement is provisional (Ben: "I might move the playqueue elsewhere"),
+/// so keeping the switcher logic inline here means there's nothing extra to
+/// unwind later, unlike `PresetsView`/`PlayQueueView` themselves, which stay
+/// fully independent view objects either way. Mode-following, exactly one
+/// of the two active at a time — same pattern `views/mod.rs` documents for
+/// the two playback views, just driven by a toggle-button pair instead of
+/// mini/full mode. The Queue toggle is hidden entirely (forcing Presets
+/// active) whenever `!ds.play_queue_supported()` — checked at build time
+/// and again on every `device-changed` (support can only become known once
+/// a UPnP client is discovered, which may not have happened yet when this
+/// window is first built).
+pub(crate) fn build_left_pane(
+    ds:         &DeviceState,
+    presets:    &crate::ui::views::presets::PresetsView,
+    play_queue: &crate::ui::views::play_queue::PlayQueueView,
+    io:         &crate::ui::views::io::InputOutputView,
 ) -> gtk::Box {
+    let presets_btn = gtk::ToggleButton::builder()
+        .label("Presets").active(true)
+        .css_classes(["flat", "library-tab-btn"])
+        .hexpand(true)
+        .build();
+    let queue_btn = gtk::ToggleButton::builder()
+        .label("Queue")
+        .css_classes(["flat", "library-tab-btn"])
+        .hexpand(true)
+        .group(&presets_btn)
+        .build();
+    let tab_row = GtkBox::builder()
+        .orientation(Orientation::Horizontal).spacing(2)
+        .margin_start(8).margin_end(8).margin_top(4)
+        .build();
+    tab_row.append(&presets_btn);
+    tab_row.append(&queue_btn);
+
+    let stack = gtk::Stack::new();
+    stack.add_named(presets, Some("presets"));
+    stack.add_named(play_queue, Some("queue"));
+
+    presets_btn.connect_toggled({
+        let stack = stack.downgrade();
+        let presets = presets.downgrade();
+        let play_queue = play_queue.downgrade();
+        move |btn| {
+            if !btn.is_active() { return; }
+            let (Some(stack), Some(presets), Some(play_queue)) =
+                (stack.upgrade(), presets.upgrade(), play_queue.upgrade()) else { return };
+            stack.set_visible_child_name("presets");
+            presets.set_active(true);
+            play_queue.set_active(false);
+        }
+    });
+    queue_btn.connect_toggled({
+        let stack = stack.downgrade();
+        let presets = presets.downgrade();
+        let play_queue = play_queue.downgrade();
+        move |btn| {
+            if !btn.is_active() { return; }
+            let (Some(stack), Some(presets), Some(play_queue)) =
+                (stack.upgrade(), presets.upgrade(), play_queue.upgrade()) else { return };
+            stack.set_visible_child_name("queue");
+            play_queue.set_active(true);
+            presets.set_active(false);
+        }
+    });
+
+    let sync_queue_visibility = {
+        let queue_btn = queue_btn.downgrade();
+        let presets_btn = presets_btn.downgrade();
+        move |ds: &DeviceState| {
+            let (Some(queue_btn), Some(presets_btn)) = (queue_btn.upgrade(), presets_btn.upgrade()) else { return };
+            let supported = ds.play_queue_supported();
+            queue_btn.set_visible(supported);
+            if !supported && queue_btn.is_active() {
+                // Force back to Presets rather than leaving the switcher on
+                // a now-hidden tab — activating it also flips the two
+                // views' `active` state via `presets_btn`'s own toggle
+                // handler above.
+                presets_btn.set_active(true);
+            }
+        }
+    };
+    sync_queue_visibility(ds);
+    ds.connect_device_changed(move |ds| sync_queue_visibility(ds));
+
     // "panel-card" is only ever styled under the RustyWiiM Modern theme
     // (see modern.css) — inert everywhere else, so no theme branching here.
     let left_pane = GtkBox::builder()
         .orientation(Orientation::Vertical)
         .css_classes(["panel-card"])
         .build();
-    left_pane.append(presets);
+    left_pane.append(&tab_row);
+    left_pane.append(&stack);
     left_pane.append(io);
     left_pane
 }

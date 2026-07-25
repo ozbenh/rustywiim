@@ -282,6 +282,23 @@ pub struct AvTransportEvent {
     /// `CurrentMediaDuration` is also present alongside it in every capture
     /// seen so far, always identical — not parsed separately.
     pub track_duration: Option<String>,
+    /// Standard UPnP `AVTransport` eventable state variable — the 1-based
+    /// play-queue index of the current track, confirmed live
+    /// (`<CurrentTrack val="6"/>`). Fires on ordinary track advance/
+    /// selection, unlike `PlayQueue`'s own NOTIFY (see `PlayQueueEvent`'s
+    /// doc comment) — this is the mechanism that keeps the play-queue
+    /// view's current-track highlight in sync during normal playback,
+    /// without needing any `BrowseQueue` polling.
+    pub current_track: Option<u32>,
+    /// Standard UPnP `AVTransport` eventable state variable alongside
+    /// `CurrentTrack` — the live queue's total track count. Used only as an
+    /// *additional* refetch trigger (alongside `PlayQueueEvent::playlist_name`
+    /// and the empty-queue retry — see `state.rs`'s `apply_gena_notify()`),
+    /// never trusted/applied as the queue length directly — a same-length
+    /// queue swap (old and new queue happening to have equal track counts)
+    /// would pass this check silently, so it's a supplementary signal, not
+    /// the only line of defense.
+    pub number_of_tracks: Option<u32>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -290,9 +307,43 @@ pub struct RenderingControlEvent {
     pub mute: Option<bool>,
 }
 
+/// `PlayQueue` NOTIFYs never carry actual track content (title/artist/
+/// album/art) — only this summary. Confirmed on two different device
+/// families (WiiM Ultra, an older Audio Pro unit) to *not* fire on
+/// ordinary track advance the same way on every device: the WiiM Ultra
+/// stays silent for that (handled instead by `AvTransportEvent::current_track`),
+/// the Audio Pro unit does fire here too. Every field is independently
+/// optional — not every device sends every field on every NOTIFY (the Audio
+/// Pro never sends `TrackNums` at all; a loop-mode-only change NOTIFY on
+/// either device carries nothing but `LoopMode`).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct PlayQueueEvent {
+    /// Trusted and applied directly (unlike `current_index`/`playlist_name`
+    /// below) — a `LoopMode`-only NOTIFY (no other fields at all, confirmed
+    /// real shape) means exactly one thing, a loop-mode change, so there's
+    /// nothing to fetch to confirm it.
     pub loop_mode: Option<i32>,
+    /// 1-based currently-playing index, same numbering as `BrowseQueue`'s
+    /// `LastPlayIndex`/`QueueTrackEntry::index`. Parsed but **not** applied
+    /// directly by `state.rs` — see `playlist_name`'s doc comment for why.
+    pub current_index: Option<u32>,
+    /// **Trigger only, never trusted as data.** Its presence (regardless of
+    /// its value, and regardless of whether `current_index` also happens to
+    /// be present) is `state.rs`'s signal that the queue's *content* may
+    /// have changed (add/remove/reorder/clear/service-switch) and a real
+    /// `BrowseQueue` fetch is needed — the fetch's own response is what
+    /// actually supplies `current_index`/track data, never this NOTIFY's
+    /// own fields. Confirmed necessary live (`bug.txt`, 2026-07-26): a
+    /// `BrowseQueue` fetch issued right as this NOTIFY arrives can race the
+    /// device still populating the *new* queue server-side, so trusting
+    /// this NOTIFY's own `current_index` (an earlier version did) could
+    /// apply a value belonging to a queue that hasn't loaded yet. Checked
+    /// under both confirmed spellings (`CurretPlayListName`/
+    /// `CurrentPlayListName` — see `parse_play_queue_event()`) since the
+    /// misspelling turned out to be a real device-firmware bug seen on more
+    /// than just the WiiM Ultra, not a one-device quirk. Not currently
+    /// displayed anywhere.
+    pub playlist_name: Option<String>,
 }
 
 /// Extracts `<tag ... val="X" .../>`'s `val` attribute, unescaping XML
@@ -327,6 +378,8 @@ pub fn parse_av_transport_event(last_change: &str) -> AvTransportEvent {
     let playback_storage_medium = extract_val_attr(last_change, "PlaybackStorageMedium");
     let track_source = extract_val_attr(last_change, "TrackSource");
     let track_duration = extract_val_attr(last_change, "CurrentTrackDuration");
+    let current_track = extract_val_attr(last_change, "CurrentTrack").and_then(|s| s.parse().ok());
+    let number_of_tracks = extract_val_attr(last_change, "NumberOfTracks").and_then(|s| s.parse().ok());
     AvTransportEvent {
         transport_state,
         title:  item.as_ref().map(|i| i.title.clone()),
@@ -343,6 +396,8 @@ pub fn parse_av_transport_event(last_change: &str) -> AvTransportEvent {
         playback_storage_medium,
         track_source,
         track_duration,
+        current_track,
+        number_of_tracks,
     }
 }
 
@@ -356,11 +411,17 @@ pub fn parse_rendering_control_event(last_change: &str) -> RenderingControlEvent
 /// Checks both `LoopMode` and `LoopMpde` — a confirmed real misspelling on
 /// the wire (the `wiim` SDK's own comments), same defensive spirit
 /// `decode_loop_mode_http`'s catch-all already has for its own inputs.
+/// `CurretPlayListName` is the WiiM Ultra's own confirmed misspelling;
+/// `CurrentPlayListName` (correct spelling) is what the Audio Pro sends —
+/// both checked for the same reason.
 pub fn parse_play_queue_event(last_change: &str) -> PlayQueueEvent {
     let loop_mode = extract_val_attr(last_change, "LoopMode")
         .or_else(|| extract_val_attr(last_change, "LoopMpde"))
         .and_then(|s| s.parse().ok());
-    PlayQueueEvent { loop_mode }
+    let current_index = extract_val_attr(last_change, "CurrentIndex").and_then(|s| s.parse().ok());
+    let playlist_name = extract_val_attr(last_change, "CurretPlayListName")
+        .or_else(|| extract_val_attr(last_change, "CurrentPlayListName"));
+    PlayQueueEvent { loop_mode, current_index, playlist_name }
 }
 
 // ── Process-wide NOTIFY listener ─────────────────────────────────────────────
@@ -1079,6 +1140,84 @@ mod tests {
 </Event>"#;
         let ev = parse_play_queue_event(last_change);
         assert_eq!(ev.loop_mode, Some(2));
+    }
+
+    /// Real shape from a WiiM Ultra (`gena.txt`, 2026-07-25) — misspelled
+    /// `CurretPlayListName`.
+    #[test]
+    fn play_queue_event_parses_current_index_and_curret_playlist_name() {
+        let last_change = r#"<Event xmlns="urn:schemas-wiimu-com:metadata-1-0/PlayQueue/">
+<QueueID val="0">
+<CurretPlayListName val="My Weekly Q_#~2026-07-20 18:06:12"/>
+<MusicSource val="Qobuz"/>
+<LoopMode val="4"/>
+<CurrentIndex val="5"/>
+<CurrentPage val="1"/>
+<TrackNums val="30"/>
+</QueueID>
+</Event>"#;
+        let ev = parse_play_queue_event(last_change);
+        assert_eq!(ev.current_index, Some(5));
+        assert_eq!(ev.playlist_name.as_deref(), Some("My Weekly Q_#~2026-07-20 18:06:12"));
+        assert_eq!(ev.loop_mode, Some(4));
+    }
+
+    /// An older Audio Pro unit spells this tag correctly — same field,
+    /// `CurrentPlayListName` not `CurretPlayListName`.
+    #[test]
+    fn play_queue_event_parses_correctly_spelled_playlist_name() {
+        let last_change = r#"<Event xmlns="urn:schemas-wiimu-com:metadata-1-0/PlayQueue/">
+<QueueID val="0">
+<CurrentPlayListName val="CurrentQueue"/>
+<CurrentIndex val="3"/>
+</QueueID>
+</Event>"#;
+        let ev = parse_play_queue_event(last_change);
+        assert_eq!(ev.current_index, Some(3));
+        assert_eq!(ev.playlist_name.as_deref(), Some("CurrentQueue"));
+    }
+
+    /// A loop-mode-only NOTIFY (confirmed real: fires alongside/instead of a
+    /// full-field one on a loop-mode change) carries neither `CurrentIndex`
+    /// nor a playlist-name field at all — must not be misread as a
+    /// content-change trigger.
+    #[test]
+    fn play_queue_event_loop_mode_only_has_no_index_or_playlist_name() {
+        let last_change = r#"<Event xmlns="urn:schemas-wiimu-com:metadata-1-0/PlayQueue/">
+  <QueueID>
+	<LoopMpde val="3"/>
+ </QueueID>
+</Event>"#;
+        let ev = parse_play_queue_event(last_change);
+        assert_eq!(ev.loop_mode, Some(3));
+        assert_eq!(ev.current_index, None);
+        assert_eq!(ev.playlist_name, None);
+    }
+
+    #[test]
+    fn av_transport_event_parses_current_track() {
+        let last_change = r#"<Event xmlns="urn:schemas-upnp-org:metadata-1-0/AVT/">
+  <InstanceID>
+    <CurrentTrack val="6"/>
+  </InstanceID>
+</Event>"#;
+        let ev = parse_av_transport_event(last_change);
+        assert_eq!(ev.current_track, Some(6));
+    }
+
+    /// Real shape from `bug.txt` (2026-07-26, Audio Pro): `CurrentTrack`/
+    /// `NumberOfTracks` arrive together on a track-change NOTIFY.
+    #[test]
+    fn av_transport_event_parses_number_of_tracks() {
+        let last_change = r#"<Event xmlns="urn:schemas-upnp-org:metadata-1-0/AVT/">
+<InstanceID val="0">
+<CurrentTrack val="2"/>
+<NumberOfTracks val="40"/>
+</InstanceID>
+</Event>"#;
+        let ev = parse_av_transport_event(last_change);
+        assert_eq!(ev.current_track, Some(2));
+        assert_eq!(ev.number_of_tracks, Some(40));
     }
 
     #[test]

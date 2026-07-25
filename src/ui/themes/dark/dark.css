@@ -155,6 +155,17 @@ window { background-color: #0a0a0a; }
 .devlist-art  { border-radius: 4px; min-width: 32px; min-height: 32px; }
 .preset-name  { font-size: 12px; color: #a0a0a0; }
 .preset-badge { font-size: 9px; font-weight: 700; color: #1a1a1a; background-color: #606060; border-radius: 50%; min-width: 16px; min-height: 16px; padding: 1px; }
+/* Play-queue row currently playing (see ui/views/play_queue.rs) — a tinted
+   background + accent-colored left edge on the row's own preset-tile, same
+   shape/radius as the plain hover state above. */
+.preset-btn.current-track .preset-tile { background-color: alpha(@rustywiim_accent, 0.18); border-left: 3px solid @rustywiim_accent; }
+/* Presets/Queue tab switch (device_window/chrome.rs's build_left_pane()) */
+.library-tab-btn { font-size: 12px; padding: 4px 8px; }
+.library-tab-btn:checked { background-color: alpha(@rustywiim_accent, 0.25); color: #ffffff; }
+/* Queue header's track-count label — deliberately *not* .section-label
+   (that's bold + letter-spaced, a heading treatment); normal weight, a
+   little dimmer than a row's own .preset-name title. */
+.queue-track-count { font-size: 12px; font-weight: 400; color: #808080; }
 /* GTK's built-in theme, and libadwaita's own override of it, both put a
    permanent drop shadow on every `window.csd` node regardless of
    decorated(false); libadwaita's version also adds a 1px `outline` (a

@@ -92,6 +92,16 @@
 .devlist-art  { border-radius: 4px; min-width: 32px; min-height: 32px; }
 .preset-name  { font-size: 12px; }
 .preset-badge { font-size: 9px; font-weight: 700; border-radius: 50%; min-width: 16px; min-height: 16px; padding: 1px; }
+/* See dark.css's identical rules for what these are (play-queue current-
+   track highlight, Presets/Queue tab switch) — System/Light/Dark use
+   Adwaita's own named accent colors instead of @rustywiim_accent. */
+.preset-btn.current-track .preset-tile { background-color: alpha(@accent_bg_color, 0.18); border-left: 3px solid @accent_bg_color; }
+.library-tab-btn { font-size: 12px; padding: 4px 8px; }
+.library-tab-btn:checked { background-color: @accent_bg_color; color: @accent_fg_color; }
+/* See dark.css's identical rule — normal weight, not the bold/letter-spaced
+   .section-label heading treatment; System/Light/Dark already dim it via
+   the .dim-label class applied alongside this one. */
+.queue-track-count { font-size: 12px; font-weight: 400; }
 /* GTK's built-in theme, and libadwaita's own override of it, both put a
    permanent drop shadow on every `window.csd` node regardless of
    decorated(false); libadwaita's version also adds a 1px `outline` (a

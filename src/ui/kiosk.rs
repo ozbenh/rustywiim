@@ -89,6 +89,7 @@ struct BoundDevice {
     /// they're not otherwise unreferenced (nothing outside `finish_bind()`
     /// needs to reach them directly yet).
     _presets: crate::ui::views::presets::PresetsView,
+    _play_queue: crate::ui::views::play_queue::PlayQueueView,
     _io:      crate::ui::views::io::InputOutputView,
     _full_mode: FullModeGuard,
     /// Disconnected explicitly when this binding is released — `ds` may
@@ -888,24 +889,23 @@ impl KioskWindow {
 
         self.sidebar_paned.set_end_child(Some(&view));
 
-        // Side panel (presets/IO) — same widget shapes DeviceWindow's own
-        // left_pane uses, rebuilt fresh each bind exactly like view/
-        // status_bar are. "panel-card" is Modern-theme-only styling (see
-        // modern.css), inert everywhere else.
+        // Side panel (presets/queue tab-switch + IO) — same widget shapes
+        // and the same shared `chrome::build_left_pane()` DeviceWindow's own
+        // left_pane uses (so Kiosk doesn't drift out of sync with it — this
+        // was previously duplicated inline here and missed the Presets/Queue
+        // tab-switch when that was added), rebuilt fresh each bind exactly
+        // like view/status_bar are. "panel-card" is Modern-theme-only
+        // styling (see modern.css), inert everywhere else.
         let presets = views::presets::PresetsView::new(&ds, &self.icons);
+        let play_queue = views::play_queue::PlayQueueView::new(&ds);
         let io = views::io::InputOutputView::new(&ds, &self.icons);
         presets.set_active(true);
         io.set_active(true);
+        let left_pane = crate::ui::device_window::chrome::build_left_pane(&ds, &presets, &play_queue, &io);
         // margin_top matches sidebar_btn's own (see .kiosk-sidebar-btn) so
         // the panel's top edge lines up with the toggle button's, instead
         // of starting right at the very top of the window.
-        let left_pane = gtk::Box::builder()
-            .orientation(gtk::Orientation::Vertical)
-            .css_classes(["panel-card"])
-            .margin_top(20)
-            .build();
-        left_pane.append(&presets);
-        left_pane.append(&io);
+        left_pane.set_margin_top(20);
         self.sidebar_paned.set_start_child(Some(&left_pane));
 
         // sidebar_paned itself is persistent (see its own field doc
@@ -1007,6 +1007,7 @@ impl KioskWindow {
             view,
             _status_bar: status_bar,
             _presets: presets,
+            _play_queue: play_queue,
             _io: io,
             playback_changed_handler,
         });
@@ -1089,9 +1090,9 @@ impl KioskWindow {
         let target = if open {
             0
         } else {
-            // The real content's own natural width (PresetsView/
-            // InputOutputView, whatever `left_pane` holds right now) plus
-            // a margin — not a fixed guess. A static width clipped the
+            // The real content's own natural width (the Presets/Queue tab
+            // switch + InputOutputView, whatever `left_pane` holds right
+            // now) plus a margin — not a fixed guess. A static width clipped the
             // panel's content on some screen/content combinations; this
             // guarantees it's fully visible regardless of screen size.
             let natural = self.sidebar_paned.start_child()

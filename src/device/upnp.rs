@@ -112,6 +112,15 @@ fn split_host_port(addr: &str) -> (&str, u16) {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct InfoEx {
     pub transport_state: String,
+    /// `<Track>` — the standard UPnP `AVTransport` "current position within
+    /// the queue" variable, same one GENA's `CurrentTrack` NOTIFY field
+    /// carries (`gena::AvTransportEvent::current_track`) — confirmed
+    /// present in a plain (non-GENA) `GetInfoEx` poll response too, on both
+    /// a WiiM Ultra and an Audio Pro unit (2026-07-26). This is what lets
+    /// the play-queue view's current-track highlight stay correct even
+    /// with GENA off/unhealthy, not just via NOTIFYs.
+    /// `None` when the tag is absent or unparseable.
+    pub track:           Option<u32>,
     /// `"HH:MM:SS"` wire format, decoded by `playback::decode_hms_duration`.
     pub rel_time:        String,
     /// `"HH:MM:SS"` wire format, decoded by `playback::decode_hms_duration`.
@@ -181,6 +190,31 @@ pub struct InfoEx {
 pub struct GuiBehavior {
     pub next: bool,
     pub prev: bool,
+}
+
+/// One track in the live play queue (`BrowseQueue("CurrentQueue")`'s
+/// `Track1`.. entries) — see `parse_current_queue()`'s doc comment for the
+/// wire shape. `index` is the 1-based position in the list, matching
+/// `LastPlayIndex`/`Track{N}`'s own numbering.
+#[derive(Debug, Clone, PartialEq)]
+pub struct QueueTrackEntry {
+    pub index:   u32,
+    pub title:   String,
+    pub artist:  String,
+    pub album:   String,
+    pub art_uri: Option<String>,
+}
+
+/// Result of a `browse_current_queue()` call — mirrors `PresetFetchOutcome`'s
+/// shape/semantics (see `get_key_mapping_presets()`'s doc comment for the
+/// `Unsupported` vs `Failed` distinction). `Changed`'s `Option<u32>` is the
+/// 1-based currently-playing index (`LastPlayIndex`), `None` if the response
+/// didn't have one.
+pub enum QueueFetchOutcome {
+    Unsupported,
+    Failed,
+    Unchanged,
+    Changed(String, Vec<QueueTrackEntry>, Option<u32>),
 }
 
 /// UPnP control-point client for one device's `AVTransport` (and, when
@@ -277,6 +311,48 @@ impl UpnpClient {
             Ok(body) => parse_key_mapping_presets(&body, old_fp),
             Err(_) => PresetFetchOutcome::Failed,
         }
+    }
+
+    /// Whether this device advertised a `PlayQueue` service at all — the
+    /// live play queue is UPnP-only, no HTTP fallback exists, so callers use
+    /// this to decide whether to offer it in the UI at all rather than
+    /// finding out via a failed fetch.
+    pub fn has_play_queue(&self) -> bool {
+        self.play_queue_control_url.is_some()
+    }
+
+    /// `BrowseQueue("CurrentQueue")` — the live play queue, as opposed to
+    /// `get_key_mapping_presets()`'s `GetKeyMapping` (saved presets) or the
+    /// `BrowseQueue("TotalQueue")` shape (recently-played station/list
+    /// history, `TrackNumber` always 0 — not real per-track data). Same
+    /// `Unsupported`-vs-`Failed` split as `get_key_mapping_presets()`.
+    pub async fn browse_current_queue(&self, old_fp: &str) -> QueueFetchOutcome {
+        let Some(control_url) = &self.play_queue_control_url else {
+            return QueueFetchOutcome::Unsupported;
+        };
+        match soap_call(control_url, PLAY_QUEUE_SERVICE, "BrowseQueue", "<QueueName>CurrentQueue</QueueName>").await {
+            Ok(body) => parse_current_queue(&body, old_fp),
+            Err(_) => QueueFetchOutcome::Failed,
+        }
+    }
+
+    /// `PlayQueueWithIndex("CurrentQueue", index)` — starts playback at
+    /// `index` (1-based, matching `QueueTrackEntry::index`) within the live
+    /// queue. Unlike `BrowseQueue("CurrentQueue")` (confirmed against real
+    /// WiiM Android app traffic — see `parse_current_queue()`'s doc
+    /// comment), this specific call is only sourced from `wiimplay`'s Go
+    /// reference (`PlayQueue1.PlayQueueWithIndex`) — no captured real
+    /// traffic exercises it yet, so it needs a live smoke test once the
+    /// rest of this feature is wired up.
+    pub async fn play_queue_index(&self, index: u32) -> anyhow::Result<()> {
+        let Some(control_url) = &self.play_queue_control_url else {
+            anyhow::bail!("device has no PlayQueue service");
+        };
+        soap_call(
+            control_url, PLAY_QUEUE_SERVICE, "PlayQueueWithIndex",
+            &format!("<QueueName>CurrentQueue</QueueName><Index>{index}</Index>"),
+        ).await?;
+        Ok(())
     }
 
     /// `RenderingControl.GetMute`, `Channel="Master"` (matches the
@@ -638,6 +714,76 @@ fn parse_key_mapping_presets(envelope: &str, old_fp: &str) -> PresetFetchOutcome
     PresetFetchOutcome::Changed(fp, entries)
 }
 
+/// Parses a `BrowseQueueResponse` (queried with `<QueueName>CurrentQueue</QueueName>`)
+/// into the live play queue. Confirmed against the real WiiM Android app's own SOAP
+/// traffic (no device capture on hand exercises this call with a populated queue:
+/// `<QueueContext>` (escaped once, same as `GetKeyMapping`'s above) holds
+/// `<PlayList><ListName>.../<ListInfo>{...,TrackNumber,LastPlayIndex,...}</ListInfo>
+/// <Tracks><Track1>{<URL>,<Metadata>,<Id>,<Source>,<ChapterNumber>,<Chapters>}
+/// </Track1><Track2>...</Tracks></PlayList>`. Tracks are numbered `Track1..TrackN`
+/// (`N` = `<TrackNumber>`), the same numbered-block convention `Key1..Key12`/
+/// `List1..List3` already use elsewhere in this service (see
+/// `parse_key_mapping_presets()` above). `LastPlayIndex` is the 1-based
+/// currently-playing index into this same list. Each track's `<Metadata>` is a
+/// DIDL-Lite item escaped a *second* time — identical situation to `GetInfoEx`'s
+/// `TrackMetaData`/GENA's `CurrentTrackMetaData` (see `parse_info_ex_response()`'s doc
+/// comment) — one more `unescape_xml_entities()` pass recovers real DIDL-Lite XML,
+/// handed to the existing `parse_didl_item()` rather than re-deriving title/artist/
+/// album/art extraction here.
+///
+/// An algorithmic/streaming source (a Tidal "Mix", confirmed live) can legitimately
+/// report `TrackNumber=0` with no `<Tracks>` block at all — the device has no local
+/// track list for it, `<SearchUrl>` points at the streaming service's own API instead
+/// — that's rendered as an empty queue (`Changed(fp, vec![], None)`), not an error.
+///
+/// Fingerprint computed from the raw `(index, title, artist, album)` tuples before
+/// building any `QueueTrackEntry`, same discipline `parse_key_mapping_presets()` uses.
+fn parse_current_queue(envelope: &str, old_fp: &str) -> QueueFetchOutcome {
+    let Some(queue_context) = extract_tag(envelope, "QueueContext") else {
+        return QueueFetchOutcome::Unsupported;
+    };
+    let play_list = unescape_xml_entities(&queue_context);
+
+    let list_info = extract_tag(&play_list, "ListInfo").unwrap_or_default();
+    let track_number: u32 = extract_tag(&list_info, "TrackNumber")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    let current_index: Option<u32> = extract_tag(&list_info, "LastPlayIndex")
+        .and_then(|s| s.parse().ok());
+
+    let tracks_block = extract_tag(&play_list, "Tracks").unwrap_or_default();
+    let tracks: Vec<(u32, DidlItem)> = (1..=track_number)
+        .filter_map(|n| {
+            let track_xml = extract_tag(&tracks_block, &format!("Track{n}"))?;
+            let metadata_raw = extract_tag(&track_xml, "Metadata").unwrap_or_default();
+            let didl = unescape_xml_entities(&metadata_raw);
+            Some((n, parse_didl_item(&didl)))
+        })
+        .collect();
+
+    // Includes `current_index`, not just the track list itself — the most
+    // common real-world change tick-to-tick is simply advancing to the next
+    // track *within* an otherwise-unchanged queue, which wouldn't move the
+    // track-only fingerprint at all and would leave the current-track
+    // highlight stale if `current_index` weren't part of what "changed"
+    // means here.
+    let fp = {
+        let parts: Vec<String> = tracks.iter()
+            .map(|(n, item)| format!("{n}:{}:{}:{}", item.title, item.artist, item.album))
+            .collect();
+        format!("{current_index:?}|{}", parts.join("|"))
+    };
+    if fp == old_fp { return QueueFetchOutcome::Unchanged; }
+
+    let entries = tracks.into_iter()
+        .map(|(n, item)| QueueTrackEntry {
+            index: n, title: item.title, artist: item.artist, album: item.album,
+            art_uri: item.album_art_uri,
+        })
+        .collect();
+    QueueFetchOutcome::Changed(fp, entries, current_index)
+}
+
 /// One DIDL-Lite `<item>`'s fields, parsed the same way regardless of which
 /// wire wrapper embedded it — `GetInfoEx`'s `TrackMetaData` element text
 /// (`parse_info_ex_response`, below) and GENA `AVTransport` NOTIFY's
@@ -694,6 +840,7 @@ pub(crate) fn parse_didl_item(didl: &str) -> DidlItem {
 /// `parse_didl_item` for the rest.
 fn parse_info_ex_response(envelope: &str) -> anyhow::Result<InfoEx> {
     let transport_state = extract_tag(envelope, "CurrentTransportState").unwrap_or_default();
+    let track            = extract_tag(envelope, "Track").and_then(|s| s.parse().ok());
     let rel_time        = extract_tag(envelope, "RelTime").unwrap_or_default();
     let track_duration  = extract_tag(envelope, "TrackDuration").unwrap_or_default();
     let current_volume  = extract_tag(envelope, "CurrentVolume").and_then(|s| s.parse().ok()).unwrap_or(0);
@@ -708,7 +855,7 @@ fn parse_info_ex_response(envelope: &str) -> anyhow::Result<InfoEx> {
     let item = parse_didl_item(&didl);
 
     Ok(InfoEx {
-        transport_state, rel_time, track_duration, current_volume, current_mute,
+        transport_state, track, rel_time, track_duration, current_volume, current_mute,
         loop_mode, play_type, play_medium, track_source,
         title: item.title, artist: item.artist, album: item.album, album_art_uri: item.album_art_uri,
         actual_quality: item.actual_quality, quality: item.quality, bitrate: item.bitrate,
@@ -818,6 +965,25 @@ mod tests {
             Some("http://i.scdn.co/image/ab67616d0000b273b6bd44cf06bf8f4d5ce1e080"),
         );
         assert_eq!(info.play_medium, "SPOTIFY");
+    }
+
+    /// `<Track>` — confirmed real (`bug.txt`, 2026-07-26, an Audio Pro
+    /// unit) but no capture on hand happens to have a non-zero value (every
+    /// `GetInfoEx` capture currently on hand is `<Track>0</Track>`, e.g.
+    /// Spotify Connect sessions where the device doesn't manage a real
+    /// queue) — hand-transcribed from the real response since no suitable
+    /// capture exists, same as `gena.rs`'s NOTIFY tests. Minimal envelope:
+    /// `extract_tag()` is non-namespace-aware substring search, so only the
+    /// tags actually asserted on need to be present.
+    #[test]
+    fn info_ex_parses_track() {
+        let envelope = r#"<u:GetInfoExResponse xmlns:u="urn:schemas-upnp-org:service:AVTransport:1">
+<CurrentTransportState>TRANSITIONING</CurrentTransportState>
+<Track>2</Track>
+<TrackDuration>00:00:00</TrackDuration>
+</u:GetInfoExResponse>"#;
+        let info = parse_info_ex_response(envelope).unwrap();
+        assert_eq!(info.track, Some(2));
     }
 
     #[test]

@@ -5,7 +5,7 @@
 //! geometry bookkeeping and persistence, and the window-level chrome
 //! (header, bottom bar, mini top bar/resize).
 
-mod chrome;
+pub(crate) mod chrome;
 mod display;
 mod geometry;
 
@@ -415,8 +415,9 @@ impl DeviceWindow {
 
         let (header, sidebar_btn, kiosk_btn, mini_btn, connecting_spinner) = build_header(init_dev_cfg.panel_visible);
         let presets = views::presets::PresetsView::new(&ds, &icons);
+        let play_queue = views::play_queue::PlayQueueView::new(&ds);
         let io = views::io::InputOutputView::new(&ds, &icons);
-        let left_pane = build_left_pane(&presets, &io);
+        let left_pane = build_left_pane(&ds, &presets, &play_queue, &io);
         // Blurred-artwork background layer for the full window — built
         // before the playback view so the view can be handed a reference
         // (it feeds it artwork alongside its own FlipCover); attached to
@@ -603,13 +604,15 @@ impl DeviceWindow {
         // whatever the DeviceState already has cached.
         inner.populate_all();
 
-        // The left-pane views stay permanently active — each
-        // self-subscribes to the DeviceState signals it needs, and the old
-        // window-driven update paths refreshed them regardless of which
-        // panel was showing anyway. The two playback views are
-        // mode-following: exactly one is active at a time
-        // (enter/exit_mini_mode flip them; activation runs the incoming
-        // view's own full catch-up refresh).
+        // `io`/`status_bar` stay permanently active — each self-subscribes
+        // to the DeviceState signals it needs, and the old window-driven
+        // update paths refreshed them regardless of which panel was
+        // showing anyway. `presets`/`play_queue` (built in
+        // `build_left_pane()`) are mode-following instead, same shape as
+        // the two playback views below: exactly one active at a time,
+        // Presets by default — its own toggle-button handler activates it,
+        // this call just performs the equivalent of that initial toggle for
+        // a widget that starts life already selected.
         inner.presets.set_active(true);
         inner.io.set_active(true);
         inner.status_bar.set_active(true);

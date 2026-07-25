@@ -19,6 +19,10 @@
 ///                        different physical thing (a battery-powered
 ///                        accessory, not the device's own network link)
 /// * `presets-changed`  — preset list (re)loaded; UI should re-read `presets()`
+/// * `queue-changed`    — live play queue (re)loaded; UI should re-read `queue()`.
+///                        Only ever fires while something holds a
+///                        `QueueWatchGuard` (`acquire_queue_watch()`) — UPnP-only,
+///                        polled on demand, not part of the always-on rotation.
 
 /// Bitmask values for the `playback-changed` signal parameter.
 pub mod playback_changed {
@@ -180,6 +184,10 @@ enum PollData {
     Http { status: Option<PlayerStatus>, meta: MetaOutcome, bt_status: Option<ApiOutcome<BtStatus>> },
     Upnp { info: Option<upnp::InfoEx>, bt_status: Option<ApiOutcome<BtStatus>> },
     PresetArt { slot: usize, url: String, bytes: Option<Vec<u8>> },
+    /// A queue-track artwork download completing — same "rides the fast-poll
+    /// channel because that's the existing pipeline, not a fast-poll result
+    /// itself" reasoning as `PresetArt`. See `dispatch_pending_queue_art()`.
+    QueueArt { url: String, bytes: Option<Vec<u8>> },
 }
 
 /// Raw result of this tick's `getMetaInfo` attempt (or reason it wasn't
@@ -216,19 +224,21 @@ enum SlowPollPhase {
     Outputs,
     OutputStatus,
     DeviceInfo,
+    PlayQueue,
 }
 
 impl SlowPollPhase {
     const FIRST: Self = Self::Presets;
 
-    /// The phase after this one; wraps back to `FIRST` after `DeviceInfo`,
+    /// The phase after this one; wraps back to `FIRST` after `PlayQueue`,
     /// which the caller uses as the "rotation complete" signal.
     fn next(self) -> Self {
         match self {
             Self::Presets      => Self::Outputs,
             Self::Outputs      => Self::OutputStatus,
             Self::OutputStatus => Self::DeviceInfo,
-            Self::DeviceInfo   => Self::FIRST,
+            Self::DeviceInfo   => Self::PlayQueue,
+            Self::PlayQueue    => Self::FIRST,
         }
     }
 }
@@ -250,6 +260,11 @@ enum SlowPollResult {
     Outputs(ApiOutcome<Vec<OutputEntry>>),
     OutputStatus(ApiOutcome<AudioOutputStatus>),
     DeviceInfo(Option<DeviceInfo>),
+    /// `None` when the phase was skipped this tick (not watched, not
+    /// supported, or no `UpnpClient` discovered yet) — distinct from
+    /// `Some(QueueFetchOutcome::Unsupported)`, which is a confirmed answer
+    /// from the device itself.
+    PlayQueue(Option<upnp::QueueFetchOutcome>),
 }
 
 /// Consecutive `PresetFetchOutcome::Failed` results (network/transport
@@ -444,6 +459,8 @@ async fn run_slow_poll_phase(
     upnp_client:    Option<UpnpClient>,
     preset_source:  capabilities::PresetSource,
     preset_probe_failures: u32,
+    queue_fp:       String,
+    queue_wanted:   bool,
 ) -> SlowPollResult {
     match phase {
         SlowPollPhase::Presets => {
@@ -458,6 +475,16 @@ async fn run_slow_poll_phase(
             SlowPollResult::OutputStatus(client.get_audio_output().await),
         SlowPollPhase::DeviceInfo =>
             SlowPollResult::DeviceInfo(client.get_device_info().await.ok()),
+        SlowPollPhase::PlayQueue => {
+            // Not watched (or no `UpnpClient` discovered yet this tick) —
+            // `None` distinguishes "skipped" from a real device answer, see
+            // `SlowPollResult::PlayQueue`'s doc comment.
+            let outcome = match (queue_wanted, upnp_client) {
+                (true, Some(uc)) => Some(uc.browse_current_queue(&queue_fp).await),
+                _ => None,
+            };
+            SlowPollResult::PlayQueue(outcome)
+        }
     }
 }
 
@@ -756,6 +783,39 @@ struct Inner {
     /// request doesn't get redispatched again on every subsequent tick
     /// before it resolves.
     preset_art_inflight: HashSet<usize>,
+    /// Number of outstanding `QueueWatchGuard`s for this device — the live
+    /// play queue is only polled (`SlowPollPhase::PlayQueue`) while this is
+    /// > 0, mirroring `full_clients`'s Simple/Full mode shape but scoped to
+    /// just this one feature rather than the whole poll set. See
+    /// `acquire_queue_watch()`.
+    queue_watchers: u32,
+    /// Live play queue, cached from the last successful
+    /// `UpnpClient::browse_current_queue()` — empty while unwatched/
+    /// unsupported/not yet fetched.
+    queue: Vec<upnp::QueueTrackEntry>,
+    /// 1-based index into `queue` of the currently-playing track
+    /// (`BrowseQueue`'s `LastPlayIndex`), `None` if unknown.
+    queue_current_index: Option<u32>,
+    /// Fingerprint of the last fetched queue (used to skip re-fetches/
+    /// redundant `queue-changed` emissions).
+    queue_fp: String,
+    /// Queue-row artwork, keyed by URL rather than track index — unlike
+    /// presets' fixed 12 slots, the queue's length/order/content can change
+    /// on every fetch, so a slot-keyed cache would need constant
+    /// invalidation for no benefit (the same album art URL commonly repeats
+    /// across tracks anyway, which this cache shape naturally dedupes).
+    queue_art_cache: HashMap<String, Vec<u8>>,
+    /// URLs with a `queue_art_cache` fetch currently in flight, so a
+    /// slow/throttled CDN request doesn't get redispatched every tick
+    /// before it resolves — same reasoning as `preset_art_inflight`.
+    queue_art_inflight: HashSet<String>,
+    /// A `dispatch_queue_fetch_now()` call is currently in flight — guards
+    /// against piling up concurrent `BrowseQueue` calls to the same device
+    /// (these embedded HTTP servers handle that poorly, same reasoning as
+    /// everywhere else in this file) when multiple independent triggers
+    /// (bootstrap, a GENA-signalled refetch, the empty-queue retry ticker)
+    /// could otherwise all fire close together.
+    queue_fetch_inflight: bool,
     /// Pending volume level to send on the next 1s tick (-1 = none pending).
     target_volume:    i32,
     /// When the last volume API command was sent (None = never).
@@ -938,6 +998,13 @@ impl Default for Inner {
             output_status_probe_failures: 0,
             pending_preset_art:  HashMap::new(),
             preset_art_inflight: HashSet::new(),
+            queue_watchers:      0,
+            queue:               Vec::new(),
+            queue_current_index: None,
+            queue_fp:            String::new(),
+            queue_art_cache:     HashMap::new(),
+            queue_art_inflight:  HashSet::new(),
+            queue_fetch_inflight: false,
             target_volume:    -1,
             last_volume_cmd:  None,
             target_seek:      None,
@@ -1087,6 +1154,7 @@ mod imp {
                     Signal::builder("network-changed").build(),
                     Signal::builder("remote-changed").build(),
                     Signal::builder("presets-changed").build(),
+                    Signal::builder("queue-changed").build(),
                 ]
             })
         }
@@ -1107,6 +1175,20 @@ pub struct FullModeGuard {
 impl Drop for FullModeGuard {
     fn drop(&mut self) {
         self.ds.release_full();
+    }
+}
+
+/// RAII handle for live-queue polling, from `DeviceState::acquire_queue_watch()`
+/// — same shape as `FullModeGuard`, just scoped to `SlowPollPhase::PlayQueue`
+/// instead of the whole poll set. Hold one for as long as something (e.g. a
+/// visible `PlayQueueView`) wants the live queue kept up to date.
+pub struct QueueWatchGuard {
+    ds: DeviceState,
+}
+
+impl Drop for QueueWatchGuard {
+    fn drop(&mut self) {
+        self.ds.release_queue_watch();
     }
 }
 
@@ -1319,6 +1401,14 @@ impl DeviceState {
                 inner.presets           = Vec::new();
                 inner.pending_preset_art.clear();
                 inner.preset_art_inflight.clear();
+                // Same reset for the queue — `queue_watchers` is left alone
+                // (it reflects UI state, not connection state; an open
+                // queue view stays "watching" across a reconnect).
+                inner.queue_fp          = String::new();
+                inner.queue             = Vec::new();
+                inner.queue_current_index = None;
+                inner.queue_art_cache.clear();
+                inner.queue_art_inflight.clear();
                 inner.connection_state  = ConnectionState::Connected;
             }
             ds.recompute_access();
@@ -1687,6 +1777,23 @@ impl DeviceState {
         let preset_probe_failures = inner.preset_probe_failures;
         let preset_fp     = inner.preset_fp.clone();
         let upnp_client   = inner.upnp_client.clone();
+        // This rotation phase is a *fallback* only — while `gena_pq` is
+        // `Healthy`, `PlayQueue` NOTIFYs (`apply_gena_notify()`) already
+        // keep content current on their own (bootstrapped by
+        // `acquire_queue_watch()`'s own immediate fetch), so polling here
+        // too would just be redundant traffic. Once `gena_pq` drops out of
+        // `Healthy` (or GENA's off for this device entirely), this phase is
+        // what keeps the queue from going stale until it recovers.
+        // `!queue_fetch_inflight` avoids this rotation phase firing a second
+        // concurrent `BrowseQueue` call to the same device while
+        // `dispatch_queue_fetch_now()` (bootstrap/GENA-triggered/empty-retry)
+        // already has one outstanding.
+        let queue_wanted = inner.queue_watchers > 0
+            && inner.access == AccessMethod::UpnpPolled
+            && upnp_client.as_ref().is_some_and(UpnpClient::has_play_queue)
+            && inner.gena_pq.health != gena::GenaHealth::Healthy
+            && !inner.queue_fetch_inflight;
+        let queue_fp      = inner.queue_fp.clone();
         drop(inner);
 
         let Some(client) = client else { return glib::ControlFlow::Continue };
@@ -1704,8 +1811,11 @@ impl DeviceState {
         self.dispatch_slow_poll(
             &client, slow_tx, dispatch_phase, probe_outputs, probe_output_status,
             preset_source, preset_probe_failures, preset_fp, upnp_client,
+            queue_fp, queue_wanted,
         );
         self.dispatch_pending_preset_art(&client, poll_tx);
+        self.dispatch_pending_queue_art(poll_tx);
+        self.dispatch_queue_empty_retry();
 
         glib::ControlFlow::Continue
     }
@@ -2206,6 +2316,8 @@ impl DeviceState {
         preset_probe_failures: u32,
         preset_fp:             String,
         upnp_client:           Option<UpnpClient>,
+        queue_fp:              String,
+        queue_wanted:          bool,
     ) {
         let Some(phase) = dispatch_phase else { return };
         let enabled = match phase {
@@ -2213,6 +2325,7 @@ impl DeviceState {
             SlowPollPhase::OutputStatus => probe_output_status,
             SlowPollPhase::Presets => preset_source != capabilities::PresetSource::Unavailable,
             SlowPollPhase::DeviceInfo => true,
+            SlowPollPhase::PlayQueue => queue_wanted,
         };
         if !enabled {
             dbg(self, &format!("slow poll: phase {phase:?} skipped (not supported)"));
@@ -2231,6 +2344,7 @@ impl DeviceState {
         let handle = self.rt().spawn(async move {
             let result = run_slow_poll_phase(
                 cp, phase, preset_fp, upnp_client, preset_source, preset_probe_failures,
+                queue_fp, queue_wanted,
             ).await;
             // Every phase here is one or two calls straight to the device
             // itself, so this should always be fast — logged (round-trip,
@@ -2495,6 +2609,7 @@ impl DeviceState {
                     SlowPollResult::Outputs(outputs)     => ds.handle_slow_poll_outputs(outputs),
                     SlowPollResult::OutputStatus(status) => ds.handle_slow_poll_output_status(status),
                     SlowPollResult::DeviceInfo(info)     => ds.handle_slow_poll_device_info(info),
+                    SlowPollResult::PlayQueue(outcome)   => ds.handle_slow_poll_play_queue(outcome),
                 }
             }
         });
@@ -2583,6 +2698,178 @@ impl DeviceState {
         }
         dbg(self, "signal: presets-changed");
         self.emit_by_name::<()>("presets-changed", &[]);
+    }
+
+    /// One-off, on-demand `BrowseQueue` fetch outside the slow-poll rotation
+    /// — reuses `handle_slow_poll_play_queue()` to apply the result via the
+    /// exact same path the rotation's own `SlowPollPhase::PlayQueue` result
+    /// takes, just triggered directly instead of waiting for that phase to
+    /// come up. Two callers: `acquire_queue_watch()`'s mandatory bootstrap
+    /// fetch (GENA never carries track content, so the very first fetch is
+    /// never optional), and `apply_gena_notify()`'s `queue_needs_refetch`
+    /// (a `PlayQueue` NOTIFY whose fields indicate the queue's content may
+    /// have changed).
+    /// Same one-off spawn-then `glib::spawn_future_local` bridge shape used
+    /// elsewhere in this file for a single request/response (e.g.
+    /// `fetch_device_info()`), not the generic `SlowPollResult` channel -
+    /// that channel exists for the rotation's own cross-thread bridging,
+    /// this is a single independent call.
+    /// A no-op if there's no `UpnpClient` yet (nothing to fetch with;
+    /// the rotation's own `SlowPollPhase::PlayQueue` fallback will pick this
+    /// up once one's discovered and `gena_pq` still isn't `Healthy`), or if
+    /// a previous call is still in flight (`queue_fetch_inflight` — see its
+    /// doc comment).
+    fn dispatch_queue_fetch_now(&self) {
+        let (uc, queue_fp, already_inflight) = {
+            let mut inner = self.imp().inner.borrow_mut();
+            let already_inflight = inner.queue_fetch_inflight;
+            if !already_inflight {
+                inner.queue_fetch_inflight = true;
+            }
+            (inner.upnp_client.clone(), inner.queue_fp.clone(), already_inflight)
+        };
+        if already_inflight {
+            dbg(self, "queue fetch: already in flight, skipping this trigger");
+            return;
+        }
+        let Some(uc) = uc else {
+            self.imp().inner.borrow_mut().queue_fetch_inflight = false;
+            return;
+        };
+        let (tx, rx) = async_channel::bounded(1);
+        self.rt().spawn(async move {
+            let outcome = uc.browse_current_queue(&queue_fp).await;
+            let _ = tx.send(outcome).await;
+        });
+        let ds = self.downgrade();
+        glib::spawn_future_local(async move {
+            let Ok(outcome) = rx.recv().await else { return };
+            let Some(ds) = ds.upgrade() else { return };
+            ds.imp().inner.borrow_mut().queue_fetch_inflight = false;
+            ds.handle_slow_poll_play_queue(Some(outcome));
+        });
+    }
+
+    /// Retries a still-empty live queue roughly once per second while
+    /// something's watching — additive/independent of everything else that
+    /// can trigger a fetch (GENA content-change trigger, bootstrap). Fixes
+    /// a real race confirmed live: a `BrowseQueue` fetch issued right as a
+    /// queue-switch NOTIFY arrives can land before the device finishes
+    /// populating the new queue server-side, caching a genuinely empty
+    /// result that (before this) nothing would ever revisit once no further
+    /// NOTIFY happened to arrive.
+    /// Cheap while it stays empty (one `BrowseQueue` call, same as any other
+    /// slow-poll-ish fetch) and self-limiting the moment the queue is non-empty.
+    /// Called every `do_poll()` tick; `dispatch_queue_fetch_now()`'s own
+    /// `queue_fetch_inflight` guard keeps this from piling calls up if a
+    /// fetch is already outstanding.
+    fn dispatch_queue_empty_retry(&self) {
+        let should_retry = {
+            let inner = self.imp().inner.borrow();
+            inner.queue_watchers > 0 && inner.queue.is_empty() && !inner.queue_fetch_inflight
+        };
+        if should_retry {
+            dbg(self, "queue: still empty, retrying BrowseQueue");
+            self.dispatch_queue_fetch_now();
+        }
+    }
+
+    /// Applies a `BrowseQueue` fetch result — either a `SlowPollPhase::PlayQueue`
+    /// rotation tick (the unhealthy-`gena_pq` fallback), or a one-off
+    /// `dispatch_queue_fetch_now()` call (the mandatory bootstrap fetch, or
+    /// a GENA-NOTIFY-triggered content refetch). `None` means the rotation
+    /// phase was skipped this tick (see `SlowPollResult::PlayQueue`'s doc
+    /// comment) — nothing to do; `dispatch_queue_fetch_now()` never passes
+    /// `None`. `Unsupported`/`Failed` are logged but otherwise left alone
+    /// (no retry-budget bookkeeping like presets/outputs — both callers
+    /// already have their own retry story: the rotation asks again next
+    /// cycle, and a NOTIFY-triggered call just waits for the next NOTIFY;
+    /// `play_queue_supported()` also already gates whether the UI offers
+    /// this at all, so a confirmed-unsupported answer here would be
+    /// surprising rather than routine). Any art whose row's `art_uri`
+    /// disappeared from the new list is dropped from the cache so it
+    /// doesn't grow unboundedly across many different queues over a long
+    /// session.
+    fn handle_slow_poll_play_queue(&self, outcome: Option<upnp::QueueFetchOutcome>) {
+        use upnp::QueueFetchOutcome;
+        let outcome = match outcome {
+            Some(o) => o,
+            None => return,
+        };
+        match outcome {
+            QueueFetchOutcome::Unchanged => {
+                dbg(self, "slow poll: play queue unchanged");
+            }
+            QueueFetchOutcome::Unsupported => {
+                dbg(self, "slow poll: play queue unsupported");
+            }
+            QueueFetchOutcome::Failed => {
+                dbg(self, "slow poll: play queue fetch failed");
+            }
+            QueueFetchOutcome::Changed(new_fp, entries, current_index) => {
+                dbg(self, &format!("slow poll: play queue updated: {} tracks", entries.len()));
+                {
+                    let mut inner = self.imp().inner.borrow_mut();
+                    inner.queue_fp            = new_fp;
+                    inner.queue_current_index = current_index;
+                    let live_urls: HashSet<&str> = entries.iter()
+                        .filter_map(|e| e.art_uri.as_deref())
+                        .collect();
+                    inner.queue_art_cache.retain(|url, _| live_urls.contains(url.as_str()));
+                    inner.queue = entries;
+                }
+                dbg(self, "signal: queue-changed");
+                self.emit_by_name::<()>("queue-changed", &[]);
+            }
+        }
+    }
+
+    /// Dispatch a fetch for every queue-track artwork URL not already
+    /// cached/in flight — mirrors `dispatch_pending_preset_art()`'s shape,
+    /// but keyed by URL (not slot) since the queue's own entries already
+    /// carry `art_uri` directly, no separate "pending" bookkeeping needed.
+    /// Called every fast-poll tick like `dispatch_pending_preset_art()`,
+    /// same reasoning: these are external CDN requests, not WiiM API calls.
+    fn dispatch_pending_queue_art(&self, poll_tx: &async_channel::Sender<PollData>) {
+        let Some(client) = self.imp().inner.borrow().client.clone() else { return };
+        let to_fetch: Vec<String> = {
+            let mut inner = self.imp().inner.borrow_mut();
+            let urls: Vec<String> = inner.queue.iter()
+                .filter_map(|e| e.art_uri.clone())
+                .filter(|url| !inner.queue_art_cache.contains_key(url) && !inner.queue_art_inflight.contains(url))
+                .collect();
+            for url in &urls {
+                inner.queue_art_inflight.insert(url.clone());
+            }
+            urls
+        };
+        for url in to_fetch {
+            dbg(self, &format!("queue art: fetching {url}"));
+            let cp = client.clone();
+            let tx = poll_tx.clone();
+            self.rt().spawn(async move {
+                let bytes = cp.fetch_bytes(&url).await.ok();
+                let _ = tx.send(PollData::QueueArt { url, bytes }).await;
+            });
+        }
+    }
+
+    /// Applies one queue-track artwork fetch result (`dispatch_pending_queue_art`).
+    /// `bytes` is `None` on failure — stored as an empty `Vec` so the row
+    /// falls back to a placeholder icon and (like `process_preset_art_result()`)
+    /// isn't refetched every tick forever.
+    fn process_queue_art_result(&self, url: String, bytes: Option<Vec<u8>>) {
+        let mut inner = self.imp().inner.borrow_mut();
+        inner.queue_art_inflight.remove(&url);
+        // Stale result: nothing in the current queue still wants this URL
+        // (the list moved on while the fetch was in flight) — discard.
+        if !inner.queue.iter().any(|e| e.art_uri.as_deref() == Some(url.as_str())) {
+            return;
+        }
+        inner.queue_art_cache.insert(url, bytes.unwrap_or_default());
+        drop(inner);
+        dbg(self, "signal: queue-changed (art)");
+        self.emit_by_name::<()>("queue-changed", &[]);
     }
 
     /// Owns the give-up/retry-budget decision for `getSoundCardModeSupportList`
@@ -2895,6 +3182,7 @@ impl DeviceState {
                 self.process_poll_upnp(info, bt_status, art_tx);
             }
             PollData::PresetArt { slot, url, bytes } => self.process_preset_art_result(slot, url, bytes),
+            PollData::QueueArt { url, bytes } => self.process_queue_art_result(url, bytes),
         }
     }
 
@@ -3356,6 +3644,7 @@ impl DeviceState {
 
         let mut art_url_for_fetch: Option<String> = None;
         let mut art_cleared = false;
+        let mut queue_index_changed = false;
 
         let emit_input_changed;
         let emit_inputs_changed;
@@ -3378,6 +3667,20 @@ impl DeviceState {
 
             if let Some(bts) = &bt_status {
                 if Self::apply_bt_status(&mut inner, bts) { playback_mask |= playback_changed::ALL; }
+            }
+
+            // `<Track>` — same standard eventable variable GENA's
+            // `CurrentTrack` NOTIFY carries (`AvTransportEvent::current_track`),
+            // just from a plain poll instead. Confirmed present in
+            // `GetInfoEx` on both a WiiM Ultra and an Audio Pro unit —
+            // reliable enough to trust directly, unlike `PlayQueue`'s own
+            // NOTIFY fields. This is what keeps the play-queue view's
+            // current-track highlight correct even with GENA off/unhealthy.
+            if let Some(track) = info.track {
+                if inner.queue_watchers > 0 && Some(track) != inner.queue_current_index {
+                    inner.queue_current_index = Some(track);
+                    queue_index_changed = true;
+                }
             }
 
             let decoded_status = playback::decode_status_upnp(&info.transport_state);
@@ -3583,6 +3886,10 @@ impl DeviceState {
         if playback_mask != 0 {
             dbg(self, &format!("signal: playback-changed mask={:#x}", playback_mask));
             self.emit_by_name::<()>("playback-changed", &[&playback_mask]);
+        }
+        if queue_index_changed {
+            dbg(self, "signal: queue-changed (index from GetInfoEx poll)");
+            self.emit_by_name::<()>("queue-changed", &[]);
         }
         self.check_gena_health(av_mismatch, rc_mismatch, pq_mismatch);
     }
@@ -4125,6 +4432,92 @@ impl DeviceState {
         }
     }
 
+    // ── Live play queue watching ────────────────────────────────────────────
+    // Same refcounted shape as Simple/Full above, but scoped to just
+    // `SlowPollPhase::PlayQueue` — the live queue is UPnP-only and
+    // comparatively heavy to browse, so it's only polled at all while
+    // something (a visible `PlayQueueView`) is actually watching, unlike
+    // presets which poll unconditionally as part of the regular rotation.
+
+    /// Acquire a queue-watch handle. Bumps the refcount immediately; while
+    /// *any* `QueueWatchGuard` for this device is alive, `PlayQueue` GENA
+    /// NOTIFYs are applied to `queue`/`queue_current_index`
+    /// (`apply_gena_notify()`), and `SlowPollPhase::PlayQueue` acts as a
+    /// polling fallback for as long as `gena_pq` isn't `Healthy`. Stops the
+    /// moment the last guard drops. Cheap and safe to call redundantly.
+    /// The 0 → 1 transition always forces one immediate `BrowseQueue` fetch
+    /// (`dispatch_queue_fetch_now()`) — GENA never carries actual track
+    /// content (title/artist/album/art), only a summary, so there's no way
+    /// to get the *initial* list from NOTIFYs alone regardless of health.
+    pub fn acquire_queue_watch(&self) -> QueueWatchGuard {
+        let n = {
+            let mut inner = self.imp().inner.borrow_mut();
+            inner.queue_watchers += 1;
+            inner.queue_watchers
+        };
+        if n == 1 {
+            dbg(self, &format!("queue watch: started (queue_watchers={n})"));
+            self.dispatch_queue_fetch_now();
+        }
+        QueueWatchGuard { ds: self.clone() }
+    }
+
+    fn release_queue_watch(&self) {
+        let mut inner = self.imp().inner.borrow_mut();
+        debug_assert!(inner.queue_watchers > 0, "release_queue_watch() with no outstanding QueueWatchGuard");
+        inner.queue_watchers = inner.queue_watchers.saturating_sub(1);
+        if inner.queue_watchers == 0 {
+            dbg(self, "queue watch: stopped (queue_watchers=0)");
+            // Cached data isn't cleared here — a later re-acquire (e.g.
+            // reopening the queue tab) shows the last-known list instantly
+            // while a fresh fetch is in flight, same "stale-but-not-wrong"
+            // tradeoff `apply_disconnected()` makes for presets.
+        }
+    }
+
+    /// Whether this device can offer a live play queue at all — UPnP-only,
+    /// no HTTP fallback exists. Checked by the UI to decide whether to show
+    /// the Queue tab, and by `dispatch_slow_poll()` to gate the actual
+    /// fetch alongside `queue_watchers`.
+    pub fn play_queue_supported(&self) -> bool {
+        let inner = self.imp().inner.borrow();
+        inner.access == AccessMethod::UpnpPolled
+            && inner.upnp_client.as_ref().is_some_and(UpnpClient::has_play_queue)
+    }
+
+    /// Current live-queue snapshot (entries, 1-based currently-playing
+    /// index) — empty/`None` while unwatched/unsupported/not yet fetched.
+    pub fn queue(&self) -> (Vec<upnp::QueueTrackEntry>, Option<u32>) {
+        let inner = self.imp().inner.borrow();
+        (inner.queue.clone(), inner.queue_current_index)
+    }
+
+    /// Cached artwork bytes for one queue row's `art_uri`, if the fetch has
+    /// completed — `None` while still pending (or if it isn't `art_uri` for
+    /// any current row, which nothing fetches art for in the first place).
+    pub fn queue_art_bytes(&self, url: &str) -> Option<Vec<u8>> {
+        self.imp().inner.borrow().queue_art_cache.get(url).cloned()
+    }
+
+    pub fn connect_queue_changed<F: Fn(&Self) + 'static>(&self, f: F) -> glib::SignalHandlerId {
+        self.connect_local("queue-changed", false, move |args| {
+            f(&args[0].get::<Self>().unwrap());
+            None
+        })
+    }
+
+    /// Jump playback to `index` (1-based, matching `QueueTrackEntry::index`)
+    /// within the live queue — fire-and-forget, mirrors the preset-button
+    /// command pattern in `ui/views/presets.rs`. `trigger_poll()` afterward
+    /// so the confirming poll lands promptly instead of waiting a full tick.
+    pub fn play_queue_track(&self, index: u32) {
+        let Some(uc) = self.imp().inner.borrow().upnp_client.clone() else { return };
+        self.rt().spawn(async move {
+            let _ = uc.play_queue_index(index).await;
+        });
+        self.trigger_poll();
+    }
+
     /// Whether *anything* currently wants this device's GENA session kept
     /// alive: `Full` mode (any open window), or `Simple` mode with
     /// song-info tracking on (nothing to do with `Full` mode's
@@ -4270,6 +4663,13 @@ impl DeviceState {
         let mut emit_inputs_changed = false;
         let mut needs_immediate_poll = false;
         let mut art_url_for_fetch: Option<String> = None;
+        // Set from either the "AVTransport" arm (`CurrentTrack`, ordinary
+        // advance) or the "PlayQueue" arm (`CurrentIndex`).
+        // `queue_needs_refetch` is `PlayQueue`-only: a NOTIFY
+        // whose fields indicate the queue's *content* (not just the index)
+        // may have changed.
+        let mut queue_index_changed = false;
+        let mut queue_needs_refetch = false;
         let (mask, old_health, new_health): (u32, gena::GenaHealth, gena::GenaHealth) = match payload.service {
             "AVTransport" => 'av: {
                 let ev = parse_av_transport_event(&payload.last_change);
@@ -4504,6 +4904,36 @@ impl DeviceState {
                         mask |= playback_changed::OTHER;
                     }
                 }
+                // Ordinary track advance/selection within the live play
+                // queue — standard UPnP eventable state variable, fires on
+                // every device tested regardless of whether `PlayQueue`'s
+                // own NOTIFY also does (see `AvTransportEvent::current_track`'s
+                // doc comment). Only bothers touching `queue_current_index`
+                // while something's actually watching — no point updating
+                // state nobody reads.
+                if let Some(idx) = ev.current_track {
+                    if inner.queue_watchers > 0 && Some(idx) != inner.queue_current_index {
+                        inner.queue_current_index = Some(idx);
+                        queue_index_changed = true;
+                    }
+                }
+                // Supplementary refetch trigger, not the only line of
+                // defense — a same-length queue swap (old and new queue
+                // happening to have equal track counts) would pass this
+                // check silently, so it doesn't replace `playlist_name`'s
+                // own trigger or the empty-queue retry
+                // (`dispatch_queue_empty_retry()`), just adds another real
+                // signal on top: `NumberOfTracks` disagreeing with the
+                // cached queue length directly means the cache is stale.
+                if let Some(n) = ev.number_of_tracks {
+                    if inner.queue_watchers > 0 && n as usize != inner.queue.len() {
+                        dbg(self, &format!(
+                            "gena: AVTransport NumberOfTracks={n} disagrees with cached queue length {} — refetching BrowseQueue",
+                            inner.queue.len(),
+                        ));
+                        queue_needs_refetch = true;
+                    }
+                }
                 let old = inner.gena_av.notify_received();
                 (mask, old, inner.gena_av.health)
             }
@@ -4544,6 +4974,27 @@ impl DeviceState {
                         mask |= playback_changed::OTHER;
                     }
                 }
+                // `playlist_name` present is used *only* as a trigger to go
+                // get authoritative data via a real `BrowseQueue` fetch —
+                // never as data to trust/apply directly. Confirmed live
+                // that a fetch dispatched right as this NOTIFY arrives can
+                // race the device still populating the *new*
+                // queue server-side, landing an empty/wrong result.
+                // So `current_index` (and everything else about
+                // queue content) must come from that fetch's own response,
+                // never from this NOTIFY's own fields. This is deliberately
+                // not conditioned on `current_index` also being present
+                // (an earlier version required both) — `playlist_name`
+                // alone is already real device confirmation that its
+                // AudioPro-family misspelling `CurretPlayListName` is a
+                // genuine wire quirk, not just a WiiM Ultra one, so both
+                // spellings are covered by `parse_play_queue_event()`
+                // either way. `LoopMode`/ `LoopMpde` stays trusted directly,
+                // unrelated to queue *content* — same handling as before,
+                // just above.
+                if inner.queue_watchers > 0 && ev.playlist_name.is_some() {
+                    queue_needs_refetch = true;
+                }
                 let old = inner.gena_pq.notify_received();
                 (mask, old, inner.gena_pq.health)
             }
@@ -4573,6 +5024,14 @@ impl DeviceState {
         }
         if needs_immediate_poll {
             self.trigger_poll();
+        }
+        if queue_index_changed {
+            dbg(self, "signal: queue-changed (index from GENA NOTIFY)");
+            self.emit_by_name::<()>("queue-changed", &[]);
+        }
+        if queue_needs_refetch {
+            dbg(self, "gena: PlayQueue NOTIFY signals content change, refetching BrowseQueue");
+            self.dispatch_queue_fetch_now();
         }
     }
 
