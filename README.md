@@ -15,6 +15,7 @@ Licensed under the [MIT License](LICENSE).
 <a href="pics/main-dark.png"><img src="pics/thumbs/main-dark.png" width="150" alt="Main window, dark theme"></a>
 <a href="pics/mini-dark.png"><img src="pics/thumbs/mini-dark.png" width="150" alt="Mini window, dark theme"></a>
 <a href="pics/main-modern.png"><img src="pics/thumbs/main-modern.png" width="150" alt="Main window, modern theme"></a>
+<a href="pics/main-modern-queue.png"><img src="pics/thumbs/main-modern-queue.png" width="150" alt="Main window, modern theme with playqueue"></a>
 <a href="pics/mini-modern.png"><img src="pics/thumbs/mini-modern.png" width="150" alt="Mini window, modern theme"></a>
 <a href="pics/devlist.png"><img src="pics/thumbs/devlist.png" width="150" alt="Device list window"></a>
 <a href="pics/settings.png"><img src="pics/thumbs/settings.png" width="150" alt="Settings dialog"></a>
@@ -156,6 +157,19 @@ You can pretty-print this file using `target/debug/wiim-capdump`. I would apprec
 * Kiosk mode doesn't have a way to manually add a device by IP address yet
 
 ## Changelog ##
+  * 0.11.0 - 2026-07-25
+    * Add EQ editor for both PEQ and GEQ. Currently only tested/supported on
+	  WiiM devices. I also only have the latest firmware, so all the features
+	  such as per-source EQ, Stereo vs. L/R etc... are there but not much
+	  logic to "detect" that they are not supported if anybody uses an earlier
+	  firwmare still. In that case, please send me a capture !
+    * Add a crazy "Wood" custom theme with VFD-looking displays etc.. just for
+	  giggles and exercise the "themability" of things.
+    * Add Play Queue view. Currently in the side-pane along with presets,
+	  though I'm still thinking of changing how this is all presented (and
+	  possibly get rid of the side-pane in its current form).
+	  Feedback & suggestions welcome as always.
+
   * 0.10.4 - 2026-07-23
     * Fix warnings when playing from a RADIO-NETWORK source
 	* And Kiosk setting to hide the mouse cursor on touch screens
@@ -407,6 +421,8 @@ You can pretty-print this file using `target/debug/wiim-capdump`. I would apprec
 ![Screenshot](pics/mini-dark.png)
 **Main window, modern theme**
 ![Screenshot](pics/main-modern.png)
+**Mini window, modern theme**
+![Screenshot](pics/main-modern-queue.png)
 **Mini window, modern theme**
 ![Screenshot](pics/mini-modern.png)
 **Kiosk mode (Raspberry Pi5 + 1024x600 touchscreen), dark theme **
