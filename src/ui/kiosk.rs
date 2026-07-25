@@ -835,6 +835,22 @@ impl KioskWindow {
         let (win_w, win_h) = (self.window.width(), self.window.height());
         let size_hint = if win_w > 0 && win_h > 0 { Some((win_w, win_h)) } else { None };
         let layout = self.layout.get();
+
+        // Built here (rather than at its original spot further down) so
+        // `size_source` below can read its actual allocated height —
+        // `content_holder` stacks `sidebar_paned` above `status_bar`
+        // vertically, so the height available to WideRight's own sizing is
+        // the window's height *minus* this bar, not the window's full
+        // height. Feeding the full window height in (as before) overstated
+        // how much room WideRight had, which on a short screen (1024x600,
+        // e.g. a Raspberry Pi's kiosk display) sized the artwork/text
+        // column tall enough to push the status bar off the bottom of the
+        // screen entirely — other themes were unaffected since they don't
+        // scale off screen height at all. Still appended into
+        // `content_holder` at its original position further down, so this
+        // reordering only changes construction order, not stacking order.
+        let status_bar = crate::ui::views::status_bar::StatusBarView::new(&ds, &self.icons, true);
+
         // Available width for the playback pane specifically, not the
         // whole window's — sidebar_paned.position() is exactly the side
         // panel's current width (0 when closed), same fix as
@@ -845,12 +861,22 @@ impl KioskWindow {
         let size_source: Rc<dyn Fn() -> Option<(i32, i32)>> = {
             let window = self.window.clone();
             let sidebar_paned = self.sidebar_paned.clone();
+            let status_bar = status_bar.downgrade();
             Rc::new(move || {
                 let (win_w, win_h) = (window.width(), window.height());
                 if win_w <= 0 || win_h <= 0 { return None; }
                 const HANDLE_W: i32 = 12;
                 let avail_w = (win_w - sidebar_paned.position() - HANDLE_W).max(1);
-                Some((avail_w, win_h))
+                // `status_bar.height()` is 0 until its first allocation
+                // (only ever true for the very first frame or two, same
+                // cold-start gap PlaybackView's own tick-callback fallback
+                // already guards elsewhere) — harmless to briefly overstate
+                // available height then, since this closure is called
+                // every frame and self-corrects as soon as a real height is
+                // reported.
+                let bar_h = status_bar.upgrade().map(|b| b.height()).unwrap_or(0);
+                let avail_h = (win_h - bar_h).max(1);
+                Some((avail_w, avail_h))
             })
         };
         let view = PlaybackView::new(
@@ -919,8 +945,10 @@ impl KioskWindow {
         // DeviceWindow's own — always shown for this first cut, no
         // Settings toggle exists yet to make it optional. Deliberately no
         // separator line above it here (unlike DeviceWindow's own bottom
-        // bar) — Kiosk mode's version looks better without one.
-        let status_bar = crate::ui::views::status_bar::StatusBarView::new(&ds, &self.icons, true);
+        // bar) — Kiosk mode's version looks better without one. Built
+        // earlier above (see that comment) so `size_source` could read its
+        // height; only appended here, to keep its stacking position below
+        // `sidebar_paned`.
         // `set_scale()` uses the same `compute_wide_right_art_side()`
         // reference regardless of which layout is actually showing above
         // it — it's just this bar's own screen-size-to-font/icon-size

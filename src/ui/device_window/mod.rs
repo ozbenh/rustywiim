@@ -309,6 +309,7 @@ impl DeviceWindowInner {
             let window = self.window.clone();
             let paned = self.paned.clone();
             let left_pane = self.left_pane.clone();
+            let status_bar = self.status_bar.clone();
             Rc::new(move || {
                 let (win_w, win_h) = (window.width(), window.height());
                 if win_w <= 0 || win_h <= 0 { return None; }
@@ -318,7 +319,60 @@ impl DeviceWindowInner {
                 const HANDLE_W: i32 = 12;
                 let sidebar_w = if left_pane.is_visible() { paned.position() } else { 0 };
                 let avail_w = (win_w - sidebar_w - HANDLE_W).max(1);
-                Some((avail_w, win_h))
+                // Same fix as `KioskWindow::finish_bind()`'s own
+                // `size_source` (`ui/kiosk.rs`) — `win_h` is the whole
+                // window, but `paned` (and so `WideRight`'s
+                // `PlaybackView` inside it) only ever gets whatever's left
+                // after the separator + `status_bar` below it, plus
+                // `paned`'s own fixed top/bottom margins (set once in
+                // `new_inner()`, `4`/`8`). Feeding the full `win_h` in
+                // here overstated how much vertical room `WideRight` had,
+                // which `compute_boxed_card_geometry()` then used to size/
+                // place `boxed_controls`' card too tall for what's
+                // actually left — confirmed live (2026-07-26): pushed the
+                // status bar down past the bottom of the window, and (via
+                // `paned`'s own consequently inflated minimum height)
+                // `left_pane` along with it. `status_bar.height()` is 0
+                // until its first allocation — harmless, same cold-start
+                // gap this closure's own tick-callback caller already
+                // tolerates elsewhere.
+                const PANED_MARGIN_V: i32 = 4 + 8; // paned's own margin_top + margin_bottom
+                // The `gtk::Separator` between `paned` and `status_bar` in
+                // `outer` (`new_inner()`) — not stored as its own field, so
+                // there's nothing to measure live here; a plain `Separator`
+                // with no extra CSS styling renders as a 1px line. Same
+                // "rough estimate, not pixel-exact" spirit as `HANDLE_W`
+                // above.
+                const SEPARATOR_H: i32 = 1;
+                // `win_h` is the *whole* window surface, header bar
+                // included — `window_overlay`'s base child fills the
+                // entire window, and `full_toolbar` (header + `outer`
+                // together) is layered over all of it, not just the area
+                // below the header — so this was still missing the header
+                // bar's own height even after the two fixes above.
+                // Confirmed live, 2026-07-26: `WideRight` kept pushing the
+                // status bar (and `left_pane`) down past the bottom of the
+                // window even with those in place. A *live* measurement of
+                // `paned.height()` was tried next, to sidestep needing to
+                // track yet another individual sibling by hand — reverted
+                // the same day: `paned.set_resize_end_child(true)` means
+                // `paned` actively resizes based on its end child's own
+                // changing demands, not purely from external ancestors, so
+                // reading it here fed back into what those demands
+                // computed to next frame — a genuine runaway feedback
+                // loop (confirmed live: the artwork, buttons, and
+                // everything else visibly grew/drifted every frame until
+                // it ran off-screen), the same class of bug as the
+                // earlier tick-callback-based margin attempt elsewhere in
+                // this file's history. `HEADER_H` is a plain constant
+                // instead, reusing `build_header()`'s own already-measured
+                // value (`connecting_spinner`'s `margin_top(56)`, added
+                // specifically to "clear the header bar's own height" —
+                // see that function's comment) rather than guessing a
+                // fresh one.
+                const HEADER_H: i32 = 56;
+                let avail_h = (win_h - HEADER_H - status_bar.height() - PANED_MARGIN_V - SEPARATOR_H).max(1);
+                Some((avail_w, avail_h))
             })
         };
         let new_view = views::playback_full::PlaybackView::new(

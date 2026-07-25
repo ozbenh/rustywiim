@@ -53,7 +53,17 @@ pub mod imp {
         /// `service` — distinct from `quality` below, which keeps the
         /// existing bitrate/depth/sample-rate text.
         pub(super) quality_badge: OnceCell<QualityBadge>,
-        pub(super) quality:  OnceCell<gtk::Label>,
+        /// A `ScrollFadeLabel`, not a plain `Label` — WideRight's boxed-
+        /// controls layout floats this in an `Overlay` at the controls
+        /// card's left edge (`service_group`, below) rather than a regular
+        /// Box slot, so nothing else naturally caps its width; a long
+        /// bitrate/depth/sample-rate string could grow wide enough to run
+        /// into the centered transport buttons. See `quality_clamp`'s own
+        /// construction comment for the actual width-clamping mechanism —
+        /// this being a `ScrollFadeLabel` is what lets it marquee-scroll
+        /// within whatever width that clamp gives it instead of just
+        /// getting cut off mid-character.
+        pub(super) quality:  OnceCell<crate::ui::scroll_fade_label::ScrollFadeLabel>,
         pub(super) pos:      OnceCell<gtk::Label>,
         pub(super) dur:      OnceCell<gtk::Label>,
         pub(super) seek:     OnceCell<gtk::Scale>,
@@ -139,6 +149,7 @@ use crate::device::state::{playback_changed, ConnectionState, DeviceState};
 use crate::ui::art_background::ArtBackground;
 use crate::ui::flip_cover::FlipCover;
 use crate::ui::icons::IconSet;
+use crate::ui::scroll_fade_label::ScrollFadeLabel;
 use super::common::{
     apply_repeat_ui, apply_shuffle_ui, build_bt_pair_button, format_bt_status_line,
     format_quality_line, format_status_only, is_unknown, QualityBadge, ServiceLabel, SwipeText,
@@ -175,6 +186,26 @@ pub(crate) enum PlaybackLayout {
 const WIDE_RIGHT_ART_MAX_HEIGHT_PCT: f64 = 60.0;
 const WIDE_RIGHT_ART_MAX_WIDTH_PCT: f64 = 33.0;
 
+/// `boxed_controls`' controls card lives in the leftover vertical space
+/// below the artwork/text row, before the status bar — see
+/// `compute_boxed_card_geometry()`, the single place that whole calculation
+/// happens (2026-07-26 rewrite, replacing several rounds of scattered,
+/// heuristic sizing spread across this function and `apply_wide_right_scale()`
+/// — see that function's own doc comment for the history). This is the
+/// margin reserved above *and* below the card within that leftover space,
+/// each as a percentage of it — e.g. 5.0 reserves 5% above the card and
+/// another 5% below, leaving the middle 90% for the card itself. A separate,
+/// easily-tunable constant (per request) rather than folded into the
+/// calculation inline.
+const BOXED_CONTROLS_MARGIN_PCT: f64 = 10.0;
+/// Hard ceiling on the card's own height, as a fraction of `screen_h` (the
+/// full available content height, before the status bar — not the leftover
+/// space below the artwork) — stops it growing unreasonably tall on a
+/// spacious screen where the artwork (width-limited there, rather than
+/// height-limited) leaves a lot of room below it. Per request, a plain
+/// constant so it's easy to retune independently of the margin above.
+const BOXED_CONTROLS_MAX_FRACTION: f64 = 1.0 / 5.0;
+
 /// The artwork's side length (it's always square) for a screen of
 /// `screen_w` × `screen_h` pixels: the smaller of `WIDE_RIGHT_ART_MAX_HEIGHT_PCT`%
 /// of the screen's height and `WIDE_RIGHT_ART_MAX_WIDTH_PCT`% of its width —
@@ -185,6 +216,16 @@ const WIDE_RIGHT_ART_MAX_WIDTH_PCT: f64 = 33.0;
 /// this layout previously accounted for the artwork's *vertical* budget at
 /// all, which on some screens left it — and the whole title/controls block
 /// sharing its height — noticeably undersized).
+///
+/// An earlier version of this function also shrank the height budget a
+/// further flat percentage whenever Wood's `vfd_panel` was active, to leave
+/// more room below the artwork for `boxed_controls`' controls card/status
+/// bar on a short screen. Reverted (2026-07-25, by request) in favor of
+/// sizing the controls card directly from the actual leftover space below
+/// the artwork instead — see `compute_boxed_card_geometry()` — shrinking the
+/// actual space hog directly, rather than shrinking the artwork (which
+/// scales *everything* in the column, title/artist/album fonts included) to
+/// indirectly claw back room elsewhere.
 pub(crate) fn compute_wide_right_art_side(screen_w: i32, screen_h: i32) -> i32 {
     let from_height = screen_h as f64 * WIDE_RIGHT_ART_MAX_HEIGHT_PCT / 100.0;
     let from_width  = screen_w as f64 * WIDE_RIGHT_ART_MAX_WIDTH_PCT / 100.0;
@@ -209,6 +250,122 @@ pub(crate) fn compute_wide_right_art_side(screen_w: i32, screen_h: i32) -> i32 {
 /// visually excuse a mismatch.
 pub(crate) fn wide_right_margin_h(art_side: i32) -> i32 {
     (art_side as f64 * 0.12).round() as i32
+}
+
+/// `boxed_controls`' controls card geometry — one place, one simple
+/// calculation, no per-theme/per-axis heuristics. Replaces several rounds
+/// of scattered, increasingly heuristic sizing that kept getting the
+/// card's real total height wrong in one direction or another (2026-07-25/26:
+/// pushed the status bar off-screen; then ballooned on a wide/4K screen;
+/// then touched the artwork above it on a small screen; then, even once
+/// each individual number checked out, the *total* still didn't add up to
+/// what was actually available).
+///
+/// The root problem, found only after all of the above: this budget was
+/// being treated as something `content_block` merely *fits within*, with
+/// any unused amount showing up as harmless blank space — but that's
+/// backwards. `content_block` (a plain, non-`vexpand` `Box`) reports its
+/// own natural/minimum size as the *sum* of what it's given (`top_row_overlay`
+/// + `card`'s margins + `card`'s real height), and nothing was capping
+/// that sum — it drives `vgrid`'s, then `outer`'s, then the whole
+/// `PlaybackView`'s reported minimum height *upward*, not the other way
+/// around. Worse, `vgrid` — the `row_homogeneous` grid `content_block` used
+/// to share with an empty `top_spacer` row, to visually push everything
+/// down by a proportional amount — *amplifies* any such growth by ~10/9x
+/// (9 of the grid's 10 homogeneous rows are `content_block`'s own cell).
+/// Confirmed live, 2026-07-26: deliberately *increasing* `BOXED_CONTROLS_MARGIN_PCT`
+/// (which should only have redistributed space between the margin and
+/// `card_h`, leaving the total constant) instead made the status bar move
+/// *further* off-screen — proof the total wasn't actually bounded by
+/// anything, just approximately estimated.
+///
+/// The fix: `boxed_controls` no longer puts `content_block` in `vgrid` at
+/// all (see the `WideRight` branch below, `outer.append(&content_block)`
+/// vs. the `!boxed_controls` `vgrid` path) — `content_block` becomes
+/// `outer`'s own direct, sole child, with the old `top_spacer` row's
+/// "push everything down by 1/10" effect reproduced as an explicit
+/// `content_block.set_margin_top()` instead of an empty grid row. This
+/// makes `content_block`'s real available height a number this function
+/// can compute exactly from `screen_h`/`side` alone — no more
+/// reverse-engineering `Grid`'s internal row-homogeneous math (`real_cell_h`'s
+/// old `* 9.0 / 10.0` factor, which was itself a second, still-imprecise
+/// attempt at modeling something this rewrite just removes the need to
+/// model at all) — and, critically, this function's caller then applies
+/// `content_block.set_size_request()` to that exact number, making it a
+/// **hard minimum** `content_block` can't fall short of — eliminating the
+/// "blank space appears somewhere and nobody's quite sure how much"
+/// failure mode for good, not just estimating it more carefully.
+///
+/// `screen_h` is the full available content height (window height minus
+/// the status bar — see `KioskWindow::finish_bind()`'s `size_source`);
+/// `side` is the artwork's own side length (`compute_wide_right_art_side()`'s
+/// result). The calculation:
+/// 1. `outer`'s own top/bottom margin (`margin_v`, same formula its caller
+///    uses) is subtracted from `screen_h`, giving `content_avail_h` —
+///    `outer`'s *real* content height, exactly (not estimated — `outer`
+///    always gets `PlaybackView`'s full allocation, driven only by the
+///    window, never by anything inside it).
+/// 2. `top_spacer_h`, replacing the old grid row, is exactly 1/10 of that
+///    — same proportional "push everything down a bit" effect as before,
+///    now computed directly instead of relying on `Grid` to produce it.
+/// 3. `real_cell_h` (what's left for `content_block` itself) is exact,
+///    not approximated — this function's caller enforces it via
+///    `set_size_request()`, so it can't be shorted regardless of what
+///    `content_block`'s own children ask for.
+/// 4. The artwork's bottom edge sits `side` below the top of that cell;
+///    everything below that, down to the bottom of the cell, is `space`.
+/// 5. `BOXED_CONTROLS_MARGIN_PCT` of `space` is reserved above the card
+///    *and* again below it, leaving the middle for the card itself.
+/// 6. That's capped to `BOXED_CONTROLS_MAX_FRACTION` of `screen_h`, so the
+///    card can't grow arbitrarily tall just because the artwork (width-
+///    rather than height-limited on a wide/4K screen) happened to leave a
+///    lot of room below it. Whenever that cap is what actually limits
+///    `card_h`, splitting the leftover slack evenly between the margin
+///    above *and* below (rather than leaving it all below) is what keeps
+///    the card centered in the gap instead of sitting close to the
+///    artwork with a large, empty space beneath it before the status bar.
+///
+/// Returns `(top_spacer_h, margin, card_h)`: `top_spacer_h` is
+/// `content_block`'s own `set_margin_top()`; `margin` is the gap both
+/// above *and* below the card (`card.set_margin_top()`/`set_margin_bottom()`);
+/// `card_h` is `card`'s total height *budget* — `apply_wide_right_scale()`
+/// subtracts `card`'s own known fixed overhead (CSS padding, spacing, the
+/// seek row) from it, and — critically, fixed alongside this rewrite —
+/// properly accounts for `play_btn` (the button row's real rendered
+/// height) being `0.68 * card_h`, not `card_h` itself, before deriving
+/// button sizes from what's left, so `card`'s real rendered height fits
+/// this budget by construction rather than by another approximation. An
+/// earlier version tried enforcing the budget as an external hard ceiling
+/// via a wrapping `ScrolledWindow` (three different property
+/// combinations, none of which actually constrained anything — confirmed
+/// live, 2026-07-26: `card`'s real allocated height tracked its own
+/// natural content size regardless of what was set on the wrapper) —
+/// abandoned; this rewrite's `content_block.set_size_request()` clamp is
+/// the load-bearing minimum instead, and it's a plain `GtkBox`, not a
+/// `ScrolledWindow`, so the doubt around whether that mechanism actually
+/// enforces anything doesn't apply to it.
+pub(crate) fn compute_boxed_card_geometry(screen_h: i32, side: i32) -> (i32, i32, i32) {
+    let margin_v = (side as f64 * 0.06).round();
+    let content_avail_h = (screen_h as f64 - 2.0 * margin_v).max(0.0);
+    let top_spacer_h = (content_avail_h / 10.0).round();
+    let real_cell_h = (content_avail_h - top_spacer_h).max(0.0);
+    let space = (real_cell_h - side as f64).max(0.0);
+    let base_margin = space * BOXED_CONTROLS_MARGIN_PCT / 100.0;
+    let card_h = (space - 2.0 * base_margin).max(0.0).min(screen_h as f64 * BOXED_CONTROLS_MAX_FRACTION);
+    // Only nonzero when `BOXED_CONTROLS_MAX_FRACTION` actually capped
+    // `card_h` below what `space` would otherwise allow.
+    let slack = (space - 2.0 * base_margin - card_h).max(0.0);
+    let margin = base_margin + slack / 2.0;
+    if crate::ui::DEBUG_UI.load(std::sync::atomic::Ordering::Relaxed) {
+        println!(
+            "{} [ui] boxed-controls card geometry: screen_h={screen_h} side={side} \
+             margin_v={margin_v:.1} content_avail_h={content_avail_h:.1} \
+             top_spacer_h={top_spacer_h:.1} real_cell_h={real_cell_h:.1} space={space:.1} \
+             base_margin={base_margin:.1} slack={slack:.1} margin={margin:.1} card_h={card_h:.1}",
+            crate::timestamp(),
+        );
+    }
+    (top_spacer_h.round() as i32, margin.round() as i32, card_h.round() as i32)
 }
 
 /// Recompute and apply the `WideRight` layout's typography/control sizing
@@ -243,7 +400,7 @@ fn apply_wide_right_scale(
     title_group: &GtkBox, status_group: &GtkBox, service_group: &GtkBox, volume: &VolumeControl,
     eq_icon: &gtk::Image, volume_cluster: &GtkBox,
     service: &ServiceLabel, quality_badge: &QualityBadge,
-    h: i32,
+    h: i32, boxed_controls: bool, boxed_card_h: i32,
 ) {
     let h = h as f64;
     // Two independent nudges by request, on top of everything else this
@@ -269,6 +426,17 @@ fn apply_wide_right_scale(
     // per Ben's ask. Harmless to always compute/emit — the `.vfd-caption`
     // selector below simply matches nothing when `vfd_panel` is off.
     let caption_px = round_to_even(album_px as f64 * 0.85);
+    // `.vfd-panel`'s own padding (wood.css) used to be a flat 22px/24px —
+    // same class of bug as `card_padding`/`seek_h` elsewhere in this
+    // function: a fixed value doesn't shrink on a small screen the way
+    // everything else here does, so on a short display (a 1024x600
+    // Raspberry Pi kiosk screen) it ate a disproportionate, non-shrinking
+    // share of the column's height, contributing to the whole right-hand
+    // column running taller than the artwork beside it. Proportional to
+    // `h` (the artwork's own side) like everything else, with a floor so
+    // it doesn't vanish to nothing on a very small screen.
+    let vfd_pad_v = round_to_even((h * 0.02).max(4.0));
+    let vfd_pad_h = round_to_even((h * 0.022).max(6.0));
     // "Slightly smaller than the album name" per the design ask, then
     // reduced another ~20% (0.85 -> 0.68) — the whole badge read too big
     // in Kiosk mode. The icon's height (`BrandIcon::set_height()`, a
@@ -322,22 +490,67 @@ fn apply_wide_right_scale(
     let service_gap = (h * 0.045).round() as i32;
     service_group.set_spacing(service_gap.max(4));
 
-    // The controls band is the bottom 1/3 of the column; the visible card
-    // itself only takes 2/3 of that (bottom-justified — see band_row's own
-    // comment), minus ".controls-card"'s own padding on each side. That
-    // padding used to be a *fixed* 12px (modern.css) subtracted as a flat
-    // 24 here — the exact same class of bug `seek_h`/`service_gap` above
-    // were fixed for, just not yet caught here: subtracting a constant
-    // from a value that itself scales with screen size shrinks the small-
-    // screen result disproportionately more than the large-screen one, so
-    // the buttons (and the whole band around them) read comparatively
-    // bigger on a small screen and smaller on a large one — confirmed
-    // live as exactly the "text bigger there, bottom bar bigger there"
-    // mismatch between a 4K monitor and a small Pi screen. Now a fraction
-    // of `h` too, so it shrinks/grows together with everything else
-    // instead of eating a growing/shrinking share of it.
+    // `!boxed_controls`: the controls band is the bottom 1/3 of the
+    // column; the visible card itself only takes 2/3 of that
+    // (bottom-justified — see band_row's own comment), minus
+    // ".controls-card"'s own padding on each side. That padding used to be
+    // a *fixed* 12px (modern.css) subtracted as a flat 24 here — the exact
+    // same class of bug `seek_h`/`service_gap` above were fixed for, just
+    // not yet caught here: subtracting a constant from a value that itself
+    // scales with screen size shrinks the small-screen result
+    // disproportionately more than the large-screen one, so the buttons
+    // (and the whole band around them) read comparatively bigger on a
+    // small screen and smaller on a large one — confirmed live as exactly
+    // the "text bigger there, bottom bar bigger there" mismatch between a
+    // 4K monitor and a small Pi screen. Now a fraction of `h` too, so it
+    // shrinks/grows together with everything else instead of eating a
+    // growing/shrinking share of it.
+    //
+    // `boxed_controls`: `boxed_card_h` is `card`'s *total* height budget
+    // (`compute_boxed_card_geometry()`, the single place that calculation
+    // happens — see its own doc comment for the full history, including
+    // why this budget is now a real, enforced number rather than an
+    // estimate `card` could still exceed). `card`'s real rendered height
+    // is `overhead` (below) plus the button row's own height — and the
+    // button row's height is `play_btn` (the tallest element in it,
+    // `0.68 * card_h` below), *not* `card_h` itself. An earlier version
+    // used the post-overhead remainder as `card_h` directly, which made
+    // the real button row only 68% as tall as intended and the card's
+    // true total systematically short of its budget; dividing by that
+    // same `0.68` here solves for the `card_h` that makes `play_btn`
+    // consume the full remainder, so the real total lands on
+    // `boxed_card_h` as intended. (A first attempt at this exact fix,
+    // 2026-07-26, was reverted the same day for making things worse — at
+    // the time, `boxed_card_h` itself was still only an *estimate* subject
+    // to the `vgrid`-amplification bug this whole function's rewrite just
+    // fixed, so correcting this ratio on top of an already-unreliable
+    // budget just meant a different, larger overshoot. Safe to reapply now
+    // that the budget it's measured against is actually enforced.)
+    // `overhead` — card's other known fixed costs:
+    // - wood.css's `.controls-card-boxed { padding: 12px; }` (Wood is the
+    //   only theme this card exists in — see `vfd_panel`'s own doc comment
+    //   on why `boxed_controls` is Wood/Kiosk-only) — a flat CSS value this
+    //   Rust code otherwise has no visibility into, unlike `.controls-card`'s
+    //   own padding above, which *is* pushed from here via `card_padding_rule`.
+    // - `card`'s own `spacing(8)` between its 3 children (2 gaps).
+    // - `controls_overlay_boxed.set_margin_top(8)`.
+    // - the seek row's own real height: not a fixed pixel value, but also
+    //   not `card_h`-derived — approximated from `status_px` (already
+    //   computed above) and `seek_h`'s own one-line formula (inlined again
+    //   here rather than reordering this function's existing calculations).
     let card_padding = (h * 0.01).round().max(4.0);
-    let card_h = (((h / 3.0) * (2.0 / 3.0) - 2.0 * card_padding) * CONTROLS_SCALE).max(24.0);
+    let card_h = if boxed_controls {
+        const WOOD_CARD_PADDING: f64 = 12.0 * 2.0;
+        const CARD_SPACING: f64 = 8.0 * 2.0;
+        const CONTROLS_MARGIN_TOP: f64 = 8.0;
+        let est_seek_h = (h * 0.006).max(2.0);
+        let est_seek_row_h = est_seek_h + 2.0 /* seek_row's own spacing */
+            + status_px as f64 * 1.25 /* rough line-height factor */;
+        let overhead = WOOD_CARD_PADDING + CARD_SPACING + CONTROLS_MARGIN_TOP + est_seek_row_h;
+        ((boxed_card_h as f64 - overhead) / 0.68).max(24.0)
+    } else {
+        (((h / 3.0) * (2.0 / 3.0) - 2.0 * card_padding) * CONTROLS_SCALE).max(24.0)
+    };
     let transport_btn = (card_h * 0.55).round() as i32;
     let play_btn      = (card_h * 0.68).round() as i32;
     let loop_btn       = transport_btn;
@@ -411,6 +624,7 @@ fn apply_wide_right_scale(
          .{class} .track-artist {{ font-size: {artist_px}px; }}\n\
          .{class} .track-album {{ font-size: {album_px}px; }}\n\
          .{class} .vfd-caption {{ font-size: {caption_px}px; }}\n\
+         .{class} .vfd-panel {{ padding: {vfd_pad_v}px {vfd_pad_h}px; }}\n\
          .{class} .service-name {{ font-size: {service_px}px; }}\n\
          .{class} .quality-label {{ font-size: {quality_line_px}px; }}\n\
          .{class} .dim-label {{ font-size: {status_px}px; }}\n\
@@ -532,7 +746,9 @@ impl PlaybackView {
         // resizes whenever quality info appears/disappears (e.g. no bitrate
         // data for the current source). Empty text still keeps its line
         // height in Pango's logical extents, same as the other labels here.
-        let quality = Label::builder().css_classes(["quality-label"]).halign(Align::Center).build();
+        let quality = ScrollFadeLabel::new("");
+        quality.add_label_css_class("quality-label");
+        quality.set_halign(Align::Center);
         let pos = Label::builder().label("0:00").css_classes(["dim-label"]).build();
         let dur = Label::builder().label("0:00").css_classes(["dim-label"]).build();
         let seek = Scale::with_range(Orientation::Horizontal, 0.0, 100.0, 1.0);
@@ -945,7 +1161,52 @@ impl PlaybackView {
                     .build();
                 service_group.append(&service.widget);
                 service_group.append(&quality_badge.widget);
-                service_group.append(&quality);
+                // `boxed_controls` only: `service_group` floats as an
+                // `Overlay` child at the controls card's left edge (see
+                // `controls_overlay_boxed` below), sharing its row with the
+                // centered `transport` buttons — nothing there naturally
+                // stops `quality`'s text (an arbitrary-length bitrate/
+                // depth/sample-rate string) from growing wide enough to run
+                // into them. Wrapping it in a non-scrolling `ScrolledWindow`
+                // (`propagate_natural_width(false)`, same technique
+                // `text_col_clamp` above uses for height) turns whatever
+                // width `boxed_card`'s tick callback below gives it into a
+                // hard ceiling instead of a suggestion — `quality` itself,
+                // being a `ScrollFadeLabel`, then marquees within that width
+                // rather than just getting cut off mid-character. Plain
+                // WideRight (`!boxed_controls`) doesn't share a row with
+                // transport at all (see `band_row`'s own comment), so
+                // there's no overlap risk there and `quality` is appended
+                // unwrapped, same as before.
+                let quality_clamp = boxed_controls.then(|| {
+                    let clamp = gtk::ScrolledWindow::builder()
+                        .child(&quality)
+                        .hscrollbar_policy(gtk::PolicyType::Never)
+                        .vscrollbar_policy(gtk::PolicyType::Never)
+                        .propagate_natural_width(false)
+                        // `min_content_width(0)`: `ScrolledWindow`'s default
+                        // `min-content-width` is `-1`. Whether this actually
+                        // stops `quality`'s own minimum width from leaking
+                        // through is unconfirmed — a near-identical
+                        // `ScrolledWindow`-as-hard-clamp attempt for
+                        // `boxed_controls`' controls card (`compute_boxed_card_geometry()`'s
+                        // own doc comment has the story) was tried three
+                        // different ways and never actually constrained
+                        // anything in a live test, so treat this property
+                        // as unproven here too, not a settled fix — it just
+                        // hasn't been reported as broken in practice (this
+                        // widget's content, `ScrollFadeLabel`, always
+                        // reports `minimum=0`, so there may be nothing for
+                        // it to leak in the first place).
+                        .min_content_width(0)
+                        .valign(Align::Center)
+                        .build();
+                    service_group.append(&clamp);
+                    clamp
+                });
+                if quality_clamp.is_none() {
+                    service_group.append(&quality);
+                }
                 // `controls_col`/`text_col_grid` still get built even when
                 // `boxed_controls` is on and neither ends up attached
                 // anywhere — both are captured by `apply_for_screen` below
@@ -1013,11 +1274,57 @@ impl PlaybackView {
                 // screen and wrong on another (confirmed live: noticeably
                 // too wide on a Raspberry Pi 5 next to a small screen's
                 // smaller artwork), same lesson as the font/button sizing.
+                // Clamps `text_col` (title/artist/album, including Wood's
+                // stack of `.vfd-panel` boxes) to exactly the artwork's own
+                // height, sized below by `apply_for_screen`. Plain
+                // `text_col.set_size_request(-1, side)` alone is only a
+                // *minimum* — if the vfd-panel padding/caption/font sizes
+                // this column's content actually needs sum to more than
+                // `side` (fixed CSS padding doesn't shrink on a small
+                // screen the way everything else here does), `text_col`'s
+                // real minimum size grows past `side` and drags `top_row`
+                // (and everything above it) taller than the artwork right
+                // alongside it — confirmed live as the right-hand column
+                // running past the bottom of a 1024x600 screen. Wrapping in
+                // a non-scrolling `ScrolledWindow` (`propagate_natural_height
+                // (false)` so it uses its own size request instead of the
+                // child's) makes `side` a hard ceiling instead of a floor:
+                // content that doesn't fit is simply clipped by the
+                // ScrolledWindow's own viewport rather than pushing the
+                // layout taller.
+                let text_col_clamp = gtk::ScrolledWindow::builder()
+                    .child(&text_col)
+                    .hscrollbar_policy(gtk::PolicyType::Never)
+                    .vscrollbar_policy(gtk::PolicyType::Never)
+                    .propagate_natural_height(false)
+                    .propagate_natural_width(false)
+                    // Without these, `min-content-height`/`-width` default
+                    // to `-1`. Whether this — or `propagate_natural_*(false)`,
+                    // or this whole `ScrolledWindow`-as-hard-clamp approach —
+                    // actually stops `text_col`'s own real minimum size from
+                    // winning is *not* confirmed: a near-identical clamp
+                    // built for `boxed_controls`' controls card
+                    // (`compute_boxed_card_geometry()`'s own doc comment has
+                    // the story) was tried three different property
+                    // combinations and never once actually constrained
+                    // anything in a live test — `card`'s real allocated
+                    // height just tracked its own natural content
+                    // regardless. This clamp has never been *reported*
+                    // broken, but that may only be because `text_col`'s
+                    // content (`ScrollFadeLabel`, always `minimum=0`) rarely
+                    // has real minimum size to leak in the first place —
+                    // treat this as unverified, not proven, until it's
+                    // re-tested the same deliberate way the boxed-card one
+                    // was.
+                    .min_content_height(0)
+                    .min_content_width(0)
+                    .valign(Align::Start)
+                    .build();
                 let top_row = GtkBox::builder()
                     .orientation(Orientation::Horizontal)
                     .build();
                 top_row.append(&art_overlay);
-                top_row.append(&text_col);
+                top_row.append(&text_col_clamp);
 
                 // Volume, overlaid on `top_row` rather than packed inside
                 // it — `top_row` (art_overlay + text_col) and `seek_row`
@@ -1193,7 +1500,65 @@ impl PlaybackView {
                     // own `controls_row` already is for this same purpose,
                     // see `controls_card`'s field doc comment.
                     self.imp().controls_card.set(controls_row_boxed.clone().upcast()).unwrap();
+
+                    // `card`'s real total height is made to fit
+                    // `compute_boxed_card_geometry()`'s `card_h` budget by
+                    // subtracting its own known fixed overhead *before*
+                    // deriving the transport/volume button sizes from what's
+                    // left (`apply_wide_right_scale()`'s `boxed_card_h`
+                    // handling) — not by an external clamp. A `ScrolledWindow`
+                    // wrapper (`propagate_natural_height(false)` +
+                    // `min_content_height(0)`, then `min`/`max_content_height`
+                    // pinned to the same value) was tried three times as a
+                    // supposedly-guaranteed hard ceiling and never actually
+                    // constrained anything: a live capture (2026-07-26)
+                    // showed `clamp.height()`/`card.height()` growing
+                    // identically frame-over-frame regardless of which
+                    // ScrolledWindow property was used to set the target,
+                    // proving `card` was just rendering at its own natural
+                    // summed content size the whole time, oblivious to the
+                    // wrapper. Abandoned rather than trying a fourth
+                    // ScrolledWindow variant of the same mechanism.
                     content_block.append(&card);
+
+                    // Recomputes `quality_clamp`'s max width every frame
+                    // from `transport`'s live on-screen position (both
+                    // measured relative to `controls_overlay_boxed`, their
+                    // nearest common ancestor). Not folded into
+                    // `apply_for_screen` below — `transport`'s actual
+                    // centered position only stabilizes once GTK finishes a
+                    // real layout pass after that closure's own font/
+                    // button-size CSS changes land, not synchronously
+                    // within it. Running unconditionally every tick (unlike
+                    // `apply_for_screen`'s own "did the size change" guard)
+                    // is what lets this self-correct as soon as a real
+                    // layout catches up; cheap either way — `compute_bounds()`
+                    // reads already-computed allocation, it doesn't force
+                    // any extra layout work of its own.
+                    let quality_clamp = quality_clamp.clone()
+                        .expect("quality_clamp is always Some when boxed_controls is true");
+                    let last_avail = std::cell::Cell::new(-1i32);
+                    self.add_tick_callback(glib::clone!(
+                        #[weak] transport, #[weak] controls_overlay_boxed,
+                        #[weak] quality_clamp,
+                        #[upgrade_or] glib::ControlFlow::Break,
+                        move |_widget, _clock| {
+                            if let (Some(t_bounds), Some(c_bounds)) = (
+                                transport.compute_bounds(&controls_overlay_boxed),
+                                quality_clamp.compute_bounds(&controls_overlay_boxed),
+                            ) {
+                                const MARGIN: f32 = 12.0;
+                                let avail =
+                                    (t_bounds.x() - c_bounds.x() - MARGIN).max(0.0) as i32;
+                                if avail != last_avail.get() {
+                                    last_avail.set(avail);
+                                    quality_clamp.set_size_request(avail, -1);
+                                }
+                            }
+                            glib::ControlFlow::Continue
+                        }
+                    ));
+
                     card
                 });
                 if !boxed_controls {
@@ -1215,27 +1580,55 @@ impl PlaybackView {
                     content_block.append(&seek_row);
                 }
 
-                // Pushes content_block down by 1/10 of the available
-                // height, proportionally rather than by a fixed pixel
-                // guess: a 10-row homogeneous grid forces every row to the
-                // same height (including the empty row 0, once given more
-                // height than its own natural content needs — see
-                // vexpand/hexpand below), so row 0 alone is always exactly
-                // 1/10 of whatever height this view ends up with. A plain
-                // margin_top couldn't do that without knowing the window's
-                // actual size, which isn't available in static CSS either.
-                let top_spacer = GtkBox::new(Orientation::Vertical, 0);
-                let vgrid = gtk::Grid::builder()
-                    .row_homogeneous(true).hexpand(true).vexpand(true)
-                    .build();
-                vgrid.attach(&top_spacer, 0, 0, 1, 1);
-                vgrid.attach(&content_block, 0, 1, 1, 9);
-
                 // Margins set below as fractions of the artwork's side too.
                 let outer = GtkBox::builder()
                     .orientation(Orientation::Vertical).hexpand(true).vexpand(true)
                     .build();
-                outer.append(&vgrid);
+                if boxed_controls {
+                    // `content_block` goes straight into `outer` — no
+                    // `vgrid` at all. `vgrid`'s `row_homogeneous` math
+                    // (below, `!boxed_controls`) is what let `content_block`'s
+                    // own real size demand grow `outer`'s (and hence the
+                    // whole `PlaybackView`'s) reported minimum height by
+                    // ~10/9x, uncapped, with no reliable way to predict by
+                    // how much — the actual root cause behind every
+                    // "status bar off-screen"/"huge gap before it" report
+                    // that survived several rounds of just re-tuning the
+                    // numbers fed into it (confirmed live, 2026-07-26:
+                    // *increasing* the margin, which should only have
+                    // redistributed space, instead pushed the status bar
+                    // further off — proof nothing was actually bounding
+                    // the total). `compute_boxed_card_geometry()`'s
+                    // `content_block.set_size_request()` below (in
+                    // `apply_for_screen`) replaces `vgrid`'s "let the
+                    // container figure it out" with an exact, directly
+                    // computed height instead — see that function's own
+                    // doc comment for the full story and why this is a
+                    // hard minimum this time, not another estimate.
+                    outer.append(&content_block);
+                } else {
+                    // Pushes content_block down by 1/10 of the available
+                    // height, proportionally rather than by a fixed pixel
+                    // guess: a 10-row homogeneous grid forces every row to
+                    // the same height (including the empty row 0, once
+                    // given more height than its own natural content needs
+                    // — see vexpand/hexpand below), so row 0 alone is
+                    // always exactly 1/10 of whatever height this view ends
+                    // up with. A plain margin_top couldn't do that without
+                    // knowing the window's actual size, which isn't
+                    // available in static CSS either. Kept for
+                    // `!boxed_controls` only — its own `card_h`/spacing
+                    // formulas were never affected by the `boxed_controls`
+                    // overflow bug this grid turned out to cause there, and
+                    // rewriting a working layout wasn't the goal.
+                    let top_spacer = GtkBox::new(Orientation::Vertical, 0);
+                    let vgrid = gtk::Grid::builder()
+                        .row_homogeneous(true).hexpand(true).vexpand(true)
+                        .build();
+                    vgrid.attach(&top_spacer, 0, 0, 1, 1);
+                    vgrid.attach(&content_block, 0, 1, 1, 9);
+                    outer.append(&vgrid);
+                }
 
                 self.set_child(Some(&outer));
 
@@ -1263,7 +1656,7 @@ impl PlaybackView {
                 // very first bind at startup, before the window's real
                 // size is known yet).
                 let apply_for_screen = glib::clone!(
-                    #[strong] art_overlay, #[strong] text_col,
+                    #[strong] art_overlay, #[strong] text_col, #[strong] text_col_clamp,
                     #[strong] title_group, #[strong] status_group, #[strong] service_group, #[strong] volume,
                     #[strong] eq_icon, #[strong] volume_cluster,
                     #[strong] service, #[strong] quality_badge,
@@ -1279,10 +1672,48 @@ impl PlaybackView {
                         ));
                         art_overlay.set_size_request(side, side);
                         text_col.set_size_request(-1, side);
+                        // The actual clamp (see `text_col_clamp`'s own
+                        // construction comment) — `text_col`'s own request
+                        // above is mostly redundant with this now, but kept
+                        // so `text_col`'s natural size still lines up rather
+                        // than defaulting to 0 before this runs.
+                        text_col_clamp.set_size_request(-1, side);
+                        // `boxed_controls` only: see `compute_boxed_card_geometry()`
+                        // for the whole calculation (one place, one simple
+                        // equation — rewritten 2026-07-26 to also bypass
+                        // `vgrid` for this case, see that function's own
+                        // doc comment for why). `top_spacer_h` replaces the
+                        // old grid row's "push everything down 1/10" effect
+                        // as an explicit margin; `content_block`'s
+                        // `set_size_request()` is what makes `real_cell_h`
+                        // (`side + card_h + 2*boxed_card_margin`, by this
+                        // function's own construction) an *enforced*
+                        // minimum instead of an estimate `content_block`
+                        // could still fall short of or exceed. `card_h` is
+                        // passed into `apply_wide_right_scale()` below,
+                        // which subtracts `card`'s own known fixed overhead
+                        // (and now properly accounts for `play_btn` being
+                        // `0.68 * card_h`, not `card_h` itself) before
+                        // deriving button sizes from what's left, so
+                        // `card`'s real total rendered height fits this
+                        // budget by construction. `boxed_card_margin` is
+                        // the gap both above *and* below `card`.
+                        let (boxed_top_spacer_h, boxed_card_margin, boxed_card_h) =
+                            compute_boxed_card_geometry(screen_h, side);
+                        if boxed_controls {
+                            content_block.set_margin_top(boxed_top_spacer_h);
+                            content_block.set_size_request(
+                                -1, side + boxed_card_h + 2 * boxed_card_margin,
+                            );
+                        }
+                        if let Some(card) = &boxed_card {
+                            card.set_margin_top(boxed_card_margin);
+                            card.set_margin_bottom(boxed_card_margin);
+                        }
                         apply_wide_right_scale(
                             &class, &provider, &title_group, &status_group, &service_group, &volume,
                             &eq_icon, &volume_cluster,
-                            &service, &quality_badge, side,
+                            &service, &quality_badge, side, boxed_controls, boxed_card_h,
                         );
                         // Forces both faces of each SwipeText to recompute
                         // their style now that the CSS provider above just
@@ -1325,19 +1756,15 @@ impl PlaybackView {
                         // gap (directly below top_row_overlay) used to be
                         // on its own, before service_group existed here.
                         content_block.set_spacing(0);
-                        if let Some(card) = &boxed_card {
-                            // `boxed_controls`: seek_row/service_group are
-                            // no longer direct children of `content_block`
-                            // (see its own construction comment) — their
-                            // margins above would just add unwanted extra
-                            // gaps *inside* the card, on top of its own
-                            // `spacing(8)`, so skip those and give the
-                            // *card itself* the "further down from the
-                            // artwork" gap instead (Ben's ask), still
-                            // proportional to screen size like everything
-                            // else here.
-                            card.set_margin_top((s * 0.08).round() as i32);
-                        } else {
+                        // `boxed_controls`: `card`'s gap from the artwork
+                        // above it is `boxed_card_margin`, set on the
+                        // `ScrolledWindow` clamp above (a plain child of
+                        // `content_block`, so `margin_top` there works the
+                        // ordinary way). `seek_row`/`service_group` aren't
+                        // direct children of `content_block` here either
+                        // (they're inside `card`, inside the clamp), so
+                        // neither needs a margin from this branch.
+                        if !boxed_controls {
                             service_group.set_margin_top((s * 0.04).round() as i32);
                             seek_row.set_margin_top((s * 0.1).round() as i32);
                         }
@@ -1587,7 +2014,7 @@ impl PlaybackView {
         imp.status.get().unwrap().set_label("");
         imp.service.get().unwrap().set(None, imp.icons.get().unwrap());
         imp.quality_badge.get().unwrap().widget.set_visible(false);
-        imp.quality.get().unwrap().set_label("");
+        imp.quality.get().unwrap().set_text("");
         imp.artwork.get().unwrap().clear();
         if let Some(Some(bg)) = imp.art_bg.get() { bg.clear(); }
         imp.bt_pair.get().unwrap().set_visible(false);
@@ -1722,7 +2149,7 @@ impl PlaybackView {
                 // Never hidden — see the quality label's construction
                 // comment. An empty label keeps the same reserved height.
                 let q = ps.quality.map(|q| format_quality_line(&q)).unwrap_or_default();
-                imp.quality.get().unwrap().set_label(&q);
+                imp.quality.get().unwrap().set_text(&q);
             }
         }
 
