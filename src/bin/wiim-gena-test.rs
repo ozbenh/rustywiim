@@ -34,7 +34,11 @@ const WANTED_SERVICES: &[WantedService] = &[
 ];
 
 fn usage() -> ! {
-    eprintln!("usage: wiim-gena-test <ip>");
+    eprintln!("usage: wiim-gena-test <ip> [--only=<Service[,Service...]>]");
+    eprintln!("  Service names: AVTransport, RenderingControl, PlayQueue");
+    eprintln!("  --only restricts which services get SUBSCRIBEd at all — useful for");
+    eprintln!("  isolating one service's NOTIFY traffic (e.g. --only=PlayQueue) from");
+    eprintln!("  AVTransport's/RenderingControl's much chattier output.");
     std::process::exit(1);
 }
 
@@ -312,10 +316,19 @@ fn serve_notify(server: tiny_http::Server, sid_names: &Arc<Mutex<HashMap<String,
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> anyhow::Result<()> {
-    let ip = std::env::args().nth(1).unwrap_or_else(|| usage());
-    if ip.starts_with('-') || ip.is_empty() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let ip = args.iter().find(|a| !a.starts_with("--")).cloned().unwrap_or_else(|| usage());
+    if ip.is_empty() {
         usage();
     }
+    // `only`, if given, restricts `WANTED_SERVICES` to just the named ones —
+    // added specifically so a real PlayQueue-eventing investigation isn't
+    // drowned out by AVTransport's much higher NOTIFY rate (position/state
+    // changes every couple of seconds during playback) when the point of a
+    // given run is isolating what, if anything, PlayQueue itself sends.
+    let only: Option<Vec<String>> = args.iter()
+        .find_map(|a| a.strip_prefix("--only="))
+        .map(|s| s.split(',').map(str::to_string).collect());
 
     let (description_xml, description_url) = discover_description(&ip).await?;
     let device_host = host_port_of(&description_url)
@@ -326,6 +339,12 @@ async fn main() -> anyhow::Result<()> {
 
     let mut found: Vec<(&'static str, String)> = Vec::new();
     for wanted in WANTED_SERVICES {
+        if let Some(only) = &only {
+            if !only.iter().any(|s| s.eq_ignore_ascii_case(wanted.name)) {
+                eprintln!("[wiim-gena-test] {}: skipped (--only)", wanted.name);
+                continue;
+            }
+        }
         match extract_event_sub_url(&description_xml, &description_url, wanted.service_type_substr) {
             Some(url) => {
                 eprintln!("[wiim-gena-test] {}: eventSubURL = {url}", wanted.name);
