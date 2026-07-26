@@ -160,6 +160,9 @@ You can pretty-print this file using `target/debug/wiim-capdump`. I would apprec
 * Kiosk mode doesn't have a way to manually add a device by IP address yet
 
 ## Changelog ##
+  * 0.11.2 - 2026-07-26
+    * Fix equalizer button SVG to display properly on Fedora 43
+
   * 0.11.1 - 2026-07-25
     * Fix some issues with Kiosk in Wood mode on some small screens. The
 	  kiosk layout engine will need to be completely redone by something
