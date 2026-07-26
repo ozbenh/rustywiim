@@ -446,6 +446,8 @@ fn create_notify_socket() -> std::io::Result<tokio::net::UdpSocket> {
     use socket2::{Domain, Protocol, Socket, Type};
     let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
     socket.set_reuse_address(true)?;
+    #[cfg(target_os = "macos")]
+    socket.set_reuse_port(true)?;
     socket.bind(&"0.0.0.0:1900".parse::<std::net::SocketAddr>().unwrap().into())?;
     socket.join_multicast_v4(&SSDP_IP, &Ipv4Addr::UNSPECIFIED)?;
     socket.set_nonblocking(true)?;
