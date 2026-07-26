@@ -160,6 +160,13 @@ You can pretty-print this file using `target/debug/wiim-capdump`. I would apprec
 * Kiosk mode doesn't have a way to manually add a device by IP address yet
 
 ## Changelog ##
+  * 0.11.3 - 2026-07-26
+    * Fix some MacOS issues with the mini-window: remove the extra margin
+	  around it we used for custom drop shadow as macos still puts some
+	  kind out outline there, and add a workaround for what looks like a
+	  gtk bug with alpha channel causing a big transparent hole in the
+	  mini window when resized (I'm chasing this with upstream).
+
   * 0.11.2 - 2026-07-26
     * Fix equalizer button SVG to display properly on Fedora 43
 
