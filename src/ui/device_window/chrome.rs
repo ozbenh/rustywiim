@@ -245,11 +245,8 @@ const MINI_RESIZE_EDGE_PX: f64 = 10.0;
 /// is wired onto a *different*, stable-origin widget by `wire_mini_resize()`
 /// (see its doc comment for why this strip can't carry the gesture itself).
 fn build_mini_resize_handle() -> GtkBox {
-    let width = 6;
     // On MacOS it's hard to see unless it's the full size */
-    #[cfg(target_os = "macos")] {
-	width = 10;
-    }
+    let width = if cfg!(target_os = "macos") { 10 } else { 6 };
     let handle = GtkBox::builder()
         .width_request(width)
         .hexpand(false).vexpand(true)
