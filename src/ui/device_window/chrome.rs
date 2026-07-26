@@ -245,8 +245,13 @@ const MINI_RESIZE_EDGE_PX: f64 = 10.0;
 /// is wired onto a *different*, stable-origin widget by `wire_mini_resize()`
 /// (see its doc comment for why this strip can't carry the gesture itself).
 fn build_mini_resize_handle() -> GtkBox {
+    let width = 6;
+    // On MacOS it's hard to see unless it's the full size */
+    #[cfg(target_os = "macos")] {
+	width = 10;
+    }
     let handle = GtkBox::builder()
-        .width_request(6)
+        .width_request(width)
         .hexpand(false).vexpand(true)
         .halign(Align::End)
         .build();
@@ -399,8 +404,12 @@ pub(super) fn build_mini_window(
     // to fade into — see mini-root's CSS comment for why this has to be a
     // plain margin on this shadowless wrapper rather than a shadow/margin on
     // the window node itself or on mini_outer directly.
-    mini_root.add_css_class("mini-root");
-
+    //
+    // On MacOS the whole custom drop shadow doesn't really work and we get
+    // an outline anyway, so ditch this (for now).
+    #[cfg(not(target_os = "macos"))] {
+	mini_root.add_css_class("mini-root");
+    }
     // Unlike an older version of this function, there is no dedicated
     // `gtk::ApplicationWindow` built here anymore — `mini_root` is packed
     // as the *shared* device window's content whenever mini mode is active

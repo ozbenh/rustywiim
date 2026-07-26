@@ -68,17 +68,22 @@ pub mod imp {
         fn snapshot(&self, snapshot: &gtk::Snapshot) {
             let w = self.obj().width()  as f32;
             let h = self.obj().height() as f32;
-            if w <= 0.0 || h <= 0.0 { return; }
-            let bounds = graphene::Rect::new(0.0, 0.0, w, h);
+            if w <= 0.0 || h <= 0.0 {
+                return;
+            }
             let t = self.progress.get().clamp(0.0, 1.0);
+            let bounds = graphene::Rect::new(0.0, 0.0, w, h);
 
             snapshot.push_clip(&bounds);
-            if t < 1.0 {
+            if t <= 0.0 {
+                draw_content(snapshot, self.front.borrow().as_ref(), w, h);
+            } else if t >= 1.0 {
+                draw_content(snapshot, self.back.borrow().as_ref(), w, h);
+            } else {
                 snapshot.push_opacity((1.0 - t) as f64);
                 draw_content(snapshot, self.front.borrow().as_ref(), w, h);
                 snapshot.pop();
-            }
-            if t > 0.0 {
+
                 snapshot.push_opacity(t as f64);
                 draw_content(snapshot, self.back.borrow().as_ref(), w, h);
                 snapshot.pop();
