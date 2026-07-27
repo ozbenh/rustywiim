@@ -484,6 +484,21 @@ fn build_appearance_page() -> adw::PreferencesPage {
         }
     ));
 
+    #[cfg(target_os = "macos")]
+    let mini_floating_row = {
+        let mini_floating = config::with(|cfg| cfg.mini_floating);
+        let row = adw::SwitchRow::builder()
+            .title("Mini Player always on top")
+            .subtitle("Makes the mini window always float above other windows")
+            .active(mini_floating)
+            .build();
+        row.connect_active_notify(move |r| {
+            config::update(|cfg| cfg.mini_floating = r.is_active());
+            crate::ui::update_mini_floating_state();
+        });
+        row
+    };
+
     let animations = config::with(|cfg| cfg.animations);
     let animations_row = adw::SwitchRow::builder()
         .title("Animations")
@@ -601,6 +616,60 @@ fn build_appearance_page() -> adw::PreferencesPage {
         crate::ui::broadcast_appearance_changed(crate::ui::appearance_changed::SCROLL_SPEED);
     });
 
+    struct AppearanceRows {
+        theme_row: adw::ComboRow,
+        mini_modern_row: adw::SwitchRow,
+        animations_row: adw::SwitchRow,
+        accent_override_row: adw::SwitchRow,
+        accent_row: adw::ActionRow,
+        accent_button: gtk::ColorDialogButton,
+        scroll_speed_row: adw::ActionRow,
+        scroll_speed_adj: gtk::Adjustment,
+        #[cfg(target_os = "macos")]
+        mini_floating_row: adw::SwitchRow,
+    }
+    impl AppearanceRows {
+        fn reset_to_defaults(&self) {
+            let (theme, mini_modern, animations, speed) = config::with(|cfg| {
+                (cfg.theme, cfg.mini_modern, cfg.animations, cfg.scroll_speed)
+            });
+            self.theme_row.set_selected(theme_index(theme));
+            self.mini_modern_row.set_active(mini_modern);
+            self.animations_row.set_active(animations);
+            #[cfg(target_os = "macos")] {
+                let mini_floating = config::with(|cfg| cfg.mini_floating);
+                self.mini_floating_row.set_active(mini_floating);
+            }
+
+            // reset_ui_settings() always clears accent_color to None — set
+            // the switch, the row's own sensitivity, and the swatch color
+            // all explicitly rather than relying on set_active(false)'s
+            // notify signal (which GTK only fires on an actual change, so
+            // it wouldn't run at all if the override was already off,
+            // leaving accent_row's dimming and the swatch color stale).
+            self.accent_override_row.set_active(false);
+            self.accent_row.set_sensitive(false); // override is always off right after a reset
+            let hex = config::default_accent_for_theme(theme);
+            if let Ok(rgba) = gtk::gdk::RGBA::parse(hex) {
+                self.accent_button.set_rgba(&rgba);
+            }
+            self.scroll_speed_adj.set_value(speed);
+        }
+    }
+
+    let rows = Rc::new(AppearanceRows {
+        theme_row,
+        mini_modern_row,
+        animations_row,
+        accent_override_row,
+        accent_row,
+        accent_button,
+        scroll_speed_row,
+        scroll_speed_adj,
+        #[cfg(target_os = "macos")]
+        mini_floating_row,
+    });
+
     // config::reset_ui_settings() persists the defaults in one write; the
     // widget setters below then push those values into the controls, which
     // fires each control's own connect_*_notify handler and writes the same
@@ -613,42 +682,24 @@ fn build_appearance_page() -> adw::PreferencesPage {
         .valign(gtk::Align::Center)
         .build();
     reset_btn.connect_clicked(glib::clone!(
-        #[weak] theme_row, #[weak] mini_modern_row, #[weak] animations_row,
-        #[weak] accent_override_row, #[weak] accent_row, #[weak] accent_button,
-        #[weak] scroll_speed_adj
-       , move |_| {
+        #[weak] rows,
+        move |_| {
             config::reset_ui_settings();
-            let (theme, mini_modern, animations, speed) = config::with(|cfg| {
-                (cfg.theme, cfg.mini_modern, cfg.animations, cfg.scroll_speed)
-            });
-            theme_row.set_selected(theme_index(theme));
-            mini_modern_row.set_active(mini_modern);
-            animations_row.set_active(animations);
-            // reset_ui_settings() always clears accent_color to None — set
-            // the switch, the row's own sensitivity, and the swatch color
-            // all explicitly rather than relying on set_active(false)'s
-            // notify signal (which GTK only fires on an actual change, so
-            // it wouldn't run at all if the override was already off,
-            // leaving accent_row's dimming and the swatch color stale).
-            accent_override_row.set_active(false);
-            accent_row.set_sensitive(false); // override is always off right after a reset
-            let hex = config::default_accent_for_theme(theme);
-            if let Ok(rgba) = gtk::gdk::RGBA::parse(hex) {
-                accent_button.set_rgba(&rgba);
-            }
-            scroll_speed_adj.set_value(speed);
+            rows.reset_to_defaults();
         }
     ));
 
     let group = adw::PreferencesGroup::builder()
         .title("Appearance")
         .build();
-    group.add(&theme_row);
-    group.add(&mini_modern_row);
-    group.add(&animations_row);
-    group.add(&accent_override_row);
-    group.add(&accent_row);
-    group.add(&scroll_speed_row);
+    group.add(&rows.theme_row);
+    group.add(&rows.mini_modern_row);
+    #[cfg(target_os = "macos")]
+    group.add(&rows.mini_floating_row);
+    group.add(&rows.animations_row);
+    group.add(&rows.accent_override_row);
+    group.add(&rows.accent_row);
+    group.add(&rows.scroll_speed_row);
 
     let actions_group = adw::PreferencesGroup::new();
     let reset_row = adw::ActionRow::builder()

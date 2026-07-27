@@ -21,6 +21,8 @@ pub(crate) use theme::{
     apply_accent_color, apply_theme, appearance_changed, broadcast_appearance_changed,
     current_tunables, cycle_theme, update_art_background_visibility,
 };
+#[cfg(target_os = "macos")]
+pub(crate) use device_window::update_mini_floating_state;
 use theme::{init_css, init_icon_resource};
 
 use std::cell::RefCell;

@@ -39,6 +39,43 @@ pub(super) const SIZE_REQUEST_WORKAROUND: bool = true;
 /// this comes from.
 pub(super) const FULL_MODE_FLOOR: (i32, i32) = (360, 200);
 
+#[cfg(target_os = "macos")]
+pub fn set_window_floating<W: gtk::prelude::IsA<gtk::Window>>(
+     window: &W,
+     enable: bool)
+{
+    use gtk::prelude::*;
+    use objc2_app_kit::NSWindow;
+
+    let gtk_window = window.upcast_ref::<gtk::Window>();
+    let Some(surface) = gtk_window.surface() else {
+        eprintln!("set_window_floating with no surface !");
+        return;
+    };
+
+    unsafe {
+	let base_surface_ptr = surface.as_ptr();
+	let macos_surface_ptr = base_surface_ptr as *mut gdk4_macos_sys::GdkMacosSurface;
+        let ptr = gdk4_macos_sys::gdk_macos_surface_get_native_window(macos_surface_ptr);
+        if ptr.is_null() {
+            eprintln!("set_window_floating with no native window !");
+            return;
+        }
+
+        let ns_window = &*(ptr as *mut NSWindow);
+
+        if enable {
+            ns_window.setLevel(
+                objc2_app_kit::NSFloatingWindowLevel
+            );
+        } else {
+            ns_window.setLevel(
+                objc2_app_kit::NSNormalWindowLevel
+            );
+        }
+    }
+}
+
 impl DeviceWindowInner {
     /// Apply per-device window/panel state (size, maximized, panel
     /// visibility/width, mini-window width) for the device identified by
@@ -242,6 +279,20 @@ impl DeviceWindowInner {
         // whatever it last had; harmless while it's not shown, and this
         // same call self-heals it the next time it's reattached.
         crate::ui::update_art_background_visibility();
+
+        #[cfg(target_os = "macos")] {
+            let win = self.window.clone();
+            let floating = mini && config::with(|cfg| cfg.mini_floating);
+
+            if win.is_realized() {
+                set_window_floating(&win, floating);
+            } else {
+                // Directly move mini into the connect_realize callback
+                win.connect_realize(move |win| {
+                    set_window_floating(win, floating);
+                });
+            }
+        }
     }
 
     /// The mini window's target size for `set_default_size()`: the requested

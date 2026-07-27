@@ -41,6 +41,7 @@ pub fn set_config_path_override(path: PathBuf) {
 fn default_panel_visible() -> bool { true }
 fn default_animations() -> bool { true }
 fn default_mini_modern() -> bool { true }
+fn default_mini_floating() -> bool { false }
 /// Both the app-wide (`Config::gena_enabled`) and per-device
 /// (`DeviceConfig::gena_enabled`) GENA toggles default on — GENA only ever
 /// starts a session when *both* are true (see `resolved_gena_enabled()`).
@@ -281,7 +282,10 @@ pub struct Config {
     /// toggle is greyed out otherwise). Defaults on.
     #[serde(default = "default_mini_modern")]
     pub mini_modern: bool,
-    /// Highlight/accent colour override (hex, e.g. "#4ecdc4") used for song
+    /// Make mini window floating, MacOS only at the moment
+    #[serde(default = "default_mini_floating")]
+    pub mini_floating: bool,
+        /// Highlight/accent colour override (hex, e.g. "#4ecdc4") used for song
     /// progress, playback status, the play/pause button, and the side-panel
     /// toggle. `None` (the default — Settings' "Override accent color"
     /// switch off) means "use the active theme's own default", resolved via
@@ -386,6 +390,7 @@ impl Default for Config {
             discovery_window_height: 0,
             animations: default_animations(),
             mini_modern: default_mini_modern(),
+            mini_floating: default_mini_floating(),
             accent_color: None,
             scroll_speed: default_scroll_speed(),
             mini_stale_pixel_workaround: false,
@@ -603,6 +608,7 @@ pub fn reset_ui_settings() {
         // deriving it keeps the two from silently diverging again.
         cfg.theme = ThemeMode::default();
         cfg.mini_modern = default_mini_modern();
+        cfg.mini_floating = default_mini_floating();
         cfg.animations = default_animations();
         cfg.accent_color = None;
         cfg.scroll_speed = default_scroll_speed();

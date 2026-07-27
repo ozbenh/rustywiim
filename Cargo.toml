@@ -29,6 +29,12 @@ rcgen = "0.14"
 resvg = { version = "0.47", default-features = false }
 pangocairo = "0.20"
 
+[target.'cfg(target_os = "macos")'.dependencies]
+gdk4-macos = "0.11"
+gdk4-macos-sys = { version = "0.11", features = ["v4_8"] }
+objc2 = "0.6"
+objc2-app-kit = {version = "0.3", features = ["NSWindow"] }
+
 [package.metadata.deb]
 maintainer = "Benjamin Herrenschmidt <benh@kernel.crashing.org>"
 copyright = "2026, Benjamin Herrenschmidt"

@@ -895,3 +895,16 @@ fn wire_window_lifecycle(
         }
     });
 }
+
+/// Sync every open mini window's floating state
+#[cfg(target_os = "macos")]
+pub(crate) fn update_mini_floating_state() {
+    let mini_floating = config::with(|cfg| cfg.mini_floating);
+
+    for widget in gtk::Window::list_toplevels() {
+        let is_mini = widget.has_css_class("mini-window");
+        if let Ok(win) = widget.dynamic_cast::<gtk::Window>() {
+            geometry::set_window_floating(&win, is_mini && mini_floating);
+        }
+    }
+}
