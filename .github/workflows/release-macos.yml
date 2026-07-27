@@ -17,7 +17,7 @@ jobs:
       - name: Install dependencies
         run: |
           brew update
-          brew install gtk4 libadwaita create-dmg
+          brew install gtk4 libadwaita adwaita-icon-theme openssl create-dmg
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
