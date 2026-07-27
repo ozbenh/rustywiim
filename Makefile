@@ -8,6 +8,16 @@
 # targets are meant to be run on Debian/Ubuntu for `deb` and Fedora for
 # `rpm`, not cross-built from one to the other.
 
+UNAME_S := $(shell uname -s)
+
+ifeq ($(UNAME_S),Darwin)
+IS_MACOS=true
+else
+IS_MACOS=false
+endif
+
+
+
 .PHONY: all build deb rpm package clean clean-pkg
 
 .DEFAULT_GOAL := build
@@ -51,17 +61,60 @@ rpm:
 	cargo generate-rpm -s 'version = "$(VERSION)"'
 	@echo "== .rpm (version $(VERSION)) written to target/generate-rpm/ =="
 
-# Builds whichever package format matches the OS you're on.
+.PHONY: bundle-macos sign-macos run-macos dmg-macos notarize-macos release-macos clean-macos 
+
+ifeq ($(IS_MACOS),true)
+APP := target/release/bundle/osx/RustyWiiM.app
+
+bundle-macos:
+	cargo bundle --release --format osx
+	./scripts/bundle-gtk-macos.sh "$(APP)"
+
+sign-macos: #bundle-macos
+	./scripts/sign-macos.sh "$(APP)"
+
+run-macos: # bundle-macos
+	open "$(APP)"
+
+dmg-macos: #sign-macos
+	./scripts/create-dmg.sh "$(APP)"
+
+notarize-macos: #dmg-macos
+	./scripts/notarize-macos.sh target/release/bundle/osx/RustyWiiM.dmg
+
+release-macos:
+	bundle-macos
+	sign-macos
+	dmg-macos
+	notarize-macos
+
+clean-macos:
+	rm -rf target/release/bundle
+	rm -rf target/debug/bundle
+
+package: release-macos
+
+else
+
+bundle-macos:
+sign-macos:
+run-macos:
+clean-macos:
+
 package:
-	@. /etc/os-release; \
+@. /etc/os-release; \
 	case "$$ID $$ID_LIKE" in \
 		*fedora*) $(MAKE) rpm ;; \
 		*debian*|*ubuntu*) $(MAKE) deb ;; \
 		*) echo "error: unrecognized distro ($$PRETTY_NAME) — use 'make deb' or 'make rpm' directly." >&2; exit 1 ;; \
 	esac
+fi
+endif
 
-clean:
+clean: clean-macos
 	cargo clean
+
 
 clean-pkg:
 	rm -rf target/debian target/generate-rpm
+

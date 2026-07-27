@@ -4,10 +4,12 @@
 # gallery links expect. Run this after adding/replacing a screenshot.
 set -e
 
-cd "$(dirname "$0")"
+pushd ${1}
 mkdir -p thumbs
 
 for src in *.png; do
     magick "$src" -resize 220x "thumbs/$src"
     echo "thumbs/$src"
 done
+
+popd

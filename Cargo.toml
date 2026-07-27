@@ -70,3 +70,14 @@ assets = [
 [package.metadata.generate-rpm.requires]
 gtk4 = ">= 4.12"
 libadwaita = ">= 1.5"
+
+[package.metadata.bundle]
+name = "RustyWiiM"
+identifier = "io.github.ozbenh.rustywiim"
+icon = ["target/icons/RustyWiiM.icns"]
+category = "public.app-category.music"
+copyright = "2026 Benjamin Herrenschmidt"
+license= "MIT"
+
+[package.metadata.bundle.macos]
+minimum_system_version = "13.0"

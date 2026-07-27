@@ -1,5 +1,70 @@
+use std::path::PathBuf;
+use std::path::Path;
 use std::process::Command;
+use std::{fs, env};
 
+#[cfg(target_os = "macos")]
+fn build_macos_icons() {
+    let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
+
+    // Temporary build directory
+    let iconset = out_dir.join("RustyWiiM.iconset");
+
+    // Final output for cargo-bundle
+    let target_dir = PathBuf::from("target/icons");
+    let icns = target_dir.join("RustyWiiM.icns");
+
+    let svg = Path::new("src/ui/icons/rustywiim-icon.svg");
+
+    // Always recreate the iconset
+    if iconset.exists() {
+        fs::remove_dir_all(&iconset).unwrap();
+    }
+    fs::create_dir_all(&iconset).unwrap();
+
+    // Ensure the output directory exists
+    fs::create_dir_all(&target_dir).unwrap();
+
+    for size in [16, 32, 128, 256, 512] {
+        let png1 = iconset.join(format!("icon_{}x{}.png", size, size));
+        let png2 = iconset.join(format!("icon_{}x{}@2x.png", size, size));
+
+        convert_svg(svg, size, &png1);
+        convert_svg(svg, size * 2, &png2);
+    }
+
+    Command::new("iconutil")
+        .args([
+            "-c",
+            "icns",
+            iconset.to_str().unwrap(),
+            "-o",
+            icns.to_str().unwrap(),
+        ])
+        .status()
+        .expect("iconutil failed");
+
+    println!("cargo:rerun-if-changed={}", svg.display());
+
+    println!(
+        "cargo:rustc-env=RUSTYWIIM_ICNS={}",
+        icns.display()
+    );
+}
+#[cfg(target_os = "macos")]
+fn convert_svg(svg: &Path, size: u32, output: &PathBuf) {
+    Command::new("magick")
+        .args([
+            "-background",
+            "none",
+            svg.to_str().unwrap(),
+            "-resize",
+            &format!("{}x{}", size, size),
+            output.to_str().unwrap(),
+        ])
+        .status()
+        .expect("ImageMagick failed");
+}
 fn git(args: &[&str]) -> Option<String> {
     Command::new("git")
         .args(args)
@@ -88,4 +153,7 @@ fn main() {
     if !status.success() {
         panic!("glib-compile-resources failed");
     }
+    // Regenerate the MacOS rasterized icon
+    #[cfg(target_os = "macos")]
+    build_macos_icons();
 }
