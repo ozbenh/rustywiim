@@ -15,15 +15,14 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install dependencies
-        run: |
-          brew update
-          brew install gtk4 libadwaita adwaita-icon-theme openssl create-dmg
+        run: make deps-macos
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install cargo-bundle
-        cargo install cargo-bundle
+        run: |
+          cargo install cargo-bundle
 
       - name: Import signing certificate
         env:

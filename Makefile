@@ -61,10 +61,20 @@ rpm:
 	cargo generate-rpm -s 'version = "$(VERSION)"'
 	@echo "== .rpm (version $(VERSION)) written to target/generate-rpm/ =="
 
-.PHONY: bundle-macos sign-macos run-macos dmg-macos notarize-macos release-macos clean-macos 
+.PHONY: deps-macos bundle-macos sign-macos run-macos dmg-macos notarize-macos release-macos clean-macos
 
 ifeq ($(IS_MACOS),true)
 APP := target/release/bundle/osx/RustyWiiM.app
+
+deps-macos:
+	brew update
+	brew install \
+	    gtk4 \
+	    libadwaita \
+	    adwaita-icon-theme \
+	    openssl \
+	    imagemagick \
+	    create-dmg
 
 bundle-macos:
 	cargo bundle --release --format osx
@@ -92,19 +102,19 @@ package: release-macos
 
 else
 
+deps-macos:
 bundle-macos:
 sign-macos:
 run-macos:
 clean-macos:
 
 package:
-@. /etc/os-release; \
+	@. /etc/os-release; \
 	case "$$ID $$ID_LIKE" in \
 		*fedora*) $(MAKE) rpm ;; \
 		*debian*|*ubuntu*) $(MAKE) deb ;; \
 		*) echo "error: unrecognized distro ($$PRETTY_NAME) — use 'make deb' or 'make rpm' directly." >&2; exit 1 ;; \
 	esac
-fi
 endif
 
 clean: clean-macos
