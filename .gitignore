@@ -4,3 +4,4 @@ Cargo.lock
 *#
 .claude
 dumps
+*.orig
