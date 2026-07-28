@@ -61,38 +61,66 @@ rpm:
 	cargo generate-rpm -s 'version = "$(VERSION)"'
 	@echo "== .rpm (version $(VERSION)) written to target/generate-rpm/ =="
 
-.PHONY: deps-macos bundle-macos sign-macos run-macos dmg-macos notarize-macos release-macos clean-macos
+.PHONY: deps-macos build-macos gtk-macos bundle-macos sign-macos run-macos dmg-macos notarize-macos verify-macos release-macos clean-macos
 
 ifeq ($(IS_MACOS),true)
 APP := target/release/bundle/osx/RustyWiiM.app
+DMG := target/release/bundle/osx/RustyWiiM.dmg
 
+# imagemagick is a real build dependency — build.rs shells out to `magick`
+# to generate the .icns. The DMG is built with plain hdiutil, so the
+# create-dmg formula is deliberately not installed.
 deps-macos:
 	brew update
 	brew install \
 	    gtk4 \
 	    libadwaita \
 	    adwaita-icon-theme \
+	    librsvg \
 	    openssl \
-	    imagemagick \
-	    create-dmg
+	    imagemagick
 
-bundle-macos:
+# The individual pipeline stages below deliberately declare no
+# prerequisites, so CI can run each one as its own step (visible progress,
+# separate logs) without re-running the stages before it. The chaining
+# convenience targets are further down.
+
+build-macos:
 	cargo bundle --release --format osx
+
+gtk-macos:
 	./scripts/bundle-gtk-macos.sh "$(APP)"
 
-sign-macos: bundle-macos
+sign-macos:
 	./scripts/sign-macos.sh "$(APP)"
+
+dmg-macos:
+	./scripts/create-dmg.sh "$(APP)"
+
+notarize-macos:
+	./scripts/notarize-macos.sh "$(DMG)"
+
+verify-macos:
+	./scripts/verify-macos.sh "$(APP)" "$(DMG)"
+
+bundle-macos:
+	$(MAKE) build-macos
+	$(MAKE) gtk-macos
 
 run-macos: bundle-macos
 	open "$(APP)"
 
-dmg-macos: sign-macos
-	./scripts/create-dmg.sh "$(APP)"
-
-notarize-macos: dmg-macos
-	./scripts/notarize-macos.sh target/release/bundle/osx/RustyWiiM.dmg
-
-release-macos: notarize-macos
+# Recursive invocations rather than prerequisites: prerequisites of a
+# single target may run in any order (and concurrently under `make -j`),
+# which for these stages would mean signing a bundle that isn't built yet.
+# Recipe lines always run in sequence.
+release-macos:
+	$(MAKE) build-macos
+	$(MAKE) gtk-macos
+	$(MAKE) sign-macos
+	$(MAKE) dmg-macos
+	$(MAKE) notarize-macos
+	$(MAKE) verify-macos
 
 clean-macos:
 	rm -rf target/release/bundle
@@ -103,8 +131,14 @@ package: release-macos
 else
 
 deps-macos:
+build-macos:
+gtk-macos:
 bundle-macos:
 sign-macos:
+dmg-macos:
+notarize-macos:
+verify-macos:
+release-macos:
 run-macos:
 clean-macos:
 

@@ -3,22 +3,17 @@ set -euo pipefail
 
 APP="${1:?Usage: $0 <app>}"
 
-if [ -z "${MACOS_SIGN_IDENTITY:-}" ]; then
-    MACOS_SIGN_IDENTITY=$(security find-identity -v -p codesigning |
-        grep "Developer ID Application" |
-        head -1 |
-        sed -E 's/.*"([^"]+)".*/\1/')
-fi
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
-if [ -z "$MACOS_SIGN_IDENTITY" ]; then
-    echo "No Developer ID Application certificate found"
-    exit 1
-fi
+# shellcheck source=scripts/macos-common.sh
+. "$ROOT/scripts/macos-common.sh"
 
-IDENTITY="${MACOS_SIGN_IDENTITY:?MACOS_SIGN_IDENTITY not set}"
+IDENTITY="$(signing_identity)"
 
 echo "Using identity: $IDENTITY"
 
+# --timestamp requests a secure timestamp from Apple's timestamp server;
+# notarization rejects signatures without one.
 sign_macho()
 {
     local file="$1"
@@ -27,6 +22,7 @@ sign_macho()
 
     codesign \
         --force \
+        --timestamp \
         --options runtime \
         --sign "$IDENTITY" \
         "$file"
@@ -80,8 +76,7 @@ sign_executable()
 {
     echo "Signing executable..."
 
-    sign_macho \
-        "$APP/Contents/MacOS/$(basename "$APP" .app | tr '[:upper:]' '[:lower:]')"
+    sign_macho "$(bundle_executable "$APP")"
 }
 
 
@@ -91,6 +86,7 @@ sign_bundle()
 
     codesign \
         --force \
+        --timestamp \
         --options runtime \
         --sign "$IDENTITY" \
         "$APP"
@@ -114,4 +110,3 @@ sign_plugins
 sign_executable
 sign_bundle
 verify_bundle
-

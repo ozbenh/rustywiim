@@ -6,15 +6,20 @@ import sys
 from pathlib import Path
 
 
-if len(sys.argv) != 3:
-    print(f"Usage: {sys.argv[0]} <app> <manifest>")
+if len(sys.argv) < 3:
+    print(f"Usage: {sys.argv[0]} <executable> <manifest> [extra-root ...]")
     sys.exit(1)
 
 
-APP = Path(sys.argv[1]).resolve()
 MANIFEST = Path(sys.argv[2])
 
-EXEC = APP / "Contents" / "MacOS" / "RustyWiiM"
+# Every Mach-O file already in its final place inside the bundle: the main
+# executable, plus any extra roots given on the command line (the gdk-pixbuf
+# loaders, which are dlopen'd from a cache file rather than linked, so
+# nothing in the executable's own dependency graph reaches them). These are
+# scanned for dependencies but never added to the manifest — they are not
+# copied, they are already where they belong.
+ROOTS = [Path(arg).resolve() for arg in [sys.argv[1]] + sys.argv[3:]]
 
 BREW_PREFIX = Path(
     subprocess.check_output(
@@ -98,8 +103,7 @@ def collect(path):
 
     print("Scanning:", path)
 
-    # The executable is not copied
-    if path != EXEC:
+    if real not in ROOTS:
         add_manifest(path)
 
     for dep in run_otool(path):
@@ -143,7 +147,8 @@ def collect(path):
         print("Ignoring:", dep)
 
 
-collect(EXEC)
+for root in ROOTS:
+    collect(root)
 
 
 MANIFEST.write_text(

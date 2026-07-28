@@ -98,7 +98,83 @@ mod tests {
     }
 }
 
+/// `bundle-gtk-macos.sh` ships a copy of Homebrew's own GTK/GLib/gdk-pixbuf
+/// data files (schemas, icons, pixbuf loaders) inside `Contents/Resources`
+/// and `Contents/Frameworks`, since we bundle Homebrew's stack rather than
+/// building our own relocatable one — but GLib/GTK/gdk-pixbuf still resolve
+/// those by paths baked in at Homebrew's own build time (`/opt/homebrew/...`)
+/// unless told otherwise. Bundling the files alone doesn't redirect the
+/// lookup, which is why removing `/opt/homebrew` after the fact reproduces
+/// missing icons and a gdk-pixbuf loader crash even though everything needed
+/// is sitting right there in the bundle. Must run before anything touches
+/// GLib/GTK, hence right at the top of `main()`; a no-op for an unbundled
+/// dev build (`cargo run`), where `Contents/Resources` doesn't exist.
+#[cfg(target_os = "macos")]
+fn setup_macos_bundle_env() {
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+
+    // exe = .../RustyWiiM.app/Contents/MacOS/RustyWiiM
+    let Some(contents) = exe.parent().and_then(|macos_dir| macos_dir.parent()) else {
+        return;
+    };
+    let resources = contents.join("Resources");
+    let frameworks = contents.join("Frameworks");
+
+    // Not running from inside an app bundle (e.g. `cargo run` in dev) —
+    // leave the environment untouched.
+    if !resources.join("share").is_dir() {
+        return;
+    }
+
+    // Single-threaded at this point (before the tokio thread is spawned),
+    // so mutating the environment here can't race another thread reading it.
+    unsafe {
+        let schema_dir = resources.join("share/glib-2.0/schemas");
+        if schema_dir.is_dir() {
+            std::env::set_var("GSETTINGS_SCHEMA_DIR", &schema_dir);
+        }
+
+        let data_dir = resources.join("share");
+        let xdg_data_dirs = match std::env::var("XDG_DATA_DIRS") {
+            Ok(existing) if !existing.is_empty() => {
+                format!("{}:{existing}", data_dir.display())
+            }
+            _ => format!("{}:/usr/local/share:/usr/share", data_dir.display()),
+        };
+        std::env::set_var("XDG_DATA_DIRS", xdg_data_dirs);
+
+        // gdk-pixbuf loads its PNG/JPEG/SVG/... format plugins via dlopen
+        // based on a generated cache file, not link-time dependencies, so
+        // `macho-deps.py`'s otool-based dependency walk never finds them —
+        // `bundle-gtk-macos.sh` copies the loader dylibs into `Frameworks`
+        // and generates this cache with a `@BUNDLE_FRAMEWORKS@` placeholder
+        // in place of the real path, since the bundle's final install
+        // location isn't known until now. Patch it and point
+        // `GDK_PIXBUF_MODULE_FILE` at the patched copy.
+        let loader_cache_template = resources.join("share/gdk-pixbuf-2.0/loaders.cache");
+        if let Ok(template) = std::fs::read_to_string(&loader_cache_template) {
+            let patched = template.replace("@BUNDLE_FRAMEWORKS@", &frameworks.to_string_lossy());
+
+            let cache_dir = dirs::cache_dir()
+                .unwrap_or_else(std::env::temp_dir)
+                .join("rustywiim");
+            let patched_cache = cache_dir.join("gdk-pixbuf-loaders.cache");
+
+            if std::fs::create_dir_all(&cache_dir).is_ok()
+                && std::fs::write(&patched_cache, patched).is_ok()
+            {
+                std::env::set_var("GDK_PIXBUF_MODULE_FILE", &patched_cache);
+            }
+        }
+    }
+}
+
 fn main() -> glib::ExitCode {
+    #[cfg(target_os = "macos")]
+    setup_macos_bundle_env();
+
     let app = adw::Application::builder()
         .application_id(ui::APP_ID)
         // Required for gtk::Application::inhibit()/uninhibit() to actually
