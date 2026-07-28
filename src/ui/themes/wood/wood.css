@@ -28,6 +28,16 @@ window {
     background-repeat: no-repeat;
     background-size: 100% 100%;
 }
+/* The mini window's toplevel square is bigger than its visible rounded
+   panel — `.mini-root`'s margin (dark.css) reserves dead space around
+   `mini-outer` for the drop shadow to fade into, meant to stay fully
+   transparent so the real desktop shows through it. dark.css's own
+   `window.mini-window` reset already clears `background-color` for
+   exactly this reason; it never anticipated a theme adding a
+   `background-image` at plain `window` scope, so this clears that too —
+   the cabinet texture instead lives on `.mini-outer` below, clipped to
+   the actual rounded panel the same way `ArtBackground` is. */
+window.mini-window { background-image: none; }
 
 /* panel-card/controls-card are structurally always present (widgets.rs)
    but only styled here (dark.css leaves them inert, same as it leaves
@@ -262,23 +272,52 @@ window.kiosk-window .vol-btn {
 .preset-badge { color: #1a1002; background-color: #a2875f; }
 
 /* ── Mini window ──────────────────────────────────────────────────────────
-   Same panel texture and ".glass" raised bevel as panel-card/controls-card
-   above; mini-main-row keeps dark.css's opaque background (it exists
-   purely to force a repaint over a stale-GPU-pixel glitch, not for its
-   color — see dark.css's own comment on it), just recolored to match this
-   theme's palette instead of being left flat black. */
+   mini-outer is the clipped/rounded backdrop for the whole floating
+   panel — the same wood-grain cabinet texture the main window itself
+   uses (not wood-panel), so the mini window reads as sitting on the same
+   cabinet surface. Deliberately painted *here*, not on the `window` node
+   (the plain `window` rule above is the main window's cabinet texture,
+   and would otherwise paint across the mini window's entire toplevel
+   square, including the dead space `.mini-root`'s margin reserves for
+   the drop shadow below to fade into — mini-outer's own overflow:Hidden
+   clip is what actually confines it to the inner rounded rect, matching
+   how ArtBackground is scoped). */
 window.mini-window .mini-outer {
+    background-color: #2A1804;
+    background-image: url("resource:///io/github/ozbenh/rustywiim/themes/wood/wood-grain.svg");
+    background-repeat: no-repeat;
+    background-size: 100% 100%;
+}
+/* mini-box is the raised panel (same texture/bevel recipe as panel-card/
+   controls-card above) wrapping just the text+controls column
+   (playback_mini.rs's info_box: title/artist/status/transport) — the top
+   bar and the artwork sit directly on mini-outer's cabinet backdrop
+   instead, uncarded, same spirit as Modern's mini-transport-card leaving
+   the top bar/title/artist uncarded on the blur.
+   mini-main-row keeps dark.css's opaque background on the whole
+   artwork+info row (it exists purely to force a repaint over a stale-
+   GPU-pixel glitch, not for its color — see dark.css's own comment on
+   it), just recolored to match this theme's palette instead of being
+   left flat black. */
+window.mini-window .mini-box {
     background-color: #15110c;
     background-image: url("resource:///io/github/ozbenh/rustywiim/themes/wood/wood-panel.svg");
     background-repeat: no-repeat;
     background-size: 100% 100%;
     border: 1px solid rgba(0, 0, 0, 0.5);
+    border-radius: 8px;
+    padding: 8px 10px;
     box-shadow: inset 0 5px 5px -6px rgba(255, 255, 255, 0.4),
                 inset 0 -3px 3px -2px rgba(0, 0, 0, 0.65),
                 inset 0 -7px 9px -5px rgba(0, 0, 0, 0.45),
                 0 0 0 1px rgba(0, 0, 0, 0.6);
 }
 window.mini-window .mini-main-row { background-color: #15110c; }
+/* dark.css's shared 64px .mini-art sizing was tuned to sit beside the old,
+   full-height mini-outer box; against the now-shorter mini-box it reads
+   small. Wood-only bump so the artwork's own height roughly matches the
+   info card's. */
+.mini-art { min-width: 80px; min-height: 80px; }
 .mini-title        { color: #f0e2c8; }
 .mini-artist       { color: #c2a980; }
 .mini-status-label { color: #8c765a; }

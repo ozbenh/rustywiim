@@ -236,9 +236,14 @@ impl MiniPlaybackView {
         transport.append(&info_row);
         transport.append(&controls_card);
 
+        // "mini-box" is currently inert everywhere except Wood (see that
+        // theme's own comment on the class) — the raised panel wraps just
+        // the text+controls area, leaving the top bar and artwork sitting
+        // directly on mini-outer's cabinet backdrop instead.
         let info_box = GtkBox::builder()
             .orientation(Orientation::Vertical).spacing(4)
             .valign(Align::Center).hexpand(true)
+            .css_classes(["mini-box"])
             .build();
         info_box.append(&title.stack);
         info_box.append(&artist_overlay);

@@ -32,7 +32,7 @@ kiosk_keep_transport_visible: true
 # syntax as any other color value in this theme's own wood.css. Omitting
 # any one of the three (rather than all three) disables the frame
 # entirely — see ThemeTunables' own doc comment for why that's deliberate.
-frame_highlight: "rgba(255, 220, 180, 0.35)"
+frame_highlight: "rgba(180, 180, 150, 0.3)"
 frame_shadow: "rgba(0, 0, 0, 0.5)"
 frame_glow: "rgba(0, 0, 0, 0.5)"
 
