@@ -285,6 +285,15 @@ pub(crate) fn parse_source_modes(body: &str) -> anyhow::Result<Vec<TargetOvervie
     let mut out = Vec::new();
     for entry in arr {
         let Some(source) = entry.get("source_name").and_then(|v| v.as_str()) else { continue };
+        // Some firmware also lists output-scoped EQ targets here (the
+        // headphone jack's own EQ), naming them with the output-mode wire
+        // vocabulary instead of a source name, and does so even on models
+        // that have no such jack. Not an input, and not modelled as an EQ
+        // target yet — dropping it keeps a raw wire token out of the
+        // source picker, which has no display name for one.
+        if source.starts_with("AUDIO_OUTPUT_") {
+            continue;
+        }
         let Some(uri) = entry.get("pluginURI").and_then(|v| v.as_str()) else { continue };
         let kind = if uri == PLUGIN_URI_GRAPHIC {
             EqKind::Graphic
@@ -479,6 +488,25 @@ mod tests {
         assert_eq!(line_in.kind, EqKind::Graphic);
         assert!(!line_in.enabled, "line-in's EQ is off in this capture");
         assert_eq!(line_in.preset, None);
+    }
+
+    /// No capture contains one of these entries — every real
+    /// `EQGetSourceModes` response captured so far names its sources with
+    /// the lowercase input vocabulary (`wifi`/`line-in`/`optical`/`HDMI`/
+    /// `phono`/`bluetooth`), so this one is spelled out rather than loaded
+    /// from a fixture.
+    #[test]
+    fn parse_source_modes_drops_output_scoped_targets() {
+        let body = r#"[
+            {"source_name": "wifi", "pluginURI": "http://moddevices.com/plugins/caps/EqNp",
+             "EQStat": "Off", "channelMode": "Stereo", "Name": ""},
+            {"source_name": "AUDIO_OUTPUT_PHONE_JACK_MODE",
+             "pluginURI": "http://moddevices.com/plugins/caps/Eq10HP",
+             "EQStat": "Off", "channelMode": "Stereo", "Name": ""}
+        ]"#;
+        let overview = parse_source_modes(body).expect("parsing EQGetSourceModes");
+        assert_eq!(overview.len(), 1, "the output-scoped entry must be dropped");
+        assert_eq!(overview[0].target, EqTarget::Source("wifi".to_string()));
     }
 
     #[test]
