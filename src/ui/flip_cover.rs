@@ -357,8 +357,19 @@ pub mod imp {
             // band, which both reads as "gradient-like" and is far gentler
             // wherever it lands over light artwork, since there's no hard
             // edge for a brightness mismatch to be obvious against.
-            snapshot.append_inset_shadow(&outline, &highlight, 1.0, 1.0, 0.0, 4.0);
-            snapshot.append_inset_shadow(&outline, &shadow, -1.0, -1.0, 0.0, 4.0);
+            // Below `SMALL_ART_THRESHOLD` (e.g. the mini window/kiosk's small
+            // art), the same offset+blur that reads as a subtle bevel on
+            // full-size art becomes a disproportionately thick band — halve
+            // the highlight's thickness there, and back the shadow off by
+            // less (it's the one carrying most of the "raised edge" read,
+            // so fully halving it too made small art look flat).
+            const SMALL_ART_THRESHOLD: f32 = 100.0;
+            let small = rect.width().min(rect.height()) < SMALL_ART_THRESHOLD;
+            let highlight_scale: f32 = if small { 0.5 } else { 1.0 };
+            let shadow_scale:    f32 = if small { 0.75 } else { 1.0 };
+
+            snapshot.append_inset_shadow(&outline, &highlight, highlight_scale, highlight_scale, 0.0, 4.0 * highlight_scale);
+            snapshot.append_inset_shadow(&outline, &shadow, -shadow_scale, -shadow_scale, 0.0, 4.0 * shadow_scale);
             snapshot.append_outset_shadow(&outline, &glow, 0.0, 6.0, 0.0, 14.0);
         }
     }
