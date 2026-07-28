@@ -38,6 +38,11 @@ pub mod imp {
         /// pattern every previous copy of this cluster used, now
         /// per-instance instead of shared between the full/mini widgets.
         pub(super) drag_timer: RefCell<Option<glib::SourceId>>,
+        /// Whether the outside-click dismissal fallback has already been
+        /// attached to this instance's window. Installed on first popup
+        /// rather than at construction, which is the first point the
+        /// widget is guaranteed to have a root.
+        pub(super) dismiss_installed: Cell<bool>,
     }
 
     #[glib::object_subclass]
@@ -80,6 +85,56 @@ use gtk::{Align, Box as GtkBox, Button, Label, Orientation, Scale};
 
 use crate::device::state::{playback_changed, DeviceState};
 use super::common::vol_icon;
+
+/// An autohide `gtk::Popover` normally closes itself on a click outside it,
+/// via a grab it holds for as long as it's open. On macOS that grab is
+/// sometimes not in effect, leaving the popover open to every outside click
+/// — Escape still closes it, since keyboard focus is unaffected, which is
+/// what distinguishes this from the popover simply not receiving events at
+/// all. Nothing on this side disables autohide or moves focus while one is
+/// open, so the fallback below dismisses it by hand instead.
+///
+/// Purely additive: a popover is its own surface, so while the grab *is*
+/// working the outside click is consumed there and never reaches the
+/// window's own handler at all.
+///
+/// Set to `false` (or delete along with its two use sites, marked
+/// `POPOVER_OUTSIDE_CLICK_WORKAROUND`) once the backend behaves.
+const POPOVER_OUTSIDE_CLICK_WORKAROUND: bool = cfg!(target_os = "macos");
+
+/// Dismisses `popover` on a click anywhere in the window outside it,
+/// standing in for the grab that should have done it. Attached in the
+/// capture phase so it runs before whatever was clicked handles the press.
+/// Clicks on `vol_btn` itself are left alone: that button toggles the
+/// popover, and closing it here first would make its handler see a closed
+/// popover and immediately reopen it.
+/// [POPOVER_OUTSIDE_CLICK_WORKAROUND]
+fn install_outside_click_dismiss(vol_btn: &Button, popover: &gtk::Popover) {
+    let Some(root) = vol_btn.root() else { return };
+
+    let gesture = gtk::GestureClick::new();
+    gesture.set_propagation_phase(gtk::PropagationPhase::Capture);
+    // Any button, not just the primary one.
+    gesture.set_button(0);
+
+    let weak_pop = popover.downgrade();
+    let weak_btn = vol_btn.downgrade();
+    gesture.connect_pressed(move |gesture, _, x, y| {
+        let Some(popover) = weak_pop.upgrade() else { return };
+        if !popover.is_visible() { return; }
+
+        if let (Some(root), Some(btn)) = (gesture.widget().and_then(|w| w.root()), weak_btn.upgrade()) {
+            if let Some(picked) = root.pick(x, y, gtk::PickFlags::DEFAULT) {
+                let btn = btn.upcast::<gtk::Widget>();
+                if picked == btn || picked.is_ancestor(&btn) { return; }
+            }
+        }
+
+        popover.popdown();
+    });
+
+    root.add_controller(gesture);
+}
 
 glib::wrapper! {
     pub struct VolumeControl(ObjectSubclass<imp::VolumeControl>)
@@ -183,8 +238,20 @@ impl VolumeControl {
         vol_btn.connect_clicked({
             let popover = popover.clone();
             let scale = scale.clone();
+            let weak_self = self.downgrade();
             move |btn| {
                 if popover.is_visible() { popover.popdown(); return; }
+
+                // [POPOVER_OUTSIDE_CLICK_WORKAROUND] — installed on first
+                // popup, the earliest point the button is guaranteed to
+                // have a root to attach to.
+                if POPOVER_OUTSIDE_CLICK_WORKAROUND {
+                    if let Some(this) = weak_self.upgrade() {
+                        if !this.imp().dismiss_installed.replace(true) {
+                            install_outside_click_dismiss(btn, &popover);
+                        }
+                    }
+                }
                 // Sized from the actual space available above the button
                 // rather than a fixed guess — a fixed min-height (Kiosk
                 // mode's own touch-friendly sizing used to be exactly
