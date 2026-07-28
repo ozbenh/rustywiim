@@ -35,9 +35,37 @@ use super::capabilities::DeviceId;
 
 pub static DEBUG_DISCOVERY: AtomicBool = AtomicBool::new(false);
 
+/// `--try-all-upnp`: ignore both denylist layers (the SSDP-header denylist
+/// and the consecutive-failure counter) so every announced device is probed
+/// on every re-announcement, regardless of past failures — for testing
+/// discovery against devices this network's own denylists would normally
+/// silence.
+pub static IGNORE_DENYLIST: AtomicBool = AtomicBool::new(false);
+
 fn dbg(msg: &str) {
     if DEBUG_DISCOVERY.load(Ordering::Relaxed) {
         println!("{} [discovery] {msg}", super::timestamp());
+    }
+}
+
+/// Log a probe's full `reqwest::Error` (including its `source()` chain) only
+/// under `--debug=discovery` — unlike `api::log_request_error()`, which
+/// always prints. A device that isn't LinkPlay at all fails every
+/// `PROBE_MODES` entry on every SSDP re-announcement until the failure
+/// counter gives up on it, and printing each of those failures unconditionally
+/// drowns real stderr output; `handle_probe_result()` prints one short
+/// unconditional line instead, once, when an IP is actually given up on.
+fn dbg_request_error(context: &str, err: &reqwest::Error) {
+    if !DEBUG_DISCOVERY.load(Ordering::Relaxed) {
+        return;
+    }
+    use std::error::Error as StdError;
+    let ts = super::timestamp();
+    println!("{ts} [discovery] {context}: {err}");
+    let mut cause: Option<&dyn StdError> = err.source();
+    while let Some(c) = cause {
+        println!("{ts} [discovery]   caused by: {c}");
+        cause = c.source();
     }
 }
 
@@ -163,7 +191,7 @@ fn is_likely_non_linkplay(server: &str, st: &str, x_user_agent: &str) -> bool {
         || NON_LINKPLAY_USER_AGENT_PATTERNS.iter().any(|p| ua_lc.contains(p))
 }
 
-const PROBE_MODES: &[TlsMode] = &[
+pub const PROBE_MODES: &[TlsMode] = &[
     TlsMode::HttpsWiiM,
     TlsMode::HttpsAudioPro,
     TlsMode::Http,
@@ -321,7 +349,9 @@ impl DiscoveryService {
                 // no network round-trip needed. Never a false positive on a
                 // real WiiM/LinkPlay device, so this is safe to apply on
                 // every re-announcement, not just the first.
-                if is_likely_non_linkplay(&server, &st, &x_user_agent) {
+                if !IGNORE_DENYLIST.load(Ordering::Relaxed)
+                    && is_likely_non_linkplay(&server, &st, &x_user_agent)
+                {
                     dbg(&format!(
                         "alive: skipping {ip} (SSDP headers indicate non-LinkPlay device: \
                          SERVER={server:?} ST/NT={st:?} X-User-Agent={x_user_agent:?})"
@@ -334,8 +364,9 @@ impl DiscoveryService {
                     // Already known by UUID or IP key?
                     let key = device_key(&uuid, &ip);
                     let already_known = inner.devices.contains_key(&key);
-                    let confirmed_non_api = inner.failures.get(&ip)
-                        .is_some_and(|&n| n >= NON_API_FAIL_THRESHOLD);
+                    let confirmed_non_api = !IGNORE_DENYLIST.load(Ordering::Relaxed)
+                        && inner.failures.get(&ip)
+                            .is_some_and(|&n| n >= NON_API_FAIL_THRESHOLD);
                     if already_known || inner.probing.contains(&ip) || confirmed_non_api {
                         if confirmed_non_api {
                             dbg(&format!("alive: skipping {ip} (confirmed non-API this run)"));
@@ -372,11 +403,16 @@ impl DiscoveryService {
         } else {
             let count = inner.failures.entry(ip.clone()).or_insert(0);
             *count += 1;
-            if *count >= NON_API_FAIL_THRESHOLD {
-                dbg(&format!(
-                    "probe failed: {ip} ({count}/{NON_API_FAIL_THRESHOLD}) — giving up \
-                     on this IP for the rest of this run"
-                ));
+            let count = *count;
+            if count >= NON_API_FAIL_THRESHOLD {
+                // The one unconditional line for this IP: full per-attempt
+                // errors already went to the debug log via
+                // `dbg_request_error()` above, so stderr only sees a short
+                // summary once discovery actually gives up on it.
+                eprintln!(
+                    "{} [discovery] {ip}: device maybe offline (gave up after {count} tries)",
+                    super::timestamp()
+                );
             } else {
                 dbg(&format!("probe failed: {ip} ({count}/{NON_API_FAIL_THRESHOLD})"));
             }
@@ -562,11 +598,7 @@ async fn probe_api(ip: &str, mode: TlsMode) -> Option<(String, String)> {
     let text   = match client.get(&url).send().await {
         Ok(r)  => r.text().await.ok()?,
         Err(e) => {
-            super::api::log_request_error(
-                "API",
-                &format!("probe {ip} [{}]", mode.description()),
-                &e,
-            );
+            dbg_request_error(&format!("probe {ip} [{}]", mode.description()), &e);
             return None;
         }
     };

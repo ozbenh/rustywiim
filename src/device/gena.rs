@@ -126,10 +126,10 @@ fn parse_timeout_header(raw: Option<&str>) -> u32 {
 /// on every attempt (a `RequestBuilder` isn't reusable once sent). Any other
 /// error, or exhausting the retries, logs via `log_request_error()` (tagged
 /// `"gena"`, `context` identifying the call — e.g. `"10.1.1.73: AVTransport:
-/// SUBSCRIBE"`) and returns it — a plain `{e}` `Display` on a
+/// SUBSCRIBE"`, `--debug=gena`-gated — a plain `{e}` `Display` on a
 /// `reqwest::Error` is often as unhelpfully generic as "error sending
 /// request for url (...)", hiding the actual cause that only walking
-/// `.source()` reveals.
+/// `.source()` reveals) and returns it.
 async fn send_with_retry(
     request: impl Fn() -> reqwest::RequestBuilder,
     context: &str,
@@ -143,14 +143,14 @@ async fn send_with_retry(
             Ok(resp) => return Ok(resp),
             Err(e) => {
                 if !e.is_request() || attempt == MAX_RETRIES {
-                    super::api::log_request_error("gena", context, &e);
+                    super::api::log_request_error("gena", context, &e, DEBUG_GENA.load(Ordering::Relaxed));
                     return Err(e);
                 }
-                // Same noise rule as api.rs's cmd(): the first attempt's
-                // transient failure only logs under --debug=gena (routine,
-                // self-healing), but a first *retry* that also fails logs
-                // unconditionally (more likely a real problem).
-                if attempt > 0 || DEBUG_GENA.load(Ordering::Relaxed) {
+                // Same rule as api.rs's cmd(): every per-attempt message is
+                // --debug=gena-only. `service_loop()` (the caller, one layer
+                // up) is what surfaces an unconditional one-liner, once, on
+                // the first SUBSCRIBE failure of a retry run.
+                if DEBUG_GENA.load(Ordering::Relaxed) {
                     eprintln!(
                         "{} [gena] {context}: transient send error (attempt {}/{}), retrying in 100ms: {e}",
                         super::timestamp(), attempt + 1, MAX_RETRIES,
@@ -887,13 +887,23 @@ async fn service_loop(
         // (Re)subscribe, retrying indefinitely on failure — this covers
         // both the very first attempt and post-renewal-failure recovery
         // identically.
+        let mut warned = false;
         let (sid, mut timeout_secs) = loop {
             match subscribe(&event_sub_url, &host_header, &callback_url, &format!("{label}: {service}")).await {
                 Ok(ok) => break ok,
                 Err(_) => {
-                    // subscribe() already logged the detailed error via
-                    // log_request_error — this is just visibility that
-                    // we're still trying, not giving up.
+                    // subscribe()'s detailed error/cause chain is
+                    // --debug=gena-only now (see log_request_error()'s doc
+                    // comment) — this is the one unconditional line for
+                    // this retry run, fired once on its first failure, not
+                    // on every subsequent retry.
+                    if !warned {
+                        eprintln!(
+                            "{} [gena] {label}: {service}: SUBSCRIBE failing, retrying every {RETRY_INTERVAL_SECS}s",
+                            super::timestamp(),
+                        );
+                        warned = true;
+                    }
                     dbg(&format!("{label}: {service}: still trying, next SUBSCRIBE attempt in {RETRY_INTERVAL_SECS}s"));
                     tokio::time::sleep(Duration::from_secs(RETRY_INTERVAL_SECS)).await;
                 }

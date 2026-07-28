@@ -153,6 +153,17 @@ fn main() -> glib::ExitCode {
         Some("PATH"),
     );
     app.add_main_option(
+        "try-all-upnp",
+        glib::Char(0),
+        glib::OptionFlags::NONE,
+        glib::OptionArg::None,
+        "Ignore discovery's non-LinkPlay denylists (both the SSDP-header \
+         denylist and the consecutive-failure counter) so every announced \
+         device is probed every time — for testing discovery against \
+         devices normally denylisted on this network",
+        None,
+    );
+    app.add_main_option(
         "kiosk:opts",
         glib::Char(0),
         glib::OptionFlags::NONE,
@@ -243,6 +254,9 @@ fn main() -> glib::ExitCode {
         }
         if opts.lookup::<bool>("no-config").ok().flatten().unwrap_or(false) {
             config::set_no_config(true);
+        }
+        if opts.lookup::<bool>("try-all-upnp").ok().flatten().unwrap_or(false) {
+            device::discovery::IGNORE_DENYLIST.store(true, Ordering::Relaxed);
         }
         if opts.lookup::<bool>("kiosk").ok().flatten().unwrap_or(false) {
             ui::set_start_in_kiosk(true);

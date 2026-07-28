@@ -1327,10 +1327,7 @@ impl DeviceState {
                     let renames = client.get_mode_rename().await;
                     Some(FetchOk { info, caps, renames })
                 }
-                None => {
-                    eprintln!("{} [state] fetch_device_info failed: getStatusEx unreachable", super::timestamp());
-                    None
-                }
+                None => None,
             };
             let _ = tx.send(payload).await;
         });
@@ -1345,6 +1342,7 @@ impl DeviceState {
             ds.imp().inner.borrow_mut().reconnect_in_flight = false;
 
             let Some(FetchOk { info, caps, renames }) = payload else {
+                dbg(&ds, "fetch_device_info: getStatusEx unreachable");
                 ds.report_failure("fetch_device_info: getStatusEx unreachable");
                 return;
             };
@@ -2050,6 +2048,16 @@ impl DeviceState {
                 false
             } else {
                 dbg(self, &format!("connection: {:?} → Failed ({reason})", inner.connection_state));
+                // The one unconditional line for this device: fires once on
+                // the actual online→offline transition, not on every
+                // background reconnect retry against an already-known-
+                // offline device (those stay silent unless --debug=state).
+                // Full request-level detail (retry attempts, error cause
+                // chain) is already available under --debug=api.
+                eprintln!(
+                    "{} [state] {}: device offline",
+                    super::timestamp(), self.ip(),
+                );
                 inner.connection_state = ConnectionState::Failed;
                 inner.device_info      = None;
                 // Whichever poll triggered this transition already

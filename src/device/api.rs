@@ -149,22 +149,30 @@ pub fn build_reqwest_client(tls: TlsMode, timeout: Duration) -> Client {
     client
 }
 
-/// Log a reqwest error for `context` (e.g. an API command or a discovery
-/// probe), tagged `[{tag}]` — shared by `api.rs` itself (`"API"`) and
-/// `upnp.rs`'s SOAP calls (`"upnp"`), since the walk-the-`source()`-chain
-/// logic is identical either way, only the tag differs now that the two
-/// modules have their own independent `--debug=api`/`--debug=upnp` flags.
+/// Log a reqwest error for `context` (e.g. an API command, a UPnP SOAP call,
+/// or a GENA SUBSCRIBE), tagged `[{tag}]` — shared by `api.rs`'s `cmd()`
+/// (`"API"`), `upnp.rs`'s `soap_call()` (`"upnp"`), and `gena.rs`'s
+/// `send_with_retry()` (`"gena"`), since the walk-the-`source()`-chain logic
+/// is identical either way, only the tag differs.
 ///
-/// Always prints to stderr, regardless of any `--debug` flag.  Walks the
-/// full `source()` chain so that the root cause (e.g. the specific TLS or
-/// certificate failure) is visible.
-pub fn log_request_error(tag: &str, context: &str, err: &reqwest::Error) {
+/// `enabled` is the caller's own `--debug=*` flag (`api::DEBUG`,
+/// `upnp::DEBUG_UPNP`, `gena::DEBUG_GENA`) — this is a transport-level
+/// error, routine on its own (a single command failing against an
+/// already-known-offline device, or a transient blip against a live one);
+/// it's the caller's job, one layer up, to decide whether/when a failure is
+/// worth an unconditional one-liner (e.g. only on an actual online→offline
+/// transition, not on every retry against a device already believed
+/// offline) — this function itself never prints unconditionally.
+pub fn log_request_error(tag: &str, context: &str, err: &reqwest::Error, enabled: bool) {
+    if !enabled {
+        return;
+    }
     use std::error::Error as StdError;
     let ts = super::timestamp();
-    eprintln!("{ts} [{tag}] {context}: {err}");
+    println!("{ts} [{tag}] {context}: {err}");
     let mut cause: Option<&dyn StdError> = err.source();
     while let Some(c) = cause {
-        eprintln!("{ts} [{tag}]   caused by: {c}");
+        println!("{ts} [{tag}]   caused by: {c}");
         cause = c.source();
     }
 }
@@ -912,14 +920,15 @@ impl WiimClient {
             // is_request() covers SendRequest errors (connection closed before
             // message completed).  These are transient; retry up to MAX_RETRIES.
             if !err.is_request() || attempt == MAX_RETRIES {
-                log_request_error("API", command, &err);
+                log_request_error("API", command, &err, DEBUG.load(Ordering::Relaxed));
                 return Err(err.into());
             }
-            // Attempt 1's failure is the routine, self-healing case this
-            // whole retry loop exists to paper over — only log it under
-            // --debug=api. A first *retry* that also fails (attempt > 0)
-            // is more likely a real problem, so that always logs.
-            if attempt > 0 || DEBUG.load(Ordering::Relaxed) {
+            // Always debug-only: a still-offline pinned device retries this
+            // every reconnect probe forever, and even a live device's
+            // occasional transient blip is routine here — `cmd()`'s own
+            // retry loop exists precisely to paper over it silently. The
+            // caller decides whether a *final* failure is worth a one-liner.
+            if DEBUG.load(Ordering::Relaxed) {
                 eprintln!(
                     "{} [API] {command}: transient send error (attempt {}/{}), retrying in 100ms: {err}",
                     super::timestamp(), attempt + 1, MAX_RETRIES,
@@ -973,14 +982,14 @@ impl WiimClient {
         Ok(serde_json::from_str(&text).unwrap_or_default())
     }
 
-    /// Single unretried `getStatusEx` attempt that never logs on failure —
-    /// bypasses `cmd()` entirely rather than just calling it once, since
-    /// `cmd()`'s failure path always calls `log_request_error()`. For
-    /// liveness probing of a device already believed offline (devlist's
-    /// health check): at that point a failure is the expected, routine
-    /// result on every probe until the device comes back, so `cmd()`'s
-    /// retry/logging (tuned for a device believed reachable) would just
-    /// waste time and spam stderr once per probe forever.
+    /// Single unretried `getStatusEx` attempt that never logs at all, even
+    /// under `--debug=api` — bypasses `cmd()` entirely rather than just
+    /// calling it once, since `cmd()`'s own 3-attempt retry still costs real
+    /// time even with its logging silenced. For liveness probing of a
+    /// device already believed offline (devlist's health check): at that
+    /// point a failure is the expected, routine result on every probe until
+    /// the device comes back, so `cmd()`'s retry (tuned for a device
+    /// believed reachable) would just waste time for no benefit.
     pub async fn get_device_info_quiet(&self) -> anyhow::Result<DeviceInfo> {
         let url = format!("{}?command=getStatusEx", self.base);
         let text = self.http.get(&url).send().await?.text().await?;

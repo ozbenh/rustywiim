@@ -468,11 +468,14 @@ fn tls_for_scheme(scheme: &str) -> TlsMode {
 /// `MAX_RETRIES` retries with a 100ms backoff, only for
 /// `reqwest::Error::is_request()` failures ("connection closed before
 /// message completed" — a known pooled-keep-alive-connection race, not a
-/// real fault). Logging follows the
-/// same noise rule `cmd()` uses too: the first attempt's transient
-/// failure only logs under `--debug=upnp` (routine, self-healing — that's
-/// the entire point of retrying), but a first *retry* that also fails
-/// logs unconditionally (more likely a real problem).
+/// real fault). Logging follows the same rule `cmd()` uses too: every
+/// per-attempt message (transient retries and the final failure/cause
+/// chain alike) is `--debug=upnp`-only — a device believed offline (e.g.
+/// UPnP-polled fast-poll ticks against it) retries this forever, and this
+/// layer has no way to tell that case apart from a genuinely novel
+/// failure. `state.rs`'s poll-failure handling is what surfaces an
+/// unconditional one-liner, once, on the actual online→offline
+/// transition.
 async fn soap_call(control_url: &str, service_type: &str, action: &str, args_xml: &str) -> anyhow::Result<String> {
     const MAX_RETRIES: u32 = 3;
     let scheme = control_url.split(':').next().unwrap_or("http");
@@ -508,10 +511,10 @@ async fn soap_call(control_url: &str, service_type: &str, action: &str, args_xml
             Err(e) => e,
         };
         if !err.is_request() || attempt == MAX_RETRIES {
-            super::api::log_request_error("upnp", action, &err);
+            super::api::log_request_error("upnp", action, &err, DEBUG_UPNP.load(Ordering::Relaxed));
             return Err(err.into());
         }
-        if attempt > 0 || DEBUG_UPNP.load(Ordering::Relaxed) {
+        if DEBUG_UPNP.load(Ordering::Relaxed) {
             eprintln!(
                 "{} [upnp] {action}: transient send error (attempt {}/{}), retrying in 100ms: {err}",
                 super::timestamp(), attempt + 1, MAX_RETRIES,

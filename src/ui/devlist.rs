@@ -217,7 +217,15 @@ impl DiscoveryWindow {
                         if let Ok(Some(dev)) = rx.recv().await {
                             manager.add_manual(dev.name, dev.ip, dev.uuid, dev.tls_mode);
                         } else {
-                            eprintln!("{} [devlist-ui] Could not reach device at {ip}", crate::timestamp());
+                            // Full per-attempt connection errors already went to the
+                            // debug log (--debug=discovery) from probe_device()'s own
+                            // identify_device()/probe_api() calls — this is just the
+                            // short summary, matching discovery.rs's give-up line.
+                            eprintln!(
+                                "{} [devlist-ui] {ip}: device maybe offline or unsupported (tried {} ways)",
+                                crate::timestamp(),
+                                crate::device::discovery::PROBE_MODES.len(),
+                            );
                         }
                     }));
                 }
