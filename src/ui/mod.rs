@@ -27,7 +27,7 @@ pub(crate) use theme::{
 pub(crate) use device_window::update_mini_floating_state;
 use theme::{init_css, init_icon_resource};
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -49,7 +49,7 @@ pub const APP_ID: &str = "io.github.ozbenh.rustywiim";
 
 pub static DEBUG_UI: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-fn dbg_ui(msg: &str) {
+pub(crate) fn dbg_ui(msg: &str) {
     if DEBUG_UI.load(Ordering::Relaxed) {
         println!("{} [ui] {msg}", crate::timestamp());
     }
@@ -199,6 +199,11 @@ pub(crate) struct AppState {
     settings_reg:   RefCell<Vec<settings::SettingsWindow>>,
     disc_win:       RefCell<Option<devlist::DiscoveryWindow>>,
     kiosk_win:      RefCell<Option<Rc<kiosk::KioskWindow>>>,
+    /// Set while `exit_kiosk()` is waiting for the Kiosk window to finish
+    /// leaving fullscreen, so a second exit request during that window
+    /// (the "K" key is still live until the window actually closes) can't
+    /// start a second teardown.
+    kiosk_exiting:  Cell<bool>,
 }
 
 impl AppState {
@@ -258,6 +263,7 @@ impl AppState {
             settings_reg:   RefCell::new(Vec::new()),
             disc_win:       RefCell::new(None),
             kiosk_win:      RefCell::new(None),
+            kiosk_exiting:  Cell::new(false),
         })
     }
 
@@ -821,14 +827,48 @@ impl AppState {
     /// before this was fixed). `restore_windows_from_config()` always
     /// presents at least one window (the device list, if nothing else
     /// qualifies), so that moment never arrives here either.
+    ///
+    /// Both of those steps wait for the Kiosk window to finish *leaving*
+    /// fullscreen first. On macOS a fullscreen window owns its own Space,
+    /// and collapsing one is an animated, asynchronous transition:
+    /// destroying the window mid-transition leaves the macOS GDK backend
+    /// delivering `windowDidExitFullScreen:` callbacks to an
+    /// already-finalized surface (a burst of `GDK_IS_MACOS_SURFACE` /
+    /// `frame_clock` assertion failures). Three things go wrong as a
+    /// result: the Space-collapse configure event is lost, so restored
+    /// windows keep the fullscreen geometry and land partly offscreen;
+    /// windows created while the Space is still up are born into it at its
+    /// size; and the half-destroyed window can stay registered with the
+    /// `GtkApplication`, whose per-window use count then keeps the process
+    /// alive after every visible window is gone. Waiting for the Space to
+    /// actually collapse avoids all three, and costs nothing on backends
+    /// that leave fullscreen synchronously.
     pub(crate) fn exit_kiosk(self_rc: &Rc<Self>) {
-        if self_rc.kiosk_win.borrow().is_none() { return; }
+        let Some(kw) = self_rc.kiosk_win.borrow().as_ref().map(Rc::clone) else { return };
 
-        Self::restore_windows_from_config(self_rc);
+        // The exit button and "K" both stay live until the window is
+        // actually gone, so a second request can arrive mid-wait.
+        if self_rc.kiosk_exiting.get() { return; }
+        self_rc.kiosk_exiting.set(true);
 
-        if let Some(kw) = self_rc.kiosk_win.borrow_mut().take() {
-            kw.close();
-        }
+        let weak = Rc::downgrade(self_rc);
+        kw.unfullscreen_then(move || {
+            let Some(self_rc) = weak.upgrade() else { return };
+
+            Self::restore_windows_from_config(&self_rc);
+
+            // Taken out of the RefCell before the `if let`, so the borrow
+            // guard isn't still alive across `close()`.
+            let kw = self_rc.kiosk_win.borrow_mut().take();
+            if let Some(kw) = kw {
+                kw.close();
+            }
+
+            // Cleared last, not on entry to this callback: until the window
+            // is actually taken out of `kiosk_win`, a re-entrant exit would
+            // still find one and restore every window a second time.
+            self_rc.kiosk_exiting.set(false);
+        });
     }
 
     /// Replace the app.quit action (set up in main.rs) with one that

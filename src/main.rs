@@ -445,7 +445,24 @@ fn main() -> glib::ExitCode {
     // Quit automatically when no visible window remains (handles the case
     // where the discovery window is hidden and the last device window closes).
     app.connect_window_removed(|a, _| {
-        if !a.windows().iter().any(|w| w.is_visible()) {
+        // A window whose destroy never completed stays registered here and
+        // keeps reporting itself visible (`is_visible()` is the widget's
+        // own flag, not whether it has a live surface), which both blocks
+        // this quit and holds the GtkApplication's per-window use count
+        // above zero. Naming what's left makes that case identifiable
+        // rather than looking like the app simply ignoring the last close.
+        let visible: Vec<String> = a.windows().iter()
+            .filter(|w| w.is_visible())
+            .map(|w| format!("{}({})", w.type_().name(), w.title().unwrap_or_default()))
+            .collect();
+        ui::dbg_ui(&format!(
+            "window removed: {} registered, {} visible{}",
+            a.windows().len(),
+            visible.len(),
+            if visible.is_empty() { String::new() } else { format!(": {}", visible.join(", ")) },
+        ));
+
+        if visible.is_empty() {
             a.quit();
         }
     });

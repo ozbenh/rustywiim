@@ -245,6 +245,12 @@ const CONTROLS_FADE_MS: u32 = 150;
 const SCREENSAVER_FADE_IN_MS: u32 = 800;
 const SCREENSAVER_FADE_OUT_MS: u32 = 200;
 
+/// Upper bound on `unfullscreen_then()`'s wait for the window to report it
+/// has left fullscreen. Generous: it's a backstop against a backend that
+/// never reports the change at all, not a tuned animation duration — the
+/// normal path is driven by the state change and doesn't wait this long.
+const UNFULLSCREEN_TIMEOUT_MS: u64 = 1500;
+
 impl KioskWindow {
     pub(crate) fn new(
         app:              &adw::Application,
@@ -1585,6 +1591,60 @@ impl KioskWindow {
         // (or indefinitely) staying at its small unfullscreened default size.
         self.window.fullscreen();
         self.window.present();
+    }
+
+    /// Leaves fullscreen, calling `done` once the window reports it has
+    /// actually left — not merely once the request has been sent. Calls
+    /// `done` immediately if the window isn't fullscreen to begin with.
+    ///
+    /// The wait matters on macOS, where a fullscreen window owns its own
+    /// Space and leaving one is an animated, asynchronous transition; see
+    /// `AppState::exit_kiosk()` for what goes wrong when the window is torn
+    /// down while that's still in flight.
+    ///
+    /// `done` runs exactly once: whichever of the state change or the
+    /// timeout arrives first consumes the stored handler id, and the
+    /// timeout only exists so a backend that never reports leaving
+    /// fullscreen can't strand the caller forever.
+    pub(crate) fn unfullscreen_then(&self, done: impl Fn() + 'static) {
+        if !self.window.is_fullscreen() {
+            done();
+            return;
+        }
+
+        let handler: Rc<RefCell<Option<glib::SignalHandlerId>>> = Rc::new(RefCell::new(None));
+
+        let finish: Rc<dyn Fn()> = {
+            let handler = Rc::clone(&handler);
+            let window = self.window.clone();
+            Rc::new(move || {
+                let Some(id) = handler.borrow_mut().take() else { return };
+                window.disconnect(id);
+                done();
+            })
+        };
+
+        let id = {
+            let finish = Rc::clone(&finish);
+            self.window.connect_fullscreened_notify(move |win| {
+                if !win.is_fullscreen() {
+                    finish();
+                }
+            })
+        };
+        *handler.borrow_mut() = Some(id);
+
+        glib::timeout_add_local_once(
+            Duration::from_millis(UNFULLSCREEN_TIMEOUT_MS),
+            move || {
+                if handler.borrow().is_some() {
+                    crate::ui::dbg_ui("kiosk exit: timed out waiting to leave fullscreen");
+                }
+                finish();
+            },
+        );
+
+        self.window.unfullscreen();
     }
 
     pub(crate) fn close(&self) {
