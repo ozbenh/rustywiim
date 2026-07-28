@@ -160,6 +160,18 @@ You can pretty-print this file using `target/debug/wiim-capdump`. I would apprec
 * Kiosk mode doesn't have a way to manually add a device by IP address yet
 
 ## Changelog ##
+  * 0.12.0 - 2026-07-28
+    * Add MacOS builds ! Standalone signed and notarized apps (fingers
+	  crossed, will only know if the whole process work once I've pushed
+	  this release out).
+    * Fixed various MacOS glitches
+	* Add an optional on-screen keyboard in the window used for editing
+	  EQ preset names or entering IP addresses (for touch-screens).
+    * Cleanup all the spurrious API error logging when devices are
+	  offline or poking at non-Linkplay devices
+    * Add MacOS-only option in Settings to keep the mini-window floating
+	  above all other windows
+
   * 0.11.3 - 2026-07-26
     * Fix some MacOS issues with the mini-window: remove the extra margin
 	  around it we used for custom drop shadow as macos still puts some
