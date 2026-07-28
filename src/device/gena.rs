@@ -891,7 +891,7 @@ async fn service_loop(
         let (sid, mut timeout_secs) = loop {
             match subscribe(&event_sub_url, &host_header, &callback_url, &format!("{label}: {service}")).await {
                 Ok(ok) => break ok,
-                Err(_) => {
+                Err(e) => {
                     // subscribe()'s detailed error/cause chain is
                     // --debug=gena-only now (see log_request_error()'s doc
                     // comment) — this is the one unconditional line for
@@ -904,7 +904,17 @@ async fn service_loop(
                         );
                         warned = true;
                     }
-                    dbg(&format!("{label}: {service}: still trying, next SUBSCRIBE attempt in {RETRY_INTERVAL_SECS}s"));
+                    // `e` is subscribe()'s own `anyhow::Error` — for a bad
+                    // HTTP status (e.g. the device not actually supporting
+                    // eventing on this service) or a missing SID header,
+                    // this is the *only* place that reason ever surfaces:
+                    // those two failure modes never go through
+                    // `log_request_error()` at all (that's transport-level
+                    // errors only), so without this the cause was silently
+                    // dropped even under --debug=gena.
+                    dbg(&format!(
+                        "{label}: {service}: SUBSCRIBE failed ({e}), still trying, next attempt in {RETRY_INTERVAL_SECS}s"
+                    ));
                     tokio::time::sleep(Duration::from_secs(RETRY_INTERVAL_SECS)).await;
                 }
             }
@@ -933,8 +943,8 @@ async fn service_loop(
                     timeout_secs = new_timeout;
                     dbg(&format!("{label}: {service}: renewed (sid={sid}, timeout={timeout_secs}s)"));
                 }
-                Err(_) => {
-                    dbg(&format!("{label}: {service}: renewal failed, will resubscribe"));
+                Err(e) => {
+                    dbg(&format!("{label}: {service}: renewal failed ({e}), will resubscribe"));
                     unregister_route(&sid);
                     subs.lock().unwrap().remove(service);
                     break;

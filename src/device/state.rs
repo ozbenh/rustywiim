@@ -295,14 +295,20 @@ const OUTPUT_STATUS_PROBE_FAIL_THRESHOLD: u32 = 3;
 /// `handle_slow_poll_outputs()`/`handle_slow_poll_output_status()`, which
 /// only ever call this for `Failed` (transient); `ApiOutcome::Unsupported`
 /// skips the budget entirely and gives up on the spot, in the caller.
-fn record_probe_failure(failures: &mut u32, threshold: u32, command: &str) -> bool {
+fn record_probe_failure(ip: &str, failures: &mut u32, threshold: u32, command: &str) -> bool {
     *failures += 1;
-    eprintln!("{} [device] {command} failed ({failures}/{threshold})", super::timestamp(), failures = *failures);
+    // Per-attempt count is --debug=state-only (same rule as everywhere else
+    // in this file); the give-up line is the one unconditional line for
+    // this probe, and — like every other such line in this file — always
+    // identifies which device it's about.
+    if DEBUG_STATE.load(Ordering::Relaxed) {
+        println!("{} [state] {ip}: {command} failed ({failures}/{threshold})", super::timestamp());
+    }
     let gave_up = *failures >= threshold;
     if gave_up {
         eprintln!(
-            "{} [device] giving up on {command} for this device after {failures} consecutive failures",
-            super::timestamp(), failures = *failures,
+            "{} [state] {ip}: giving up on {command} after {failures} consecutive failures",
+            super::timestamp(),
         );
     }
     gave_up
@@ -2904,7 +2910,7 @@ impl DeviceState {
             }
             ApiOutcome::Failed => {
                 let gave_up = record_probe_failure(
-                    &mut inner.outputs_probe_failures, OUTPUTS_PROBE_FAIL_THRESHOLD,
+                    &self.ip(), &mut inner.outputs_probe_failures, OUTPUTS_PROBE_FAIL_THRESHOLD,
                     "getSoundCardModeSupportList",
                 );
                 if gave_up {
@@ -2937,7 +2943,7 @@ impl DeviceState {
                 }
                 ApiOutcome::Failed => {
                     let gave_up = record_probe_failure(
-                        &mut inner.output_status_probe_failures, OUTPUT_STATUS_PROBE_FAIL_THRESHOLD,
+                        &self.ip(), &mut inner.output_status_probe_failures, OUTPUT_STATUS_PROBE_FAIL_THRESHOLD,
                         "getNewAudioOutputHardwareMode",
                     );
                     if gave_up {
