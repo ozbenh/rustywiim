@@ -2,14 +2,16 @@
 //! buttons, as one self-contained widget. Built to replace the ad-hoc
 //! entry+button UI the EQ preset save/rename flow used to have in two
 //! separate places, but deliberately not EQ-specific: kept general enough
-//! to reuse for any other touch-screen text-entry need later, since Kiosk
-//! mode still has no on-screen-keyboard story of its own.
+//! to reuse for any other touch-screen text-entry need. Also owns showing
+//! `ui::osk`'s on-screen keyboard alongside the entry (`sync_osk()`,
+//! triggered by `set_keyboard_type()`), gated on `config::OskMode` and
+//! `ui::touch::has_touchscreen()` — see `should_show_osk()`.
 //!
 //! This widget itself has zero window-awareness — it's just a `gtk::Widget`,
 //! shown today via [`present_prompt_window`] (a plain window), but nothing
 //! about the widget assumes that; hosting it as a `gtk::Overlay` child
-//! inside another window's own content (e.g. Kiosk mode, once an on-screen
-//! keyboard exists to go with it) wouldn't need to change anything here.
+//! inside another window's own content (e.g. Kiosk mode) wouldn't need to
+//! change anything here.
 
 pub mod imp {
     use std::cell::{Cell, OnceCell, RefCell};
@@ -24,6 +26,7 @@ pub mod imp {
 
     #[derive(Default)]
     pub struct PromptEntry {
+        pub(super) content:       OnceCell<gtk::Box>,
         pub(super) prompt_label:  OnceCell<gtk::Label>,
         pub(super) entry:         OnceCell<gtk::Entry>,
         pub(super) error_label:   OnceCell<gtk::Label>,
@@ -31,11 +34,16 @@ pub mod imp {
         pub(super) cancel_button: OnceCell<gtk::Button>,
         /// `None` means "always valid" — not every prompt needs one.
         pub(super) validator: RefCell<Option<Validator>>,
-        /// Not yet read by anything (no on-screen-keyboard implementation
-        /// exists yet) — recorded so callers can already declare what kind
-        /// of input a given prompt wants, ready for whenever Kiosk mode's
-        /// own on-screen keyboard exists to act on it.
+        /// Read by `sync_osk()` (via `KeyboardType::osk_layout()`) to pick
+        /// which of the on-screen keyboard's three layouts to build, once
+        /// `set_keyboard_type()` is called — callers set this before the
+        /// widget is shown, so `Complete` (the `#[default]`) is never
+        /// actually seen by a real prompt today.
         pub(super) keyboard_type: Cell<super::KeyboardType>,
+        /// The currently-built on-screen keyboard widget, if
+        /// `sync_osk()` decided to show one — kept so it can be removed
+        /// again if `set_keyboard_type()` is ever called a second time.
+        pub(super) osk_widget: RefCell<Option<gtk::Widget>>,
     }
 
     #[glib::object_subclass]
@@ -140,6 +148,7 @@ pub mod imp {
             });
             self.obj().add_controller(key_controller);
 
+            self.content.set(content).ok();
             self.prompt_label.set(prompt_label).ok();
             self.entry.set(entry).ok();
             self.error_label.set(error_label).ok();
@@ -194,6 +203,36 @@ pub mod imp {
             if invalid { return; }
             self.obj().emit_by_name::<()>("confirmed", &[&text]);
         }
+
+        /// Builds (or rebuilds) the on-screen keyboard widget for the
+        /// current `keyboard_type`, per `should_show_osk()` — a no-op
+        /// removal-only pass when that says no. Inserted right after the
+        /// error label, so it always sits between the entry and the
+        /// Ok/Cancel row regardless of when it's built.
+        pub(super) fn sync_osk(&self) {
+            let content = self.content.get().unwrap();
+            if let Some(old) = self.osk_widget.borrow_mut().take() {
+                content.remove(&old);
+            }
+            if !should_show_osk() { return; }
+            let layout = self.keyboard_type.get().osk_layout();
+            let kb = crate::ui::osk::build(layout);
+            content.insert_child_after(&kb, Some(self.error_label.get().unwrap()));
+            *self.osk_widget.borrow_mut() = Some(kb);
+        }
+    }
+
+    /// Read once per prompt (`sync_osk()`, called from `set_keyboard_type()`)
+    /// rather than kept live — a `PromptEntry` is short-lived (opened for
+    /// one rename/save/add-device action and closed again), so there's no
+    /// meaningful window for `osk_mode` or the touch-seat answer to change
+    /// out from under an already-open prompt.
+    fn should_show_osk() -> bool {
+        match crate::config::with(|cfg| cfg.osk_mode) {
+            crate::config::OskMode::AlwaysOn  => true,
+            crate::config::OskMode::AlwaysOff => false,
+            crate::config::OskMode::Auto      => crate::ui::touch::has_touchscreen(),
+        }
     }
 }
 
@@ -210,13 +249,13 @@ impl Default for PromptEntry {
     fn default() -> Self { Self::new() }
 }
 
-/// Which kind of on-screen keyboard a prompt wants, once one exists —
-/// entirely unused today (`PromptEntry::set_keyboard_type()`'s doc
-/// comment), just declared ahead of time so call sites don't need
-/// revisiting once it is. `#[allow(dead_code)]`: only `AlphaUnderscore`
-/// is actually requested by anything yet, but these aren't placeholders
-/// to delete — they're the exact set the future keyboard is expected to
-/// need.
+/// Which kind of on-screen keyboard a prompt wants — collapsed down to one
+/// of `ui::osk::OskLayout`'s three actual layouts by `osk_layout()`.
+/// `#[allow(dead_code)]`: only `Numeric` and `AlphaUnderscore` are
+/// actually requested by any call site yet, but the others aren't
+/// placeholders to delete — they're real, distinct hints (e.g. `Complete`
+/// for a prompt that genuinely wants symbols/punctuation) kept ready for
+/// whatever prompt needs them next.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[allow(dead_code)]
 pub(crate) enum KeyboardType {
@@ -247,12 +286,17 @@ impl PromptEntry {
         self.imp().revalidate();
     }
 
+    pub(crate) fn set_placeholder(&self, text: &str) {
+        self.imp().entry.get().unwrap().set_placeholder_text(Some(text));
+    }
+
     pub(crate) fn set_ok_label(&self, text: &str) {
         self.imp().ok_button.get().unwrap().set_label(text);
     }
 
     pub(crate) fn set_keyboard_type(&self, kind: KeyboardType) {
         self.imp().keyboard_type.set(kind);
+        self.imp().sync_osk();
     }
 
     /// `f` returns `Some(error message)` for invalid text, `None` for

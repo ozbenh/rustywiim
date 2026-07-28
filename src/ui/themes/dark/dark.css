@@ -50,6 +50,22 @@ window { background-color: #0a0a0a; }
    (used above for .net-icon) has no effect on it, opacity does. */
 .remote-icon  { opacity: 1.0; }
 .sidebar-toggle:checked { color: @rustywiim_accent; }
+/* On-screen keyboard keys (`ui::osk`) — light grey, distinct from the
+   window's near-black background rather than Adwaita's own default flat
+   button (barely visible against it). Shared by Modern (WOOD_CSS-style
+   concat! of this file + modern.css) since Modern never overrides it —
+   same "lighter grey in dark and modern" look either way. Wood overrides
+   this with its own raised control-button bevel (its own .osk-key rule,
+   loaded after this one). */
+.osk-key {
+    background-color: #3a3a3a;
+    color: #ffffff;
+    border: none;
+    border-radius: 6px;
+    box-shadow: none;
+}
+.osk-key:hover { background-color: #4a4a4a; }
+.osk-key-active { background-color: @rustywiim_accent; color: #000000; }
 .transport-btn {
     min-width: 36px; min-height: 36px;
     padding: 0; -gtk-icon-size: 16px;

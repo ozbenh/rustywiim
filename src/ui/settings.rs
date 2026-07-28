@@ -509,6 +509,20 @@ fn build_appearance_page() -> adw::PreferencesPage {
         config::update(|cfg| cfg.animations = row.is_active());
     });
 
+    let osk_mode = config::with(|cfg| cfg.osk_mode);
+    let osk_names: Vec<&str> = OSK_CHOICES.iter().map(|(name, _)| *name).collect();
+    let osk_list = gtk::StringList::new(&osk_names);
+    let osk_row = adw::ComboRow::builder()
+        .title("On-Screen Keyboard")
+        .subtitle("Touch keyboard shown alongside text-entry prompts — Auto only with a touch screen detected")
+        .model(&osk_list)
+        .build();
+    osk_row.set_selected(osk_index(osk_mode));
+    osk_row.connect_selected_notify(|row| {
+        let Some((_, mode)) = OSK_CHOICES.get(row.selected() as usize) else { return };
+        config::update(|cfg| cfg.osk_mode = *mode);
+    });
+
     // "Override accent color" switch + "Accent color" swatch row, in that
     // dependency order: the switch owns whether config.accent_color is
     // Some/None at all (None = follow the active theme's own default,
@@ -620,6 +634,7 @@ fn build_appearance_page() -> adw::PreferencesPage {
         theme_row: adw::ComboRow,
         mini_modern_row: adw::SwitchRow,
         animations_row: adw::SwitchRow,
+        osk_row: adw::ComboRow,
         accent_override_row: adw::SwitchRow,
         accent_row: adw::ActionRow,
         accent_button: gtk::ColorDialogButton,
@@ -630,12 +645,13 @@ fn build_appearance_page() -> adw::PreferencesPage {
     }
     impl AppearanceRows {
         fn reset_to_defaults(&self) {
-            let (theme, mini_modern, animations, speed) = config::with(|cfg| {
-                (cfg.theme, cfg.mini_modern, cfg.animations, cfg.scroll_speed)
+            let (theme, mini_modern, animations, speed, osk_mode) = config::with(|cfg| {
+                (cfg.theme, cfg.mini_modern, cfg.animations, cfg.scroll_speed, cfg.osk_mode)
             });
             self.theme_row.set_selected(theme_index(theme));
             self.mini_modern_row.set_active(mini_modern);
             self.animations_row.set_active(animations);
+            self.osk_row.set_selected(osk_index(osk_mode));
             #[cfg(target_os = "macos")] {
                 let mini_floating = config::with(|cfg| cfg.mini_floating);
                 self.mini_floating_row.set_active(mini_floating);
@@ -661,6 +677,7 @@ fn build_appearance_page() -> adw::PreferencesPage {
         theme_row,
         mini_modern_row,
         animations_row,
+        osk_row,
         accent_override_row,
         accent_row,
         accent_button,
@@ -697,6 +714,7 @@ fn build_appearance_page() -> adw::PreferencesPage {
     #[cfg(target_os = "macos")]
     group.add(&rows.mini_floating_row);
     group.add(&rows.animations_row);
+    group.add(&rows.osk_row);
     group.add(&rows.accent_override_row);
     group.add(&rows.accent_row);
     group.add(&rows.scroll_speed_row);
@@ -712,6 +730,15 @@ fn build_appearance_page() -> adw::PreferencesPage {
     page.add(&group);
     page.add(&actions_group);
     page
+}
+
+const OSK_CHOICES: &[(&str, config::OskMode)] = &[
+    ("Off", config::OskMode::AlwaysOff),
+    ("On", config::OskMode::AlwaysOn),
+    ("Auto", config::OskMode::Auto),
+];
+fn osk_index(v: config::OskMode) -> u32 {
+    OSK_CHOICES.iter().position(|(_, m)| *m == v).unwrap_or(0) as u32
 }
 
 const INHIBIT_CHOICES: &[(&str, config::InhibitSystemScreensaver)] = &[

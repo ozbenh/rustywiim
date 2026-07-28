@@ -124,8 +124,8 @@ impl DiscoveryWindow {
         ));
 
         // "Add device" button.
-        add_btn.connect_clicked(clone!(#[strong] window, #[strong] manager, move |_| {
-            Self::show_add_dialog(&window, &manager);
+        add_btn.connect_clicked(clone!(#[strong] manager, move |_| {
+            Self::show_add_dialog(&manager);
         }));
 
         // win.close action — lets Ctrl-W (set app-wide) close this window.
@@ -181,56 +181,50 @@ impl DiscoveryWindow {
         self.window.present();
     }
 
-    fn show_add_dialog(parent: &adw::ApplicationWindow, manager: &DiscoveryManager) {
-        let ip_entry = gtk::Entry::builder()
-            .placeholder_text("192.168.1.x")
-            .activates_default(true)
-            .build();
+    /// `PromptEntry`-hosted, not an `adw::AlertDialog`, since 2026-07-28 —
+    /// same swap `eq/chrome.rs`'s `show_preset_name_prompt()` made earlier,
+    /// for the same reason: it's the one path in this codebase that also
+    /// gets the on-screen keyboard (`KeyboardType::Numeric` — an IP address
+    /// is digits and dots).
+    fn show_add_dialog(manager: &DiscoveryManager) {
+        let entry = crate::ui::prompt_entry::PromptEntry::new();
+        entry.set_prompt("Enter the IP address of a WiiM device:");
+        entry.set_placeholder("192.168.1.x");
+        entry.set_ok_label("Add");
+        entry.set_keyboard_type(crate::ui::prompt_entry::KeyboardType::Numeric);
 
-        let dialog = adw::AlertDialog::builder()
-            .heading("Add Device")
-            .body("Enter the IP address of a WiiM device:")
-            .close_response("cancel")
-            .build();
-        dialog.add_response("cancel", "Cancel");
-        dialog.add_response("add", "Add");
-        dialog.set_response_appearance("add", adw::ResponseAppearance::Suggested);
-        dialog.set_default_response(Some("add"));
-        dialog.set_extra_child(Some(&ip_entry));
+        let window = crate::ui::prompt_entry::present_prompt_window("Add Device", &entry);
 
-        dialog.connect_response(None, clone!(
-            #[strong] manager, #[strong] ip_entry
-               , move |_dlg, resp| {
-                    if resp != "add" { return; }
-                    let ip = ip_entry.text().to_string();
-                    if ip.is_empty() { return; }
+        entry.connect_confirmed(clone!(
+            #[strong] manager, #[strong] window,
+            move |_, ip| {
+                window.close();
 
-                    let rt = manager.rt();
-                    let (tx, rx) = async_channel::bounded::<Option<DiscoveredDevice>>(1);
-                    let ip2 = ip.clone();
-                    rt.spawn(async move {
-                        let result = crate::device::discovery::DiscoveryService::probe_device(&ip2).await;
-                        let _ = tx.send(result).await;
-                    });
+                let rt = manager.rt();
+                let (tx, rx) = async_channel::bounded::<Option<DiscoveredDevice>>(1);
+                let ip2 = ip.clone();
+                rt.spawn(async move {
+                    let result = crate::device::discovery::DiscoveryService::probe_device(&ip2).await;
+                    let _ = tx.send(result).await;
+                });
 
-                    glib::spawn_future_local(clone!(#[strong] manager, async move {
-                        if let Ok(Some(dev)) = rx.recv().await {
-                            manager.add_manual(dev.name, dev.ip, dev.uuid, dev.tls_mode);
-                        } else {
-                            // Full per-attempt connection errors already went to the
-                            // debug log (--debug=discovery) from probe_device()'s own
-                            // identify_device()/probe_api() calls — this is just the
-                            // short summary, matching discovery.rs's give-up line.
-                            eprintln!(
-                                "{} [devlist-ui] {ip}: device maybe offline or unsupported (tried {} ways)",
-                                crate::timestamp(),
-                                crate::device::discovery::PROBE_MODES.len(),
-                            );
-                        }
-                    }));
-                }
+                glib::spawn_future_local(clone!(#[strong] manager, async move {
+                    if let Ok(Some(dev)) = rx.recv().await {
+                        manager.add_manual(dev.name, dev.ip, dev.uuid, dev.tls_mode);
+                    } else {
+                        // Full per-attempt connection errors already went to the
+                        // debug log (--debug=discovery) from probe_device()'s own
+                        // identify_device()/probe_api() calls — this is just the
+                        // short summary, matching discovery.rs's give-up line.
+                        eprintln!(
+                            "{} [devlist-ui] {ip}: device maybe offline or unsupported (tried {} ways)",
+                            crate::timestamp(),
+                            crate::device::discovery::PROBE_MODES.len(),
+                        );
+                    }
+                }));
+            }
         ));
-
-        dialog.present(Some(parent));
+        entry.connect_cancelled(clone!(#[strong] window, move |_| window.close()));
     }
 }

@@ -107,6 +107,19 @@ pub enum InhibitSystemScreensaver {
     Always,
 }
 
+/// Whether touch-entry prompts (`ui::prompt_entry::PromptEntry`) show the
+/// on-screen keyboard alongside their text entry. `Auto` (the default)
+/// shows it only when `ui::touch::has_touchscreen()` reports a touch seat —
+/// same detection Kiosk mode's `kiosk_hide_cursor_on_touch` already uses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum OskMode {
+    AlwaysOff,
+    AlwaysOn,
+    #[default]
+    Auto,
+}
+
 /// Per-device window state, keyed on the device UUID from `getStatusEx`.
 /// The UUID is a stable hardware-level identifier that does not change when
 /// the device is renamed or moved to a different network.
@@ -376,6 +389,10 @@ pub struct Config {
     /// non-touch display (`has_touchscreen()` returns false).
     #[serde(default = "default_kiosk_hide_cursor_on_touch")]
     pub kiosk_hide_cursor_on_touch: bool,
+    /// Whether `ui::prompt_entry::PromptEntry` shows the on-screen keyboard
+    /// — see `OskMode`'s own doc comment. Defaults to `Auto`.
+    #[serde(default)]
+    pub osk_mode: OskMode,
 }
 
 impl Default for Config {
@@ -404,6 +421,7 @@ impl Default for Config {
             kiosk_screensaver_timeout_secs: default_kiosk_screensaver_timeout_secs(),
             kiosk_screensaver_include_phys_inputs: default_kiosk_screensaver_include_phys_inputs(),
             kiosk_hide_cursor_on_touch: default_kiosk_hide_cursor_on_touch(),
+            osk_mode: OskMode::default(),
         }
     }
 }
@@ -612,6 +630,7 @@ pub fn reset_ui_settings() {
         cfg.animations = default_animations();
         cfg.accent_color = None;
         cfg.scroll_speed = default_scroll_speed();
+        cfg.osk_mode = OskMode::default();
     });
 }
 

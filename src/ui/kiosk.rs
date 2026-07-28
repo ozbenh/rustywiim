@@ -38,6 +38,7 @@ use crate::device::discovery_manager::DiscoveryManager;
 use crate::device::playback::PlaybackStatus;
 use crate::device::state::{DeviceState, FullModeGuard};
 use crate::ui::art_background::ArtBackground;
+use crate::ui::touch::has_touchscreen;
 use crate::ui::icons::IconSet;
 use crate::ui::update_art_background_visibility;
 use crate::ui::views;
@@ -243,19 +244,6 @@ const CONTROLS_FADE_MS: u32 = 150;
 /// activity should feel instantly responsive).
 const SCREENSAVER_FADE_IN_MS: u32 = 800;
 const SCREENSAVER_FADE_OUT_MS: u32 = 200;
-
-/// Whether the default seat reports touch capability — the same check
-/// `src/experiments/check_touch.py` prototyped
-/// (`GdkDisplayManager`→default display→default seat→`SeatCapabilities`),
-/// ported to gtk4-rs. Drives `kiosk_hide_cursor_on_touch`: on a touch
-/// screen the pointer has no real position to show (it only ever jumps to
-/// wherever was last touched), so there's no "not idle yet" state where
-/// showing it is actually useful the way there is with a mouse.
-fn has_touchscreen() -> bool {
-    let Some(display) = gtk::gdk::DisplayManager::get().default_display() else { return false };
-    let Some(seat) = display.default_seat() else { return false };
-    seat.capabilities().contains(gtk::gdk::SeatCapabilities::TOUCH)
-}
 
 impl KioskWindow {
     pub(crate) fn new(

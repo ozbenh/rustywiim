@@ -189,6 +189,36 @@ window.kiosk-window .controls-card {
 }
 .bt-pair-btn { border-color: rgba(255, 205, 145, 0.25); }
 .bt-pair-btn:hover { color: #f0e2c8; }
+
+/* On-screen keyboard keys (`ui::osk`) — same raised, proud-of-the-cabinet
+   control-button bevel as .transport-btn/.vol-btn/.eq-btn above (a real
+   semi-opaque base fill plus inset+outer shadows, not just a tint), so a
+   keyboard shown next to those controls reads as the same "hi-fi hardware"
+   family rather than a plain flat-grey UI element dropped on top of it.
+   Overrides dark.css's own lighter-grey `.osk-key` (this file loads after
+   it — see MODERN_CSS/WOOD_CSS's own doc comment). */
+.osk-key {
+    background-color: rgba(35, 24, 14, 0.82);
+    background-image: linear-gradient(160deg,
+        rgba(255, 220, 180, 0.16) 0%, rgba(0, 0, 0, 0.35) 100%);
+    box-shadow: inset 0 1px 0 rgba(255, 220, 180, 0.16),
+                inset 0 -1px 1px rgba(0, 0, 0, 0.55),
+                0 2px 4px rgba(0, 0, 0, 0.45);
+    color: #f0e2c8;
+    border: none;
+    border-radius: 6px;
+}
+.osk-key:hover {
+    background-image: linear-gradient(160deg,
+        rgba(255, 220, 180, 0.24) 0%, rgba(0, 0, 0, 0.3) 100%);
+}
+.osk-key-active {
+    background-image: linear-gradient(160deg,
+        rgba(255, 220, 180, 0.4) 0%, rgba(0, 0, 0, 0.2) 100%);
+    box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.4),
+                inset 0 -2px 2px rgba(0, 0, 0, 0.35),
+                0 0 6px alpha(@rustywiim_accent, 0.5);
+}
 /* .eq-btn is otherwise plain Adwaita "circular" (dark.css's own .vol-btn
    rule below sets a 6px rounded-rect, not circular — border-radius: 6px
    here outranks "circular"'s own THEME-priority round shape the same
