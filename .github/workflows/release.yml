@@ -125,6 +125,94 @@ jobs:
           name: rpm-fedora-43
           path: target/generate-rpm/*.rpm
 
+  dmg-macos:
+    # macos-latest is Apple Silicon — every GitHub-hosted macOS image from
+    # macos-14 onwards is arm64, which is what the asset filename claims.
+    # An Intel .dmg would need its own runner and its own filename.
+    name: .dmg (macOS, arm64)
+    runs-on: macos-latest
+    # The notarization step blocks on Apple's service, which is occasionally
+    # slow; the default 6h job timeout is far too generous for that wait.
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0 # full tag history — build.rs `git describe`s
+      - name: Install build dependencies
+        run: make deps-macos
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install cargo-bundle
+        run: cargo install --locked cargo-bundle
+      # Signing has to happen against a keychain this job actually owns —
+      # a hosted runner has no Developer ID cert of its own. The keychain is
+      # thrown away with the runner at the end of the job.
+      - name: Import the Developer ID signing certificate
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          echo "$MACOS_CERTIFICATE" | base64 --decode > certificate.p12
+
+          security create-keychain \
+            -p actions \
+            build.keychain
+
+          security default-keychain \
+            -s build.keychain
+
+          security unlock-keychain \
+            -p actions \
+            build.keychain
+
+          security import certificate.p12 \
+            -k build.keychain \
+            -P "$MACOS_CERTIFICATE_PASSWORD" \
+            -T /usr/bin/codesign
+
+          # Without this, codesign prompts for keychain access interactively
+          # and just hangs until the job times out.
+          security set-key-partition-list \
+            -S apple-tool:,apple: \
+            -s \
+            -k actions \
+            build.keychain
+      - name: Check signing identity
+        run: security find-identity -v -p codesigning
+      # The Makefile's macOS stages deliberately declare no prerequisites of
+      # their own, so each runs here as its own step — separate logs and
+      # visible progress — rather than one opaque `make release-macos`.
+      - name: Build the .app bundle
+        run: make build-macos
+      - name: Bundle the GTK stack into it
+        run: make gtk-macos
+      - name: Sign
+        env:
+          MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+        run: make sign-macos
+      - name: Build the disk image
+        env:
+          MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+        run: make dmg-macos
+      - name: Notarize
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: make notarize-macos
+      - name: Verify signature, Gatekeeper and staple
+        run: make verify-macos
+      # create-dmg.sh names the image after the .app bundle (RustyWiiM.dmg);
+      # rename only now, after notarization has stapled its ticket to it —
+      # the ticket lives inside the image, so a later rename is harmless.
+      - name: Name the asset for the release page
+        run: |
+          cd target/release/bundle/osx
+          mv RustyWiiM.dmg RustyWiiM-MacOS-arm64.dmg
+      - uses: actions/upload-artifact@v6
+        with:
+          name: dmg-macos-arm64
+          path: target/release/bundle/osx/RustyWiiM-MacOS-arm64.dmg
+
   source-tarball:
     name: Source tarball
     runs-on: ubuntu-latest
@@ -143,7 +231,7 @@ jobs:
 
   publish:
     name: Attach everything to the GitHub Release
-    needs: [deb-ubuntu, deb-debian, rpm-fedora, source-tarball]
+    needs: [deb-ubuntu, deb-debian, rpm-fedora, dmg-macos, source-tarball]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -157,4 +245,5 @@ jobs:
             deb-debian-trixie-amd64/*.deb
             deb-debian-trixie-arm64/*.deb
             rpm-fedora-43/*.rpm
+            dmg-macos-arm64/*.dmg
             source-tarball/*.tar.gz
