@@ -184,9 +184,10 @@ pub(super) fn handle_transport_key(
     next_btn: &gtk::Button,
     play_btn: &gtk::Button,
 ) -> glib::Propagation {
-    // Ignore Ctrl/Alt combinations so this doesn't shadow other accelerators
-    // (Ctrl-W, Ctrl-Q, Alt-based window-manager bindings, etc.).
-    if state.intersects(gtk::gdk::ModifierType::CONTROL_MASK | gtk::gdk::ModifierType::ALT_MASK) {
+    // Ignore modified combinations so this doesn't shadow other accelerators
+    // (Ctrl-W, Ctrl-Q, their macOS Command equivalents, Alt-based
+    // window-manager bindings, etc.).
+    if views::common::is_accel_modifier(state) {
         return glib::Propagation::Proceed;
     }
     // "M" (mini-toggle), "K" (enter Kiosk mode bound to this device), and

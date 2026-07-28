@@ -411,6 +411,19 @@ pub(crate) fn flash_button(btn: &gtk::Button) {
     });
 }
 
+/// True when a key press carries a modifier that an application accelerator
+/// or window-manager binding may be bound to, so the plain-letter shortcuts
+/// hosts define must let it through instead of shadowing it. Ctrl and Alt
+/// everywhere; on macOS also Command, which GDK reports as `META_MASK` and
+/// which the quit/close accelerators are bound to there in addition to Ctrl.
+pub(crate) fn is_accel_modifier(state: gtk::gdk::ModifierType) -> bool {
+    let mut mods = gtk::gdk::ModifierType::CONTROL_MASK | gtk::gdk::ModifierType::ALT_MASK;
+    if cfg!(target_os = "macos") {
+        mods |= gtk::gdk::ModifierType::META_MASK;
+    }
+    state.intersects(mods)
+}
+
 /// The transport/volume keyboard shortcuts (prev/next/play-pause/volume
 /// up-down) shared by every host of a playback view — factored out of
 /// `device_window/display.rs`'s `handle_transport_key()` so a host doesn't

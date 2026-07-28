@@ -430,17 +430,30 @@ fn main() -> glib::ExitCode {
         adw::StyleManager::default().set_color_scheme(adw::ColorScheme::ForceDark);
     });
 
-    // App-level quit action — used by Ctrl-Q and the Quit menu item.
+    // Quit/close accelerators. macOS additionally binds the Command key,
+    // which GDK reports as `<Meta>` (GDK_META_MASK) there — Ctrl keeps
+    // working alongside it. Command is listed first on macOS because GTK
+    // treats the first entry as the primary accelerator and shows that one
+    // in menus, so the hamburger menu reads Cmd-Q rather than Ctrl-Q. Meta
+    // is left unbound elsewhere: on Linux it isn't the Command key and that
+    // modifier is generally the window manager's to claim.
+    let (quit_accels, close_accels): (&[&str], &[&str]) = if cfg!(target_os = "macos") {
+        (&["<Meta>Q", "<Ctrl>Q"], &["<Meta>W", "<Ctrl>W"])
+    } else {
+        (&["<Ctrl>Q"], &["<Ctrl>W"])
+    };
+
+    // App-level quit action — used by the quit accelerators and the Quit menu item.
     {
         let quit_action = gio::SimpleAction::new("quit", None);
         let app2 = app.clone();
         quit_action.connect_activate(move |_, _| { app2.quit(); });
         app.add_action(&quit_action);
-        app.set_accels_for_action("app.quit", &["<Ctrl>Q"]);
+        app.set_accels_for_action("app.quit", quit_accels);
     }
 
-    // Ctrl-W closes the focused window (action defined per-window in ui/).
-    app.set_accels_for_action("win.close", &["<Ctrl>W"]);
+    // Closes the focused window (action defined per-window in ui/).
+    app.set_accels_for_action("win.close", close_accels);
 
     // Quit automatically when no visible window remains (handles the case
     // where the discovery window is hidden and the last device window closes).

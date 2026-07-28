@@ -606,7 +606,7 @@ impl KioskWindow {
             let weak = Rc::downgrade(&this);
             move |_, keyval, _keycode, state| {
                 let Some(this) = weak.upgrade() else { return glib::Propagation::Proceed };
-                if state.intersects(gtk::gdk::ModifierType::CONTROL_MASK | gtk::gdk::ModifierType::ALT_MASK) {
+                if views::common::is_accel_modifier(state) {
                     return glib::Propagation::Proceed;
                 }
                 // Any key counts as activity, before it's dispatched to
