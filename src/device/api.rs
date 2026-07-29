@@ -405,7 +405,9 @@ pub struct DeviceInfo {
     pub essid: String,
     #[serde(default)]
     pub firmware: String,
-    #[serde(default)]
+    /// Normalised on the way in (see `utils::deserialize_normalized`), so
+    /// this is directly comparable with a uuid from any other source.
+    #[serde(default, deserialize_with = "super::utils::deserialize_normalized")]
     pub uuid: String,
     #[serde(default)]
     pub project: String,

@@ -420,6 +420,11 @@ impl DiscoveryService {
     }
 }
 
+/// Same algorithm as `discovery_manager::device_key()` — the two must agree
+/// or a device is tracked under one key here and another there. Kept
+/// separate only because this module is the lower layer; the uuids reaching
+/// it are already normalised (`extract_uuid_from_usn`, and `DeviceInfo`'s
+/// own deserializer), so this needs no normalisation of its own.
 fn device_key(uuid: &str, ip: &str) -> String {
     if !uuid.is_empty() { uuid.to_string() } else { format!("ip:{ip}") }
 }
@@ -530,14 +535,21 @@ fn parse_ssdp_packet(pkt: &str, src_ip: &str) -> Option<SsdpEvent> {
     }
 }
 
-/// Extract the UUID from a USN header value.
+/// Extracts the device uuid from an SSDP `USN` header, **normalised**.
 /// USN format: `uuid:XXXX-XXXX::urn:...` or bare `uuid:XXXX-XXXX`.
+///
+/// This is the single entry point for every uuid SSDP produces — `Alive`,
+/// `Byebye` and the `DiscoveredDevice`s built from them — so normalising
+/// here covers the whole listener. An SSDP `UDN` is the most punctuated of
+/// the shapes a uuid arrives in (`uuid:` prefix, hyphens, arbitrary case),
+/// and the one most likely to be compared against a bare `getStatusEx`
+/// value.
 fn extract_uuid_from_usn(usn: &str) -> String {
-    if let Some(rest) = usn.strip_prefix("uuid:") {
-        rest.split("::").next().unwrap_or(rest).to_string()
-    } else {
-        String::new()
-    }
+    let Some(rest) = usn.strip_prefix("uuid:") else {
+        return String::new()
+    };
+    crate::device::utils::normalize_uuid(
+        rest.split("::").next().unwrap_or(rest))
 }
 
 /// Extract the host IP from an `http://` or `https://` URL.

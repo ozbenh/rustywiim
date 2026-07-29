@@ -495,7 +495,8 @@ impl Config {
         };
         let cleaned = strip_trailing_commas(&text);
         match serde_json::from_str::<Self>(&cleaned) {
-            Ok(cfg) => {
+            Ok(mut cfg) => {
+                cfg.normalize_uuids();
                 dbg(&format!("loaded {} device(s): {:?}", cfg.devices.len(), cfg.devices.keys().collect::<Vec<_>>()));
                 cfg
             }
@@ -541,6 +542,37 @@ impl Config {
     /// inserting a default entry if none exists yet.
     pub fn device_mut(&mut self, uuid: &str) -> &mut DeviceConfig {
         self.devices.entry(uuid.to_string()).or_default()
+    }
+
+    /// Rewrites every uuid this config holds into its normalised form, so
+    /// the in-memory image is canonical from the moment it is loaded and
+    /// every lookup can key on a plain normalised string.
+    ///
+    /// No separate migration or file-version flag is needed: `write_to_disk()`
+    /// re-serialises the whole `Config` and rewrites the entire file, so a
+    /// config written before this existed becomes canonical on the next
+    /// save by itself.
+    ///
+    /// Entries whose keys collide once normalised are merged by keeping the
+    /// first and dropping the rest. That can only happen for a config that
+    /// already recorded one device twice under two spellings, in which case
+    /// the two entries described the same device anyway.
+    fn normalize_uuids(&mut self) {
+        let devices = std::mem::take(&mut self.devices);
+        for (key, dev) in devices {
+            let key = crate::device::utils::normalize_uuid(&key);
+            // An empty key is dropped rather than kept under "": it can
+            // never refer to a real device, and `write_to_disk()` already
+            // refuses to persist one.
+            if key.is_empty() {
+                continue;
+            }
+            self.devices.entry(key).or_insert(dev);
+        }
+        self.last_uuid = crate::device::utils::normalize_uuid(&self.last_uuid);
+        if let Some(uuid) = &self.kiosk_last_uuid {
+            self.kiosk_last_uuid = Some(crate::device::utils::normalize_uuid(uuid));
+        }
     }
 
     /// Migrate legacy `last_ip` / `last_uuid` fields into the matching per-device
@@ -644,6 +676,53 @@ pub fn save() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn loading_normalizes_every_uuid_it_holds() {
+        // A config written before uuids were normalised: the device key
+        // carries a `uuid:` prefix, hyphens and upper case, and
+        // `kiosk_last_uuid` uses a different spelling of the same device.
+        let json = r#"{
+            "devices": {
+                "UUID:FF98F7F4-075B-5A90-FA95-72C3": { "name": "Kitchen", "pinned": true }
+            },
+            "kiosk_last_uuid": "ff98f7f4075b5a90fa9572c3",
+            "last_uuid": "FF98F7F4075B5A90FA9572C3"
+        }"#;
+        let mut cfg: Config = serde_json::from_str(json).unwrap();
+        cfg.normalize_uuids();
+
+        let canonical = "ff98f7f4075b5a90fa9572c3";
+        assert_eq!(cfg.devices.keys().collect::<Vec<_>>(), vec![canonical]);
+        assert_eq!(cfg.devices[canonical].name.as_deref(), Some("Kitchen"));
+        // The two spellings now resolve to the same device, which is the
+        // whole point: before this, a kiosk or window lookup using one
+        // spelling missed an entry stored under the other.
+        assert_eq!(cfg.kiosk_last_uuid.as_deref(), Some(canonical));
+        assert_eq!(cfg.last_uuid, canonical);
+    }
+
+    #[test]
+    fn loading_merges_device_entries_that_collide_once_normalized() {
+        // Only reachable for a config that already recorded one device
+        // twice under two spellings — in which case both described the same
+        // device and keeping either is correct.
+        let json = r#"{
+            "devices": {
+                "AABBCC": { "name": "First" },
+                "uuid:aa-bb-cc": { "name": "Second" },
+                "": { "name": "Bogus" }
+            }
+        }"#;
+        let mut cfg: Config = serde_json::from_str(json).unwrap();
+        cfg.normalize_uuids();
+
+        assert_eq!(cfg.devices.len(), 1);
+        assert!(cfg.devices.contains_key("aabbcc"));
+        // An empty key can never name a real device and is dropped, matching
+        // what `write_to_disk()` already refuses to persist.
+        assert!(!cfg.devices.contains_key(""));
+    }
 
     #[test]
     fn stale_playback_access_override_value_is_discarded_not_fatal() {
