@@ -89,7 +89,7 @@ impl DiscoveryWindow {
             .build();
         header.pack_end(&add_btn);
         header.pack_end(&super::menu::build_menu_button(false));
-        super::wire_window_actions(&window, None, open_settings);
+        super::wire_window_actions(&window, None, Rc::clone(&open_settings));
 
         // Device list — the actual rendering/live-updating is entirely
         // `DeviceListView`'s job now; this window just embeds it and
@@ -100,6 +100,15 @@ impl DiscoveryWindow {
                 open_device(&entry);
             }
         }));
+
+        // A group member's settings cog. That device has no window of its
+        // own — opening one from this list opens the group — so this is the
+        // only way to reach its own settings.
+        device_list.connect_device_settings(clone!(
+            #[strong] manager, #[strong] open_settings, move |_, key| {
+                open_settings(manager.device_state_for(key));
+            }
+        ));
 
         let content = gtk::Box::builder()
             .orientation(Orientation::Vertical)

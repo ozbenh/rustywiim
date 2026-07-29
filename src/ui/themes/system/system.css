@@ -90,6 +90,15 @@
 .preset-art   { border-radius: 5px; min-width: 40px; min-height: 40px; }
 .preset-art-small { min-width: 26px; min-height: 26px; padding: 7px; }
 .devlist-art  { border-radius: 4px; min-width: 32px; min-height: 32px; }
+
+/* A multiroom group's own row, and the compact member lines beneath it.
+   A member line has no artwork and no song info, so it needs far less
+   vertical room than a device row -- min-height is what actually makes it
+   read as subordinate, since the label alone would still be padded out to
+   a full row. */
+.devlist-group  { font-weight: bold; }
+.devlist-member { min-height: 0; }
+.devlist-member label { font-size: 0.9em; }
 .preset-name  { font-size: 12px; }
 .preset-badge { font-size: 9px; font-weight: 700; border-radius: 50%; min-width: 16px; min-height: 16px; padding: 1px; }
 /* See dark.css's identical rules for what these are (play-queue current-
