@@ -19,6 +19,14 @@
 ///                        different physical thing (a battery-powered
 ///                        accessory, not the device's own network link)
 /// * `presets-changed`  — preset list (re)loaded; UI should re-read `presets()`
+/// * `group-changed`   — this device's multiroom *topology* changed: its
+///                        role, its leader, or its member set. Structural,
+///                        and rare — a device list rebuilds on this. A
+///                        member's volume or mute moving is **not** this;
+///                        it arrives as `playback-changed(VOLUME)` on the
+///                        leader, since a leader's `DeviceState` is the
+///                        group's and `group_volume()`/`group_muted()`
+///                        already answer for the whole group
 /// * `queue-changed`    — live play queue (re)loaded; UI should re-read `queue()`.
 ///                        Only ever fires while something holds a
 ///                        `QueueWatchGuard` (`acquire_queue_watch()`) — UPnP-only,
@@ -134,6 +142,7 @@ use super::api::{
 };
 use super::capabilities::{self, DeviceCapabilities};
 use super::eq;
+use super::group;
 use super::utils;
 use super::gena::{
     self, parse_av_transport_event, parse_play_queue_event, parse_rendering_control_event,
@@ -260,7 +269,13 @@ enum SlowPollResult {
     /// immediately, no retry budget, unlike `Failed` (transient).
     Outputs(ApiOutcome<Vec<OutputEntry>>),
     OutputStatus(ApiOutcome<AudioOutputStatus>),
-    DeviceInfo(Option<DeviceInfo>),
+    /// `getStatusEx` plus, on the HTTP path only, the raw
+    /// `multiroom:getSlaveList` body. `slave_list` is `None` both when the
+    /// device polls over UPnP (whose `GetInfoEx` already carries the same
+    /// data, so asking again would be a wasted request) and when the call
+    /// failed — neither case should be read as "no followers", which is why
+    /// the leader side is only ever updated from a payload that decodes.
+    DeviceInfo { info: Option<DeviceInfo>, slave_list: Option<String> },
     /// `None` when the phase was skipped this tick (not watched, not
     /// supported, or no `UpnpClient` discovered yet) — distinct from
     /// `Some(QueueFetchOutcome::Unsupported)`, which is a confirmed answer
@@ -468,6 +483,10 @@ async fn run_slow_poll_phase(
     preset_probe_failures: u32,
     queue_fp:       String,
     queue_wanted:   bool,
+    // False on the UPnP path, where `GetInfoEx` already carries the slave
+    // list — this is the one extra request group support costs, and only
+    // the families that need it pay for it.
+    want_slave_list: bool,
 ) -> SlowPollResult {
     match phase {
         SlowPollPhase::Presets => {
@@ -480,8 +499,13 @@ async fn run_slow_poll_phase(
             SlowPollResult::Outputs(client.get_sound_card_mode_support_list().await),
         SlowPollPhase::OutputStatus =>
             SlowPollResult::OutputStatus(client.get_audio_output().await),
-        SlowPollPhase::DeviceInfo =>
-            SlowPollResult::DeviceInfo(client.get_device_info().await.ok()),
+        SlowPollPhase::DeviceInfo => {
+            let info = client.get_device_info().await.ok();
+            // Sequential, never joined with the call above: these devices
+            // handle concurrent connections poorly.
+            let slave_list = if want_slave_list { client.get_slave_list().await } else { None };
+            SlowPollResult::DeviceInfo { info, slave_list }
+        }
         SlowPollPhase::PlayQueue => {
             // Not watched (or no `UpnpClient` discovered yet this tick) —
             // `None` distinguishes "skipped" from a real device answer, see
@@ -638,6 +662,20 @@ struct Inner {
     /// field by field, by `process_poll()` rather than rebuilt and diffed
     /// wholesale every tick.
     playback:        PlaybackState,
+    /// Weak handle to the registry that created this `DeviceState`, so a
+    /// group leader can resolve its members' own `DeviceState`s and drive
+    /// them through their normal debounced command path rather than
+    /// relaying raw commands on their behalf. `None` for a standalone
+    /// instance created outside the registry (`--connect`), which by
+    /// definition has no members to resolve.
+    manager:         Option<glib::WeakRef<super::manager::DeviceManager>>,
+    /// Canonical multiroom group state. Refreshed from whichever transport
+    /// this device polls: free on the UPnP path (`GetInfoEx` already
+    /// carries the tags), one extra slow-poll call on the HTTP path.
+    /// Replaced wholesale rather than patched field-by-field — unlike
+    /// playback it is small, changes rarely, and its member list has no
+    /// stable per-field identity to diff against.
+    group:           group::GroupState,
     /// `false` on any tick where `process_poll_http()`/`process_poll_upnp()`
     /// skipped real content decode because `has_playable_content()` said
     /// no (idle, or Bluetooth not confirmed connected) — set once a
@@ -973,6 +1011,8 @@ impl Default for Inner {
             upnp_client:      None,
             upnp_discovery_in_flight: false,
             playback:        PlaybackState::default(),
+            manager:         None,
+            group:           group::GroupState::default(),
             has_content:     false,
             access:          AccessMethod::Http,
             access_override: None,
@@ -1161,6 +1201,7 @@ mod imp {
                     Signal::builder("network-changed").build(),
                     Signal::builder("remote-changed").build(),
                     Signal::builder("presets-changed").build(),
+                    Signal::builder("group-changed").build(),
                     Signal::builder("queue-changed").build(),
                 ]
             })
@@ -1216,6 +1257,50 @@ impl DeviceState {
         // `getStatusEx` regardless of how a future caller obtains the value.
         obj.imp().uuid.set(utils::normalize_uuid(&uuid)).unwrap();
         obj
+    }
+
+    /// Hands this device a weak handle to the registry it belongs to.
+    /// Called by `DeviceManager` on creation; see `Inner::manager`.
+    pub fn set_manager(&self, manager: &super::manager::DeviceManager) {
+        self.imp().inner.borrow_mut().manager = Some(manager.downgrade());
+    }
+
+    /// The live `DeviceState` for one of this device's group members, when
+    /// the registry still holds one.
+    /// Resolves a group member to its own `DeviceState`, by uuid where
+    /// possible and by address otherwise.
+    ///
+    /// The address fallback is not belt-and-braces: observed live, a WiiM
+    /// leader reports a uuid for an Audio Pro member that does not match
+    /// the uuid that device reports for itself, so the uuid lookup alone
+    /// left a perfectly reachable member being relayed through the leader —
+    /// which is rate-limited, so it visibly lagged the rest of the group
+    /// during a drag instead of following it.
+    fn member_state(&self, uuid: &str, ip: &str) -> Option<Self> {
+        let manager = match self.imp().inner.borrow().manager.as_ref().and_then(|m| m.upgrade()) {
+            Some(m) => m,
+            None => {
+                dbg(self, "group member lookup: no device registry on this state");
+                return None;
+            }
+        };
+        if let Some(ds) = manager.get_state(uuid) {
+            return Some(ds);
+        }
+        match manager.get_state_by_ip(ip) {
+            Some(ds) => {
+                dbg(self, &format!(
+                    "group member lookup: {uuid:?} not in registry, matched {ip} instead                      (that device registered as {:?})", ds.uuid(),
+                ));
+                Some(ds)
+            }
+            None => {
+                dbg(self, &format!(
+                    "group member lookup: {uuid:?} / {ip} in neither — relaying via leader",
+                ));
+                None
+            }
+        }
     }
 
     // ── Connection ────────────────────────────────────────────────────────────
@@ -1281,7 +1366,16 @@ impl DeviceState {
         *self.imp().ip.borrow_mut() = ip.to_string();
         {
             let mut inner = self.imp().inner.borrow_mut();
+            // The registry handle is an identity, not cached device state:
+            // it is handed in once at construction and stays valid across
+            // any number of reconnects, so it has to survive the reset
+            // below. Losing it silently disables everything that needs to
+            // reach a sibling device — a group leader could no longer
+            // resolve its own members, and fell back to relaying their
+            // volume through itself.
+            let manager = inner.manager.take();
             *inner = Inner::default();
+            inner.manager          = manager;
             inner.client           = Some(WiimClient::new(ip, tls));
             if connect_now { inner.connection_state = ConnectionState::Connecting; }
             inner.access_override  = access_override;
@@ -1373,7 +1467,12 @@ impl DeviceState {
             // attempts, so there's no separate identity-mismatch handling
             // the picker-list backend itself needs to duplicate anymore.
             let known_uuid = ds.uuid();
-            if !known_uuid.is_empty() && info.uuid != known_uuid {
+            // Compared normalised: the same device's uuid reaches us in
+            // several shapes — an SSDP `UDN` carries a `uuid:` prefix and
+            // hyphens, `getStatusEx` reports it bare, and casing differs
+            // between sources — so a literal comparison reports a healthy
+            // device as an impostor.
+            if !known_uuid.is_empty() && !utils::same_device(&info.uuid, &known_uuid) {
                 ds.report_failure(&format!(
                     "device identity mismatch at this IP (expected {known_uuid}, got {})",
                     info.uuid,
@@ -1798,6 +1897,9 @@ impl DeviceState {
         // concurrent `BrowseQueue` call to the same device while
         // `dispatch_queue_fetch_now()` (bootstrap/GENA-triggered/empty-retry)
         // already has one outstanding.
+        // The UPnP path gets the slave list inside `GetInfoEx` for free, so
+        // only HTTP-polled devices pay for the extra request.
+        let want_slave_list = inner.access != AccessMethod::UpnpPolled;
         let queue_wanted = inner.queue_watchers > 0
             && inner.access == AccessMethod::UpnpPolled
             && upnp_client.as_ref().is_some_and(UpnpClient::has_play_queue)
@@ -1821,7 +1923,7 @@ impl DeviceState {
         self.dispatch_slow_poll(
             &client, slow_tx, dispatch_phase, probe_outputs, probe_output_status,
             preset_source, preset_probe_failures, preset_fp, upnp_client,
-            queue_fp, queue_wanted,
+            queue_fp, queue_wanted, want_slave_list,
         );
         self.dispatch_pending_preset_art(&client, poll_tx);
         self.dispatch_pending_queue_art(poll_tx);
@@ -2338,6 +2440,7 @@ impl DeviceState {
         upnp_client:           Option<UpnpClient>,
         queue_fp:              String,
         queue_wanted:          bool,
+        want_slave_list:       bool,
     ) {
         let Some(phase) = dispatch_phase else { return };
         let enabled = match phase {
@@ -2364,7 +2467,7 @@ impl DeviceState {
         let handle = self.rt().spawn(async move {
             let result = run_slow_poll_phase(
                 cp, phase, preset_fp, upnp_client, preset_source, preset_probe_failures,
-                queue_fp, queue_wanted,
+                queue_fp, queue_wanted, want_slave_list,
             ).await;
             // Every phase here is one or two calls straight to the device
             // itself, so this should always be fast — logged (round-trip,
@@ -2628,7 +2731,10 @@ impl DeviceState {
                     }
                     SlowPollResult::Outputs(outputs)     => ds.handle_slow_poll_outputs(outputs),
                     SlowPollResult::OutputStatus(status) => ds.handle_slow_poll_output_status(status),
-                    SlowPollResult::DeviceInfo(info)     => ds.handle_slow_poll_device_info(info),
+                    SlowPollResult::DeviceInfo { info, slave_list } => {
+                        ds.handle_slow_poll_device_info(info);
+                        ds.apply_group_from_http(slave_list.as_deref());
+                    }
                     SlowPollResult::PlayQueue(outcome)   => ds.handle_slow_poll_play_queue(outcome),
                 }
             }
@@ -3025,6 +3131,91 @@ impl DeviceState {
         changed
     }
 
+    /// Applies group state from the HTTP path: the follower-side fields
+    /// already carried by this tick's `getStatusEx`, plus the leader-side
+    /// slave list fetched alongside it.
+    ///
+    /// `raw_slave_list` is `None` when the call failed or was skipped. That
+    /// is not "no followers": leaving the previous membership in place
+    /// through a transient failure is much better than briefly collapsing a
+    /// group in the device list and rebuilding it a second later. A payload
+    /// that arrives but does not decode (the bare `OK` the families without
+    /// the endpoint answer with) is treated the same way.
+    fn apply_group_from_http(&self, raw_slave_list: Option<&str>) {
+        let inner = self.imp().inner.borrow();
+        let Some(info) = inner.device_info.clone() else { return };
+        let previous = inner.group.clone();
+        drop(inner);
+
+        let slave_list = raw_slave_list
+            .and_then(group::decode_slave_list)
+            // Keep whatever the last successful poll established rather than
+            // regressing to "standalone" on a blip.
+            .or_else(|| (previous.role == group::GroupRole::Leader).then(|| group::SlaveList {
+                members: previous.members.as_ref().clone(),
+                kind:    previous.kind,
+            }));
+
+        let next = group::detect(&group::GroupInputs {
+            self_uuid:   info.uuid.clone(),
+            group_field: Some(info.group.clone()),
+            slave_flag:  None,
+            master_uuid: Some(info.master_uuid.clone()),
+            master_ip:   Some(info.master_ip.clone()),
+            slave_list,
+        });
+        self.apply_group_state(next);
+    }
+
+    /// Applies group state from a UPnP `GetInfoEx`, which carries the whole
+    /// topology in the same response already fetched for playback — no
+    /// extra request.
+    fn apply_group_from_upnp(&self, info: &upnp::InfoEx) {
+        let self_uuid = self.imp().inner.borrow()
+            .device_info.as_ref().map(|d| d.uuid.clone()).unwrap_or_default();
+
+        let next = group::detect(&group::GroupInputs {
+            self_uuid,
+            group_field: None,
+            slave_flag:  Some(info.slave_flag),
+            master_uuid: Some(info.master_uuid.clone()),
+            // This transport never reports the leader's address; resolution
+            // is by uuid, which it always does report.
+            master_ip:   None,
+            slave_list:  info.slave_list.as_deref().and_then(group::decode_slave_list),
+        });
+        self.apply_group_state(next);
+    }
+
+    fn apply_group_state(&self, next: group::GroupState) {
+        let topology_changed = {
+            let mut inner = self.imp().inner.borrow_mut();
+            if inner.group == next {
+                return;
+            }
+            let topology_changed = !inner.group.same_topology(&next);
+            inner.group = next;
+            topology_changed
+        };
+
+        if !topology_changed {
+            // Levels only — the group's derived volume/mute may have moved,
+            // which is a volume change as far as anything watching this
+            // device is concerned. Emphatically *not* `group-changed`:
+            // that restructures a device list, and member levels move on
+            // essentially every poll.
+            self.emit_by_name::<()>("playback-changed", &[&playback_changed::VOLUME]);
+            return;
+        }
+
+        let g = self.imp().inner.borrow().group.clone();
+        dbg(self, &format!(
+            "group: role={:?} kind={:?} members={} leader={:?}",
+            g.role, g.kind, g.follower_count(), g.leader_uuid,
+        ));
+        self.emit_by_name::<()>("group-changed", &[]);
+    }
+
     fn handle_slow_poll_device_info(&self, info: Option<DeviceInfo>) {
         // getStatusEx failed — no threshold/counter (see report_failure()'s
         // doc comment: cmd()'s own internal retry already absorbed a
@@ -3057,7 +3248,8 @@ impl DeviceState {
         // at-this-IP case, not a "this device renamed its uuid" case —
         // there is no such thing).
         let known_uuid = self.uuid();
-        if !known_uuid.is_empty() && new_info.uuid != known_uuid {
+        // Normalised, same as `fetch_device_info()`'s identical check.
+        if !known_uuid.is_empty() && !utils::same_device(&new_info.uuid, &known_uuid) {
             self.report_failure(&format!(
                 "device identity mismatch at this IP (expected {known_uuid}, got {})",
                 new_info.uuid,
@@ -3661,6 +3853,7 @@ impl DeviceState {
         // all (confirmed permanent on some devices, e.g. Audio Pro Addon
         // C5), so this needs no special-casing here the way it briefly did.
         let has_content = Self::has_playable_content(info.play_type, &bt_status);
+        self.apply_group_from_upnp(&info);
 
         let mut art_url_for_fetch: Option<String> = None;
         let mut art_cleared = false;
@@ -4318,6 +4511,12 @@ impl DeviceState {
         self.imp().inner.borrow().playback.clone()
     }
 
+    /// This device's multiroom group state. Cheap to clone — the member
+    /// list is behind an `Rc`.
+    pub fn group_state(&self) -> group::GroupState {
+        self.imp().inner.borrow().group.clone()
+    }
+
     pub fn muted(&self) -> bool {
         self.imp().inner.borrow().playback.muted
     }
@@ -4343,6 +4542,13 @@ impl DeviceState {
 
     pub fn connect_device_changed<F: Fn(&Self) + 'static>(&self, f: F) -> glib::SignalHandlerId {
         self.connect_local("device-changed", false, move |args| {
+            f(&args[0].get::<Self>().unwrap());
+            None
+        })
+    }
+
+    pub fn connect_group_changed<F: Fn(&Self) + 'static>(&self, f: F) -> glib::SignalHandlerId {
+        self.connect_local("group-changed", false, move |args| {
             f(&args[0].get::<Self>().unwrap());
             None
         })

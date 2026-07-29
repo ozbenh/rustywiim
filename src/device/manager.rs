@@ -192,6 +192,7 @@ impl DeviceManager {
         }
 
         let ds = DeviceState::new(self.rt(), uuid.to_string());
+        ds.set_manager(self);
         ds.set_device(ip, tls, access_override, mute_access_override, loop_mode_access_override, gena_enabled, try_connect || uuid.is_empty());
         ds.start_polling();
 
@@ -233,6 +234,7 @@ impl DeviceManager {
         }
 
         let ds = DeviceState::new(self.rt(), uuid.to_string());
+        ds.set_manager(self);
         self.emit_by_name::<()>("configure-device", &[&ds]);
         let access_override           = ds.playback_access_override();
         let mute_access_override      = ds.mute_access_override();
@@ -256,8 +258,26 @@ impl DeviceManager {
     /// lifetime of, not something `get_state()` itself could sensibly do
     /// on the caller's behalf.
     pub fn get_state(&self, uuid: &str) -> Option<DeviceState> {
+        let uuid = crate::device::utils::normalize_uuid(uuid);
         if uuid.is_empty() { return None; }
-        self.imp().states.borrow().get(uuid).and_then(|w| w.upgrade())
+        self.imp().states.borrow().get(&uuid).and_then(|w| w.upgrade())
+    }
+
+    /// Look up an already-tracked `DeviceState` by address.
+    ///
+    /// The fallback for resolving a group member: a leader's slave list
+    /// reports each member's uuid *and* address, and the two do not always
+    /// agree with what the member itself reports — a member found this way
+    /// can be driven through its own `DeviceState` rather than relayed
+    /// through the leader, which is both faster and rate-limit-free.
+    ///
+    /// Address is a weaker key than uuid (it moves on a DHCP lease change),
+    /// so this is deliberately only a fallback, never the primary lookup.
+    pub fn get_state_by_ip(&self, ip: &str) -> Option<DeviceState> {
+        if ip.is_empty() { return None; }
+        self.imp().states.borrow().values()
+            .filter_map(|w| w.upgrade())
+            .find(|ds| ds.ip() == ip)
     }
 
     /// Calls `f` for every currently-live `DeviceState` this manager still
