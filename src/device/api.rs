@@ -433,6 +433,27 @@ pub struct DeviceInfo {
     /// "4.2" → Gen2+.  Used for Gen1 detection in capability profiles.
     #[serde(default)]
     pub wmrm_version: String,
+    /// Multiroom: **"am I a follower"**, not "am I in a group" — a group's
+    /// *leader* reports `"0"` here, same as a standalone device. A leader is
+    /// only ever identified via its slave list, so never treat a non-`"0"`
+    /// test as "is grouped".  Empty when the device omits the field.
+    #[serde(default)]
+    pub group: String,
+    /// Multiroom: the leader's uuid, when this device is a follower. The
+    /// only leader identifier available on every family, which is why group
+    /// resolution keys on it rather than on `master_ip`.
+    #[serde(default, deserialize_with = "super::utils::deserialize_normalized")]
+    pub master_uuid: String,
+    /// Multiroom: the leader's address, when this device is a follower.
+    /// **Absent entirely on some families** (confirmed on iEAST 4.2
+    /// firmware, which reports `master_uuid` alone), so this is an
+    /// accelerator, never the identity key.
+    #[serde(default)]
+    pub master_ip: String,
+    /// Multiroom: `"1"` when this follower is masked — still a group member
+    /// but behaving as a standalone device.
+    #[serde(default)]
+    pub slave_mask: String,
     /// Present (non-empty) on devices with the LV2 EQ system, e.g.
     /// `"Eq10HP_ver_2.0"` — a connect-time hint used by
     /// `capabilities::eq_hint()` to decide whether the EQ editor button is
@@ -1122,6 +1143,40 @@ impl WiimClient {
             device_name: resp.a2dp_sink.name,
             pairing:     resp.a2dp_sink.pairing != 0,
         })
+    }
+
+    /// Sets one group member's volume, addressed by its address and sent
+    /// **to the leader**, which relays it. The only per-member path
+    /// available from the leader alone, and the only one that reaches a
+    /// member sitting on a WiFi-Direct leader's private subnet.
+    pub async fn set_slave_volume(&self, member_ip: &str, vol: u8) -> anyhow::Result<String> {
+        self.cmd(&format!("multiroom:SlaveVolume:{member_ip}:{vol}")).await
+    }
+
+    /// Mutes or unmutes one group member, addressed by its address and
+    /// sent **to the leader**, which relays it. Same reasoning as
+    /// `set_slave_volume()`: the only per-member path available from the
+    /// leader alone, and the only one that reaches a member sitting on a
+    /// WiFi-Direct leader's private subnet.
+    pub async fn set_slave_mute(&self, member_ip: &str, muted: bool) -> anyhow::Result<String> {
+        self.cmd(&format!("multiroom:SlaveMute:{member_ip}:{}", u8::from(muted))).await
+    }
+
+    /// Raw `multiroom:getSlaveList` response, for `group::decode_slave_list`
+    /// to interpret — this method deliberately does no parsing of its own,
+    /// since that schema has four generations and belongs in one place.
+    ///
+    /// `None` when the call fails outright. Note that the families which
+    /// don't implement this answer `200 OK` with a bare `"OK"` or
+    /// `"unknown command"` body rather than an error, so a `Some` here is
+    /// not a guarantee of a usable payload — the decoder is what
+    /// distinguishes "no followers" from "not supported", and callers must
+    /// keep that distinction rather than collapsing both to an empty list.
+    ///
+    /// The `multiroom:` prefix is required; a bare `getSlaveList` returns
+    /// `unknown command` on every device.
+    pub async fn get_slave_list(&self) -> Option<String> {
+        self.cmd("multiroom:getSlaveList").await.ok()
     }
 
     /// Returns each input and whether it is enabled (1) or disabled (0), or

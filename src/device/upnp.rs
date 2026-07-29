@@ -178,6 +178,23 @@ pub struct InfoEx {
     /// fallback for that case, not just for services never granted a tag
     /// at all.
     pub gui_behavior:    Option<GuiBehavior>,
+    /// `<SlaveFlag>` — `true` when this device is a multiroom follower.
+    /// Defaults to `false` when the tag is absent, which is what every
+    /// standalone device and every older firmware reports.
+    pub slave_flag:      bool,
+    /// `<MasterUUID>` — the leader's uuid when this device is a follower.
+    /// Present but empty on a device that is not one, so an empty string
+    /// means "no leader", not "unknown leader".
+    pub master_uuid:     String,
+    /// `<SlaveList>` — the `multiroom:getSlaveList` JSON verbatim, already
+    /// XML-unescaped but left as a string: decoding it belongs to
+    /// `group.rs`, which owns that schema and its four generations. `None`
+    /// when the tag is absent entirely.
+    ///
+    /// This is what makes group topology free on the UPnP path — the same
+    /// poll that already supplies playback state carries the whole slave
+    /// list, so no extra request is needed.
+    pub slave_list:      Option<String>,
 }
 
 /// One `song:guibehavior` JSON blob's `next`/`prev` flags, already
@@ -853,6 +870,19 @@ fn parse_info_ex_response(envelope: &str) -> anyhow::Result<InfoEx> {
     let play_medium      = extract_tag(envelope, "PlayMedium").unwrap_or_default();
     let track_source     = extract_tag(envelope, "TrackSource").unwrap_or_default();
 
+    let slave_flag       = extract_tag(envelope, "SlaveFlag").is_some_and(|s| s == "1");
+    // Normalised here, at the boundary, so it compares directly against a
+    // uuid from `getStatusEx` or SSDP without either side knowing which
+    // shape the other used.
+    let master_uuid      = crate::device::utils::normalize_uuid(
+        &extract_tag(envelope, "MasterUUID").unwrap_or_default());
+    // The device escapes this JSON to embed it in XML, so it arrives as
+    // `{&quot;slaves&quot;:0,...}` and has to be unescaped before it will
+    // parse.
+    let slave_list       = extract_tag(envelope, "SlaveList")
+        .filter(|s| !s.is_empty())
+        .map(|s| unescape_xml_entities(&s));
+
     let track_metadata_raw = extract_tag(envelope, "TrackMetaData").unwrap_or_default();
     let didl = unescape_xml_entities(&track_metadata_raw);
     let item = parse_didl_item(&didl);
@@ -864,6 +894,7 @@ fn parse_info_ex_response(envelope: &str) -> anyhow::Result<InfoEx> {
         actual_quality: item.actual_quality, quality: item.quality, bitrate: item.bitrate,
         format_s: item.format_s, rate_hz: item.rate_hz, protocol_info: item.protocol_info,
         gui_behavior: item.gui_behavior,
+        slave_flag, master_uuid, slave_list,
     })
 }
 
@@ -1194,6 +1225,75 @@ mod tests {
                 }
             }
             other => panic!("expected Changed, got {other:?}"),
+        }
+    }
+
+    /// A real two-device group, captured live from both sides. The point
+    /// of these two tests is that `GetInfoEx` — a call already made every
+    /// poll for playback state — carries the entire group topology, so the
+    /// UPnP path needs no extra request to know what is grouped with what.
+    #[test]
+    fn get_info_ex_carries_group_topology_on_a_leader() {
+        let cap = load_device_capture("WiiM_Ultra_20260708_022203.group1.json");
+        let info = parse_info_ex_response(&get_info_ex_body(&cap)).unwrap();
+
+        assert!(!info.slave_flag);
+        assert_eq!(info.master_uuid, "");
+        // The embedded blob is the getSlaveList schema verbatim, so the
+        // group decoder consumes it unchanged.
+        let list = crate::device::group::decode_slave_list(info.slave_list.as_deref().unwrap())
+            .expect("embedded slave list should decode");
+        assert_eq!(list.members.len(), 1);
+        assert_eq!(list.members[0].name, "WiiM Bu");
+        assert_eq!(list.members[0].volume, 30);
+    }
+
+    #[test]
+    fn get_info_ex_carries_group_topology_on_a_follower() {
+        let cap = load_device_capture("WiiM_Ultra_20260708_022221.group2.json");
+        let info = parse_info_ex_response(&get_info_ex_body(&cap)).unwrap();
+
+        assert!(info.slave_flag);
+        assert!(!info.master_uuid.is_empty());
+        // A follower reports an empty list of its own, which is a real
+        // answer and not an absent one.
+        let list = crate::device::group::decode_slave_list(info.slave_list.as_deref().unwrap())
+            .expect("follower slave list should decode");
+        assert!(list.members.is_empty());
+
+        // The same response also carries the leader's real metadata and a
+        // truthful transport state, unlike this device's HTTP player status,
+        // which reports "stop" with "Unknown" track fields while playing.
+        assert_eq!(info.transport_state, "PLAYING");
+        assert_eq!(info.title, "Bass & Drum Intro");
+        assert_eq!(info.artist, "Nils Lofgren Band");
+        assert_eq!(info.play_type, 99);
+    }
+
+    /// Every device that is not in a group, across all three families we
+    /// hold captures for. The tags are simply absent on older firmware, so
+    /// the defaults have to read as "standalone" rather than as unknown.
+    #[test]
+    fn get_info_ex_group_tags_default_to_standalone_when_absent() {
+        for fixture in [
+            "WiiM_Sound_20260726_180153.json",
+            "Audio_Pro_Addon_C5_20260710_073433.FW3.7.x.json",
+        ] {
+            let cap = load_device_capture(fixture);
+            let Some(upnp) = cap.upnp.as_ref() else { continue };
+            let Some(action) = upnp.actions.iter().find(|a| a.action == "GetInfoEx") else { continue };
+            let Some(resp) = action.response.as_ref() else { continue };
+            let info = parse_info_ex_response(blob_text(resp)).unwrap();
+
+            assert!(!info.slave_flag, "{fixture}");
+            assert_eq!(info.master_uuid, "", "{fixture}");
+            // When present, an ungrouped device's list decodes to no
+            // members; when absent entirely it stays None.
+            if let Some(raw) = info.slave_list.as_deref() {
+                let list = crate::device::group::decode_slave_list(raw)
+                    .unwrap_or_else(|| panic!("{fixture} slave list should decode"));
+                assert!(list.members.is_empty(), "{fixture}");
+            }
         }
     }
 
