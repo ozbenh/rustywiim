@@ -32,6 +32,32 @@
 ///                        `QueueWatchGuard` (`acquire_queue_watch()`) — UPnP-only,
 ///                        polled on demand, not part of the always-on rotation.
 
+/// What `DeviceState::stage_mute()` captured so `send_mute()` can dispatch
+/// the command after the caller has finished staging every other member.
+struct MuteSend {
+    access:      AccessMethod,
+    client:      Option<WiimClient>,
+    upnp_client: Option<UpnpClient>,
+}
+
+/// One group member's live level, as resolved by
+/// `DeviceState::member_levels()`. `ds` is `None` for a member the registry
+/// has no live `DeviceState` for, in which case the values came from the
+/// leader's cached slave list and the member can only be driven by relay.
+struct MemberLevel {
+    uuid:   String,
+    name:   String,
+    ds:     Option<DeviceState>,
+    volume: u32,
+    muted:  bool,
+}
+
+impl MemberLevel {
+    fn name_hint(&self) -> &str {
+        &self.name
+    }
+}
+
 /// Bitmask values for the `playback-changed` signal parameter.
 pub mod playback_changed {
     pub const ARTWORK: u32 = 0x01;
@@ -662,6 +688,33 @@ struct Inner {
     /// field by field, by `process_poll()` rather than rebuilt and diffed
     /// wholesale every tick.
     playback:        PlaybackState,
+    /// Latest per-member volumes still to be relayed through this leader,
+    /// and when the last relay batch went out.
+    ///
+    /// Replaced wholesale rather than queued, and rate-limited like
+    /// `target_volume`: firing one task per drag step raced them against
+    /// each other on the shared runtime, so a command from earlier in the
+    /// drag could land *after* a later one and leave that member sitting at
+    /// the wrong level while the rest of the group was correct.
+    pending_relay_vol:  Vec<(String, u8)>,
+    last_relay_vol_cmd: Option<Instant>,
+    /// Live subscriptions to each group member's `playback-changed`, so a
+    /// member changing its own level updates this group's derived volume
+    /// and mute immediately.
+    ///
+    /// Without these a leader only finds out via its own slave-list poll,
+    /// which is the *slow* poll on the HTTP path — long enough for a
+    /// group's slider to sit visibly wrong after somebody moves one member.
+    ///
+    /// Weak refs deliberately: the registry owns member lifetime, and a
+    /// leader holding its members alive would defeat the pruning that
+    /// happens when one goes away.
+    member_subs:     Vec<(String, glib::WeakRef<DeviceState>, glib::SignalHandlerId)>,
+    /// When this device last issued a group-wide volume/mute command, so a
+    /// poll that has not caught up cannot undo the optimistic member levels
+    /// in `group`. Mirrors `last_volume_cmd`/`VOLUME_POLL_SETTLE`, which
+    /// protect this device's *own* level the same way.
+    last_group_cmd:  Option<Instant>,
     /// Weak handle to the registry that created this `DeviceState`, so a
     /// group leader can resolve its members' own `DeviceState`s and drive
     /// them through their normal debounced command path rather than
@@ -1011,6 +1064,10 @@ impl Default for Inner {
             upnp_client:      None,
             upnp_discovery_in_flight: false,
             playback:        PlaybackState::default(),
+            last_group_cmd:  None,
+            pending_relay_vol:  Vec::new(),
+            last_relay_vol_cmd: None,
+            member_subs:     Vec::new(),
             manager:         None,
             group:           group::GroupState::default(),
             has_content:     false,
@@ -1811,28 +1868,15 @@ impl DeviceState {
 
         let now = Instant::now();
 
-        if inner.full_clients == 0 {
-            self.do_simple_poll(&mut inner, now, simple_tx);
-            // Runs every tick when wanted (unlike `do_simple_poll()`'s own
-            // `SIMPLE_POLL_INTERVAL` gating) — `dispatch_fast_poll()`'s own
-            // `Inner::fast_poll_target` mechanism is what actually decides
-            // this tick's real cadence (`SIMPLE_POLL_INTERVAL` in ticks
-            // while GENA isn't healthy, `GENA_HEALTHY_FAST_POLL_TICKS`
-            // while it is), reusing the exact same countdown `Full` mode
-            // uses rather than a second cheaper-cadence implementation.
-            let want_song_info = inner.simple_mode_song_info;
-            drop(inner);
-            if want_song_info {
-                self.dispatch_fast_poll();
-            }
-            return glib::ControlFlow::Continue;
-        }
-
-        // Is it time to start a new slow-poll cycle?
-        let cycle_due = inner.last_slow_poll
-            .map_or(true, |t| now.duration_since(t) >= SLOW_POLL_INTERVAL);
-
-        // Flush any pending volume command if the debounce window has elapsed.
+        // Flush any pending volume command if the debounce window has
+        // elapsed. Deliberately *above* the `Simple` mode branch below:
+        // a device with no open window still accepts volume commands — a
+        // devlist row's slider, and every follower of a group whose volume
+        // is being moved from the leader. Leaving this below the early
+        // return meant those devices staged a debounced value that was
+        // never sent, so a group volume drag left the member with a window
+        // open at the requested level and every other member stuck at
+        // whatever the first, undebounced command happened to set.
         let pending_vol = if inner.target_volume >= 0
             && inner.last_volume_cmd
                 .map_or(true, |t| now.duration_since(t) >= VOLUME_DEBOUNCE)
@@ -1844,6 +1888,46 @@ impl DeviceState {
         } else {
             None
         };
+
+        // Same rate limit, same latest-wins replacement, for members this
+        // leader has to relay on behalf of.
+        let pending_relay = if !inner.pending_relay_vol.is_empty()
+            && inner.last_relay_vol_cmd
+                .map_or(true, |t| now.duration_since(t) >= VOLUME_DEBOUNCE)
+        {
+            inner.last_relay_vol_cmd = Some(now);
+            Some(std::mem::take(&mut inner.pending_relay_vol))
+        } else {
+            None
+        };
+
+        if inner.full_clients == 0 {
+            self.do_simple_poll(&mut inner, now, simple_tx);
+            // Runs every tick when wanted (unlike `do_simple_poll()`'s own
+            // `SIMPLE_POLL_INTERVAL` gating) — `dispatch_fast_poll()`'s own
+            // `Inner::fast_poll_target` mechanism is what actually decides
+            // this tick's real cadence (`SIMPLE_POLL_INTERVAL` in ticks
+            // while GENA isn't healthy, `GENA_HEALTHY_FAST_POLL_TICKS`
+            // while it is), reusing the exact same countdown `Full` mode
+            // uses rather than a second cheaper-cadence implementation.
+            let want_song_info = inner.simple_mode_song_info;
+            let client = inner.client.clone();
+            drop(inner);
+            if let Some(vol) = pending_vol {
+                self.send_volume(vol, client);
+            }
+            if let Some(batch) = pending_relay {
+                self.send_relay_volume(batch);
+            }
+            if want_song_info {
+                self.dispatch_fast_poll();
+            }
+            return glib::ControlFlow::Continue;
+        }
+
+        // Is it time to start a new slow-poll cycle?
+        let cycle_due = inner.last_slow_poll
+            .map_or(true, |t| now.duration_since(t) >= SLOW_POLL_INTERVAL);
 
         // Flush any pending debounced seek the same way — see `do_seek()`'s
         // doc comment.
@@ -1914,6 +1998,9 @@ impl DeviceState {
         if let Some(vol) = pending_vol {
             let cv = client.clone();
             self.rt().spawn(async move { let _ = cv.set_volume(vol).await; });
+        }
+        if let Some(batch) = pending_relay {
+            self.send_relay_volume(batch);
         }
         if let Some(pos) = pending_seek {
             self.dispatch_seek(pos, Some(client.clone()));
@@ -3187,9 +3274,133 @@ impl DeviceState {
         self.apply_group_state(next);
     }
 
-    fn apply_group_state(&self, next: group::GroupState) {
+    /// Stores a freshly-detected group state and signals only on a real
+    /// change — this runs every slow poll (or every fast poll on the UPnP
+    /// path), and topology is usually identical tick to tick.
+    /// Records the latest volumes to relay for members with no live
+    /// `DeviceState`, and sends them if the rate limit allows. Anything
+    /// held back is flushed by the poll tick, exactly like `target_volume`.
+    fn queue_relay_volume(&self, targets: Vec<(String, u8)>) {
+        if targets.is_empty() {
+            return;
+        }
+        let batch = {
+            let mut inner = self.imp().inner.borrow_mut();
+            // Replace, never append: only the newest value for each member
+            // matters, and keeping older ones around is what let a stale
+            // command land last.
+            inner.pending_relay_vol = targets;
+            let now = Instant::now();
+            let due = inner.last_relay_vol_cmd
+                .map_or(true, |t| now.duration_since(t) >= VOLUME_DEBOUNCE);
+            if due {
+                inner.last_relay_vol_cmd = Some(now);
+                Some(std::mem::take(&mut inner.pending_relay_vol))
+            } else {
+                None
+            }
+        };
+        if let Some(batch) = batch {
+            self.send_relay_volume(batch);
+        }
+    }
+
+    fn send_relay_volume(&self, batch: Vec<(String, u8)>) {
+        let Some(client) = self.imp().inner.borrow().client.clone() else { return };
+        self.rt().spawn(async move {
+            for (ip, v) in batch {
+                // Sequential, and deliberately so: every one of these goes
+                // to the *leader*, which handles concurrent connections
+                // poorly.
+                let _ = client.set_slave_volume(&ip, v).await;
+            }
+        });
+    }
+
+    /// Points `Inner::member_subs` at the current membership, doing nothing
+    /// when it already matches.
+    ///
+    /// A member changing its own volume or mute changes this group's
+    /// derived level, and the group's own controls have no other way to
+    /// hear about it — the member emits on itself, not here.
+    ///
+    /// Called on every group update rather than only on a topology change,
+    /// because a member's `DeviceState` can appear *after* the topology
+    /// settles: adoption of a member discovery never saw is triggered *by*
+    /// the topology signal, so subscribing only at that moment would always
+    /// miss it. The comparison below makes the common no-op case cheap.
+    fn ensure_member_subs(&self) {
+        let members = self.member_levels();
+        let want: Vec<String> = members.iter()
+            .filter(|m| m.ds.is_some())
+            .map(|m| m.uuid.clone())
+            .collect();
+        {
+            let inner = self.imp().inner.borrow();
+            let have: Vec<&String> = inner.member_subs.iter().map(|(u, _, _)| u).collect();
+            if have.len() == want.len() && have.into_iter().zip(want.iter()).all(|(a, b)| a == b) {
+                return;
+            }
+        }
+
+        for (_, weak, id) in std::mem::take(&mut self.imp().inner.borrow_mut().member_subs) {
+            if let Some(ds) = weak.upgrade() {
+                ds.disconnect(id);
+            }
+        }
+
+        let subs: Vec<_> = members.into_iter()
+            .filter_map(|m| m.ds.map(|ds| (m.uuid, ds)))
+            .map(|(uuid, ds)| {
+                let leader = self.downgrade();
+                let id = ds.connect_playback_changed(move |_, mask| {
+                    if mask & playback_changed::VOLUME == 0 {
+                        return;
+                    }
+                    let Some(leader) = leader.upgrade() else { return };
+                    // Still a leader, and not mid-command: a group command
+                    // already emits once for the whole group after staging
+                    // every member, so re-emitting per member here would
+                    // just repeat that work N times.
+                    let inner = leader.imp().inner.borrow();
+                    if inner.group.role != group::GroupRole::Leader {
+                        return;
+                    }
+                    let settling = inner.last_group_cmd
+                        .is_some_and(|t| Instant::now().duration_since(t) < VOLUME_POLL_SETTLE);
+                    drop(inner);
+                    if settling {
+                        return;
+                    }
+                    // The leader's own volume signal, not a group-specific
+                    // one: a leader's `DeviceState` *is* the group's, and
+                    // `group_volume()`/`group_muted()` already answer for
+                    // the whole group — so every existing consumer of this
+                    // signal becomes correct for a group with no changes of
+                    // its own, and none can go stale by forgetting to
+                    // subscribe to a second signal.
+                    leader.emit_by_name::<()>("playback-changed", &[&playback_changed::VOLUME]);
+                });
+                (uuid, ds.downgrade(), id)
+            })
+            .collect();
+        dbg(self, &format!("group: watching {} member(s) for level changes", subs.len()));
+        self.imp().inner.borrow_mut().member_subs = subs;
+    }
+
+    fn apply_group_state(&self, mut next: group::GroupState) {
         let topology_changed = {
             let mut inner = self.imp().inner.borrow_mut();
+            // A poll in flight when a group command was issued still reports
+            // the pre-command levels. A member's own `DeviceState` rides its
+            // own settle window, but a member with no live `DeviceState` is
+            // represented only by these cached values — without this, the
+            // adjustment just made would be undone a moment later.
+            let settled = inner.last_group_cmd
+                .map_or(true, |t| Instant::now().duration_since(t) >= VOLUME_POLL_SETTLE);
+            if !settled {
+                next.carry_levels_from(&inner.group);
+            }
             if inner.group == next {
                 return;
             }
@@ -3197,6 +3408,8 @@ impl DeviceState {
             inner.group = next;
             topology_changed
         };
+
+        self.ensure_member_subs();
 
         if !topology_changed {
             // Levels only — the group's derived volume/mute may have moved,
@@ -4183,36 +4396,53 @@ impl DeviceState {
     /// command. No HTTP fallback when UPnP is wanted but no client has been
     /// discovered yet — same "don't silently use the other backend"
     /// precedent `access`/`do_set_volume` already follow.
-    pub fn do_set_mute(&self, muted: bool) {
-        let (mute_access, client, upnp_client) = {
-            // Optimistic update of the *canonical* playback.muted, for
-            // instant UI feedback (a picker row, for instance, has no other
-            // way to know a mute click landed before the next poll) —
-            // deliberately not touching `player_status`/`GetInfoEx` cache,
-            // which must stay a read-only diffing baseline written only by
-            // process_poll() itself (see that field's doc comment — an
-            // in-place command write there once caused the next real poll's
-            // diff to silently see "no change" and skip ever correcting
-            // `playback.muted` again). `last_mute_cmd` starts the settle
-            // window `process_poll_http()`/`process_poll_upnp()`'s
-            // self-healing `mute_changed` comparison waits out — same
-            // reasoning as `do_set_volume()`'s `last_volume_cmd`/
-            // `VOLUME_POLL_SETTLE`: a poll already in flight when this was
-            // called can still report the pre-command value for a moment.
-            let mut inner = self.imp().inner.borrow_mut();
-            inner.playback.muted = muted;
-            inner.last_mute_cmd = Some(Instant::now());
-            (inner.mute_access, inner.client.clone(), inner.upnp_client.clone())
-        };
-        self.emit_by_name::<()>("playback-changed", &[&playback_changed::VOLUME]);
-        match mute_access {
+    /// Applies a mute optimistically and returns what is needed to actually
+    /// send it, **without emitting anything or touching the network**.
+    ///
+    /// Split out of `do_set_mute()` so a group operation can stage every
+    /// member first, then fire all the commands back to back, then emit
+    /// once. Doing that matters twice over: the signals each member emits
+    /// drive real synchronous UI work, so emitting between sends staggered
+    /// the commands noticeably (visible in another controller as the
+    /// members muting one after another), and a handler running midway
+    /// through saw a half-updated group and rendered it.
+    fn stage_mute(&self, muted: bool) -> MuteSend {
+        // Optimistic update of the *canonical* playback.muted, for
+        // instant UI feedback (a picker row, for instance, has no other
+        // way to know a mute click landed before the next poll) —
+        // deliberately not touching `player_status`/`GetInfoEx` cache,
+        // which must stay a read-only diffing baseline written only by
+        // process_poll() itself (see that field's doc comment — an
+        // in-place command write there once caused the next real poll's
+        // diff to silently see "no change" and skip ever correcting
+        // `playback.muted` again). `last_mute_cmd` starts the settle
+        // window `process_poll_http()`/`process_poll_upnp()`'s
+        // self-healing `mute_changed` comparison waits out — same
+        // reasoning as `do_set_volume()`'s `last_volume_cmd`/
+        // `VOLUME_POLL_SETTLE`: a poll already in flight when this was
+        // called can still report the pre-command value for a moment.
+        let mut inner = self.imp().inner.borrow_mut();
+        inner.playback.muted = muted;
+        inner.last_mute_cmd = Some(Instant::now());
+        MuteSend {
+            access:      inner.mute_access,
+            client:      inner.client.clone(),
+            upnp_client: inner.upnp_client.clone(),
+        }
+    }
+
+    /// Sends a previously-staged mute. Emits nothing.
+    fn send_mute(&self, muted: bool, send: MuteSend) {
+        match send.access {
             AccessMethod::UpnpPolled => {
-                let Some(upnp_client) = upnp_client else { return };
-                self.rt().spawn(async move { let _ = upnp_client.set_mute(muted).await; });
+                if let Some(upnp_client) = send.upnp_client {
+                    self.rt().spawn(async move { let _ = upnp_client.set_mute(muted).await; });
+                }
             }
             AccessMethod::Http => {
-                let Some(client) = client else { return };
-                self.rt().spawn(async move { let _ = client.set_mute(muted).await; });
+                if let Some(client) = send.client {
+                    self.rt().spawn(async move { let _ = client.set_mute(muted).await; });
+                }
             }
         }
         // A confirming poll is only needed as a fallback: while
@@ -4224,25 +4454,277 @@ impl DeviceState {
         }
     }
 
-    pub fn do_set_volume(&self, vol: u32) {
-        let (send_now, client) = {
-            let mut inner = self.imp().inner.borrow_mut();
-            // Optimistic update of playback.volume to avoid slider glitches
-            inner.playback.volume = vol;
-            let now = Instant::now();
-            let since_last = inner.last_volume_cmd
-                .map_or(VOLUME_DEBOUNCE, |t| now.duration_since(t));
-            if since_last < VOLUME_DEBOUNCE {
-                // Within the debounce window — save as pending; the 1s timer will flush it.
-                inner.target_volume = vol as i32;
-                (false, None)
-            } else {
-                // Debounce window has elapsed — send immediately.
-                inner.target_volume   = -1;
-                inner.last_volume_cmd = Some(now);
-                (true, inner.client.clone())
+    pub fn do_set_mute(&self, muted: bool) {
+        let send = self.stage_mute(muted);
+        self.emit_by_name::<()>("playback-changed", &[&playback_changed::VOLUME]);
+        self.send_mute(muted, send);
+    }
+
+
+    /// Every member's current level, paired with that member's own
+    /// `DeviceState` where the registry still has one. Empty unless this
+    /// device leads a group, so callers need no role check.
+    ///
+    /// A member's *own* `DeviceState` is the authoritative source when it
+    /// exists: it polls itself, so it knows about a change made from that
+    /// device's front panel or another app long before the leader's
+    /// `slave_list` refreshes. The cached slave-list values are the
+    /// fallback for a member nothing has connected to.
+    fn member_levels(&self) -> Vec<MemberLevel> {
+        let cached: Vec<(String, String, String, u32, bool)> = {
+            let inner = self.imp().inner.borrow();
+            if inner.group.role != group::GroupRole::Leader {
+                return Vec::new();
             }
+            inner.group.members.iter()
+                .map(|m| (m.uuid.clone(), m.name.clone(), m.ip.clone(), m.volume as u32, m.muted))
+                .collect()
         };
+        cached.into_iter()
+            .map(|(uuid, name, ip, vol, muted)| match self.member_state(&uuid, &ip) {
+                Some(ds) => {
+                    let (v, m) = (ds.get_vol(), ds.muted());
+                    MemberLevel { uuid, name, ds: Some(ds), volume: v, muted: m }
+                }
+                None => MemberLevel { uuid, name, ds: None, volume: vol, muted },
+            })
+            .collect()
+    }
+
+    /// The group's volume: **the loudest member's**, this device included.
+    ///
+    /// Derived on every read rather than stored, which is what makes the
+    /// expected behaviour fall out with no special case — adjust one member
+    /// upward past the previous loudest and it simply becomes the group
+    /// volume. Member levels are read from each member's own `DeviceState`
+    /// where available, so a change made directly to a member shows up here
+    /// as soon as that device notices it, not a slave-list poll later.
+    ///
+    /// Returns this device's own volume when it is not a leader, so callers
+    /// can use it unconditionally.
+    pub fn group_volume(&self) -> u32 {
+        let own = self.imp().inner.borrow().playback.volume;
+        let mut levels: Vec<u32> = vec![own];
+        levels.extend(self.member_levels().iter().map(|m| m.volume));
+        group::group_volume_of(&levels)
+    }
+
+    /// Whether the group counts as muted: **every** member is, this device
+    /// included. Any member still audible leaves this `false`, so unmuting
+    /// one member clears the group's indicator.
+    ///
+    /// Returns this device's own mute state when it is not a leader, so
+    /// callers can use it unconditionally.
+    pub fn group_muted(&self) -> bool {
+        let own = self.imp().inner.borrow().playback.muted;
+        let members = self.member_levels();
+        if members.is_empty() {
+            return own;
+        }
+        let mut states: Vec<bool> = vec![own];
+        states.extend(members.iter().map(|m| m.muted));
+        group::group_muted_of(&states)
+    }
+
+    /// Mutes or unmutes every member of the group at once — unlike volume,
+    /// this is an absolute state rather than a shared offset, so each
+    /// member simply takes `muted`.
+    ///
+    /// Members are driven through their own `DeviceState::do_set_mute()`
+    /// where the registry has one, for the same reasons as
+    /// `set_group_volume()`: identical optimistic update and change signal
+    /// to a member muting itself. A member with no live `DeviceState` falls
+    /// back to `multiroom:SlaveMute` relayed by this leader.
+    pub fn set_group_muted(&self, muted: bool) {
+        if self.imp().inner.borrow().group.role != group::GroupRole::Leader {
+            self.do_set_mute(muted);
+            return;
+        }
+
+        let members = self.member_levels();
+
+        // Stage every member *before* anything is emitted or sent, so no
+        // handler can observe a half-muted group and render it — that is
+        // what made a group mute look like it had only reached the leader.
+        let mut staged: Vec<(Self, MuteSend)> = Vec::with_capacity(members.len() + 1);
+        let mut relayed: Vec<(String, bool)> = Vec::new();
+        {
+            let mut inner = self.imp().inner.borrow_mut();
+            let cached = std::rc::Rc::make_mut(&mut inner.group.members);
+            for (slot, member) in cached.iter_mut().zip(members.iter()) {
+                slot.muted = muted;
+                if member.ds.is_none() && !slot.ip.is_empty()
+                    && !utils::is_wifi_direct_address(&slot.ip)
+                {
+                    relayed.push((slot.ip.clone(), muted));
+                }
+            }
+        }
+        for member in &members {
+            if let Some(ds) = &member.ds {
+                let send = ds.stage_mute(muted);
+                staged.push((ds.clone(), send));
+            }
+        }
+        let own_send = self.stage_mute(muted);
+
+        self.imp().inner.borrow_mut().last_group_cmd = Some(Instant::now());
+        dbg(self, &format!(
+            "group mute: {muted} across {} member(s) ({} direct, {} relayed)",
+            members.len(), staged.len(), relayed.len(),
+        ));
+
+        // Commands next, back to back with no signal handling in between.
+        // Emitting between sends is what staggered them enough to be
+        // visible in another controller as the members muting one by one.
+        for (ds, send) in staged {
+            ds.send_mute(muted, send);
+        }
+        self.send_mute(muted, own_send);
+
+        if !relayed.is_empty() {
+            let client = self.imp().inner.borrow().client.clone();
+            if let Some(client) = client {
+                self.rt().spawn(async move {
+                    for (ip, m) in relayed {
+                        // Sequential, and deliberately so: every one of
+                        // these goes to the *leader*, which handles
+                        // concurrent connections poorly.
+                        let _ = client.set_slave_mute(&ip, m).await;
+                    }
+                });
+            }
+        }
+
+        // Signals last, with every member's state already final.
+        for member in &members {
+            if let Some(ds) = &member.ds {
+                ds.emit_by_name::<()>("playback-changed", &[&playback_changed::VOLUME]);
+            }
+        }
+        self.emit_by_name::<()>("playback-changed", &[&playback_changed::VOLUME]);
+    }
+
+    pub fn set_group_volume(&self, vol: u32) {
+        if self.imp().inner.borrow().group.role != group::GroupRole::Leader {
+            self.do_set_volume(vol);
+            return;
+        }
+
+        let own = self.imp().inner.borrow().playback.volume;
+        let members = self.member_levels();
+
+        // One vector, this device first, so the shared arithmetic sees the
+        // whole group at once — it is the loudest of *all* of them that
+        // defines the current group volume.
+        let mut levels = Vec::with_capacity(members.len() + 1);
+        levels.push(own);
+        levels.extend(members.iter().map(|m| m.volume));
+        let shifted = group::shift_to_group_volume(&levels, vol);
+        if shifted == levels {
+            return;
+        }
+        let own_next = shifted[0];
+        let member_next = &shifted[1..];
+
+        // Members with no live `DeviceState` of their own cannot be driven
+        // through the normal path, and are relayed by this leader instead.
+        let mut relayed: Vec<(String, u8)> = Vec::new();
+        {
+            let mut inner = self.imp().inner.borrow_mut();
+            let cached = std::rc::Rc::make_mut(&mut inner.group.members);
+            for (slot, (member, next)) in cached.iter_mut().zip(members.iter().zip(member_next.iter())) {
+                // Kept in step even when the member drives itself, so
+                // `group_volume()` stays right for a member whose own
+                // `DeviceState` is momentarily unavailable.
+                slot.volume = *next as u8;
+                if member.ds.is_none() && !slot.ip.is_empty()
+                    && !utils::is_wifi_direct_address(&slot.ip)
+                {
+                    relayed.push((slot.ip.clone(), *next as u8));
+                }
+            }
+        }
+
+        // Stage, send, then emit — same three phases as `set_group_muted()`
+        // and for the same two reasons: no handler should see a
+        // half-adjusted group, and emitting between sends puts real
+        // synchronous UI work between the network commands.
+        self.imp().inner.borrow_mut().last_group_cmd = Some(Instant::now());
+        if DEBUG_STATE.load(Ordering::Relaxed) {
+            let detail: Vec<String> = members.iter().zip(member_next.iter())
+                .map(|(m, next)| format!(
+                    "{}={} [{}] -> {next}",
+                    if m.name_hint().is_empty() { &m.uuid } else { m.name_hint() },
+                    m.volume,
+                    if m.ds.is_some() { "own" } else { "relay" },
+                ))
+                .collect();
+            dbg(self, &format!(
+                "group volume: request {vol}; self {own} -> {own_next}; {}",
+                detail.join(", "),
+            ));
+        }
+
+        let mut staged: Vec<(Self, u32, Option<WiimClient>)> = Vec::new();
+        for (member, next) in members.iter().zip(member_next.iter()) {
+            if let Some(ds) = &member.ds {
+                let client = ds.stage_volume(*next);
+                staged.push((ds.clone(), *next, client));
+            }
+        }
+        let own_client = self.stage_volume(own_next);
+
+        for (ds, next, client) in staged {
+            ds.send_volume(next, client);
+        }
+        self.send_volume(own_next, own_client);
+
+        self.queue_relay_volume(relayed);
+
+        for member in &members {
+            if let Some(ds) = &member.ds {
+                ds.emit_by_name::<()>("playback-changed", &[&playback_changed::VOLUME]);
+            }
+        }
+        self.emit_by_name::<()>("playback-changed", &[&playback_changed::VOLUME]);
+    }
+
+    /// Applies a volume optimistically and decides whether it may go out
+    /// now, **without emitting anything or touching the network**. `Some`
+    /// means send it; `None` means the debounce window swallowed it and the
+    /// poll timer will flush the pending value.
+    ///
+    /// Split out for the same reason as `stage_mute()`: a group operation
+    /// stages every member first so the commands can go back to back and a
+    /// single consistent state is emitted afterwards.
+    fn stage_volume(&self, vol: u32) -> Option<WiimClient> {
+        let mut inner = self.imp().inner.borrow_mut();
+        // Optimistic update of playback.volume to avoid slider glitches
+        inner.playback.volume = vol;
+        let now = Instant::now();
+        let since_last = inner.last_volume_cmd
+            .map_or(VOLUME_DEBOUNCE, |t| now.duration_since(t));
+        if since_last < VOLUME_DEBOUNCE {
+            // Within the debounce window — save as pending; the 1s timer will flush it.
+            inner.target_volume = vol as i32;
+            None
+        } else {
+            // Debounce window has elapsed — send immediately.
+            inner.target_volume   = -1;
+            inner.last_volume_cmd = Some(now);
+            inner.client.clone()
+        }
+    }
+
+    /// Sends a previously-staged volume. Emits nothing.
+    fn send_volume(&self, vol: u32, client: Option<WiimClient>) {
+        let Some(client) = client else { return };
+        self.rt().spawn(async move { let _ = client.set_volume(vol).await; });
+    }
+
+    pub fn do_set_volume(&self, vol: u32) {
+        let client = self.stage_volume(vol);
         // Same synchronous emit `do_set_mute()` already does, and for the
         // same reason: the optimistic write above already lands in
         // canonical `playback.volume`, so the next real poll's self-heal
@@ -4251,10 +4733,7 @@ impl DeviceState {
         // the devlist row's volume control while a device window's own
         // slider is what moved) never finds out at all.
         self.emit_by_name::<()>("playback-changed", &[&playback_changed::VOLUME]);
-        if send_now {
-            let Some(client) = client else { return };
-            self.rt().spawn(async move { let _ = client.set_volume(vol).await; });
-        }
+        self.send_volume(vol, client);
     }
 
     // ── Transport commands ────────────────────────────────────────────────────
@@ -5170,14 +5649,33 @@ impl DeviceState {
                     let old = inner.gena_rc.notify_received();
                     break 'rc (mask, old, inner.gena_rc.health);
                 }
+                // Same settle window both poll paths apply (see
+                // `process_poll_http()`'s `vol_settled`/`mute_settled`): a
+                // NOTIFY already in flight when a command was issued still
+                // reports the pre-command value, and applying it would undo
+                // the optimistic update.
+                //
+                // This matters far more in a group than it looks. For a
+                // single device a stale value just makes the slider twitch
+                // and the next drag event corrects it. In a group the
+                // members' levels are the *input* to the shared offset, so
+                // one member clobbered mid-drag stays that far off for the
+                // rest of the drag — the group ends up genuinely split,
+                // with each device sent a different level.
+                let now = Instant::now();
+                let vol_settled = inner.target_volume < 0
+                    && inner.last_volume_cmd
+                        .map_or(true, |t| now.duration_since(t) >= VOLUME_POLL_SETTLE);
+                let mute_settled = inner.last_mute_cmd
+                    .map_or(true, |t| now.duration_since(t) >= VOLUME_POLL_SETTLE);
                 if let Some(v) = ev.volume {
-                    if v != inner.playback.volume {
+                    if vol_settled && v != inner.playback.volume {
                         inner.playback.volume = v;
                         mask |= playback_changed::VOLUME;
                     }
                 }
                 if let Some(v) = ev.mute {
-                    if v != inner.playback.muted {
+                    if mute_settled && v != inner.playback.muted {
                         inner.playback.muted = v;
                         mask |= playback_changed::VOLUME;
                     }
