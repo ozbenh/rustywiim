@@ -4,6 +4,7 @@ pub mod discovery;
 pub mod discovery_manager;
 pub mod eq;
 pub mod gena;
+pub mod group;
 pub mod manager;
 pub mod playback;
 pub mod state;
