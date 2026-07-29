@@ -39,6 +39,11 @@ pub mod imp {
         pub(super) list_box:        OnceCell<gtk::ListBox>,
         pub(super) current_entries: RefCell<Vec<ManagedEntry>>,
         pub(super) row_widgets:     RefCell<HashMap<String, RowWidgets>>,
+        pub(super) member_widgets:  RefCell<HashMap<String, super::MemberWidgets>>,
+        /// One key per appended `ListBoxRow`, in order — what a click
+        /// resolves to. Separate from `current_entries` because a group
+        /// contributes several entries but only one row.
+        pub(super) row_keys:        RefCell<Vec<String>>,
         pub(super) handlers:        RefCell<Vec<glib::SignalHandlerId>>,
     }
 
@@ -64,6 +69,14 @@ pub mod imp {
                     Signal::builder("device-selected")
                         .param_types([String::static_type()])
                         .build(),
+                    // Host request: open settings scoped to one device.
+                    // Carries the same device_key() as `device-selected`.
+                    // A group member has no device window of its own — only
+                    // the group does — so its member line's cog is the only
+                    // route to that device's own settings.
+                    Signal::builder("device-settings")
+                        .param_types([String::static_type()])
+                        .build(),
                 ]
             })
         }
@@ -80,6 +93,9 @@ pub mod imp {
             for rw in self.row_widgets.borrow().values() {
                 rw.vol_popover.unparent();
             }
+            for mw in self.member_widgets.borrow().values() {
+                mw.vol_popover.unparent();
+            }
         }
     }
     impl WidgetImpl for DeviceListView {}
@@ -94,7 +110,7 @@ use adw::subclass::prelude::*;
 use glib::clone;
 use gtk::{glib, Orientation};
 
-use crate::device::discovery_manager::{DevicePresence, DiscoveryManager, ManagedEntry, device_key};
+use crate::device::discovery_manager::{DevicePresence, DiscoveryManager, EntryGroupRole, ManagedEntry, device_key};
 use crate::device::state::DeviceState;
 use crate::ui::flip_cover::FlipCover;
 use crate::ui::icons::IconSet;
@@ -110,6 +126,20 @@ glib::wrapper! {
 /// place — keyed by `device_key()`'s result, rebuilt (not incrementally
 /// patched) whenever `rebuild_list()` runs. Only present for rows built
 /// while `entry.song_info_enabled` was true (see `build_row()`).
+/// A member line's volume controls. Kept apart from `RowWidgets` because a
+/// leader occupies two rows — a group header *and* a member line — so one
+/// map keyed by device cannot hold both, and because a member line has no
+/// artwork or subtitle to update.
+struct MemberWidgets {
+    vol_icon_img: gtk::Image,
+    vol_label:    gtk::Label,
+    vol_scale:    gtk::Scale,
+    mute_btn:     gtk::Button,
+    /// Same `set_parent()` teardown caveat as `RowWidgets::vol_popover`.
+    vol_popover:  gtk::Popover,
+    vol_drag_timer: Rc<RefCell<Option<glib::SourceId>>>,
+}
+
 struct RowWidgets {
     flip:         FlipCover,
     subtitle:     ScrollFadeLabel,
@@ -244,9 +274,26 @@ fn build_devlist_vol_popover() -> (gtk::Button, gtk::Image, gtk::Label, gtk::Sca
 /// Skips repositioning the slider while `drag_timer` is set (same
 /// protection the main/mini windows use), so a poll update arriving
 /// mid-drag doesn't fight the user's own gesture.
+/// `sync_devlist_vol_display()`'s counterpart for a member line, which has
+/// the same volume widgets but none of the artwork/subtitle ones.
+fn sync_member_vol_display(mw: &MemberWidgets, ds: &DeviceState) {
+    if mw.vol_drag_timer.borrow().is_some() {
+        return;
+    }
+    let vol = ds.playback_state().volume as f64;
+    mw.vol_scale.set_value(vol);
+    mw.vol_label.set_label(&format!("{}", vol as u32));
+    mw.vol_icon_img.set_icon_name(Some(vol_icon(ds.muted(), vol)));
+    mw.mute_btn.set_icon_name(if ds.muted() { "audio-volume-muted-symbolic" } else { "audio-volume-high-symbolic" });
+}
+
 fn sync_devlist_vol_display(rw: &RowWidgets, ds: &DeviceState) {
-    let vol = ds.get_vol() as f64;
-    let muted = ds.muted();
+    // Group-aware, same as the shared `VolumeControl`: this row is either a
+    // standalone device or a group's own row, and `group_volume()` covers
+    // both. Member lines use `sync_member_vol_display()` instead, which is
+    // deliberately per-device.
+    let vol = ds.group_volume() as f64;
+    let muted = ds.group_muted();
     if rw.vol_drag_timer.borrow().is_none() {
         rw.vol_scale.set_value(vol);
     }
@@ -260,6 +307,15 @@ impl DeviceListView {
         let obj: Self = glib::Object::new();
         obj.build(manager, icons);
         obj
+    }
+
+    pub(crate) fn connect_device_settings<F: Fn(&Self, &str) + 'static>(&self, f: F) -> glib::SignalHandlerId {
+        self.connect_local("device-settings", false, move |args| {
+            let this = args[0].get::<Self>().unwrap();
+            let key  = args[1].get::<String>().unwrap();
+            f(&this, &key);
+            None
+        })
     }
 
     pub(crate) fn connect_device_selected<F: Fn(&Self, &str) + 'static>(&self, f: F) -> glib::SignalHandlerId {
@@ -322,8 +378,12 @@ impl DeviceListView {
                 let Some(this) = weak.upgrade() else { return };
                 let idx = row.index();
                 if idx < 0 { return; }
-                let key = this.imp().current_entries.borrow().get(idx as usize)
-                    .map(|entry| device_key(&entry.uuid, &entry.ip));
+                // Rows and entries are no longer one-to-one — a group's
+                // member lines live inside their group's row — so the key
+                // is tracked alongside the rows as they are appended rather
+                // than looked up positionally. Activating anywhere in a
+                // group's row opens the group.
+                let key = this.imp().row_keys.borrow().get(idx as usize).cloned();
                 if let Some(key) = key {
                     this.emit_by_name::<()>("device-selected", &[&key]);
                 }
@@ -335,6 +395,10 @@ impl DeviceListView {
         use crate::device::state::playback_changed as PC;
         let imp = self.imp();
         let Some(entry) = mgr.entry_for(key) else { return };
+        if mask & PC::VOLUME != 0 {
+            self.apply_member_volume(mgr, key);
+            self.apply_group_levels_for_member(mgr, key);
+        }
         let widgets = imp.row_widgets.borrow();
         let Some(rw) = widgets.get(key) else { return };
         if mask & (PC::TITLE | PC::ARTIST) != 0 {
@@ -350,6 +414,38 @@ impl DeviceListView {
         }
     }
 
+    /// A device can occupy a member line as well as (or instead of) a
+    /// device row, so its volume has to be synced in both places.
+    fn apply_member_volume(&self, mgr: &DiscoveryManager, key: &str) {
+        let imp = self.imp();
+        let widgets = imp.member_widgets.borrow();
+        let Some(mw) = widgets.get(key) else { return };
+        let Some(ds) = mgr.device_state_for(key) else { return };
+        sync_member_vol_display(mw, &ds);
+    }
+
+    /// Refreshes the group row that owns `key`'s member line, if any.
+    ///
+    /// A group's volume is the loudest member's and its mute is the AND of
+    /// all of them, so changing *any* member changes what the group row
+    /// should read — but the change arrives keyed by the member, and the
+    /// group row is keyed by its leader. Without this the group row only
+    /// updates when the leader itself happens to change.
+    fn apply_group_levels_for_member(&self, mgr: &DiscoveryManager, key: &str) {
+        let imp = self.imp();
+        let leader_key = imp.current_entries.borrow().iter()
+            .find(|e| device_key(&e.uuid, &e.ip) == key)
+            .and_then(|e| match &e.group_role {
+                EntryGroupRole::Member { leader_key, .. } => Some(leader_key.clone()),
+                _ => None,
+            });
+        let Some(leader_key) = leader_key else { return };
+        let widgets = imp.row_widgets.borrow();
+        let Some(rw) = widgets.get(&leader_key) else { return };
+        let Some(leader_ds) = mgr.device_state_for(&leader_key) else { return };
+        sync_devlist_vol_display(rw, &leader_ds);
+    }
+
     fn rebuild_list(&self) {
         let imp = self.imp();
         let manager = imp.manager.get().unwrap().clone();
@@ -361,16 +457,19 @@ impl DeviceListView {
         for rw in imp.row_widgets.borrow().values() {
             rw.vol_popover.unparent();
         }
+        for mw in imp.member_widgets.borrow().values() {
+            mw.vol_popover.unparent();
+        }
         while let Some(child) = list_box.first_child() {
             list_box.remove(&child);
         }
-        // Must match row append order exactly — `connect_row_activated`
-        // above looks a clicked row up by index into this.
         *imp.current_entries.borrow_mut() = entries.clone();
+        imp.row_keys.borrow_mut().clear();
         // Rebuilt from scratch alongside the rows themselves (structural
         // change — every widget is new) — `apply_song_info()` only ever
         // updates a row that's still in here.
         imp.row_widgets.borrow_mut().clear();
+        imp.member_widgets.borrow_mut().clear();
         if entries.is_empty() {
             let placeholder = adw::ActionRow::builder()
                 .title("No devices found")
@@ -379,12 +478,187 @@ impl DeviceListView {
             list_box.append(&placeholder);
             return;
         }
-        for entry in &entries {
-            list_box.append(&self.build_row(entry, &manager));
+        // A group is one row containing its member lines, not a run of
+        // sibling rows — otherwise the boxed-list styling draws a separator
+        // between each and the group reads as several unrelated devices.
+        let mut i = 0;
+        while i < entries.len() {
+            let entry = &entries[i];
+            let (row, key) = match entry.group_role {
+                EntryGroupRole::GroupHeader { .. } => {
+                    let start = i + 1;
+                    let mut end = start;
+                    while end < entries.len()
+                        && matches!(entries[end].group_role, EntryGroupRole::Member { .. })
+                    {
+                        end += 1;
+                    }
+                    i = end;
+                    let key = device_key(&entry.uuid, &entry.ip);
+                    (self.build_group_card(entry, &entries[start..end], &manager), key)
+                }
+                _ => {
+                    i += 1;
+                    let key = device_key(&entry.uuid, &entry.ip);
+                    (self.build_device_row(entry, &manager), key)
+                }
+            };
+            list_box.append(&row);
+            imp.row_keys.borrow_mut().push(key);
         }
     }
 
-    fn build_row(&self, entry: &ManagedEntry, manager: &DiscoveryManager) -> gtk::ListBoxRow {
+    /// One group, rendered as a single row: the group's own content on top,
+    /// then a stacked line per member inside the same row. Keeping it to
+    /// one `ListBoxRow` is what makes the boxed list draw a single outline
+    /// around the whole group rather than separating every line.
+    fn build_group_card(
+        &self, header: &ManagedEntry, members: &[ManagedEntry], manager: &DiscoveryManager,
+    ) -> gtk::ListBoxRow {
+        // Line the member names up with the group's own name rather than
+        // with its artwork, so the block reads as one indented list. The
+        // group content's name starts past its artwork slot, which is only
+        // present when song info is on: row margin + art width + spacing.
+        let indent = if header.song_info_enabled { 12 + 32 + 12 } else { 12 };
+
+        let vbox = gtk::Box::builder().orientation(Orientation::Vertical).build();
+        vbox.append(&self.build_group_header_content(header, manager));
+        for m in members {
+            vbox.append(&self.build_member_content(m, manager, indent));
+        }
+
+        let row = gtk::ListBoxRow::builder()
+            .activatable(true)
+            .child(&vbox)
+            .tooltip_text(&header.ip)
+            .build();
+        row.add_css_class("devlist-group");
+        if header.presence != DevicePresence::Active {
+            row.add_css_class("dim-label");
+        }
+        row
+    }
+
+    /// One member of a group: name, its own volume, and a settings cog.
+    /// Deliberately much shorter than a device row — no artwork slot, no
+    /// song info — since the group's own content above already shows what
+    /// is playing, and repeating it per member would be noise.
+    ///
+    /// Returns the content box rather than a row: member lines are packed
+    /// inside their group's single row, not appended as siblings.
+    fn build_member_content(
+        &self, entry: &ManagedEntry, manager: &DiscoveryManager, indent: i32,
+    ) -> gtk::Box {
+        let imp = self.imp();
+        let key = device_key(&entry.uuid, &entry.ip);
+
+        let hbox = gtk::Box::builder()
+            .orientation(Orientation::Horizontal)
+            .spacing(8)
+            .margin_top(2).margin_bottom(2)
+            .margin_start(indent).margin_end(12)
+            .build();
+
+        let name = gtk::Label::builder()
+            .label(&entry.name)
+            .halign(gtk::Align::Start)
+            .hexpand(true)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .build();
+        name.add_css_class("caption");
+        hbox.append(&name);
+
+        // A member the leader named but that nothing has connected to has
+        // no `DeviceState`, so there is nothing to drive a slider with.
+        // Render the line without controls rather than with dead ones.
+        let tracked = matches!(entry.group_role, EntryGroupRole::Member { tracked: true, .. });
+        if let (true, Some(ds)) = (tracked, manager.device_state_for(&key)) {
+            let (vol_btn, vol_icon_img, vol_label, vol_scale, mute_btn, vol_popover) =
+                build_devlist_vol_popover();
+            vol_btn.set_sensitive(entry.presence == DevicePresence::Active);
+            vol_btn.connect_clicked(clone!(#[weak] vol_popover, move |_| {
+                if vol_popover.is_visible() { vol_popover.popdown(); } else { vol_popover.popup(); }
+            }));
+            hbox.append(&vol_btn);
+
+            let vol_drag_timer: Rc<RefCell<Option<glib::SourceId>>> = Rc::new(RefCell::new(None));
+            let mw = MemberWidgets {
+                vol_icon_img: vol_icon_img.clone(), vol_label: vol_label.clone(),
+                vol_scale: vol_scale.clone(), mute_btn: mute_btn.clone(),
+                vol_popover: vol_popover.clone(), vol_drag_timer: vol_drag_timer.clone(),
+            };
+            sync_member_vol_display(&mw, &ds);
+
+            mute_btn.connect_clicked(clone!(#[strong] ds, move |_| {
+                ds.do_set_mute(!ds.muted());
+            }));
+            vol_scale.connect_change_value(clone!(
+                #[strong] ds, #[strong] vol_icon_img, #[strong] vol_label, #[strong] vol_drag_timer,
+                move |_, _, vol| {
+                    let icon = vol_icon(ds.muted(), vol);
+                    vol_icon_img.set_icon_name(Some(icon));
+                    vol_label.set_label(&format!("{}", vol as u32));
+                    // A member line is that device's own volume, never the
+                    // group's — the group's lives on the row above.
+                    ds.do_set_volume(vol as u32);
+                    if let Some(id) = vol_drag_timer.borrow_mut().take() { id.remove(); }
+                    let timer_cell = Rc::clone(&vol_drag_timer);
+                    let id = glib::timeout_add_local_once(std::time::Duration::from_millis(500), move || {
+                        timer_cell.borrow_mut().take();
+                    });
+                    *vol_drag_timer.borrow_mut() = Some(id);
+                    glib::Propagation::Proceed
+                }
+            ));
+            imp.member_widgets.borrow_mut().insert(key.clone(), mw);
+        }
+
+        // The only route to a member's own settings: a member has no
+        // device window, since opening one from this list opens the group.
+        let cog = gtk::Button::builder()
+            .icon_name("emblem-system-symbolic")
+            .tooltip_text("Device settings")
+            .valign(gtk::Align::Center)
+            .css_classes(["flat"])
+            .build();
+        cog.set_sensitive(tracked);
+        cog.connect_clicked(clone!(#[weak(rename_to = this)] self, #[strong] key, move |_| {
+            this.emit_by_name::<()>("device-settings", &[&key]);
+        }));
+        hbox.append(&cog);
+
+        hbox.add_css_class("devlist-member");
+        if entry.presence != DevicePresence::Active {
+            hbox.add_css_class("dim-label");
+        }
+        hbox.set_tooltip_text(Some(&entry.ip));
+        hbox
+    }
+
+    /// A group's own content: the same treatment a device row gets, minus
+    /// the pin button.
+    fn build_group_header_content(&self, entry: &ManagedEntry, manager: &DiscoveryManager) -> gtk::Box {
+        self.build_device_content(entry, manager)
+    }
+
+    fn build_device_row(&self, entry: &ManagedEntry, manager: &DiscoveryManager) -> gtk::ListBoxRow {
+        let hbox = self.build_device_content(entry, manager);
+        let status_suffix = match entry.presence {
+            DevicePresence::Active => String::new(),
+            DevicePresence::Ghost | DevicePresence::Dead => " · offline".to_string(),
+        };
+        let row = gtk::ListBoxRow::builder()
+            .activatable(true)
+            .child(&hbox)
+            .tooltip_text(&format!("{}{}", entry.ip, status_suffix))
+            .build();
+        if entry.presence != DevicePresence::Active {
+            row.add_css_class("dim-label");
+        }
+        row
+    }
+
+    fn build_device_content(&self, entry: &ManagedEntry, manager: &DiscoveryManager) -> gtk::Box {
         let imp = self.imp();
         let icons = imp.icons.get().unwrap();
         let key = device_key(&entry.uuid, &entry.ip);
@@ -447,14 +721,10 @@ impl DeviceListView {
 
         hbox.append(&text_box);
 
-        // IP address moved from a permanently-visible label to a hover
-        // tooltip on the whole row — freeing that space for the volume
-        // control below.
-        let status_suffix = match entry.presence {
-            DevicePresence::Active => String::new(),
-            DevicePresence::Ghost | DevicePresence::Dead => " · offline".to_string(),
-        };
-        let row_tooltip = format!("{}{}", entry.ip, status_suffix);
+        // The IP address is a hover tooltip rather than a visible label,
+        // freeing that space for the volume control. Applied by whichever
+        // caller wraps this content, since a group's tooltip belongs on the
+        // whole card.
 
         // Volume button + popover slider + mute, same widget shape as the
         // mini window's own. Reserved alongside the artwork slot (same
@@ -490,15 +760,21 @@ impl DeviceListView {
                 sync_devlist_vol_display(&rw_for_sync, &ds);
 
                 mute_btn.connect_clicked(clone!(#[strong] ds, move |_| {
-                    ds.do_set_mute(!ds.muted());
+                    // Group-aware: on a group's own row this mutes every
+                    // member, and on a standalone device it falls through
+                    // to that device's own mute.
+                    ds.set_group_muted(!ds.group_muted());
                 }));
                 vol_scale.connect_change_value(clone!(
                     #[strong] ds, #[strong] vol_icon_img, #[strong] vol_label, #[strong] vol_drag_timer
                        , move |_, _, vol| {
-                            let icon = vol_icon(ds.muted(), vol);
+                            let icon = vol_icon(ds.group_muted(), vol);
                             vol_icon_img.set_icon_name(Some(icon));
                             vol_label.set_label(&format!("{}", vol as u32));
-                            ds.do_set_volume(vol as u32);
+                            // Group-aware: on a group's own row this shifts
+                            // every member, and on a standalone device it
+                            // falls through to that device's own volume.
+                            ds.set_group_volume(vol as u32);
                             if let Some(id) = vol_drag_timer.borrow_mut().take() { id.remove(); }
                             let timer_cell = Rc::clone(&vol_drag_timer);
                             let id = glib::timeout_add_local_once(std::time::Duration::from_millis(500), move || {
@@ -518,7 +794,12 @@ impl DeviceListView {
             });
         }
 
-        // Pin / unpin toggle button.
+        // Pin / unpin toggle button. A group header has none: pinning is a
+        // per-device concept and a group is not a device, so the member
+        // lines below own it instead.
+        if matches!(entry.group_role, EntryGroupRole::GroupHeader { .. }) {
+            return hbox;
+        }
         let pin_btn = gtk::ToggleButton::builder()
             .icon_name(if entry.pinned { "starred-symbolic" } else { "non-starred-symbolic" })
             .tooltip_text(if entry.pinned { "Unpin device" } else { "Pin device" })
@@ -534,15 +815,6 @@ impl DeviceListView {
             manager.set_pinned(&uuid_for_pin, btn.is_active());
         }));
         hbox.append(&pin_btn);
-
-        let row = gtk::ListBoxRow::builder()
-            .activatable(true)
-            .child(&hbox)
-            .tooltip_text(&row_tooltip)
-            .build();
-        if entry.presence != DevicePresence::Active {
-            row.add_css_class("dim-label");
-        }
-        row
+        hbox
     }
 }

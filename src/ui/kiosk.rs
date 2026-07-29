@@ -251,6 +251,18 @@ const SCREENSAVER_FADE_OUT_MS: u32 = 200;
 /// normal path is driven by the state change and doesn't wait this long.
 const UNFULLSCREEN_TIMEOUT_MS: u64 = 1500;
 
+/// The name a surface bound to `ds` should show: the group's when this
+/// device leads one, otherwise the device's own. Named groups are stored on
+/// the device and not read yet, so this is always the auto-generated form.
+fn group_display_name(ds: &DeviceState, device_name: &str) -> String {
+    let g = ds.group_state();
+    if g.role == crate::device::group::GroupRole::Leader {
+        crate::device::group::auto_group_name(device_name, g.follower_count())
+    } else {
+        device_name.to_string()
+    }
+}
+
 impl KioskWindow {
     pub(crate) fn new(
         app:              &adw::Application,
@@ -819,7 +831,9 @@ impl KioskWindow {
     /// `BoundDevice`. Caller has already released the old binding and
     /// cleared `content_holder`.
     fn finish_bind(self: &Rc<Self>, key: String, ds: DeviceState, label: String) {
-        self.device_btn.set_label(&label);
+        // A group leader's surface is the group's, so it takes the group's
+        // name — same rule the device window's title uses.
+        self.device_btn.set_label(&group_display_name(&ds, &label));
 
         // Known synchronously for every device switch (the window's
         // already fullscreen and stable by then) — only the very first
@@ -1607,8 +1621,30 @@ impl KioskWindow {
     /// timeout only exists so a backend that never reports leaving
     /// fullscreen can't strand the caller forever.
     pub(crate) fn unfullscreen_then(&self, done: impl Fn() + 'static) {
+        // `done` tears this window down, so it is deferred to an idle
+        // callback rather than run from wherever the caller happens to be.
+        // The wait for the fullscreen transition below is a separate
+        // concern: it delays *when* teardown starts, but does nothing about
+        // *what is on the stack* when it does.
+        //
+        // Two paths here would otherwise reach `done` synchronously — the
+        // early "already unfullscreened" return, and a
+        // `fullscreened-notify` that a backend chooses to emit from inside
+        // `unfullscreen()`. In both cases the emission that is still
+        // unwinding can be one on this window's own widget tree, and
+        // destroying a widget from inside its own handler is a
+        // use-after-free.
+        let done: Rc<dyn Fn()> = Rc::new(done);
+        let defer_done: Rc<dyn Fn()> = {
+            let done = Rc::clone(&done);
+            Rc::new(move || {
+                let done = Rc::clone(&done);
+                glib::idle_add_local_once(move || done());
+            })
+        };
+
         if !self.window.is_fullscreen() {
-            done();
+            defer_done();
             return;
         }
 
@@ -1620,7 +1656,7 @@ impl KioskWindow {
             Rc::new(move || {
                 let Some(id) = handler.borrow_mut().take() else { return };
                 window.disconnect(id);
-                done();
+                defer_done();
             })
         };
 

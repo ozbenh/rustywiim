@@ -290,7 +290,9 @@ impl VolumeControl {
             move |_| {
                 let Some(obj) = weak.upgrade() else { return };
                 let Some(ds) = obj.imp().ds.get() else { return };
-                ds.do_set_mute(!ds.muted());
+                // Group-aware: on a group leader this mutes every member,
+                // and on any other device it is that device's own mute.
+                ds.set_group_muted(!ds.group_muted());
             }
         });
 
@@ -302,6 +304,10 @@ impl VolumeControl {
             }
         });
 
+        // Covers a group as well as a single device with no extra wiring:
+        // on a leader, a member moving its own level is re-emitted here as
+        // a volume change, and `sync_display()` reads the group-aware
+        // `group_volume()`/`group_muted()`.
         let id = ds.connect_playback_changed({
             let weak = self.downgrade();
             move |_, mask| {
@@ -387,11 +393,16 @@ impl VolumeControl {
             return;
         }
         self.set_sensitive(true);
-        let muted = ds.muted();
+        let muted = ds.group_muted();
         // Fetch the authoritative volume first; used for both the slider
         // position and the icon so they stay consistent even when
         // set_value is inhibited.
-        let vol = ds.get_vol() as f64;
+        // Group-aware: on a group leader this is the group's volume (the
+        // loudest member's), and on any other device it is simply that
+        // device's own — so this needs no branch here, and every surface
+        // that embeds this control (device window, mini, kiosk) gets the
+        // group behaviour for free.
+        let vol = ds.group_volume() as f64;
         if imp.drag_timer.borrow().is_none() {
             imp.scale.get().unwrap().set_value(vol);
         }
@@ -424,9 +435,9 @@ impl VolumeControl {
     fn on_user_vol(&self, vol: f64) {
         let imp = self.imp();
         let Some(ds) = imp.ds.get() else { return };
-        imp.icon_img.get().unwrap().set_icon_name(Some(vol_icon(ds.muted(), vol)));
+        imp.icon_img.get().unwrap().set_icon_name(Some(vol_icon(ds.group_muted(), vol)));
         imp.level.get().unwrap().set_label(&format!("{}", vol as u32));
-        ds.do_set_volume(vol as u32);
+        ds.set_group_volume(vol as u32);
 
         if let Some(id) = imp.drag_timer.borrow_mut().take() { id.remove(); }
         let weak = self.downgrade();

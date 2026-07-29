@@ -63,6 +63,13 @@ struct DeviceWindowInner {
     /// `reset_device_ui()`. Overlaid on the header bar, not packed into
     /// it — see `build_header()`'s doc comment for why.
     connecting_spinner: gtk::Spinner,
+    /// Explains why the window is inert while this device is a follower in
+    /// someone else's group. Hidden otherwise.
+    follower_banner:    adw::Banner,
+    /// The full window's body (playback pane plus status bar), made
+    /// insensitive while dormant — held so dormancy can toggle it without
+    /// re-walking the widget tree.
+    full_body:          GtkBox,
     /// When `connecting_spinner` was last shown — `None` while hidden.
     /// Lets `hide_connecting_spinner()` enforce `MIN_SPINNER_DISPLAY`
     /// (see that constant) instead of hiding it again so fast (a
@@ -516,8 +523,14 @@ impl DeviceWindow {
         outer.append(&gtk::Separator::new(Orientation::Horizontal));
         outer.append(&status_bar);
 
+        // Shown only while this device is a group follower — see
+        // `apply_follower_dormancy()`.
+        let follower_banner = adw::Banner::new("");
+        follower_banner.set_revealed(false);
+
         let full_toolbar = adw::ToolbarView::new();
         full_toolbar.add_top_bar(&header);
+        full_toolbar.add_top_bar(&follower_banner);
         full_toolbar.set_content(Some(&outer));
 
         // `art_bg` (built above, before the playback view) sits behind the
@@ -593,6 +606,8 @@ impl DeviceWindow {
             presets,
             status_bar,
             connecting_spinner,
+            follower_banner,
+            full_body: outer.clone(),
             spinner_shown_at: std::cell::Cell::new(None),
             spinner_hide_timer: RefCell::new(None),
             window: window.clone(),
@@ -737,6 +752,21 @@ fn wire_device_signals(inner: &Rc<DeviceWindowInner>) {
             dbg_ui(&format!(
                 "device-changed signal: device_info_present={}",
                 ds.device_info().is_some(),
+            ));
+            i.populate_all();
+        }
+    });
+    // A device can be grouped or ungrouped while its window is open, which
+    // changes what the window is showing: a leader's window becomes the
+    // group's window, titled accordingly. Nothing else about it changes —
+    // it was already displaying the leader, which is the group's playback.
+    ds.connect_group_changed({
+        let i = Rc::downgrade(&inner);
+        move |ds| {
+            let Some(i) = i.upgrade() else { return };
+            let g = ds.group_state();
+            dbg_ui(&format!(
+                "group-changed signal: role={:?} members={}", g.role, g.follower_count(),
             ));
             i.populate_all();
         }

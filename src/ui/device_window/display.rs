@@ -120,6 +120,7 @@ impl DeviceWindowInner {
     /// status bar need nothing here — each view subscribes to
     /// `device-changed` itself.
     pub(super) fn populate_all(self: &Rc<Self>) {
+        self.apply_follower_dormancy();
         if self.ds.device_info().is_some() {
             self.apply_device_info();
         } else {
@@ -130,6 +131,55 @@ impl DeviceWindowInner {
             crate::ui::dbg_ui(&format!("populate_all: no device_info, connection_state={state:?}"));
             self.reset_device_ui(state);
         }
+    }
+
+    /// What this window calls the thing it is showing.
+    ///
+    /// When the bound device leads a multiroom group the window *is* the
+    /// group's window — everything it displays comes from the leader
+    /// anyway — so it takes the group's name rather than the leader's own.
+    /// Titling it with the bare device name would make a group window
+    /// indistinguishable from that device's own.
+    ///
+    /// Named groups are stored on the device and not read yet, so this is
+    /// always the auto-generated form for now; a group with a real name
+    /// should use it in preference once that lands.
+    pub(super) fn display_name(&self, device_name: &str) -> String {
+        let g = self.ds.group_state();
+        if g.role == crate::device::group::GroupRole::Leader {
+            crate::device::group::auto_group_name(device_name, g.follower_count())
+        } else {
+            device_name.to_string()
+        }
+    }
+
+    /// Reflects whether this window's device is currently a follower in
+    /// someone else's group.
+    ///
+    /// A follower renders another device's stream and has no controls of
+    /// its own worth offering — transport commands are the leader's, and
+    /// the group is reachable through the leader's own window. Rather than
+    /// leaving a window that looks live but does nothing useful, it goes
+    /// **dormant**: a banner naming the situation, and the body made
+    /// insensitive.
+    ///
+    /// Closing the window instead was considered and rejected. Closing
+    /// persists `window_open = false`, so the window would not come back on
+    /// the next launch, and if it were the last visible window closing it
+    /// would quit the application outright — grouping a speaker should not
+    /// exit RustyWiiM.
+    pub(super) fn apply_follower_dormancy(self: &Rc<Self>) {
+        let g = self.ds.group_state();
+        let dormant = g.role == crate::device::group::GroupRole::Follower;
+
+        self.follower_banner.set_title(
+            "Part of a group — controlled by the group leader",
+        );
+        self.follower_banner.set_revealed(dormant);
+        // The banner itself stays interactive; only the playback body goes
+        // inert, so the window can still be moved, closed, or have its menu
+        // opened.
+        self.full_body.set_sensitive(!dormant);
     }
 
     pub(super) fn apply_device_info(self: &Rc<Self>) {
@@ -143,11 +193,11 @@ impl DeviceWindowInner {
         // opposite transition (`Connecting` → `Connected`, a live
         // `device_info` just arrived) and never runs through there.
         self.hide_connecting_spinner();
-        self.window.set_title(Some(&format!("RustyWiiM ({})", info.device_name)));
+        self.window.set_title(Some(&format!("RustyWiiM ({})", self.display_name(&info.device_name))));
         // The mini top bar's device-name label is chrome (not part of
         // MiniPlaybackView), so it's kept fresh here alongside the window
         // title rather than by the view.
-        self.mini.device_label.set_label(&info.device_name);
+        self.mini.device_label.set_label(&self.display_name(&info.device_name));
         // Refresh the disconnected-fallback title too (see `cached_name`'s
         // doc comment) — this device just answered, so its name is at
         // least as fresh as whatever config had at window-open time, and a
