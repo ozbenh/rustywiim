@@ -134,6 +134,7 @@ use super::api::{
 };
 use super::capabilities::{self, DeviceCapabilities};
 use super::eq;
+use super::utils;
 use super::gena::{
     self, parse_av_transport_event, parse_play_queue_event, parse_rendering_control_event,
     GenaSession, NotifyPayload,
@@ -1208,7 +1209,12 @@ impl DeviceState {
     pub fn new(rt: Arc<tokio::runtime::Runtime>, uuid: String) -> Self {
         let obj: Self = glib::Object::new();
         obj.imp().rt.set(rt).unwrap();
-        obj.imp().uuid.set(uuid).unwrap();
+        // Idempotent anchor: every uuid reaching here is already normalised
+        // at its entry boundary (config load, `getStatusEx` deserialisation,
+        // SSDP extraction), but re-normalising once at construction keeps
+        // `uuid()` guaranteed-canonical for the identity check against
+        // `getStatusEx` regardless of how a future caller obtains the value.
+        obj.imp().uuid.set(utils::normalize_uuid(&uuid)).unwrap();
         obj
     }
 

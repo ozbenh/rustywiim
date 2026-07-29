@@ -36,6 +36,7 @@ use crate::device::capabilities;
 use crate::device::discovery::{DEBUG_DISCOVERY, DiscoveryService};
 use crate::device::manager::DeviceManager;
 use crate::device::state::{ConnectionState, DeviceState};
+use crate::device::utils;
 
 /// `[disc-mgr]` — this module's own tracking/presence/persistence-signal
 /// logic. Distinct from `device/discovery.rs`'s `[discovery]` (the SSDP
@@ -767,8 +768,16 @@ impl DiscoveryManager {
 /// independently (to index its own `RowWidgets` map alongside this
 /// module's `Inner.devices`) — both sides must share this one algorithm
 /// rather than risk drifting apart.
+///
+/// Normalises the uuid (`utils::normalize_uuid`) as a belt-and-braces
+/// anchor: every uuid reaching here is already normalised at its entry
+/// boundary (SSDP `USN` extraction, `getStatusEx` deserialisation, config
+/// load), so this is idempotent — it exists so this key and any key an
+/// independent caller (`ui::devlist`) computes from the same inputs cannot
+/// drift apart, not because a raw value is expected to arrive.
 pub fn device_key(uuid: &str, ip: &str) -> String {
-    if !uuid.is_empty() { uuid.to_string() } else { format!("ip:{ip}") }
+    let uuid = utils::normalize_uuid(uuid);
+    if !uuid.is_empty() { uuid } else { format!("ip:{ip}") }
 }
 
 /// Shared by `entries()`/`entry_for()` — one record's cached identity

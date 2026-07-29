@@ -9,6 +9,7 @@ pub mod playback;
 pub mod state;
 pub mod tcpuart;
 pub mod upnp;
+pub mod utils;
 
 /// Wall-clock timestamp prefix for `--debug=*` log lines (`HH:MM:SS.mmm`,
 /// local time) — every per-module `dbg()`/`debug()` function in this crate
