@@ -2,7 +2,7 @@
 
 [![GitHub release](https://img.shields.io/github/v/release/ozbenh/rustywiim)](https://github.com/ozbenh/rustywiim/releases)
 
-A Linux GTK4 front-end for WiiM media players written in Rust. It should also work with other LinkPlay based players
+A Linux and MacOS GTK4 front-end for WiiM media players written in Rust. It should also work with other LinkPlay based players
 
 Copyright (c) 2026 Benjamin Herrenschmidt
 
@@ -62,6 +62,7 @@ On the following distributions:
  * Fedora 43 and 44 (x86_64)
  * Ubuntu 24.04 (x86_64)
  * Raspberry PiOS (trixie) (Pi5)
+ * MacOS 26 (Apple Silicon)
  
 See below how to send me data to help support other devices if you own them.
 
