@@ -1,3 +1,64 @@
+//! Shared device-identity helpers, and the home of one codebase-wide rule.
+//!
+//! # UUID normalisation: normalise once, at the edge
+//!
+//! **A device uuid is normalised exactly where it enters the app from the
+//! outside world. Everywhere inside, uuids are already canonical — compare
+//! them with `==` and key maps on them directly.**
+//!
+//! Re-normalising an already-canonical value is harmless (the function is
+//! idempotent), but it burns CPU on per-poll and per-lookup paths and, worse,
+//! obscures where the real boundary is: if every comparison site normalises
+//! defensively, nobody can tell which one is actually load-bearing, and a
+//! genuinely missing boundary hides indefinitely.
+//!
+//! ## The entry boundaries
+//!
+//! These are the only places a raw uuid crosses in. Each normalises, so
+//! nothing downstream ever sees an unnormalised form:
+//!
+//! 1. **Config file** — `Config::normalize_uuids()`, called from `load()`:
+//!    every `devices` key, `last_uuid`, `kiosk_last_uuid`. Keys that collide
+//!    once normalised are merged (first wins); the empty key is dropped.
+//! 2. **Device HTTP API** — `deserialize_normalized` on `DeviceInfo`'s `uuid`
+//!    and `master_uuid` (`getStatusEx`/`getStatus`).
+//! 3. **SSDP / UPnP discovery** — `extract_uuid_from_usn()`. SSDP `UDN` is the
+//!    most punctuated shape there is: `uuid:` prefix, hyphens, arbitrary case.
+//! 4. **UPnP `GetInfoEx`** — `parse_info_ex_response()` normalises `MasterUUID`
+//!    at the parse site.
+//! 5. **A leader's slave list** — `group::decode_member()` normalises each
+//!    member uuid.
+//!
+//! Users only ever type IP addresses, never uuids, so manual "Add Device" is
+//! not a separate boundary — it picks its uuid up from #2.
+//!
+//! ## Adding code that handles uuids
+//!
+//! - **New wire or config field carrying a uuid?** That is a new boundary.
+//!   Put `#[serde(deserialize_with = "…deserialize_normalized")]` on it, or
+//!   call `normalize_uuid` at the parse site if it is not serde-driven. GENA
+//!   (`gena.rs`) carries no uuid fields yet; when it does, it is next on the
+//!   list above.
+//! - **Consuming a uuid from anywhere inside** (`DeviceState::uuid()`,
+//!   `ManagedEntry.uuid`, a config `devices` key, `DeviceInfo.uuid`,
+//!   `GroupState::leader_uuid`)? It is already canonical. Do not re-normalise.
+//!   Reach for [`same_device`] only where a side may legitimately be empty, or
+//!   where tolerance is wanted on purpose.
+//! - Prefer keying maps on `discovery_manager::device_key()` (uuid, else
+//!   `ip:<addr>`) for anything that must line up with the existing device maps.
+//!
+//! ## The deliberate exceptions
+//!
+//! Three interior sites re-normalise even though their inputs are provably
+//! canonical. All three are one-shot or near-enough, and each guards an
+//! identity invariant, so the cost is nil and they mark a seam worth marking:
+//! `discovery_manager::device_key()` (computed independently by `device/` and
+//! by `ui/`, so drift between the two would be invisible), `DeviceState::new()`
+//! (makes `uuid()` canonical by construction for the identity check against
+//! `getStatusEx`), and `DeviceManager::get_state()` (the lookup deciding
+//! whether a group member is driven directly or relayed through its leader).
+//! Anything beyond these three is redundant — strip it.
+
 // ── UUID normalisation ────────────────────────────────────────────────────────
 
 /// Normalises the several shapes a device uuid arrives in so they can be

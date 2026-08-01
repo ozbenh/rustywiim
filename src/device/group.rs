@@ -373,6 +373,12 @@ fn decode_member(entry: &serde_json::Value) -> Option<GroupMember> {
 /// The per-device fields either transport supplies, gathered into one shape
 /// so role detection has a single implementation rather than one per
 /// backend.
+///
+/// `self_uuid`/`master_uuid` must already be canonical uuids. Every caller
+/// fills them from a field that normalizes at its own wire boundary
+/// (`api.rs`'s `DeviceInfo`, `upnp.rs`'s `parse_info_ex_response`), so
+/// `detect()` stores and compares them as-is rather than re-normalizing on
+/// every poll tick.
 #[derive(Debug, Clone, Default)]
 pub struct GroupInputs {
     /// This device's own uuid, used to reject a device that names itself as
@@ -395,19 +401,25 @@ pub struct GroupInputs {
 /// exclusive on the wire — a device that has just left a group can briefly
 /// report a stale slave list — and a device that knows it has a leader is
 /// the more trustworthy of the two signals.
+///
+/// The uuids that come out of here (`leader_uuid`) are whatever went in, so
+/// `GroupInputs`' "already canonical" requirement is what makes the resulting
+/// `GroupState` safe to resolve against the device list with a plain lookup.
 pub fn detect(inputs: &GroupInputs) -> GroupState {
     let master_uuid = inputs
         .master_uuid
         .as_deref()
-        .map(utils::normalize_uuid)
         .filter(|u| !u.is_empty());
     let master_ip = inputs.master_ip.as_deref().map(str::trim).filter(|s| !s.is_empty());
 
     // A device naming itself as its own master is reporting "no leader" in
     // an awkward way; treat it as unset rather than as a self-referential
-    // group.
+    // group. This is the one comparison here that still normalizes
+    // (`same_device`): it is the recovery path for a device left in a
+    // self-referential state after a botched ungroup, so it is worth being
+    // tolerant of a shape that skipped a boundary rather than rendering a
+    // group with itself in it. Once per poll, not per lookup.
     let names_self = master_uuid
-        .as_deref()
         .is_some_and(|m| utils::same_device(m, &inputs.self_uuid));
 
     let group_says_follower = inputs
@@ -424,7 +436,7 @@ pub fn detect(inputs: &GroupInputs) -> GroupState {
             // A follower is told nothing about the group's shape, so the
             // kind is not knowable from this side.
             kind: GroupKind::Multiroom,
-            leader_uuid: master_uuid,
+            leader_uuid: master_uuid.map(str::to_owned),
             leader_ip: master_ip.map(str::to_owned),
             members: Rc::new(Vec::new()),
         };
@@ -432,11 +444,10 @@ pub fn detect(inputs: &GroupInputs) -> GroupState {
 
     if let Some(list) = &inputs.slave_list {
         if !list.members.is_empty() {
-            let self_uuid = utils::normalize_uuid(&inputs.self_uuid);
             return GroupState {
                 role: GroupRole::Leader,
                 kind: list.kind,
-                leader_uuid: (!self_uuid.is_empty()).then_some(self_uuid),
+                leader_uuid: (!inputs.self_uuid.is_empty()).then(|| inputs.self_uuid.clone()),
                 leader_ip: None,
                 members: Rc::new(list.members.clone()),
             };

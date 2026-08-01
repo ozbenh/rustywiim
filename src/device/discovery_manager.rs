@@ -905,11 +905,12 @@ pub fn device_key(uuid: &str, ip: &str) -> String {
 /// - Ordering is by name across headers and standalone rows; a group's
 ///   member lines stay immediately after their header.
 fn resolve_topology(rows: Vec<(String, ManagedEntry, group::GroupState)>) -> Vec<ManagedEntry> {
-    // Normalised uuid -> key, since a follower knows its leader only by
-    // uuid and the sources punctuate it inconsistently.
+    // uuid -> key, since a follower knows its leader only by uuid.
+    // `e.uuid` is already canonical (normalized at its entry boundary), so
+    // this is a plain lookup, not a re-normalization.
     let by_uuid: HashMap<String, String> = rows.iter()
         .filter(|(_, e, _)| !e.uuid.is_empty())
-        .map(|(key, e, _)| (utils::normalize_uuid(&e.uuid), key.clone()))
+        .map(|(key, e, _)| (e.uuid.clone(), key.clone()))
         .collect();
     let is_leader: HashSet<String> = rows.iter()
         .filter(|(_, _, g)| g.role == group::GroupRole::Leader)
@@ -1022,9 +1023,14 @@ mod tests {
     use super::*;
     use std::rc::Rc;
 
+    /// `uuid` is normalized here for the same reason every real
+    /// `ManagedEntry` holds a canonical one: it is only ever built from a
+    /// source that normalized at its own entry boundary (`DeviceInfo`, SSDP,
+    /// the config seed). Fixtures spell it raw so the tests can show the
+    /// shapes the different sources actually produce.
     fn entry(uuid: &str, name: &str, ip: &str) -> ManagedEntry {
         ManagedEntry {
-            uuid: uuid.to_string(), name: name.to_string(), model: String::new(),
+            uuid: utils::normalize_uuid(uuid), name: name.to_string(), model: String::new(),
             project: String::new(), firmware: String::new(), ip: ip.to_string(),
             tls_mode: TlsMode::HttpsWiiM, pinned: false, presence: DevicePresence::Active,
             song_info_enabled: true, now_playing: None,
@@ -1185,6 +1191,11 @@ mod tests {
 
     #[test]
     fn uuid_punctuation_differences_still_resolve_a_follower_to_its_leader() {
+        // The leader's slave list, SSDP and `getStatusEx` each punctuate the
+        // same device differently. Resolution here is a plain lookup, so what
+        // makes it line up is that all three normalized on the way in — this
+        // pins that end-to-end, not a re-normalization inside
+        // `resolve_topology`.
         let out = resolve_topology(vec![
             row("L", entry("FF98F7F4075B", "Lead", "1.1.1.1"),
                 leader_of(vec![member("uuid:ff98-0002", "Follower", "1.1.1.2")])),
