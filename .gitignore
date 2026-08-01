@@ -1,7 +1,17 @@
 target/
 Cargo.lock
-*~
-*#
 .claude
 dumps
+
+# Editor backups, autosaves and scratch copies. Emacs writes `file~`,
+# `#file#` and `.#file`; vim writes `.file.swp`; patch/merge tools leave
+# `.orig`/`.rej` behind; `.bak`/`.old`/`.tmp.*` are hand-made copies.
+*~
+*#
+.#*
+*.sw[a-p]
 *.orig
+*.rej
+*.bak
+*.old
+*.tmp.*
