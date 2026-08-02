@@ -191,6 +191,37 @@ fn dbg_state(msg: &str) {
     }
 }
 
+/// Confirms a device-list trashcan click before actually forgetting the
+/// device — shared by `DiscoveryWindow` and Kiosk's own device popover
+/// (both wire `DeviceListView::connect_device_forget` to this rather than
+/// calling `forget` directly), since removal also drops all of that
+/// device's per-device settings (access overrides, GENA toggle, ...), not
+/// just its list entry.
+pub(crate) fn confirm_forget_device(
+    parent: &adw::ApplicationWindow,
+    name: &str,
+    uuid: String,
+    forget: Rc<dyn Fn(&str)>,
+) {
+    let dialog = adw::AlertDialog::builder()
+        .heading("Remove Device?")
+        .body(format!(
+            "This will remove device \u{201c}{name}\u{201d} from the list and forget all of this application's settings for this device."
+        ))
+        .close_response("cancel")
+        .build();
+    dialog.add_response("cancel", "Cancel");
+    dialog.add_response("ok", "OK");
+    dialog.set_response_appearance("ok", adw::ResponseAppearance::Destructive);
+    dialog.set_default_response(Some("cancel"));
+    dialog.connect_response(None, move |_, response| {
+        if response == "ok" {
+            forget(&uuid);
+        }
+    });
+    dialog.present(Some(parent));
+}
+
 pub(crate) struct AppState {
     app:            adw::Application,
     disc_mgr:       DiscoveryManager,

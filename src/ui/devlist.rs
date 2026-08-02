@@ -112,9 +112,13 @@ impl DiscoveryWindow {
         ));
 
         // Offline-only trashcan — see DeviceListView's own doc comment.
+        // Confirms first (`crate::ui::confirm_forget_device()`): removal
+        // also drops the device's per-device settings, not just its list
+        // entry.
         device_list.connect_device_forget(clone!(
-            #[strong] forget_device, move |_, key| {
-                forget_device(key);
+            #[strong] manager, #[strong] forget_device, #[strong] window, move |_, key| {
+                let name = manager.entry_for(key).map(|e| e.name).unwrap_or_else(|| key.to_string());
+                crate::ui::confirm_forget_device(&window, &name, key.to_string(), Rc::clone(&forget_device));
             }
         ));
 

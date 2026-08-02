@@ -603,12 +603,19 @@ impl KioskWindow {
             }
         });
         // Offline-only trashcan — see DeviceListView's own doc comment.
-        // `forget_device()` (ui/mod.rs) already rebinds Kiosk mode away
-        // from a forgotten device if it's the one currently bound, so
+        // Confirms first (`crate::ui::confirm_forget_device()`): removal
+        // also drops the device's per-device settings, not just its list
+        // entry. `forget_device()` (ui/mod.rs) already rebinds Kiosk mode
+        // away from a forgotten device if it's the one currently bound, so
         // nothing further needs doing here.
         device_list.connect_device_forget({
             let forget_device = Rc::clone(&forget_device);
-            move |_, key| forget_device(key)
+            let weak = Rc::downgrade(&this);
+            move |_, key| {
+                let Some(this) = weak.upgrade() else { return };
+                let name = this.manager.entry_for(key).map(|e| e.name).unwrap_or_else(|| key.to_string());
+                crate::ui::confirm_forget_device(&this.window, &name, key.to_string(), Rc::clone(&forget_device));
+            }
         });
 
         // Keyboard: "K" exits kiosk mode (unless `--kiosk:only` — see

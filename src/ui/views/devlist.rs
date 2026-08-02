@@ -178,12 +178,21 @@ struct RowWidgets {
 /// `build_row()` (initial render) and the `song-info-changed` handler
 /// (in-place update).
 fn subtitle_text_for(entry: &ManagedEntry) -> String {
-    match &entry.now_playing {
+    let base = match &entry.now_playing {
         Some(np) if np.is_idle => entry.model.clone(),
         Some(np) if !np.title.is_empty() && !np.artist.is_empty() => format!("{} \u{00b7} {}", np.title, np.artist),
         Some(np) if !np.title.is_empty()  => np.title.clone(),
         Some(np) if !np.artist.is_empty() => np.artist.clone(),
         _ => entry.model.clone(),
+    };
+    // `now_playing` is only ever populated for an `Active` device (see
+    // `build_managed_entry()`), so `base` here is always `entry.model` in
+    // practice — but this stays a presence check, not an emptiness check,
+    // so it keeps meaning "offline" if that invariant ever changes.
+    if entry.presence == DevicePresence::Offline {
+        if base.is_empty() { "Offline".to_string() } else { format!("{base} (offline)") }
+    } else {
+        base
     }
 }
 
@@ -588,12 +597,15 @@ impl DeviceListView {
 
         // A member the leader named but that nothing has connected to has
         // no `DeviceState`, so there is nothing to drive a slider with.
-        // Render the line without controls rather than with dead ones.
+        // Render the line without controls rather than with dead ones —
+        // same reasoning extends to an offline member: hide the volume
+        // control outright rather than show a stale/zeroed reading (see
+        // `build_device_content()`'s own volume-widgets comment).
         let tracked = matches!(entry.group_role, EntryGroupRole::Member { tracked: true, .. });
-        if let (true, Some(ds)) = (tracked, manager.device_state_for(&key)) {
+        let show_vol = tracked && entry.presence == DevicePresence::Active;
+        if let (true, Some(ds)) = (show_vol, manager.device_state_for(&key)) {
             let (vol_btn, vol_icon_img, vol_label, vol_scale, mute_btn, vol_popover) =
                 build_devlist_vol_popover();
-            vol_btn.set_sensitive(entry.presence == DevicePresence::Active);
             vol_btn.connect_clicked(clone!(#[weak] vol_popover, move |_| {
                 if vol_popover.is_visible() { vol_popover.popdown(); } else { vol_popover.popup(); }
             }));
@@ -748,15 +760,18 @@ impl DeviceListView {
         // mini window's own. Reserved alongside the artwork slot (same
         // `song_info_enabled` gate — volume data is only kept fresh while
         // Simple-mode's fuller poll is active, same as title/artist), and
-        // greyed out for a device that isn't `Active` right now rather
-        // than hidden, so the row's layout doesn't shift either way. A
-        // click on it doesn't open the device window — a `GtkButton`
-        // child claims its own click before the row's own click-to-
-        // activate gesture sees it, same as the pin button already relies
-        // on (never special-cased, just how GTK widgets nest).
-        let vol_widgets = entry.song_info_enabled.then(|| {
+        // hidden outright rather than merely greyed out while the device
+        // isn't `Active` — an offline device has no live level to show, so
+        // a stale/zeroed reading is worse than no control at all; a
+        // presence flip already rebuilds the whole row (see
+        // `on_tracked_device_changed()`), so there's no live-toggle case
+        // to handle here. A click on it doesn't open the device window —
+        // a `GtkButton` child claims its own click before the row's own
+        // click-to-activate gesture sees it, same as the trashcan button
+        // already relies on (never special-cased, just how GTK widgets
+        // nest).
+        let vol_widgets = (entry.song_info_enabled && entry.presence == DevicePresence::Active).then(|| {
             let (vol_btn, vol_icon_img, vol_label, vol_scale, mute_btn, vol_popover) = build_devlist_vol_popover();
-            vol_btn.set_sensitive(entry.presence == DevicePresence::Active);
             vol_btn.connect_clicked(clone!(#[weak] vol_popover, move |_| {
                 if vol_popover.is_visible() { vol_popover.popdown(); } else { vol_popover.popup(); }
             }));
