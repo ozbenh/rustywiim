@@ -4475,7 +4475,75 @@ impl DeviceState {
         self.send_mute(muted, send);
     }
 
-
+    /// The group volume/mute algorithm, in full — `member_levels()` itself
+    /// is the shared foundation `group_volume()`/`group_muted()`/
+    /// `set_group_muted()`/`set_group_volume()` all build on, so this is
+    /// where the whole picture belongs rather than being scattered one
+    /// paragraph per function.
+    ///
+    /// **Reading the group's level.** A group's volume is the **loudest**
+    /// of its members, the leader included; its mute state is the
+    /// **logical AND** of all of them (muted only when everything is
+    /// silent). Both are derived on every read, never stored, so a change
+    /// made directly on one member becomes the group's answer as soon as
+    /// that member notices it. `group_volume()`/`group_muted()` return the
+    /// device's own level when it isn't a leader, so callers never need a
+    /// role check.
+    ///
+    /// **Where a member's level comes from.** A member's own `DeviceState`
+    /// is authoritative when the registry has one — it polls itself, so it
+    /// learns about a front-panel or third-app change long before the
+    /// leader's slave list refreshes. The slave list's cached
+    /// `volume`/`muted` are the fallback for a member nothing has
+    /// connected to.
+    ///
+    /// **Moving the group.** The requested target minus the current group
+    /// volume is a delta applied to *every* member; levels shift, they
+    /// never equalise (10 and 20 asked for 15 → 5 and 15). Clamping at
+    /// 0/100 is hard and is not restored: a member that hits a rail stays
+    /// there and a later move in the other direction starts from the
+    /// rail, so groups visibly compress against the ends of the range.
+    /// This matches the vendor app.
+    ///
+    /// **Muting the group** sets every member to the same absolute state —
+    /// no delta, no per-member memory of what it was before.
+    ///
+    /// **How a member is driven.** A member with a live `DeviceState` is
+    /// driven *directly* through its own volume/mute path, so it emits its
+    /// own change signal and behaves exactly as if the user had moved that
+    /// device's own slider. A member without one is **relayed** through
+    /// the leader (`multiroom:SlaveVolume`/`SlaveMute`), sequentially (the
+    /// leader handles concurrent connections poorly) and rate-limited.
+    ///
+    /// **Ordering — stage, send, emit.** Every member's optimistic state is
+    /// staged first, then all commands go out back to back, then one
+    /// signal is emitted. Both boundaries matter: emitting mid-way lets a
+    /// handler render a half-adjusted group (a group mute that looked like
+    /// it only reached the leader), and emitting between sends puts
+    /// synchronous UI work between two network commands (members visibly
+    /// muting one by one in another controller).
+    ///
+    /// **Three independent clocks, and what each protects.**
+    /// - `VOLUME_DEBOUNCE` (500ms) — rate-limits *outgoing* per-device
+    ///   commands. A value swallowed by the window is stashed in
+    ///   `target_volume` and flushed by the 1s poll tick. The flush
+    ///   deliberately runs *above* the simple-mode early return, because a
+    ///   device with no window open still accepts commands (a devlist
+    ///   slider, or every follower of a group being dragged from the
+    ///   leader).
+    /// - the relay rate limit — the same 500ms window and the same flush
+    ///   (`queue_relay_volume()`), applied to the leader-relayed batch,
+    ///   with *replace-not-append* semantics so only the newest value per
+    ///   member survives a drag.
+    /// - `VOLUME_POLL_SETTLE` (1s) — distrusts *incoming* poll readings
+    ///   after an outgoing command, because a real device (confirmed on
+    ///   AudioCast) can keep reporting its pre-command volume briefly.
+    ///   Applied in three places: each member's own poll self-heal, the
+    ///   leader's `last_group_cmd` window in `apply_group_state()` (which
+    ///   calls `carry_levels_from()` to keep the optimistic cached levels
+    ///   for relay-only members), and `ensure_member_subs()`'s re-emit
+    ///   suppression.
+    ///
     /// Every member's current level, paired with that member's own
     /// `DeviceState` where the registry still has one. Empty unless this
     /// device leads a group, so callers need no role check.
