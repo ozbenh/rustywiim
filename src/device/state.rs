@@ -1316,6 +1316,21 @@ impl DeviceState {
         obj
     }
 
+    /// A standalone placeholder that never connects and never registers
+    /// with a `DeviceManager` — Kiosk's "no device bound" null object (see
+    /// `KioskWindow::bind_device()`), which needs `PlaybackView` to render
+    /// its normal disconnected/greyed-out state rather than growing a
+    /// distinct "no device at all" mode. Elsewhere an empty uuid means
+    /// "unknown, may resolve later" (a fresh `--connect`/manual add); here
+    /// it means "placeholder, by construction" — this constructor gives
+    /// that distinction its own name instead of leaving two call sites that
+    /// happen to both pass `new(rt, String::new())`.
+    pub fn detached(rt: Arc<tokio::runtime::Runtime>) -> Self {
+        let ds = Self::new(rt, String::new());
+        ds.start_polling();
+        ds
+    }
+
     /// Hands this device a weak handle to the registry it belongs to.
     /// Called by `DeviceManager` on creation; see `Inner::manager`.
     pub fn set_manager(&self, manager: &super::manager::DeviceManager) {

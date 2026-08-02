@@ -124,9 +124,9 @@ pub struct DeviceSpec {
 }
 
 /// `--connect <scheme://ip[:port]>` override: when set, `AppState::activate()`
-/// skips discovery entirely and opens exactly one device window straight at
-/// this address (uuid unknown until `getStatusEx` resolves it, same as any
-/// freshly-added manual device) — for pointing the app directly at
+/// skips discovery entirely, resolves this address's uuid with one direct
+/// `DiscoveryService::probe_known_scheme()` call, and opens exactly one
+/// device window straight at it — for pointing the app directly at
 /// `wiim-simulator` without it needing to be discoverable via SSDP. Must be
 /// set (via `set_direct_connect`) before `activate()` runs — in practice,
 /// during `main.rs`'s `connect_handle_local_options`.
@@ -522,38 +522,60 @@ impl AppState {
         Self::install_quit_action(self_rc);
 
         // `--connect` override: skip discovery/config-restored windows entirely
-        // and open exactly one device window straight at the given address.
-        // uuid is empty (unresolved until getStatusEx) — DeviceManager::get()
-        // and DeviceWindow::new_inner() already handle that case (a brand new,
-        // not-yet-deduplicated DeviceState), same as for a manually-added device.
+        // and resolve exactly one device straight at the given address, then
+        // open a window on it (nothing without a resolved uuid may ever be
+        // tracked — see `device::discovery::ProbeFailure`'s doc comment). The
+        // flag already names the scheme, so this probes that one TLS mode
+        // directly rather than walking `PROBE_MODES` the way a plain
+        // manual-add-by-IP does.
         //
-        // `--connect --kiosk` together used to silently drop `--kiosk`: this
-        // branch returned unconditionally, so the "if start_in_kiosk" check
-        // further down never even ran. Building the DeviceState directly
-        // (mirroring what `device_manager.get()` call `DeviceWindow::new_inner()`
-        // itself makes from a `DeviceSpec`) and handing it to Kiosk mode via
-        // `enter_kiosk_with_device()` instead of `open_device_spec()` is what
-        // lets the two flags combine: Kiosk mode pre-bound to the `--connect`
-        // target rather than a plain `DeviceWindow`.
+        // `--connect --kiosk` together hands the resolved `DeviceState` to
+        // Kiosk mode via `enter_kiosk_with_device()` instead of
+        // `open_device_spec()`, which is what lets the two flags combine:
+        // Kiosk mode pre-bound to the `--connect` target rather than a plain
+        // `DeviceWindow`.
         if let Some((ip, tls_mode)) = DIRECT_CONNECT.get() {
             let start_in_kiosk = START_IN_KIOSK.load(Ordering::Relaxed);
             dbg_state(&format!(
                 "activate: --connect direct to {ip} via {tls_mode:?}{}",
                 if start_in_kiosk { " (--kiosk)" } else { "" }
             ));
-            if start_in_kiosk {
-                let ds = self_rc.device_manager.get(
-                    "", ip, *tls_mode, None, None, None, config::resolved_gena_enabled(""), true,
-                );
-                Self::enter_kiosk_with_device(self_rc, ds, ip.clone());
-            } else {
-                Self::open_device_spec(self_rc, DeviceSpec {
-                    ip: ip.clone(),
-                    uuid: String::new(),
-                    tls_mode: *tls_mode,
-                    try_connect: true,
-                });
-            }
+            let self_rc  = Rc::clone(self_rc);
+            let ip       = ip.clone();
+            let tls_mode = *tls_mode;
+            let rt = self_rc.device_manager.rt();
+            let (tx, rx) = async_channel::bounded::<Result<crate::device::discovery::DiscoveredDevice, crate::device::discovery::ProbeFailure>>(1);
+            let probe_ip = ip.clone();
+            rt.spawn(async move {
+                let result = DiscoveryService::probe_known_scheme(&probe_ip, tls_mode).await;
+                let _ = tx.send(result).await;
+            });
+            glib::spawn_future_local(async move {
+                match rx.recv().await {
+                    Ok(Ok(dev)) => {
+                        if start_in_kiosk {
+                            let ds = self_rc.device_manager.create_and_configure(&dev.uuid, &dev.ip, dev.tls_mode);
+                            Self::enter_kiosk_with_device(&self_rc, ds, dev.name);
+                        } else {
+                            Self::open_device_spec(&self_rc, DeviceSpec {
+                                ip:          dev.ip,
+                                uuid:        dev.uuid,
+                                tls_mode:    dev.tls_mode,
+                                try_connect: true,
+                            });
+                        }
+                    }
+                    // A testing flag aimed at one known target: report why
+                    // and exit non-zero rather than leaving a window sitting
+                    // at "Connecting…" forever.
+                    Ok(Err(failure)) => {
+                        eprintln!("{}: {}", ip, failure.describe(&ip));
+                        std::process::exit(1);
+                    }
+                    // Sender dropped — nothing left to report to.
+                    Err(_) => {}
+                }
+            });
             return;
         }
 

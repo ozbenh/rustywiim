@@ -388,6 +388,15 @@ impl DiscoveryService {
         identify_device(ip, "").await
     }
 
+    /// Probe a single IP at an already-known TLS mode — skips the
+    /// `PROBE_MODES` walk `probe_device()` does, since the caller already
+    /// names the scheme. For `--connect`, which is aimed at one specific,
+    /// already-configured target rather than an unknown device on the LAN.
+    pub async fn probe_known_scheme(ip: &str, mode: TlsMode) -> Result<DiscoveredDevice, ProbeFailure> {
+        let (name, uuid) = probe_api(ip, mode).await?;
+        Ok(DiscoveredDevice { ip: ip.to_string(), name, uuid, tls_mode: mode })
+    }
+
     pub fn connect_discovery_updated<F: Fn(&Self) + 'static>(
         &self, f: F,
     ) -> glib::SignalHandlerId {

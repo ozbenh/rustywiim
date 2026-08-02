@@ -427,7 +427,7 @@ impl DeviceWindow {
         open_settings:  Rc<dyn Fn(Option<DeviceState>)>,
         spec:           DeviceSpec,
     ) -> Self {
-        Self::new_inner(app, device_manager, show_devices_fn, enter_kiosk_fn, open_settings, Some(spec))
+        Self::new_inner(app, device_manager, show_devices_fn, enter_kiosk_fn, open_settings, spec)
     }
 
     fn new_inner(
@@ -436,36 +436,23 @@ impl DeviceWindow {
         show_devices_fn: Rc<dyn Fn()>,
         enter_kiosk_fn:  Rc<dyn Fn()>,
         open_settings:   Rc<dyn Fn(Option<DeviceState>)>,
-        device_spec:     Option<DeviceSpec>,
+        device_spec:     DeviceSpec,
     ) -> Self {
         let icons = Rc::new(icons::IconSet::load());
 
         // Pick the device UUID to use for loading per-device window config.
-        // The no-spec path no longer falls back to last_uuid (phased out).
-        let cfg_uuid: String = device_spec.as_ref()
-            .map(|s| s.uuid.clone())
-            .filter(|u| !u.is_empty())
-            .unwrap_or_default();
+        let cfg_uuid: String = device_spec.uuid.clone();
 
         let init_dev_cfg = config::with(|cfg| cfg.device(&cfg_uuid));
 
-        let ds = match device_spec.as_ref() {
-            Some(spec) => device_manager.get(
-                &spec.uuid, &spec.ip, spec.tls_mode,
-                init_dev_cfg.playback_access_override,
-                init_dev_cfg.mute_access_override,
-                init_dev_cfg.loop_mode_access_override,
-                config::resolved_gena_enabled(&spec.uuid),
-                spec.try_connect,
-            ),
-            None => {
-                // No device spec: create a standalone state that isn't wired to
-                // any device yet; polling still starts so the UI can be shown.
-                let ds = DeviceState::new(device_manager.rt(), String::new());
-                ds.start_polling();
-                ds
-            }
-        };
+        let ds = device_manager.get(
+            &device_spec.uuid, &device_spec.ip, device_spec.tls_mode,
+            init_dev_cfg.playback_access_override,
+            init_dev_cfg.mute_access_override,
+            init_dev_cfg.loop_mode_access_override,
+            config::resolved_gena_enabled(&device_spec.uuid),
+            device_spec.try_connect,
+        );
         // A device window always wants Full mode — covers both branches
         // above (main + mini share this one `ds`, so one guard is enough
         // for both surfaces); released automatically when this window's

@@ -746,12 +746,10 @@ impl KioskWindow {
     /// cleanup), and builds a fresh `PlaybackView` for the new one.
     ///
     /// `None` (or a `key` that no longer resolves to a tracked device)
-    /// builds a `PlaybackView` against a standalone, never-connecting
-    /// `DeviceState` instead of a bespoke "no device" placeholder — the
-    /// same "no device spec" pattern `DeviceWindow::new_inner()` already
-    /// uses, which naturally renders the disconnected/greyed-out state
-    /// `PlaybackView` already supports, rather than adding a distinct
-    /// "no device at all" mode to it.
+    /// builds a `PlaybackView` against `DeviceState::detached()` instead of
+    /// a bespoke "no device" placeholder, which naturally renders the
+    /// disconnected/greyed-out state `PlaybackView` already supports,
+    /// rather than adding a distinct "no device at all" mode to it.
     pub(crate) fn bind_device(self: &Rc<Self>, key: Option<&str>) {
         // Release whichever device was shown before, regardless of what
         // (if anything) replaces it — mirrors DeviceWindow's own
@@ -781,9 +779,7 @@ impl KioskWindow {
                 (key, ds, label)
             }
             None => {
-                let ds = DeviceState::new(self.manager.rt(), String::new());
-                ds.start_polling();
-                (String::new(), ds, "Select device".to_string())
+                (String::new(), DeviceState::detached(self.manager.rt()), "Select device".to_string())
             }
         };
         self.finish_bind(key, ds, label);
