@@ -161,7 +161,7 @@ impl InputView {
         in_box.append(
             &Label::builder()
                 .label("INPUT").css_classes(["section-label"])
-                .halign(Align::Start).margin_top(6).build(),
+                .halign(Align::Start).build(),
         );
         in_box.append(&in_dropdown);
         self.set_child(Some(&in_box));

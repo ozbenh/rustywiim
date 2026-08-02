@@ -145,7 +145,7 @@ impl OutputView {
 
         let out_box = GtkBox::builder()
             .orientation(Orientation::Vertical).spacing(4)
-            .margin_bottom(8).margin_start(8).margin_end(8)
+            .margin_top(4).margin_bottom(8).margin_start(8).margin_end(8)
             .build();
         out_box.append(
             &Label::builder()
