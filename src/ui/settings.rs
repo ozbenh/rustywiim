@@ -245,12 +245,12 @@ impl DeviceSettingsWindow {
         let (input_holder, output_holder) = build_io_pages(&ds, connected);
 
         let initial_title = device_settings_title(&ds);
-        let mut pages = vec![
-            ("Advanced", "advanced", advanced_holder.clone().upcast()),
+        let pages = vec![
             ("Input",    "input",    input_holder.clone().upcast()),
             ("Output",   "output",   output_holder.clone().upcast()),
+            ("Advanced", "advanced", advanced_holder.clone().upcast()),
+            ("About",    "about",    about_holder.clone().upcast()),
         ];
-        pages.push(("About", "about", about_holder.clone().upcast()));
         let window = build_settings_window(&initial_title, pages);
 
         // Rows aren't reachable from `build_settings_window()`'s return
