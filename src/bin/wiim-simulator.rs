@@ -1420,18 +1420,18 @@ fn print_banner(
     eprintln!();
     eprintln!("[wiim-simulator] run rustywiim against this fleet with:");
     eprintln!();
-    // `--connect`'s second, comma-separated URL points rustywiim's UPnP
-    // discovery straight at this device's UPnP listener rather than relying
-    // on its default well-known-port probe (49152/59152) to happen to find
-    // it — always included when this device has one, since a custom
-    // `--upnp-port` can put it on neither of those two ports, in which case
-    // the probe wouldn't find it at all without this.
+    // The bare-IP form: `rustywiim` resolves the API address itself from
+    // this device's UPnP advert (`device::upnp::discover_api_address()`),
+    // so nothing about the API's actual port needs to appear on the command
+    // line at all. Only when this device has no UPnP data (nothing for that
+    // resolution to read) does the banner fall back to the explicit
+    // `scheme://host:port` form.
     let connect_args: Vec<String> = (0..fleet.devices.len())
         .filter_map(|i| {
-            let api_url = primary_api_url[i].as_ref()?;
-            match (upnp_ports[i], fleet.devices[i].upnp.is_some()) {
-                (Some(port), true) => Some(format!("--connect {api_url},http://{}:{port}", fleet.devices[i].host)),
-                _ => Some(format!("--connect {api_url}")),
+            if fleet.devices[i].upnp.is_some() {
+                Some(format!("--connect {}", fleet.devices[i].host))
+            } else {
+                primary_api_url[i].as_ref().map(|u| format!("--connect {u}"))
             }
         })
         .collect();

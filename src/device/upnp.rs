@@ -75,37 +75,6 @@ const RENDERING_CONTROL_SERVICE: &str = "urn:schemas-upnp-org:service:RenderingC
 /// `wiim-capture.rs`'s `fetch_description()` already probes.
 const DESCRIPTION_PORTS: &[u16] = &[49152, 59152];
 
-/// Testing-only UPnP-address override (`--connect`'s optional second,
-/// comma-separated UPnP URL — see `main.rs`'s `--connect` handling and
-/// `wiim-simulator`, which binds a fixed, printed UPnP port rather than a
-/// random one specifically so this can point at it). When set,
-/// `UpnpClient::discover()` tries *only* this host:port instead of probing
-/// the real device's two hardcoded ports — `--connect` already means
-/// "point at exactly one known test target," not "prefer this, but also
-/// try the real thing," so replacing normal probing entirely (rather than
-/// trying this first with a fallback) is the right behavior here. Set
-/// once, before `activate()` runs, same lifecycle as `api::TLS_MODE`/
-/// `ui::DIRECT_CONNECT` — there is exactly one directly-connected device
-/// per `--connect` invocation, so a single process-global override is
-/// sufficient; no need to thread it through `DeviceState`/`DeviceManager`.
-static UPNP_DISCOVER_OVERRIDE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-
-pub fn set_discover_override(host_port: String) {
-    let _ = UPNP_DISCOVER_OVERRIDE.set(host_port);
-}
-
-/// Splits `"host:port"` into its two parts — `port` defaults to `49152`
-/// (the primary well-known UPnP port) if missing or unparseable, which
-/// only matters for a malformed override value (a real caller always
-/// supplies one, since `wiim-simulator`'s UPnP listener always has an
-/// explicit port).
-fn split_host_port(addr: &str) -> (&str, u16) {
-    match addr.rsplit_once(':') {
-        Some((host, port_str)) => (host, port_str.parse().unwrap_or(DESCRIPTION_PORTS[0])),
-        None => (addr, DESCRIPTION_PORTS[0]),
-    }
-}
-
 /// Everything `GetInfoEx` returns, wire-shaped (not canonical — see
 /// `device/playback.rs`'s `decode_*_upnp` functions for the canonical
 /// translation).
@@ -259,12 +228,7 @@ impl UpnpClient {
     /// include an embedded `:port` (the `--connect`/simulator testing
     /// convention used elsewhere) — only the host part is used here since
     /// UPnP's own port is independent of the main HTTP API's (real hardware:
-    /// HTTPS on 443 for the API, plain HTTP on 49152 for UPnP). Unless
-    /// `set_discover_override()` has been called (`--connect`'s optional
-    /// second, comma-separated UPnP URL), in which case `ip` is ignored
-    /// entirely and only the override host:port is tried — see that
-    /// function's doc comment for why this replaces normal probing rather
-    /// than being tried first with a fallback.
+    /// HTTPS on 443 for the API, plain HTTP on 49152 for UPnP).
     pub async fn discover(ip: &str) -> anyhow::Result<Self> {
         let (body, url) = discover_description(ip).await?;
         match extract_url_for_service(&body, &url, ":service:AVTransport:", "controlURL") {
@@ -432,24 +396,18 @@ impl UpnpClient {
     }
 }
 
-/// Probes `description.xml` at the well-known LinkPlay UPnP ports/schemes
-/// (or the `--connect` override, same as `UpnpClient::discover()` uses),
+/// Probes `description.xml` at the well-known LinkPlay UPnP ports/schemes,
 /// returning the raw body and the URL that answered. `pub(crate)` so
 /// `device/gena.rs` can reuse the exact same probing this module's own
 /// `UpnpClient::discover()` is built on, rather than duplicating it, since
 /// GENA needs `eventSubURL`s from the same document `discover()` already
 /// fetches for `controlURL`s.
 pub(crate) async fn discover_description(ip: &str) -> anyhow::Result<(String, String)> {
-    let (host, ports): (&str, Vec<u16>) = match UPNP_DISCOVER_OVERRIDE.get() {
-        Some(addr) => {
-            let (host, port) = split_host_port(addr);
-            (host, vec![port])
-        }
-        None => (ip.split(':').next().unwrap_or(ip), DESCRIPTION_PORTS.to_vec()),
-    };
+    let host = ip.split(':').next().unwrap_or(ip);
+    let ports = DESCRIPTION_PORTS;
     let mut last_err: Option<anyhow::Error> = None;
     for scheme in ["http", "https"] {
-        for &port in &ports {
+        for &port in ports {
             let url = format!("{scheme}://{host}:{port}/description.xml");
             dbg(&format!("trying description.xml at {url}"));
             let client = build_reqwest_client(tls_for_scheme(scheme), REQUEST_TIMEOUT);
@@ -468,6 +426,63 @@ pub(crate) async fn discover_description(ip: &str) -> anyhow::Result<(String, St
         }
     }
     Err(last_err.unwrap_or_else(|| anyhow::anyhow!("no description.xml candidate answered")))
+}
+
+/// Reads `wiim-simulator`'s API-address advert out of a device's
+/// `description.xml` (`X_RustyWiiM_ApiUrl`, see that project's own doc
+/// comment for the tag), returning `(host:port, TlsMode)` so the caller
+/// (`ui/mod.rs`'s `--connect` resolution) can go straight to
+/// `DiscoveryService::probe_known_scheme()` instead of walking every
+/// `PROBE_MODES` entry — confirmed live that skipping the scheme here and
+/// walking the full probe list instead cost several seconds of real-world
+/// delay (each wrong TLS mode against the simulator's plain-HTTP listener
+/// times out before the walk finally reaches `Http`), for information this
+/// function already has in hand. `None` for every real device: only the
+/// simulator emits this tag, since real firmware serves its API on 80/443
+/// and needs no advert at all. This is what lets `--connect <ip>` reach a
+/// simulator whose API sits on an unprivileged, otherwise-unguessable
+/// port — UPnP *is* on its well-known port, so it's the one thing that can
+/// be found without already knowing the answer.
+pub async fn discover_api_address(ip: &str) -> Option<(String, TlsMode)> {
+    let (body, _url) = discover_description(ip).await.ok()?;
+    let value = extract_local_tag(&body, "X_RustyWiiM_ApiUrl")?;
+    let (scheme, rest) = value.split_once("://")?;
+    let host_port = rest.split('/').next().unwrap_or(rest);
+    if host_port.is_empty() {
+        return None;
+    }
+    Some((host_port.to_string(), tls_for_scheme(scheme)))
+}
+
+/// Finds `<…:LOCALNAME …>value</…:LOCALNAME>` regardless of the namespace
+/// prefix — `description.xml`'s tags are always prefixed (`sim:`, `qq:`,
+/// etc.), and the prefix isn't guaranteed stable, so this matches on the
+/// tag's local name. The opening tag may carry attributes (the advert this
+/// exists for does: `xmlns:sim="..."`), so a bare `":LOCAL>"` search would
+/// only ever match the *closing* tag (which never has attributes) and
+/// return the wrong span — confirmed live, this was silently returning an
+/// empty string and sending `--connect <ip>` down the "no advert" fallback
+/// path for every device. Each `":LOCAL"` occurrence is checked against the
+/// `<` immediately preceding it: a `/` right after that `<` means it's the
+/// closing tag, so skip it and keep searching; otherwise it's the opening
+/// tag, and the value is everything between its `>` and the next `<`.
+fn extract_local_tag<'a>(xml: &'a str, local: &str) -> Option<&'a str> {
+    let marker = format!(":{local}");
+    let mut from = 0;
+    loop {
+        let idx = from + xml[from..].find(&marker)?;
+        let tag_start = xml[..idx].rfind('<')?;
+        if xml.as_bytes().get(tag_start + 1) == Some(&b'/') {
+            // A closing tag's ":LOCAL" — keep searching past it.
+            from = idx + marker.len();
+            continue;
+        }
+        let after_marker = idx + marker.len();
+        let gt = after_marker + xml[after_marker..].find('>')?;
+        let content_start = gt + 1;
+        let content_end = content_start + xml[content_start..].find('<')?;
+        return Some(&xml[content_start..content_end]);
+    }
 }
 
 fn tls_for_scheme(scheme: &str) -> TlsMode {
@@ -1302,5 +1317,40 @@ mod tests {
         assert_eq!(strip_wiimu_name_suffix("My Mix 1_#~2026-07-08 16:49:59"), "My Mix 1");
         assert_eq!(strip_wiimu_name_suffix("Radio National Sydney"), "Radio National Sydney");
         assert_eq!(strip_wiimu_name_suffix(""), "");
+    }
+
+    #[test]
+    fn extract_local_tag_finds_value_when_the_opening_tag_has_attributes() {
+        // The exact shape wiim-simulator's own advert produces — this is
+        // the regression case: an opening tag with an xmlns attribute
+        // caused the old implementation to match the closing tag instead
+        // and return an empty string.
+        let xml = r#"<device><sim:X_RustyWiiM_ApiUrl xmlns:sim="https://github.com/rustywiim/simulator">http://127.0.0.3:38739</sim:X_RustyWiiM_ApiUrl></device>"#;
+        assert_eq!(extract_local_tag(xml, "X_RustyWiiM_ApiUrl"), Some("http://127.0.0.3:38739"));
+    }
+
+    #[test]
+    fn extract_local_tag_finds_value_when_the_opening_tag_has_no_attributes() {
+        let xml = "<a><qq:Foo>bar</qq:Foo></a>";
+        assert_eq!(extract_local_tag(xml, "Foo"), Some("bar"));
+    }
+
+    #[test]
+    fn extract_local_tag_is_none_when_the_tag_is_absent() {
+        let xml = "<a><qq:Foo>bar</qq:Foo></a>";
+        assert_eq!(extract_local_tag(xml, "Missing"), None);
+    }
+
+    #[test]
+    fn discover_api_address_advert_round_trips_through_the_same_extraction() {
+        let xml = r#"<sim:X_RustyWiiM_ApiUrl xmlns:sim="https://github.com/rustywiim/simulator">http://127.0.0.3:38739</sim:X_RustyWiiM_ApiUrl>"#;
+        let value = extract_local_tag(xml, "X_RustyWiiM_ApiUrl").unwrap();
+        let (scheme, rest) = value.split_once("://").unwrap();
+        assert_eq!(rest.split('/').next().unwrap(), "127.0.0.3:38739");
+        // The scheme must resolve to a usable TlsMode too — dropping it and
+        // walking PROBE_MODES instead was the actual bug (confirmed live:
+        // several seconds of wrong-TLS-mode timeouts before ever trying
+        // plain HTTP, which is what the simulator's listener speaks).
+        assert_eq!(tls_for_scheme(scheme), TlsMode::Http);
     }
 }

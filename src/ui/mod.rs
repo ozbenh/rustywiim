@@ -154,22 +154,46 @@ pub struct DeviceSpec {
     pub try_connect: bool,
 }
 
-/// `--connect <scheme://ip[:port]>` override: when set, `AppState::activate()`
-/// skips discovery entirely, resolves this address's uuid with one direct
-/// `DiscoveryService::probe_known_scheme()` call, tracks the resolved device
-/// exactly like an add-by-IP entry (`DeviceManager::add_manual()` — so it
-/// gets a picker row and a live Device Settings entry point, same as any
-/// other device), and opens exactly one device window straight at it — for
-/// pointing the app directly at `wiim-simulator` without it needing to be
-/// discoverable via SSDP. Config never sees it regardless: every write for
-/// its uuid is routed to scratch storage instead (see
-/// `config::Config::device_mut()`). Must be set (via `set_direct_connect`)
-/// before `activate()` runs — in practice, during `main.rs`'s
-/// `connect_handle_local_options`.
-static DIRECT_CONNECT: std::sync::OnceLock<(String, TlsMode)> = std::sync::OnceLock::new();
+/// One `--connect` occurrence, parsed by `main.rs` before `activate()` runs.
+/// Repeatable — `--connect` may appear more than once, one device per
+/// occurrence (a multi-device `wiim-simulator` fleet needs at least two to
+/// exercise a group at all).
+#[derive(Debug, Clone)]
+pub enum ConnectTarget {
+    /// `scheme://ip[:port]` — exact, no probing. Today's original form.
+    Explicit { ip: String, tls: TlsMode },
+    /// `ip,port` — the API port is known but not the scheme, so this walks
+    /// `PROBE_MODES` against `ip:port` the way a plain manual-add-by-IP
+    /// does. The escape hatch for a capture with no UPnP data (nothing for
+    /// `ViaUpnp` to resolve against) or anywhere `ViaUpnp`'s resolution
+    /// misbehaves.
+    Port { ip: String, port: u16 },
+    /// A bare IP — resolves the API address itself via the UPnP advert
+    /// `wiim-simulator` emits (`device::upnp::discover_api_address()`),
+    /// falling back to the `PROBE_MODES` walk a manual add-by-IP does when
+    /// there's no advert to read (real hardware, or a capture with no UPnP
+    /// data at all).
+    ViaUpnp { ip: String },
+}
 
-pub fn set_direct_connect(ip: String, tls_mode: TlsMode) {
-    let _ = DIRECT_CONNECT.set((ip, tls_mode));
+/// `--connect <scheme://ip[:port]>` override: when set, `AppState::activate()`
+/// skips discovery entirely, resolves each target's uuid (`ConnectTarget::
+/// Explicit` via one direct `DiscoveryService::probe_known_scheme()` call,
+/// `ConnectTarget::Port` via the `PROBE_MODES` walk `probe_device()` does),
+/// tracks each resolved device exactly like an add-by-IP entry
+/// (`DeviceManager::add_manual()` — so it gets a picker row and a live
+/// Device Settings entry point, same as any other device), and opens one
+/// device window per target straight at it — for pointing the app directly
+/// at `wiim-simulator` (a fleet of one or more devices) without it needing
+/// to be discoverable via SSDP. Config never sees any of them regardless:
+/// every write for an ephemeral uuid is routed to scratch storage instead
+/// (see `config::Config::device_mut()`). Must be set (via
+/// `set_direct_connect`) before `activate()` runs — in practice, during
+/// `main.rs`'s `connect_handle_local_options`.
+static DIRECT_CONNECT: std::sync::OnceLock<Vec<ConnectTarget>> = std::sync::OnceLock::new();
+
+pub fn set_direct_connect(targets: Vec<ConnectTarget>) {
+    let _ = DIRECT_CONNECT.set(targets);
 }
 
 /// `--kiosk`: when set, `AppState::activate()` starts directly in Kiosk
@@ -732,91 +756,160 @@ impl AppState {
         Self::install_quit_action(self_rc);
 
         // `--connect` override: skip discovery/config-restored windows entirely
-        // and resolve exactly one device straight at the given address, then
-        // open a window on it (nothing without a resolved uuid may ever be
-        // tracked — see `device::discovery::ProbeFailure`'s doc comment). The
-        // flag already names the scheme, so this probes that one TLS mode
-        // directly rather than walking `PROBE_MODES` the way a plain
-        // manual-add-by-IP does.
+        // and resolve each target straight at its given address, then open
+        // a window per resolved device that isn't a group follower (nothing
+        // without a resolved uuid may ever be tracked — see
+        // `device::discovery::ProbeFailure`'s doc comment). `ConnectTarget::
+        // Explicit` already names the scheme, so it probes that one TLS
+        // mode directly; `ConnectTarget::Port` walks `PROBE_MODES` the way a
+        // plain manual-add-by-IP does.
         //
-        // The resolved device is tracked exactly like an add-by-IP device
+        // Every resolved device is tracked exactly like an add-by-IP device
         // (see the `add_manual()` call below), so `--connect --kiosk`
         // together can use the normal `enter_kiosk()`/`bind_device()` path
-        // instead of a bespoke bind — Kiosk mode pre-bound to the
-        // `--connect` target rather than a plain `DeviceWindow`.
-        if let Some((ip, tls_mode)) = DIRECT_CONNECT.get() {
+        // instead of a bespoke bind — Kiosk mode pre-bound to the *first*
+        // target (a fullscreen kiosk shows one device at a time; the rest
+        // are still tracked and reachable through Kiosk's own device
+        // switcher) rather than a plain `DeviceWindow`. A group follower
+        // among the non-first targets is still tracked (so it shows up as
+        // a group member wherever it's rendered) but never gets its own
+        // top-level window automatically — same as a normally-discovered/
+        // adopted group member never does; see the window-opening branch
+        // below for why that decision has to wait past one poll interval.
+        if let Some(targets) = DIRECT_CONNECT.get() {
             let start_in_kiosk = START_IN_KIOSK.load(Ordering::Relaxed);
             dbg_state(&format!(
-                "activate: --connect direct to {ip} via {tls_mode:?}{}",
+                "activate: --connect direct to {} target(s){}",
+                targets.len(),
                 if start_in_kiosk { " (--kiosk)" } else { "" }
             ));
-            let self_rc  = Rc::clone(self_rc);
-            let ip       = ip.clone();
-            let tls_mode = *tls_mode;
-            let rt = self_rc.device_manager.rt();
-            let (tx, rx) = async_channel::bounded::<Result<crate::device::discovery::DiscoveredDevice, crate::device::discovery::ProbeFailure>>(1);
-            let probe_ip = ip.clone();
-            rt.spawn(async move {
-                let result = DiscoveryService::probe_known_scheme(&probe_ip, tls_mode).await;
-                let _ = tx.send(result).await;
-            });
-            // The probe is async, so `activate()` returns with no window yet
-            // created. A GtkApplication whose window count is zero when
-            // `activate` finishes has nothing holding it alive and exits
-            // immediately (`g_application_run()`'s loop ends the moment the
-            // use count hits zero) — so hold the application across the
-            // probe. The guard is moved into the future and dropped once it
-            // completes, by which point the device window it opened is
-            // holding the count itself.
-            let hold = self_rc.app.hold();
-            glib::spawn_future_local(async move {
-                let _hold = hold;
-                match rx.recv().await {
-                    Ok(Ok(dev)) => {
-                        // Marks this uuid as `--connect`'s ephemeral device
-                        // *before* anything below can write to config for
-                        // it (`create_and_configure()`'s `configure-device`
-                        // handler already reads config for overrides — a
-                        // read, unaffected — but `device_manager.rt()`'s
-                        // callers and the window-opening path that follows
-                        // both eventually reach `config::device_mut()`) —
-                        // see `config::Config::device_mut()`'s own doc
-                        // comment for exactly what this suppresses.
-                        config::set_ephemeral_uuid(dev.uuid.clone());
-                        // Tracked exactly like an add-by-IP device, so it
-                        // appears in the picker, gets a Device Settings
-                        // entry point, and renders as a group member/leader
-                        // like any other. Config never sees it: every write
-                        // for this uuid goes to scratch storage instead
-                        // (see `config::Config::device_mut()`), which is
-                        // why tracking it is safe. Track *before* opening
-                        // anything so the window's lookup below is a hit,
-                        // not a second creation.
-                        self_rc.device_manager.add_manual(
-                            dev.name.clone(), dev.ip.clone(), dev.uuid.clone(), dev.tls_mode,
-                        );
-                        if start_in_kiosk {
-                            Self::enter_kiosk(&self_rc, Some(dev.uuid.clone()));
-                        } else {
-                            Self::open_device_spec(&self_rc, DeviceSpec {
-                                ip:          dev.ip,
-                                uuid:        dev.uuid,
-                                tls_mode:    dev.tls_mode,
-                                try_connect: true,
-                            });
-                        }
-                    }
-                    // A testing flag aimed at one known target: report why
-                    // and exit non-zero rather than leaving a window sitting
-                    // at "Connecting…" forever.
-                    Ok(Err(failure)) => {
-                        eprintln!("{}: {}", ip, failure.describe(&ip));
-                        std::process::exit(1);
-                    }
-                    // Sender dropped — nothing left to report to.
-                    Err(_) => {}
+            for (i, target) in targets.iter().cloned().enumerate() {
+                let self_rc = Rc::clone(self_rc);
+                let rt = self_rc.device_manager.rt();
+                let (tx, rx) = async_channel::bounded::<Result<crate::device::discovery::DiscoveredDevice, crate::device::discovery::ProbeFailure>>(1);
+                let describe_target = match &target {
+                    ConnectTarget::Explicit { ip, .. } => ip.clone(),
+                    ConnectTarget::Port { ip, port } => format!("{ip}:{port}"),
+                    ConnectTarget::ViaUpnp { ip } => ip.clone(),
+                };
+                let bind_kiosk = start_in_kiosk && i == 0;
+                if start_in_kiosk && i > 0 {
+                    dbg_state("activate: --kiosk binds only the first --connect target; the rest are tracked but not bound");
                 }
-            });
+                rt.spawn(async move {
+                    let result = match target {
+                        ConnectTarget::Explicit { ip, tls } => DiscoveryService::probe_known_scheme(&ip, tls).await,
+                        ConnectTarget::Port { ip, port } => DiscoveryService::probe_device(&format!("{ip}:{port}")).await,
+                        ConnectTarget::ViaUpnp { ip } => match crate::device::upnp::discover_api_address(&ip).await {
+                            // The advert carries the scheme too, so this
+                            // goes straight to the known-scheme probe
+                            // instead of walking `PROBE_MODES` — skipping
+                            // several wrong-TLS-mode timeouts against
+                            // whatever actually answers (confirmed live).
+                            Some((addr, tls)) => DiscoveryService::probe_known_scheme(&addr, tls).await,
+                            // No advert (real hardware, or a capture with no
+                            // UPnP data): fall back to the standard-port walk
+                            // a manual add-by-IP does.
+                            None => DiscoveryService::probe_device(&ip).await,
+                        },
+                    };
+                    let _ = tx.send(result).await;
+                });
+                // The probe is async, so `activate()` returns with no window
+                // yet created. A GtkApplication whose window count is zero
+                // when `activate` finishes has nothing holding it alive and
+                // exits immediately (`g_application_run()`'s loop ends the
+                // moment the use count hits zero) — so hold the application
+                // across each probe. Each guard is moved into its own
+                // future and dropped once that probe completes; by the time
+                // the *last* one drops, at least one device window is
+                // holding the count itself (or the process has already
+                // exited non-zero on a failure).
+                let hold = self_rc.app.hold();
+                glib::spawn_future_local(async move {
+                    match rx.recv().await {
+                        Ok(Ok(dev)) => {
+                            // Marks this uuid as `--connect`'s ephemeral
+                            // device *before* anything below can write to
+                            // config for it (`create_and_configure()`'s
+                            // `configure-device` handler already reads
+                            // config for overrides — a read, unaffected —
+                            // but `device_manager.rt()`'s callers and the
+                            // window-opening path that follows both
+                            // eventually reach `config::device_mut()`) —
+                            // see `config::Config::device_mut()`'s own doc
+                            // comment for exactly what this suppresses.
+                            config::set_ephemeral_uuid(dev.uuid.clone());
+                            // Tracked exactly like an add-by-IP device, so
+                            // it appears in the picker, gets a Device
+                            // Settings entry point, and renders as a group
+                            // member/leader like any other. Config never
+                            // sees it: every write for this uuid goes to
+                            // scratch storage instead (see
+                            // `config::Config::device_mut()`), which is why
+                            // tracking it is safe. Track *before* opening
+                            // anything so the window's lookup below is a
+                            // hit, not a second creation.
+                            self_rc.device_manager.add_manual(
+                                dev.name.clone(), dev.ip.clone(), dev.uuid.clone(), dev.tls_mode,
+                            );
+                            if bind_kiosk {
+                                Self::enter_kiosk(&self_rc, Some(dev.uuid.clone()));
+                            } else if start_in_kiosk {
+                                // Tracked above, but Kiosk only ever binds
+                                // the first target — nothing more to do for
+                                // this one.
+                            } else {
+                                // A group follower shouldn't get its own
+                                // top-level window automatically — same as
+                                // a normally-discovered/adopted group
+                                // member never does (only the leader's
+                                // window shows the whole group; a follower
+                                // is only ever opened if the user picks it
+                                // deliberately). Group role isn't known yet
+                                // right after the probe (it's `Standalone`
+                                // until a real poll resolves it, and
+                                // `set_device()`'s own synchronous
+                                // `device-changed` — emitted before polling
+                                // has even had a chance to run — would read
+                                // that same not-yet-known default), so
+                                // delay the decision past one full poll
+                                // interval (`start_unified_timer()` ticks
+                                // every 1s) rather than deciding on stale
+                                // information.
+                                let self_rc = Rc::clone(&self_rc);
+                                glib::timeout_add_local_once(std::time::Duration::from_millis(1500), move || {
+                                    let _hold = hold;
+                                    let is_follower = self_rc.device_manager.get_state(&dev.uuid).is_some_and(|ds| {
+                                        ds.group_state().role == crate::device::group::GroupRole::Follower
+                                    });
+                                    if !is_follower {
+                                        Self::open_device_spec(&self_rc, DeviceSpec {
+                                            ip:          dev.ip,
+                                            uuid:        dev.uuid,
+                                            tls_mode:    dev.tls_mode,
+                                            try_connect: true,
+                                        });
+                                    }
+                                });
+                                // `hold` was moved into the timeout closure
+                                // above, so skip the fallthrough drop below.
+                                return;
+                            }
+                        }
+                        // A testing flag aimed at known targets: report why
+                        // and exit non-zero rather than leaving a window
+                        // sitting at "Connecting…" forever.
+                        Ok(Err(failure)) => {
+                            eprintln!("{}: {}", describe_target, failure.describe(&describe_target));
+                            std::process::exit(1);
+                        }
+                        // Sender dropped — nothing left to report to.
+                        Err(_) => {}
+                    }
+                    drop(hold);
+                });
+            }
             return;
         }
 

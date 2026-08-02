@@ -17,35 +17,45 @@ pub(crate) fn timestamp() -> String {
     chrono::Local::now().format("%H:%M:%S%.3f").to_string()
 }
 
-/// Parses `--connect`'s `scheme://ip[:port]` into (ip-with-optional-port,
-/// TlsMode). Deliberately minimal — no path/query, just enough to point
-/// `device::api::api_base_url()` at an arbitrary host:port (e.g.
-/// `wiim-simulator`'s randomly-assigned ports), which already accepts an
-/// embedded port in `ip` for `Http`/`HttpsAny`/`HttpsWiiM`.
-fn parse_connect_url(url: &str) -> Option<(String, device::api::TlsMode)> {
-    let (scheme, rest) = url.split_once("://")?;
-    let tls = match scheme {
-        "http" => device::api::TlsMode::Http,
-        "https" => device::api::TlsMode::HttpsWiiM,
-        _ => return None,
-    };
-    let host_port = rest.split('/').next().unwrap_or(rest);
-    if host_port.is_empty() {
-        return None;
+/// Parses one `--connect` occurrence into a `ui::ConnectTarget`, in this
+/// order: contains `,` → split into `(ip, port)` → `Port` (the API port is
+/// known but not the scheme, so this walks `PROBE_MODES` the way a plain
+/// manual-add-by-IP does — rejected if the left side has a scheme, since
+/// that's almost certainly a leftover of the old `scheme://ip,scheme://ip`
+/// UPnP-override syntax this form replaces — checked *before* the `://`
+/// case below, since a stray scheme on the left would otherwise just get
+/// silently absorbed into `Explicit`'s host string instead of rejected);
+/// contains `://` → `Explicit` (exact scheme, no probing — deliberately
+/// minimal parsing, no path/query, just enough to point
+/// `device::api::api_base_url()` at an arbitrary host:port, e.g.
+/// `wiim-simulator`'s randomly-assigned ports); otherwise a bare IP →
+/// `ViaUpnp` (resolves the API address itself via the UPnP advert
+/// `wiim-simulator` emits — see `device::upnp::discover_api_address()`).
+fn parse_connect_target(spec: &str) -> Result<ui::ConnectTarget, String> {
+    if let Some((ip, port)) = spec.split_once(',') {
+        if ip.contains("://") {
+            return Err(format!(
+                "--connect ip,port takes a bare IP before the comma, got {spec:?}"
+            ));
+        }
+        let port: u16 = port
+            .parse()
+            .map_err(|_| format!("--connect {spec:?}: {port:?} is not a port number"))?;
+        return Ok(ui::ConnectTarget::Port { ip: ip.to_string(), port });
     }
-    Some((host_port.to_string(), tls))
-}
-
-/// Extracts just the `host[:port]` portion from a `scheme://host[:port]`
-/// URL — used for `--connect`'s optional second, comma-separated UPnP URL
-/// (`http://api-host:port,http://upnp-host:port`), which only needs an
-/// address for `device::upnp::UpnpClient::discover()` to try (that call
-/// already tries both http/https schemes on its own, same as the normal
-/// no-override case) — no `TlsMode` to resolve, unlike the API URL.
-fn extract_host_port(url: &str) -> Option<String> {
-    let (_, rest) = url.split_once("://")?;
-    let host_port = rest.split('/').next().unwrap_or(rest);
-    if host_port.is_empty() { None } else { Some(host_port.to_string()) }
+    if let Some((scheme, rest)) = spec.split_once("://") {
+        let tls = match scheme {
+            "http" => device::api::TlsMode::Http,
+            "https" => device::api::TlsMode::HttpsWiiM,
+            _ => return Err(format!("--connect scheme must be http:// or https://, got {spec:?}")),
+        };
+        let host_port = rest.split('/').next().unwrap_or(rest);
+        if host_port.is_empty() {
+            return Err(format!("--connect {spec:?} has no host"));
+        }
+        return Ok(ui::ConnectTarget::Explicit { ip: host_port.to_string(), tls });
+    }
+    Ok(ui::ConnectTarget::ViaUpnp { ip: spec.to_string() })
 }
 
 /// Generic comma-separated `key`/`key:value` token parser, reusable by any
@@ -95,6 +105,41 @@ mod tests {
             rewrite_kiosk_arg(args(&["rustywiim", "--kiosk:opts=only"])),
             vec!["rustywiim", "--kiosk:opts=only"],
         );
+    }
+
+    #[test]
+    fn connect_target_parses_explicit_scheme_form() {
+        match parse_connect_target("http://127.0.0.2:41234").unwrap() {
+            ui::ConnectTarget::Explicit { ip, tls } => {
+                assert_eq!(ip, "127.0.0.2:41234");
+                assert_eq!(tls, device::api::TlsMode::Http);
+            }
+            other => panic!("expected Explicit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn connect_target_parses_ip_port_form() {
+        match parse_connect_target("127.0.0.2,41234").unwrap() {
+            ui::ConnectTarget::Port { ip, port } => {
+                assert_eq!(ip, "127.0.0.2");
+                assert_eq!(port, 41234);
+            }
+            other => panic!("expected Port, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn connect_target_rejects_a_scheme_before_the_comma() {
+        assert!(parse_connect_target("http://127.0.0.2,41234").is_err());
+    }
+
+    #[test]
+    fn connect_target_parses_bare_ip_as_via_upnp() {
+        match parse_connect_target("127.0.0.2").unwrap() {
+            ui::ConnectTarget::ViaUpnp { ip } => assert_eq!(ip, "127.0.0.2"),
+            other => panic!("expected ViaUpnp, got {other:?}"),
+        }
     }
 }
 
@@ -205,12 +250,14 @@ fn main() -> glib::ExitCode {
         "connect",
         glib::Char(0),
         glib::OptionFlags::NONE,
-        glib::OptionArg::String,
-        "Connect directly to scheme://ip[:port] (e.g. http://127.0.0.1:8080 for wiim-simulator), \
-         opening a device window for it immediately instead of discovery. Optionally followed by \
-         a comma and a second scheme://ip[:port] for the UPnP listener (e.g. wiim-simulator's \
-         --upnp-port), tried instead of the two standard UPnP ports",
-        Some("URL"),
+        glib::OptionArg::StringArray,
+        "Connect directly to a device, opening a window for it immediately instead of \
+         discovery/config-restored windows (repeatable, one device per occurrence — for a \
+         multi-device wiim-simulator fleet). Three forms: scheme://ip[:port] (exact, no \
+         probing); ip,port (API port known, scheme walked); or a bare ip, which resolves the \
+         API address itself via the UPnP advert wiim-simulator emits, falling back to a plain \
+         probe if there isn't one",
+        Some("TARGET"),
     );
     app.add_main_option(
         "no-config",
@@ -363,33 +410,18 @@ fn main() -> glib::ExitCode {
         if let Ok(Some(path)) = opts.lookup::<std::path::PathBuf>("config-file") {
             config::set_config_path_override(path);
         }
-        if let Ok(Some(url)) = opts.lookup::<String>("connect") {
-            let (api_url, upnp_url) = match url.split_once(',') {
-                Some((a, u)) => (a, Some(u)),
-                None => (url.as_str(), None),
-            };
-            match parse_connect_url(api_url) {
-                Some((ip, tls_mode)) => {
-                    ui::set_direct_connect(ip, tls_mode);
-                    if let Some(upnp_url) = upnp_url {
-                        match extract_host_port(upnp_url) {
-                            Some(host_port) => device::upnp::set_discover_override(host_port),
-                            None => {
-                                eprintln!(
-                                    "rustywiim: --connect's UPnP URL must be scheme://ip[:port], got {upnp_url:?}"
-                                );
-                                return 1;
-                            }
-                        }
+        if let Ok(Some(specs)) = opts.lookup::<Vec<String>>("connect") {
+            let mut targets = Vec::with_capacity(specs.len());
+            for spec in specs {
+                match parse_connect_target(&spec) {
+                    Ok(target) => targets.push(target),
+                    Err(msg) => {
+                        eprintln!("rustywiim: {msg}");
+                        return 1;
                     }
                 }
-                None => {
-                    eprintln!(
-                        "rustywiim: --connect expects scheme://ip[:port] (e.g. http://127.0.0.1:8080), got {api_url:?}"
-                    );
-                    return 1;
-                }
             }
+            ui::set_direct_connect(targets);
         }
         -1 // continue normal startup
     });

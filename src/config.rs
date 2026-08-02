@@ -38,22 +38,22 @@ pub fn set_config_path_override(path: PathBuf) {
     let _ = CONFIG_PATH_OVERRIDE.set(path);
 }
 
-/// `--connect`'s resolved uuid, once known — see `Config::device_mut()`'s
-/// own doc comment for exactly what this suppresses and why. Set once, from
-/// `ui/mod.rs`'s `--connect` handling, the moment the probe resolves a real
-/// uuid (necessarily later than `NO_CONFIG`/`CONFIG_PATH_OVERRIDE` above,
-/// which are set before anything touches config at all — this one can't be,
-/// since resolving a uuid needs a live probe). `OnceLock` here for the same
-/// reason as those: `--connect` only ever resolves one device per process,
-/// so "only the first call sticks" is never actually exercised twice.
-static EPHEMERAL_UUID: OnceLock<String> = OnceLock::new();
+/// `--connect`'s resolved uuids, as they become known — see
+/// `Config::device_mut()`'s own doc comment for exactly what this
+/// suppresses and why. Inserted, one at a time, from `ui/mod.rs`'s
+/// `--connect` handling, as each probe resolves a real uuid (necessarily
+/// later than `NO_CONFIG`/`CONFIG_PATH_OVERRIDE` above, which are set before
+/// anything touches config at all — these can't be, since resolving a uuid
+/// needs a live probe). A set, not a single `OnceLock`, since `--connect` is
+/// now repeatable (one uuid per resolved device).
+static EPHEMERAL_UUIDS: std::sync::Mutex<Option<std::collections::HashSet<String>>> = std::sync::Mutex::new(None);
 
 pub fn set_ephemeral_uuid(uuid: String) {
-    let _ = EPHEMERAL_UUID.set(uuid);
+    EPHEMERAL_UUIDS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(Default::default).insert(uuid);
 }
 
 pub(crate) fn is_ephemeral_uuid(uuid: &str) -> bool {
-    EPHEMERAL_UUID.get().is_some_and(|e| e == uuid)
+    EPHEMERAL_UUIDS.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|s| s.contains(uuid))
 }
 
 /// A field present on `Config` purely so `device_mut()` can hand back a real
@@ -799,12 +799,6 @@ mod tests {
         assert_eq!(cfg.devices.get("u").unwrap().playback_access_override, Some(AccessMethod::UpnpPolled));
     }
 
-    /// `EPHEMERAL_UUID` is a process-global `OnceLock` — only the first
-    /// `set_ephemeral_uuid()` call across the whole test binary sticks, so
-    /// this is deliberately the *one* test that ever calls it, covering
-    /// both cases (`device_mut()`'s never-create and never-touch-a-real-
-    /// entry behaviour) in a single test rather than risking a second test
-    /// silently no-op'ing against an already-set uuid.
     #[test]
     fn device_mut_never_persists_the_connect_ephemeral_uuid() {
         set_ephemeral_uuid("ephemeral-test-uuid".to_string());
