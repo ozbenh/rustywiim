@@ -15,10 +15,12 @@
 //! panel toggle rather than its own separate corner, by request. A
 //! transparent top-right button showing the bound device's name opens a
 //! popover containing a `DeviceListView` to switch devices, grouped
-//! (`top_right_group`, same shape as `top_left_group`) with a Preferences
-//! button and a Device Settings button to its left — opening the same
-//! plain, non-modal `PreferencesWindow`/`DeviceSettingsWindow` every other
-//! window uses.
+//! (`top_right_group`, same shape as `top_left_group`) with a Device
+//! Settings cog to its left. The two corners split by scope: the right
+//! group is about the *bound device*, the left one about the *app*
+//! (panel toggle, exit-Kiosk, and an app-wide Preferences spanner). Both
+//! settings buttons open the same plain, non-modal
+//! `PreferencesWindow`/`DeviceSettingsWindow` every other window uses.
 //!
 //! Keyboard shortcuts are owned entirely by this window, not shared with
 //! `DeviceWindow`'s own controller — "K" exits kiosk mode here; there is
@@ -125,10 +127,11 @@ pub(crate) struct KioskWindow {
     /// Kept sensitivity live by `finish_bind()`'s own `group-changed`
     /// wiring, not just set once at bind time.
     device_settings_btn: gtk::Button,
-    /// Groups `device_btn` with the Preferences/Device Settings buttons
-    /// (see `KioskWindow::new()`'s `open_preferences`/`open_device_settings`
-    /// params) so they move/fade together as one unit — same shape as
-    /// `top_left_group` below.
+    /// Groups `device_btn` with the Device Settings cog (see
+    /// `KioskWindow::new()`'s `open_device_settings` param) so they move/fade
+    /// together as one unit — same shape as `top_left_group` below. Both are
+    /// about the *bound device*; app-wide Preferences lives in
+    /// `top_left_group` instead.
     top_right_group: gtk::Box,
     popover:       gtk::Popover,
     /// Splits the side panel (presets/IO, start child) from the playback
@@ -151,9 +154,11 @@ pub(crate) struct KioskWindow {
     /// on a fresh launch.
     layout:        Cell<PlaybackLayout>,
 
-    /// The floating chrome group (sidebar toggle + exit-Kiosk button),
-    /// stored here (rather than re-derived each time, as `new()` briefly
-    /// did) so the auto-hide fade can target it directly.
+    /// The floating chrome group (sidebar toggle + exit-Kiosk button +
+    /// app-wide Preferences spanner — everything *not* scoped to the bound
+    /// device, which lives in `top_right_group` instead), stored here
+    /// (rather than re-derived each time, as `new()` briefly did) so the
+    /// auto-hide fade can target it directly.
     top_left_group: gtk::Box,
     /// Last mouse/touch activity, updated by the controllers `new()` wires
     /// on `window` — read by the idle timer for both auto-hide-controls
@@ -729,24 +734,26 @@ impl KioskWindow {
             .label("Select device")
             .css_classes(["kiosk-device-btn"])
             .build();
-        // Two entry points where DeviceWindow/DiscoveryWindow each only
-        // need one, since Kiosk mode has no menu bar to hold a
-        // "Preferences…"/"Device Settings…" pair instead (see
-        // `KioskWindow::new()`'s own params) — no dedicated Kiosk icons
-        // yet, just the stock Adwaita "system"/"properties" emblems.
-        // Grouped with device_btn (not their own floating corner) the same
-        // way sidebar_btn/exit_kiosk_btn share `top_left_group` below, so
-        // all three move/fade as one unit.
-        let preferences_btn = gtk::Button::builder()
-            .icon_name("emblem-system-symbolic")
-            .tooltip_text("Preferences")
-            .css_classes(["kiosk-sidebar-btn"])
-            .build();
+        // Device Settings sits with `device_btn` (both are about the bound
+        // *device*), not their own floating corner, the same way
+        // sidebar_btn/exit_kiosk_btn/preferences_btn share `top_left_group`
+        // below — so each group moves/fades as one unit.
+        //
+        // The **cog** is Device Settings everywhere in the app — the device
+        // list's row/member cogs and the device window's header button use
+        // this same `emblem-system-symbolic`; app-wide Preferences is the
+        // spanner (`preferences-other-symbolic`, on the left group below).
+        // Kiosk mode is the only surface with buttons for both, since it has
+        // no menu bar to hold a "Preferences…"/"Device Settings…" pair
+        // instead (see `KioskWindow::new()`'s own params) — so it's also the
+        // only place the two could drift apart, which they did before this
+        // was made consistent.
+        //
         // Starts insensitive — `finish_bind()`'s first call (during `new()`,
         // below) sets the real state before this is ever shown, but the
         // sensible default before that is "no device to configure yet".
         let device_settings_btn = gtk::Button::builder()
-            .icon_name("preferences-other-symbolic")
+            .icon_name("emblem-system-symbolic")
             .tooltip_text("Device Settings")
             .css_classes(["kiosk-sidebar-btn"])
             .sensitive(false)
@@ -756,18 +763,17 @@ impl KioskWindow {
             .halign(gtk::Align::End).valign(gtk::Align::Start)
             .margin_end(20)
             .build();
-        top_right_group.append(&preferences_btn);
         top_right_group.append(&device_settings_btn);
         top_right_group.append(&device_btn);
         overlay.add_overlay(&top_right_group);
 
         // Symmetric to device_btn on the opposite corner. No margin-start
-        // set directly on either button here — that's the wrapping
+        // set directly on any button here — that's the wrapping
         // `top_left_group` Box's job below (matching `.kiosk-sidebar-btn`'s
         // own comment on deliberately not setting it itself), so it stays
         // fully Rust-controlled (see sidebar_paned's "notify::position"
         // handler in new(), which moves the whole group live once the
-        // panel's open) and both buttons move together as one unit.
+        // panel's open) and the buttons move together as one unit.
         let sidebar_btn = gtk::Button::builder()
             .icon_name("sidebar-show-symbolic")
             .tooltip_text("Toggle presets panel")
@@ -780,6 +786,17 @@ impl KioskWindow {
             .tooltip_text("Exit Kiosk mode")
             .css_classes(["kiosk-sidebar-btn"])
             .build();
+        // App-wide Preferences — the **spanner**, distinct from Device
+        // Settings' cog above (see that button's comment). Grouped on the
+        // left next to exit-Kiosk rather than with the device buttons on the
+        // right, by request: neither it nor exit-Kiosk is about the bound
+        // device, so the two corners split cleanly into "app" (left) and
+        // "this device" (right).
+        let preferences_btn = gtk::Button::builder()
+            .icon_name("preferences-other-symbolic")
+            .tooltip_text("Preferences")
+            .css_classes(["kiosk-sidebar-btn"])
+            .build();
         let top_left_group = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal).spacing(8)
             .halign(gtk::Align::Start).valign(gtk::Align::Start)
@@ -787,6 +804,7 @@ impl KioskWindow {
             .build();
         top_left_group.append(&sidebar_btn);
         top_left_group.append(&exit_kiosk_btn);
+        top_left_group.append(&preferences_btn);
         overlay.add_overlay(&top_left_group);
 
         (device_btn, preferences_btn, device_settings_btn, sidebar_btn, exit_kiosk_btn)
