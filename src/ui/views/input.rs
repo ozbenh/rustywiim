@@ -158,7 +158,6 @@ impl InputView {
             .orientation(Orientation::Vertical).spacing(4)
             .margin_top(4).margin_bottom(4).margin_start(8).margin_end(8)
             .build();
-        in_box.append(&gtk::Separator::new(Orientation::Horizontal));
         in_box.append(
             &Label::builder()
                 .label("INPUT").css_classes(["section-label"])
