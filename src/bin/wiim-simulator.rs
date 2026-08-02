@@ -6,7 +6,19 @@
 //!
 //! Usage: `wiim-simulator <capture-file-or-dir>... [--http [N:]PORT]
 //! [--https [N:]PORT] [--upnp-port [N:]PORT] [--base-ip IP]
-//! [--standard-ports] [--no-upnp] [--no-stateful] [--global] [--keep-config]`
+//! [--standard-ports] [--no-upnp] [--no-stateful] [--global] [--keep-config]
+//! [--group=N,N[:left|:right],...]`
+//!
+//! **`--group=1,2,3`** groups devices by their 1-based number, first is the
+//! leader; repeat the flag for a second group. An optional per-member
+//! `:left`/`:right` suffix sets that member's `channel` value. Static for
+//! the whole run — the app itself has no way to form or dissolve a group
+//! (only read one and relay volume/mute), so there is no join/leave to
+//! simulate. Synthesized on both transports the app can read a group from:
+//! the leader's `multiroom:getSlaveList` and every device's `GetInfoEx`
+//! (`SlaveFlag`/`MasterUUID`/`SlaveList`) — necessary because WiiM/AudioCast
+//! devices default to UPnP-polled access, where the HTTP slave list is
+//! never even fetched.
 //!
 //! Once every device has finished binding, prints a summary of the fleet
 //! (name/model/uuid/api/upnp per device) and a ready-to-paste `rustywiim`
@@ -176,6 +188,13 @@ struct Device {
     /// `GroupName` key is present (`patch_identity_fields()`) and into
     /// `description.xml`'s `<friendlyName>` (`build_upnp_shared()`).
     name: String,
+    /// This device's own primary bound API address, `"host:port"` (no
+    /// scheme) — `None` only if every one of its listeners failed to bind.
+    /// Read by another device's leader-role handling (`synth_slave_list()`)
+    /// to fill a member's `ip` field, since a group's slave list is only
+    /// ever produced by the *leader* thread reading a fellow `Device`'s
+    /// fields, never its own.
+    api_addr: Option<String>,
     index: HashMap<String, CommandCapture>,
     state: Mutex<SimState>,
     upnp: Option<UpnpShared>,
@@ -200,6 +219,55 @@ struct Fleet {
     /// which always reads/writes `state` regardless (see this file's module
     /// doc comment).
     stateful_http: bool,
+    /// `--group`'s parsed, static topology — empty when no `--group` was
+    /// given at all. Static because the app itself has no way to form or
+    /// dissolve a group (only read one and relay volume/mute), so there is
+    /// no join/leave to honour.
+    groups: Vec<Group>,
+}
+
+/// One `--group` member: which device (0-based index into `Fleet::devices`)
+/// and its channel role, if given (`--group=1,2:left,3:right`) — mapped
+/// straight onto the wire `channel` value `device::group::ChannelRole`
+/// decodes (`0` stereo, `1` left, `2` right), not a separate concept.
+#[derive(Clone, Copy)]
+struct GroupMemberSpec {
+    dev: usize,
+    channel: u8,
+}
+
+/// One `--group`'s static topology: `leader` and every `members` entry are
+/// 0-based device indices, validated at parse time (see `parse_groups()`)
+/// to be in range, in exactly one group, and not also a leader elsewhere.
+struct Group {
+    leader: usize,
+    members: Vec<GroupMemberSpec>,
+}
+
+/// A device's role within `fleet.groups`, resolved fresh per request rather
+/// than cached — the topology is static (no join/leave), so this is cheap
+/// enough to just recompute; caching it would be a second place for it to
+/// drift from `fleet.groups` itself.
+enum SimRole {
+    Standalone,
+    /// Index into `fleet.groups`.
+    Leader(usize),
+    /// The leader's own device index.
+    Follower(usize),
+}
+
+/// Resolves `dev_idx`'s role within `fleet.groups` — see `SimRole`'s doc
+/// comment for why this isn't cached.
+fn role_of(fleet: &Fleet, dev_idx: usize) -> SimRole {
+    for (gi, g) in fleet.groups.iter().enumerate() {
+        if g.leader == dev_idx {
+            return SimRole::Leader(gi);
+        }
+        if g.members.iter().any(|m| m.dev == dev_idx) {
+            return SimRole::Follower(g.leader);
+        }
+    }
+    SimRole::Standalone
 }
 
 /// One simulator instance's fresh identity: the plain 24-hex-char LinkPlay
@@ -472,42 +540,109 @@ fn patch_tag(xml: &str, tag: &str, new_value: &str) -> String {
     format!("{}{}{}", &xml[..content_start], new_value, &xml[content_end..])
 }
 
+/// Like `patch_tag()`, but inserts `<tag>value</tag>` immediately before the
+/// literal `before` marker when `tag` isn't already present in `xml`,
+/// instead of returning it unchanged. Needed for `--group`'s UPnP tags
+/// (`SlaveFlag`/`MasterUUID`/`SlaveList`): a capture from a device that
+/// never reported one of these (most don't, absent a real group at capture
+/// time) must still be able to act as a follower or leader.
+fn patch_or_insert_tag(xml: &str, tag: &str, value: &str, before: &str) -> String {
+    if xml.contains(&format!("<{tag}>")) {
+        return patch_tag(xml, tag, value);
+    }
+    match xml.find(before) {
+        Some(pos) => format!("{}<{tag}>{value}</{tag}>{}", &xml[..pos], &xml[pos..]),
+        None => xml.to_string(),
+    }
+}
+
+/// Escapes text for embedding inside XML element content (not an
+/// attribute) — the mirror of `device/upnp.rs`'s own private
+/// `unescape_xml_entities()`, used here to embed `SlaveList`'s JSON inside
+/// `<SlaveList>...</SlaveList>`, matching how real firmware escapes the same
+/// field. `&` first, so it doesn't double-escape the entities it just
+/// produced.
+fn escape_xml_text(s: &str) -> String {
+    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
+}
+
+/// The exact body a real follower (or standalone device) returns for
+/// `multiroom:getSlaveList`, and the `<SlaveList>` UPnP tag value on every
+/// non-leader — shared so both transports report an identical "not a
+/// leader" shape.
+const EMPTY_SLAVE_LIST_JSON: &str = r#"{"group_type":-1,"slaves":0,"surround":0,"wmrm_version":"4.3"}"#;
+
 /// Answers the fixed set of UPnP SOAP actions this app itself makes (see
 /// this file's module doc comment). `body` is the raw incoming SOAP request
 /// XML (only actually read for `SetMute`/`SetQueueLoopMode`, the only two
 /// that carry an argument). Returns `None` for anything outside this set,
 /// so the caller replies with a visible error instead of a wrong guess.
-fn handle_soap_action(
-    service: &str,
-    action: &str,
-    body: &str,
-    upnp: &UpnpShared,
-    state: &Mutex<SimState>,
-) -> Option<String> {
-    let mut state = state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+fn handle_soap_action(service: &str, action: &str, body: &str, fleet: &Fleet, dev_idx: usize) -> Option<String> {
+    let dev = &fleet.devices[dev_idx];
+    let upnp = dev.upnp.as_ref()?;
     match action {
         "GetInfoEx" => {
             let template = upnp.info_ex_template.as_deref()?;
-            let xml = patch_tag(template, "CurrentVolume", &state.vol.to_string());
-            let xml = patch_tag(&xml, "CurrentMute", if state.mute { "1" } else { "0" });
-            let xml = patch_tag(&xml, "LoopMode", &state.loop_mode);
+            // Own state lock is taken and dropped *before* any group
+            // synthesis below might lock a fellow device's state — this
+            // file's one hard rule against ever holding two `SimState`
+            // locks at once (a crossing relay across two group members
+            // would otherwise deadlock with no error message).
+            let (vol, mute, loop_mode) = {
+                let state = dev.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                (state.vol, state.mute, state.loop_mode.clone())
+            };
+            let xml = patch_tag(template, "CurrentVolume", &vol.to_string());
+            let xml = patch_tag(&xml, "CurrentMute", if mute { "1" } else { "0" });
+            let xml = patch_tag(&xml, "LoopMode", &loop_mode);
+
+            // `--group`'s UPnP side (the one that matters most: WiiM/
+            // AudioCast devices default to UPnP-polled access, where the
+            // HTTP slave list is never even fetched, so this is the *only*
+            // place their group topology comes from). Every role, including
+            // Standalone, gets these three tags overwritten — never only
+            // "when grouped" — for the same stale-capture reason
+            // `patch_group_status_fields()` does on the HTTP side.
+            let (slave_flag, master_uuid, slave_list_json) = match role_of(fleet, dev_idx) {
+                SimRole::Leader(gi) => {
+                    ("0", String::new(), synth_slave_list(fleet, &fleet.groups[gi]).to_string())
+                }
+                SimRole::Follower(leader_idx) => {
+                    ("1", fleet.devices[leader_idx].fresh_uuid.plain.clone(), EMPTY_SLAVE_LIST_JSON.to_string())
+                }
+                SimRole::Standalone => ("0", String::new(), EMPTY_SLAVE_LIST_JSON.to_string()),
+            };
+            let xml = patch_or_insert_tag(&xml, "SlaveFlag", slave_flag, "</u:GetInfoExResponse>");
+            let xml = patch_or_insert_tag(&xml, "MasterUUID", &master_uuid, "</u:GetInfoExResponse>");
+            let xml = patch_or_insert_tag(
+                &xml,
+                "SlaveList",
+                &escape_xml_text(&slave_list_json),
+                "</u:GetInfoExResponse>",
+            );
             Some(xml)
         }
-        "GetMute" => Some(soap_envelope(
-            service,
-            action,
-            &format!("<CurrentMute>{}</CurrentMute>", if state.mute { "1" } else { "0" }),
-        )),
+        "GetMute" => {
+            let state = dev.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            Some(soap_envelope(
+                service,
+                action,
+                &format!("<CurrentMute>{}</CurrentMute>", if state.mute { "1" } else { "0" }),
+            ))
+        }
         "SetMute" => {
+            let mut state = dev.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             if let Some(v) = extract_tag(body, "DesiredMute") {
                 state.mute = v.trim() == "1";
             }
             Some(soap_envelope(service, action, ""))
         }
         "GetQueueLoopMode" => {
+            let state = dev.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             Some(soap_envelope(service, action, &format!("<LoopMode>{}</LoopMode>", state.loop_mode)))
         }
         "SetQueueLoopMode" => {
+            let mut state = dev.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             if let Some(v) = extract_tag(body, "LoopMode") {
                 state.loop_mode = v.trim().to_string();
             }
@@ -547,7 +682,7 @@ fn serve_upnp(server: tiny_http::Server, fleet: &Arc<Fleet>, dev_idx: usize) {
                 let mut body = String::new();
                 let _ = request.as_reader().read_to_string(&mut body);
                 return match soap_action_header.as_deref().and_then(parse_soap_action) {
-                    Some((service, action)) => match handle_soap_action(service, action, &body, upnp, &dev.state) {
+                    Some((service, action)) => match handle_soap_action(service, action, &body, fleet, dev_idx) {
                         Some(xml) => (200, xml, "text/xml"),
                         None => (500, format!("simulator: no response modeled for {action}"), "text/plain"),
                     },
@@ -801,13 +936,16 @@ struct Args {
     no_upnp: bool,
     global: bool,
     keep_config: bool,
+    /// Raw `--group=1,2,3` values (one per occurrence, repeatable for a
+    /// second group), parsed by `parse_groups()` once `ndevices` is known.
+    groups: Vec<String>,
 }
 
 fn usage() -> ! {
     eprintln!(
         "usage: wiim-simulator <capture-file-or-dir>... [--http [N:]PORT] [--https [N:]PORT] \
          [--upnp-port [N:]PORT] [--base-ip IP] [--standard-ports] [--no-upnp] [--no-stateful] \
-         [--global] [--keep-config]"
+         [--global] [--keep-config] [--group=N,N[:left|:right],...]"
     );
     eprintln!("  (every non-flag argument is a capture path — one simulated device per path)");
     eprintln!("  (--http/--https/--upnp-port take a bare PORT or an indexed N:PORT, 1-based;");
@@ -822,6 +960,8 @@ fn usage() -> ! {
     eprintln!("  (--global listens on 0.0.0.0 instead of loopback — single capture path only)");
     eprintln!("  (the printed rustywiim command line includes --no-config by default, since");
     eprintln!("   every run mints fresh uuids; --keep-config drops it)");
+    eprintln!("  (--group=1,2,3 groups devices 1-based, first is the leader; repeat for a");
+    eprintln!("   second group; an optional :left/:right suffix sets that member's channel)");
     std::process::exit(2);
 }
 
@@ -864,6 +1004,7 @@ fn parse_args() -> Args {
     let mut no_upnp = false;
     let mut global = false;
     let mut keep_config = false;
+    let mut groups = Vec::new();
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -901,6 +1042,7 @@ fn parse_args() -> Args {
             "--global" => global = true,
             "--keep-config" => keep_config = true,
             "-h" | "--help" => usage(),
+            other if other.starts_with("--group=") => groups.push(other["--group=".len()..].to_string()),
             other if !other.starts_with('-') => paths.push(other.to_string()),
             other => {
                 eprintln!("wiim-simulator: unrecognized argument '{other}'");
@@ -918,7 +1060,74 @@ fn parse_args() -> Args {
         );
         std::process::exit(2);
     }
-    Args { paths, http, https, upnp_port, base_ip, standard_ports, no_stateful, no_upnp, global, keep_config }
+    Args {
+        paths, http, https, upnp_port, base_ip, standard_ports,
+        no_stateful, no_upnp, global, keep_config, groups,
+    }
+}
+
+/// Parses every `--group=...` occurrence into validated, 0-based `Group`
+/// topology. `--group=1,2,3` — 1-based device numbers, first is the leader;
+/// repeatable for a second group. An optional per-member `:left`/`:right`
+/// suffix (`--group=1,2:left,3:right`) sets that member's wire `channel`
+/// value (see `GroupMemberSpec`'s doc comment). Pure — see
+/// `try_parse_port_spec()`'s doc comment for why; `parse_groups()` below is
+/// the CLI-facing wrapper.
+fn try_parse_groups(raw: &[String], ndevices: usize) -> Result<Vec<Group>, String> {
+    let mut groups = Vec::new();
+    let mut assigned: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    for spec in raw {
+        let mut entries: Vec<(usize, u8)> = Vec::new();
+        for token in spec.split(',') {
+            let (num_str, channel_str) = match token.split_once(':') {
+                Some((n, c)) => (n, Some(c)),
+                None => (token, None),
+            };
+            let n: usize = num_str
+                .parse()
+                .map_err(|_| format!("--group '{token}' is not a device number"))?;
+            if n == 0 {
+                return Err("--group device numbers are 1-based".to_string());
+            }
+            let dev = n - 1;
+            if dev >= ndevices {
+                return Err(format!(
+                    "--group device {n} out of range (only {ndevices} capture path(s) given)"
+                ));
+            }
+            let channel = match channel_str {
+                None => 0,
+                Some("left") => 1,
+                Some("right") => 2,
+                Some(other) => return Err(format!("--group channel '{other}' is not 'left' or 'right'")),
+            };
+            entries.push((dev, channel));
+        }
+        if entries.len() < 2 {
+            return Err(format!("--group '{spec}' needs at least two devices (a leader and a follower)"));
+        }
+        for &(dev, _) in &entries {
+            // Catches every overlap in one check: a device repeated within
+            // this group, reused as a leader/member of an earlier one, or
+            // both a leader in one group and a member in another — `assigned`
+            // accumulates every device index across every group, leader
+            // included.
+            if !assigned.insert(dev) {
+                return Err(format!("--group: device {} is in more than one group", dev + 1));
+            }
+        }
+        let leader = entries[0].0;
+        let members = entries[1..].iter().map(|&(dev, channel)| GroupMemberSpec { dev, channel }).collect();
+        groups.push(Group { leader, members });
+    }
+    Ok(groups)
+}
+
+fn parse_groups(raw: Vec<String>, ndevices: usize) -> Vec<Group> {
+    try_parse_groups(&raw, ndevices).unwrap_or_else(|msg| {
+        eprintln!("wiim-simulator: {msg}");
+        std::process::exit(2);
+    })
 }
 
 /// Groups parsed `--http`/`--https`/`--upnp-port` occurrences by device
@@ -991,6 +1200,7 @@ fn main() {
     let source_names: Vec<&str> = loaded.iter().map(|(name, _)| name.as_str()).collect();
     let captures: Vec<&CaptureFile> = loaded.iter().map(|(_, c)| c).collect();
     let ndevices = captures.len();
+    let groups = parse_groups(args.groups, ndevices);
 
     let http_per_device = group_by_device(args.http, ndevices, "--http");
     let https_per_device = group_by_device(args.https, ndevices, "--https");
@@ -1091,15 +1301,17 @@ fn main() {
                 .collect(),
         );
         let api_listener = bound[i].iter().find(|l| !l.https).or_else(|| bound[i].first());
-        let this_primary_url = api_listener.map(|l| format!("{}://{host}:{}", if l.https { "https" } else { "http" }, l.port));
+        let api_addr = api_listener.map(|l| format!("{host}:{}", l.port));
+        let this_primary_url =
+            api_listener.map(|l| format!("{}://{host}:{}", if l.https { "https" } else { "http" }, l.port));
         let upnp = match (upnp_ports[i].is_some(), &this_primary_url) {
             (true, Some(api_url)) => build_upnp_shared(capture, &name, &fresh_uuid, api_url),
             _ => None,
         };
         primary_api_url.push(this_primary_url);
-        devices.push(Arc::new(Device { n: i, host, name, index, state, upnp, fresh_uuid }));
+        devices.push(Arc::new(Device { n: i, host, name, api_addr, index, state, upnp, fresh_uuid }));
     }
-    let fleet = Arc::new(Fleet { devices, stateful_http: !args.no_stateful });
+    let fleet = Arc::new(Fleet { devices, stateful_http: !args.no_stateful, groups });
 
     // Phase 3: spawn threads for the listeners already bound in phase 1
     // (now that `Fleet` exists to hand them), then bind+spawn each device's
@@ -1197,6 +1409,13 @@ fn print_banner(
             eprintln!("                 upnp      http://{}:{port}", dev.host);
         }
     }
+    for (gi, g) in fleet.groups.iter().enumerate() {
+        let followers: Vec<String> = g.members.iter().map(|m| format!("#{}", m.dev + 1)).collect();
+        eprintln!(
+            "[wiim-simulator] group {}   leader #{}, followers {}",
+            gi + 1, g.leader + 1, followers.join(", ")
+        );
+    }
 
     eprintln!();
     eprintln!("[wiim-simulator] run rustywiim against this fleet with:");
@@ -1252,6 +1471,14 @@ fn report_bind_failure(
 /// `index`, keyed by the request's full path+query.
 fn resolve_response(key: &str, command: Option<&str>, fleet: &Fleet, dev_idx: usize) -> (u16, String) {
     let dev = &fleet.devices[dev_idx];
+    // `--group`'s HTTP side, ahead of everything else: explicit topology the
+    // user asked for, so it applies regardless of `--no-stateful` (unlike
+    // `handle_mutation()`'s mini-device simulation, this isn't optional
+    // fidelity — a real device answers `multiroom:getSlaveList` the same way
+    // whether or not it's also simulating playback state).
+    if command == Some("multiroom:getSlaveList") {
+        return (200, group_slave_list_body(fleet, dev_idx));
+    }
     if fleet.stateful_http {
         if let Some(command) = command {
             let mut state = dev.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -1273,10 +1500,97 @@ fn resolve_response(key: &str, command: Option<&str>, fleet: &Fleet, dev_idx: us
             }
         }
     }
-    match dev.index.get(key) {
+    let (status, body) = match dev.index.get(key) {
         Some(cap) => handle_command(cap, dev),
         None => (404, "unknown command".to_string()),
+    };
+    // Every role, including Standalone, gets its group/master_uuid/master_ip
+    // fields overwritten — never only "when grouped" — since a capture can
+    // carry stale group state (a real device recorded while it happened to
+    // be in a group) that would otherwise leak into a simulated standalone
+    // or differently-grouped run.
+    if status == 200 && command == Some("getStatusEx") {
+        return (status, patch_group_status_fields(&body, fleet, dev_idx));
     }
+    (status, body)
+}
+
+/// The leader's `multiroom:getSlaveList` body, in the 4.3 schema real WiiM
+/// firmware uses — read live from each member's own `SimState` (one lock at
+/// a time, never two at once, per this file's group-synthesis rule) so a
+/// relayed volume/mute change is visible here on the next poll. A
+/// non-leader (follower or standalone) gets the exact body a real follower
+/// returns: no slaves, nothing to relay through it.
+fn group_slave_list_body(fleet: &Fleet, dev_idx: usize) -> String {
+    match role_of(fleet, dev_idx) {
+        SimRole::Leader(gi) => synth_slave_list(fleet, &fleet.groups[gi]).to_string(),
+        SimRole::Follower(_) | SimRole::Standalone => {
+            EMPTY_SLAVE_LIST_JSON.to_string()
+        }
+    }
+}
+
+/// Builds one `Group`'s slave-list JSON, matching the shape real WiiM
+/// firmware's 4.3 `multiroom:getSlaveList` uses. `ip` carries the member's
+/// own API `host:port` — that's what makes the member adoptable by a real
+/// `rustywiim` leader (`DeviceManager::adopt_group_members()` creates a
+/// `DeviceState` straight from it). `type`/`version` are plausible constants
+/// (`device::group::decode_slave_list()` doesn't read either), not derived
+/// from anything about the member.
+fn synth_slave_list(fleet: &Fleet, group: &Group) -> serde_json::Value {
+    let members: Vec<serde_json::Value> = group
+        .members
+        .iter()
+        .map(|m| {
+            let dev = &fleet.devices[m.dev];
+            let (vol, mute) = {
+                let state = dev.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                (state.vol, state.mute)
+            };
+            serde_json::json!({
+                "uuid": dev.fresh_uuid.plain,
+                "name": dev.name,
+                "ip": dev.api_addr.clone().unwrap_or_default(),
+                "volume": vol,
+                "mute": if mute { 1 } else { 0 },
+                "channel": m.channel,
+                "group_channel": -1,
+                "type": "WiiMu-AmlogicA1",
+                "version": "4.3",
+                "battery_charging": 0,
+                "battery_percent": 0,
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "group_type": 1,
+        "slaves": members.len(),
+        "surround": 0,
+        "wmrm_version": "4.3",
+        "slave_list": members,
+    })
+}
+
+/// Overwrites `getStatusEx`'s `group`/`master_uuid`/`master_ip` fields to
+/// match this device's role in `fleet.groups` — inserted even if the
+/// captured body never had them (a follower must report them regardless of
+/// what the source capture was), unlike every other identity field this
+/// file patches, which only ever overwrites a key that's already present. A
+/// no-op for anything that isn't a JSON object.
+fn patch_group_status_fields(body: &str, fleet: &Fleet, dev_idx: usize) -> String {
+    let Ok(mut value) = serde_json::from_str::<serde_json::Value>(body) else { return body.to_string() };
+    let Some(obj) = value.as_object_mut() else { return body.to_string() };
+    let (group, master_uuid, master_ip) = match role_of(fleet, dev_idx) {
+        SimRole::Follower(leader_idx) => {
+            let leader = &fleet.devices[leader_idx];
+            ("1", leader.fresh_uuid.plain.clone(), leader.host.clone())
+        }
+        SimRole::Leader(_) | SimRole::Standalone => ("0", String::new(), String::new()),
+    };
+    obj.insert("group".into(), serde_json::Value::String(group.to_string()));
+    obj.insert("master_uuid".into(), serde_json::Value::String(master_uuid));
+    obj.insert("master_ip".into(), serde_json::Value::String(master_ip));
+    value.to_string()
 }
 
 fn serve(server: tiny_http::Server, fleet: &Arc<Fleet>, dev_idx: usize) {
@@ -1365,5 +1679,107 @@ mod tests {
         assert_eq!(host_for(base, 0), "127.0.0.2");
         assert_eq!(host_for(base, 1), "127.0.0.3");
         assert_eq!(host_for(base, 5), "127.0.0.7");
+    }
+
+    fn test_device(n: usize, host: &str, name: &str, vol: u32, mute: bool) -> Arc<Device> {
+        Arc::new(Device {
+            n,
+            host: host.to_string(),
+            name: name.to_string(),
+            api_addr: Some(format!("{host}:1234")),
+            index: HashMap::new(),
+            state: Mutex::new(SimState {
+                vol,
+                mute,
+                status: "play".to_string(),
+                curpos: 0,
+                totlen: 0,
+                loop_mode: "0".to_string(),
+                mode: "0".to_string(),
+            }),
+            upnp: None,
+            fresh_uuid: FreshUuid::new(),
+        })
+    }
+
+    fn test_fleet_with_one_group() -> Fleet {
+        let leader = test_device(0, "127.0.0.2", "Simulated Leader #1", 30, false);
+        let member = test_device(1, "127.0.0.3", "Simulated Member #2", 55, true);
+        Fleet {
+            devices: vec![leader, member],
+            stateful_http: true,
+            groups: vec![Group { leader: 0, members: vec![GroupMemberSpec { dev: 1, channel: 0 }] }],
+        }
+    }
+
+    #[test]
+    fn synth_slave_list_round_trips_through_the_real_decoder() {
+        let fleet = test_fleet_with_one_group();
+        let member_uuid = fleet.devices[1].fresh_uuid.plain.clone();
+        let raw = synth_slave_list(&fleet, &fleet.groups[0]).to_string();
+        let list = rustywiim::device::group::decode_slave_list(&raw).unwrap();
+        assert_eq!(list.kind, rustywiim::device::group::GroupKind::Multiroom);
+        assert_eq!(list.members.len(), 1);
+        assert_eq!(list.members[0].uuid, rustywiim::device::utils::normalize_uuid(&member_uuid));
+        assert_eq!(list.members[0].volume, 55);
+        assert!(list.members[0].muted);
+    }
+
+    #[test]
+    fn role_of_finds_leader_and_follower_and_defaults_to_standalone() {
+        let fleet = test_fleet_with_one_group();
+        assert!(matches!(role_of(&fleet, 0), SimRole::Leader(0)));
+        assert!(matches!(role_of(&fleet, 1), SimRole::Follower(0)));
+
+        let standalone = Fleet {
+            devices: vec![test_device(0, "127.0.0.2", "Solo", 30, false)],
+            stateful_http: true,
+            groups: vec![],
+        };
+        assert!(matches!(role_of(&standalone, 0), SimRole::Standalone));
+    }
+
+    #[test]
+    fn detect_resolves_leader_and_follower_from_synthesized_inputs() {
+        use rustywiim::device::group::{detect, GroupInputs, GroupRole};
+
+        let fleet = test_fleet_with_one_group();
+        let leader_uuid = fleet.devices[0].fresh_uuid.plain.clone();
+        let raw = synth_slave_list(&fleet, &fleet.groups[0]).to_string();
+        let slave_list = rustywiim::device::group::decode_slave_list(&raw);
+
+        let leader_state = detect(&GroupInputs {
+            self_uuid: leader_uuid.clone(),
+            slave_list,
+            ..Default::default()
+        });
+        assert_eq!(leader_state.role, GroupRole::Leader);
+
+        let follower_state = detect(&GroupInputs {
+            self_uuid: fleet.devices[1].fresh_uuid.plain.clone(),
+            slave_flag: Some(true),
+            master_uuid: Some(leader_uuid),
+            ..Default::default()
+        });
+        assert_eq!(follower_state.role, GroupRole::Follower);
+    }
+
+    #[test]
+    fn patch_or_insert_tag_inserts_when_absent_and_overwrites_when_present() {
+        let xml = "<a>1</a></u:GetInfoExResponse>";
+        let inserted = patch_or_insert_tag(xml, "b", "2", "</u:GetInfoExResponse>");
+        assert_eq!(inserted, "<a>1</a><b>2</b></u:GetInfoExResponse>");
+        let overwritten = patch_or_insert_tag(&inserted, "b", "3", "</u:GetInfoExResponse>");
+        assert_eq!(overwritten, "<a>1</a><b>3</b></u:GetInfoExResponse>");
+    }
+
+    #[test]
+    fn group_status_fields_are_inserted_even_when_absent_from_the_capture() {
+        let fleet = test_fleet_with_one_group();
+        let body = patch_group_status_fields("{}", &fleet, 1);
+        let value: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(value["group"], "1");
+        assert_eq!(value["master_uuid"], fleet.devices[0].fresh_uuid.plain);
+        assert_eq!(value["master_ip"], fleet.devices[0].host);
     }
 }
