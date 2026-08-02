@@ -58,7 +58,6 @@ pub fn default_accent_for_theme(theme: ThemeMode) -> &'static str {
         _                        => "#4ecdc4",
     }
 }
-fn default_devlist_song_info() -> bool { true }
 /// Matches `ScrollFadeLabel::SPEED_DEFAULT`.
 fn default_scroll_speed() -> f64 { 0.6 }
 fn default_kiosk_auto_hide_controls() -> bool { true }
@@ -318,16 +317,6 @@ pub struct Config {
     /// true`) if it turns up again.
     #[serde(default)]
     pub mini_stale_pixel_workaround: bool,
-    /// Whether the device-picker list additionally fetches and shows
-    /// title/artist/artwork for every tracked device, not just ones with an
-    /// open window. On by default (Ben, 2026-07-11) — every known device is
-    /// already polled continuously for liveness (Simple mode) regardless of
-    /// this setting, and showing what's playing is the more useful default
-    /// experience; the extra background HTTP/UPnP traffic it costs per
-    /// device is the accepted trade-off, not something to hide behind an
-    /// opt-in.
-    #[serde(default = "default_devlist_song_info")]
-    pub devlist_song_info: bool,
     /// App-wide GENA (UPnP eventing) on/off switch. GENA only ever starts a
     /// session for a device when this **and** that device's own
     /// `DeviceConfig::gena_enabled` are both true — see
@@ -406,7 +395,6 @@ impl Default for Config {
             accent_color: None,
             scroll_speed: default_scroll_speed(),
             mini_stale_pixel_workaround: false,
-            devlist_song_info: default_devlist_song_info(),
             gena_enabled: default_gena_enabled(),
             kiosk_last_uuid: None,
             kiosk_auto_hide_controls: default_kiosk_auto_hide_controls(),

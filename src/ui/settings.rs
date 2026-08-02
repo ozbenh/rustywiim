@@ -865,28 +865,6 @@ fn build_kiosk_page(notify_kiosk_changed: Rc<dyn Fn(u32)>) -> adw::PreferencesPa
 }
 
 fn build_general_page(disc_mgr: &DiscoveryManager) -> adw::PreferencesPage {
-    let song_info = config::with(|cfg| cfg.devlist_song_info);
-    let song_info_row = adw::SwitchRow::builder()
-        .title("Song info in device list")
-        .subtitle("Show title/artist/artwork for every device in the picker, \
-                   not just ones with an open window — costs extra background \
-                   network traffic per device")
-        .active(song_info)
-        .build();
-    song_info_row.connect_active_notify(glib::clone!(#[weak] disc_mgr, move |row| {
-        let want = row.is_active();
-        // `device/`-resident DiscoveryManager can't touch config itself —
-        // this is the "report out" side, mirroring how it can't read
-        // config in either (see device::discovery_manager's module doc).
-        config::update(|cfg| cfg.devlist_song_info = want);
-        disc_mgr.set_song_info(want);
-    }));
-
-    let group = adw::PreferencesGroup::builder()
-        .title("Device List")
-        .build();
-    group.add(&song_info_row);
-
     // App-wide GENA (UPnP eventing) switch. GENA only ever starts a session
     // for a given device when this **and** that device's own per-device
     // switch (Settings' "Device -> Advanced" panel) are both on — see
@@ -917,7 +895,6 @@ fn build_general_page(disc_mgr: &DiscoveryManager) -> adw::PreferencesPage {
     gena_group.add(&gena_row);
 
     let page = adw::PreferencesPage::new();
-    page.add(&group);
     page.add(&gena_group);
     page
 }

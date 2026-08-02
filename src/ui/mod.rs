@@ -791,8 +791,7 @@ impl AppState {
                 window_open: d.window_open,
             }).collect()
         });
-        let devlist_song_info = config::with(|cfg| cfg.devlist_song_info);
-        self_rc.disc_mgr.load_seed(seed, devlist_song_info);
+        self_rc.disc_mgr.load_seed(seed);
 
         // `disc_mgr` can't persist to config itself either — this is the
         // "report out" half of the same rule. Fires unconditionally on

@@ -224,12 +224,6 @@ struct DeviceRecord {
 
 struct Inner {
     devices: HashMap<String, DeviceRecord>,
-    /// Whether every tracked device additionally fetches title/artist/
-    /// artwork — mirrors `config::Config::devlist_song_info`, pushed in
-    /// once via `load_seed()` and again on every `set_song_info()` call.
-    /// Cached here rather than re-read from config (this module can't) on
-    /// every device creation.
-    song_info: bool,
     /// Config-derived cache of every known device's identity, handed in
     /// once via `load_seed()`. Consulted (never mutated) by
     /// `on_discovery_updated()` to enrich a freshly-SSDP-seen device that
@@ -243,7 +237,7 @@ struct Inner {
 
 impl Default for Inner {
     fn default() -> Self {
-        Self { devices: HashMap::new(), song_info: false, seed: HashMap::new() }
+        Self { devices: HashMap::new(), seed: HashMap::new() }
     }
 }
 
@@ -283,14 +277,13 @@ mod mgr_imp {
             static SIGNALS: OnceLock<Vec<Signal>> = OnceLock::new();
             SIGNALS.get_or_init(|| vec![
                 // Fired on every tracked-device-list change (new/moved/
-                // pruned device, presence flip, identity update, pin
-                // toggle, song-info toggle). `ui/`'s own listener reads
-                // `entries()` off this and persists the relevant subset
-                // back to config — see `set_song_info()`'s doc comment for
-                // why this module never writes config itself. Deliberately
-                // structural only — a single tracked device's now-playing
-                // content or volume/mute change goes through
-                // `song-info-changed` instead (see below), not this.
+                // pruned/forgotten device, presence flip, identity update).
+                // `ui/`'s own listener reads `entries()` off this and
+                // persists the relevant subset back to config — this module
+                // never writes config itself (see this module's own doc
+                // comment). Deliberately structural only — a single tracked
+                // device's now-playing content or volume/mute change goes
+                // through `song-info-changed` instead (see below), not this.
                 Signal::builder("list-changed").build(),
                 // Fired once, synchronously in start(), after the seed
                 // (handed in via load_seed()) has been eagerly tracked —
@@ -348,10 +341,10 @@ impl DiscoveryManager {
 
     /// Hand in a config-derived snapshot — this module's only view of
     /// config, since it can't read config itself. Must be called exactly
-    /// once, before `start()`. Stores `song_info` and the full `seed` map
-    /// (keyed by uuid) in `Inner`; `start()` is what actually eagerly tracks
-    /// every entry in it (known-by-default — see this module's own doc
-    /// comment) that already has an address to connect to.
+    /// once, before `start()`. Stores the full `seed` map (keyed by uuid) in
+    /// `Inner`; `start()` is what actually eagerly tracks every entry in it
+    /// (known-by-default — see this module's own doc comment) that already
+    /// has an address to connect to.
     ///
     /// A boot-time-only snapshot (never refreshed after this call) is
     /// safe, not just convenient: the app is the sole config writer while
@@ -359,9 +352,8 @@ impl DiscoveryManager {
     /// tracked (`on_discovery_updated()`) — once a device becomes tracked
     /// it's kept live via `on_tracked_device_changed()` instead, never
     /// falling back to `seed` again.
-    pub fn load_seed(&self, seed: Vec<SeedEntry>, song_info: bool) {
+    pub fn load_seed(&self, seed: Vec<SeedEntry>) {
         let mut inner = self.imp().inner.borrow_mut();
-        inner.song_info = song_info;
         inner.seed = seed.into_iter().map(|e| (e.uuid.clone(), e)).collect();
     }
 
@@ -390,9 +382,8 @@ impl DiscoveryManager {
     /// row. See `resolve_topology()`, which holds the actual rules.
     pub fn entries(&self) -> Vec<ManagedEntry> {
         let inner = self.imp().inner.borrow();
-        let song_info = inner.song_info;
         let rows: Vec<(String, ManagedEntry, group::GroupState)> = inner.devices.iter()
-            .map(|(key, r)| (key.clone(), build_managed_entry(r, song_info), r.ds.group_state()))
+            .map(|(key, r)| (key.clone(), build_managed_entry(r), r.ds.group_state()))
             .collect();
         resolve_topology(rows)
     }
@@ -404,8 +395,7 @@ impl DiscoveryManager {
     /// implicitly keyed by for row-widget lookup purposes.
     pub fn entry_for(&self, key: &str) -> Option<ManagedEntry> {
         let inner = self.imp().inner.borrow();
-        let song_info = inner.song_info;
-        inner.devices.get(key).map(|r| build_managed_entry(r, song_info))
+        inner.devices.get(key).map(build_managed_entry)
     }
 
     /// The tracked `DeviceState` for `key` — cheap to clone (GObject
@@ -448,31 +438,6 @@ impl DiscoveryManager {
                 rec.entry.name, rec.entry.ip,
             ));
         }
-    }
-
-    /// Toggles whether every tracked device additionally fetches title/
-    /// artist/artwork (`ui/`'s Settings "General" page). Updates the
-    /// cached `Inner.song_info` new devices read at creation
-    /// (`create_and_track()`) and pushes the new value onto every
-    /// currently-tracked `DeviceState` right away — so toggling takes
-    /// effect immediately, not just for devices tracked afterward. No
-    /// effect on a device already in `Full` mode (an open window already
-    /// fetches this content regardless — see
-    /// `DeviceState::configure_simple_mode()`'s doc comment).
-    ///
-    /// Deliberately does **not** persist to config itself — this module
-    /// can't. The caller (`ui/settings.rs`'s switch handler, which already
-    /// has config access) does the `config::update()` write; this just
-    /// does the fan-out.
-    pub fn set_song_info(&self, want: bool) {
-        {
-            let inner = self.imp().inner.borrow_mut();
-            for rec in inner.devices.values() {
-                rec.ds.configure_simple_mode(want);
-            }
-        }
-        self.imp().inner.borrow_mut().song_info = want;
-        self.emit_list_changed();
     }
 
     /// Explicitly forgets a device — the only way a tracked device leaves
@@ -672,12 +637,12 @@ impl DiscoveryManager {
     ) {
         dbg(&format!("track_device: new {name} ({ip}) uuid={uuid:?} key={key:?}"));
         let ds = self.device_manager().create_and_configure(uuid, ip, tls);
-        ds.configure_simple_mode(self.imp().inner.borrow().song_info);
+        ds.configure_simple_mode(true);
         let entry = ManagedEntry {
             uuid: uuid.to_string(), name, model, project, firmware,
             ip: ip.to_string(), tls_mode: tls,
             presence: DevicePresence::compute(ds.connection_state()),
-            song_info_enabled: self.imp().inner.borrow().song_info,
+            song_info_enabled: true,
             now_playing: None,
             // Resolved per-render by `entries()`, which is the only place
             // with a view of every device at once; the cached record never
@@ -708,8 +673,7 @@ impl DiscoveryManager {
         // fires far more often than anything structural, and rebuilding
         // every row's widgets on every track/volume change is both
         // wasteful and defeats FlipCover's flip transition (see
-        // `song-info-changed`'s doc comment in `signals()`). No-op,
-        // cheaply, when `song_info` is off.
+        // `song-info-changed`'s doc comment in `signals()`).
         let weak2 = self.downgrade();
         let key_for_song_info = key.to_string();
         ds.connect_playback_changed(move |_, mask| {
@@ -721,9 +685,7 @@ impl DiscoveryManager {
                 return;
             }
             let Some(mgr) = weak2.upgrade() else { return };
-            if mgr.imp().inner.borrow().song_info {
-                mgr.emit_song_info_changed(&key_for_song_info, mask);
-            }
+            mgr.emit_song_info_changed(&key_for_song_info, mask);
         });
         self.imp().inner.borrow_mut().devices.insert(key.to_string(), DeviceRecord { entry, ds });
     }
@@ -734,8 +696,8 @@ impl DiscoveryManager {
     /// rendering fields from the live `DeviceState` (never a redundant
     /// separate probe — `ds` already did the work) and always re-renders
     /// (`ui/`'s `list-changed` listener persists identity changes back to
-    /// config unconditionally — see `set_song_info()`'s doc comment for
-    /// why this module doesn't gate that itself).
+    /// config unconditionally — this module doesn't gate that itself, since
+    /// it can't touch config at all).
     fn on_tracked_device_changed(&self, key: &str, ds: &DeviceState) {
         {
             let mut inner = self.imp().inner.borrow_mut();
@@ -914,10 +876,10 @@ fn resolve_topology(rows: Vec<(String, ManagedEntry, group::GroupState)>) -> Vec
 /// Shared by `entries()`/`entry_for()` — one record's cached identity
 /// fields plus a freshly-computed `now_playing` snapshot, gated on
 /// `song_info` and the record's own presence.
-fn build_managed_entry(r: &DeviceRecord, song_info: bool) -> ManagedEntry {
+fn build_managed_entry(r: &DeviceRecord) -> ManagedEntry {
     let mut entry = r.entry.clone();
-    entry.song_info_enabled = song_info;
-    entry.now_playing = (song_info && entry.presence == DevicePresence::Active)
+    entry.song_info_enabled = true;
+    entry.now_playing = (entry.presence == DevicePresence::Active)
         .then(|| compute_now_playing(&r.ds));
     entry
 }
