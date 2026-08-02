@@ -927,21 +927,35 @@ impl DeviceListView {
             });
         }
 
-        // Offline-only "forget this device" trashcan. A group header gets
-        // none — a group isn't a device, so it has nothing to forget (its
-        // member lines are a separate, standalone-only concept too: a
-        // member is reachable through its leader, so "offline" doesn't
-        // apply to it the way this button means). Restricted to `Offline`
-        // rather than shown unconditionally: removing a reachable device
-        // would just have it reappear at the next discovery pass, and a
-        // button whose effect visibly undoes itself seconds later reads as
-        // broken. Tooltip deliberately doesn't say "delete"/"remove
-        // permanently" for the same reason — the device really can come
-        // back if it's seen again.
-        if matches!(entry.group_role, EntryGroupRole::GroupHeader { .. }) {
-            return hbox;
-        }
-        if entry.presence == DevicePresence::Offline {
+        // One fixed-size trailing icon slot, always present, holding
+        // exactly one of: the settings cog, the offline-only "forget this
+        // device" trashcan, or (a group header) nothing visible — never
+        // zero and never two. Without this, a group header (previously no
+        // trailing icon at all) and an offline device (previously trash
+        // *and* cog both) each contributed a different width here, which
+        // shifted the volume control before it out of line with every
+        // other row's (confirmed live). Exclusive rather than "trash next
+        // to a disabled cog" is deliberate: an offline device has no live
+        // settings worth showing anyway (see `DeviceSettingsWindow`'s own
+        // "Offline" placeholder), so there's nothing lost by the trashcan
+        // simply taking the slot instead of sharing it.
+        //
+        // Tooltip on the trashcan deliberately doesn't say "delete"/"remove
+        // permanently" — restricted to `Offline` rather than shown
+        // unconditionally, a reachable device would just reappear at the
+        // next discovery pass, so it really can come back if seen again.
+        let is_group_header = matches!(entry.group_role, EntryGroupRole::GroupHeader { .. });
+        if is_group_header {
+            let placeholder = gtk::Button::builder()
+                .icon_name("emblem-system-symbolic")
+                .valign(gtk::Align::Center)
+                .css_classes(["flat"])
+                .sensitive(false)
+                .can_target(false)
+                .opacity(0.0)
+                .build();
+            hbox.append(&placeholder);
+        } else if entry.presence == DevicePresence::Offline {
             let forget_btn = gtk::Button::builder()
                 .icon_name("user-trash-symbolic")
                 .tooltip_text("Remove from list")
@@ -952,24 +966,22 @@ impl DeviceListView {
                 this.emit_by_name::<()>("device-forget", &[&key]);
             }));
             hbox.append(&forget_btn);
+        } else {
+            // Reuses the same `device-settings` signal a group member's own
+            // line already emits (`build_member_content()`), so both hosts
+            // (`DiscoveryWindow`, Kiosk's device popover) need only the one
+            // handler.
+            let cog = gtk::Button::builder()
+                .icon_name("emblem-system-symbolic")
+                .tooltip_text("Device settings")
+                .valign(gtk::Align::Center)
+                .css_classes(["flat"])
+                .build();
+            cog.connect_clicked(clone!(#[weak(rename_to = this)] self, #[strong] key, move |_| {
+                this.emit_by_name::<()>("device-settings", &[&key]);
+            }));
+            hbox.append(&cog);
         }
-
-        // Settings cog — every standalone row gets one (a group header
-        // does not, same reasoning as the trashcan above: a group isn't a
-        // device). Reuses the same `device-settings` signal a group
-        // member's own line already emits (`build_member_content()`), so
-        // both hosts (`DiscoveryWindow`, Kiosk's device popover) need only
-        // the one handler.
-        let cog = gtk::Button::builder()
-            .icon_name("emblem-system-symbolic")
-            .tooltip_text("Device settings")
-            .valign(gtk::Align::Center)
-            .css_classes(["flat"])
-            .build();
-        cog.connect_clicked(clone!(#[weak(rename_to = this)] self, #[strong] key, move |_| {
-            this.emit_by_name::<()>("device-settings", &[&key]);
-        }));
-        hbox.append(&cog);
 
         hbox
     }
