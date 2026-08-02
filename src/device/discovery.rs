@@ -16,6 +16,14 @@
 /// re-announcements too. Both are session-only in-memory state, never
 /// persisted, so a restart always retries.
 ///
+/// A device is only ever recorded once a probe has resolved its **uuid** —
+/// the key everything downstream tracks it under. A device that answers
+/// `getStatusEx` with no uuid, or that only a UPnP description document
+/// identifies as LinkPlay, is deliberately not recorded at all; it goes
+/// through the same failure counter as an unreachable one, so it is
+/// re-probed when SSDP re-announces it and eventually given up on. See
+/// `ProbeFailure`.
+///
 /// Emits `discovery-updated` (on the GTK main thread) whenever the discovered
 /// device list changes.
 
@@ -75,10 +83,71 @@ fn dbg_request_error(context: &str, err: &reqwest::Error) {
 pub struct DiscoveredDevice {
     pub ip:       String,
     pub name:     String,
-    /// UUID from `getStatusEx`.  Used as the per-device config key.
-    /// Empty if only the UPnP fallback path succeeded.
+    /// UUID from `getStatusEx`, normalised.  Used as the per-device config
+    /// key. **Never empty** — a reply without one is a `ProbeFailure::NoUuid`
+    /// rather than a `DiscoveredDevice`, precisely so nothing downstream has
+    /// to invent a key for it.
     pub uuid:     String,
     pub tls_mode: TlsMode,
+}
+
+// ── Probe failures ────────────────────────────────────────────────────────────
+
+/// Why a probe produced no `DiscoveredDevice`.
+///
+/// One type, two consumers: SSDP's own probing decides from this whether a
+/// failure is worth putting on stderr, and the manual add-by-IP path
+/// (`probe_device()`) turns it into a message in a dialog. Before this
+/// existed both collapsed every outcome to `None`, so the one stderr line
+/// said "device maybe offline" for three genuinely different things — most
+/// often for a random non-LinkPlay box on the LAN that was never going to
+/// answer, which is what made the message untrustworthy.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProbeFailure {
+    /// Transport errors on every scheme/port tried — nothing answered at
+    /// all. Powered off, firewalled, or simply the wrong address.
+    Unreachable,
+    /// Something answered, but not with a parseable `getStatusEx` document.
+    /// The common case on a busy network, where every announcing UPnP box
+    /// gets probed; deliberately kept off stderr for exactly that reason.
+    NotLinkPlay,
+    /// A valid LinkPlay reply carrying no uuid. The device is real and
+    /// working, but there is no key to track it under, so it is not added to
+    /// the device list. Rare enough to be worth saying out loud — it is the
+    /// only thing that will ever explain a device silently missing from the
+    /// list.
+    NoUuid { name: String },
+}
+
+impl ProbeFailure {
+    /// How much this outcome says about the device, so `identify_device()`
+    /// can report the most informative failure across every mode it tried
+    /// rather than whichever one happened to come last.
+    fn rank(&self) -> u8 {
+        match self {
+            Self::Unreachable   => 0,
+            Self::NotLinkPlay   => 1,
+            Self::NoUuid { .. } => 2,
+        }
+    }
+
+    /// One-sentence explanation for a user, given the address that was
+    /// probed (no variant carries it — the caller always has it in hand).
+    pub fn describe(&self, ip: &str) -> String {
+        match self {
+            Self::Unreachable => format!(
+                "Nothing answered at {ip}. Check that the device is powered on, \
+                 on this network, and that the address is correct."
+            ),
+            Self::NotLinkPlay => format!(
+                "Something answered at {ip}, but it is not a WiiM or LinkPlay device."
+            ),
+            Self::NoUuid { name } => format!(
+                "{name} at {ip} answered, but reported no UUID, so it cannot be \
+                 identified or remembered."
+            ),
+        }
+    }
 }
 
 // ── Inner state (GTK-thread only) ─────────────────────────────────────────────
@@ -260,7 +329,7 @@ impl DiscoveryService {
         let (ssdp_tx, ssdp_rx) =
             async_channel::unbounded::<SsdpEvent>();
         let (probe_tx, probe_rx) =
-            async_channel::unbounded::<(String, Option<DiscoveredDevice>)>();
+            async_channel::unbounded::<(String, Result<DiscoveredDevice, ProbeFailure>)>();
 
         // SSDP listener runs in tokio — sends events to the GTK thread.
         self.rt().spawn(ssdp_listener(ssdp_tx));
@@ -310,9 +379,12 @@ impl DiscoveryService {
     }
 
     /// Probe a single IP across all TLS modes.  Returns a `DiscoveredDevice`
-    /// if the device responds and is identified as a WiiM/LinkPlay device.
+    /// if the device responds, is identified as a WiiM/LinkPlay device, and
+    /// reports a uuid; otherwise the `ProbeFailure` explaining which of
+    /// those three it fell down on, so the caller can say so rather than
+    /// just "it didn't work".
     /// Intended for manually-added devices where there is no SSDP location URL.
-    pub async fn probe_device(ip: &str) -> Option<DiscoveredDevice> {
+    pub async fn probe_device(ip: &str) -> Result<DiscoveredDevice, ProbeFailure> {
         identify_device(ip, "").await
     }
 
@@ -333,7 +405,7 @@ impl DiscoveryService {
         &self,
         event: SsdpEvent,
         rt: &Arc<tokio::runtime::Runtime>,
-        probe_tx: &async_channel::Sender<(String, Option<DiscoveredDevice>)>,
+        probe_tx: &async_channel::Sender<(String, Result<DiscoveredDevice, ProbeFailure>)>,
     ) {
         match event {
             SsdpEvent::Byebye { uuid, ip } => {
@@ -390,32 +462,58 @@ impl DiscoveryService {
         }
     }
 
-    fn handle_probe_result(&self, ip: String, result: Option<DiscoveredDevice>) {
+    fn handle_probe_result(&self, ip: String, result: Result<DiscoveredDevice, ProbeFailure>) {
         let mut inner = self.imp().inner.borrow_mut();
         inner.probing.remove(&ip);
-        if let Some(dev) = result {
-            inner.failures.remove(&ip);
-            dbg(&format!("probe ok: {} ({}) uuid={:?}", dev.name, dev.ip, dev.uuid));
-            let key = device_key(&dev.uuid, &dev.ip);
-            inner.devices.insert(key, dev);
-            drop(inner);
-            self.emit_by_name::<()>("discovery-updated", &[]);
-        } else {
-            let count = inner.failures.entry(ip.clone()).or_insert(0);
-            *count += 1;
-            let count = *count;
-            if count >= NON_API_FAIL_THRESHOLD {
-                // The one unconditional line for this IP: full per-attempt
-                // errors already went to the debug log via
-                // `dbg_request_error()` above, so stderr only sees a short
-                // summary once discovery actually gives up on it.
-                eprintln!(
-                    "{} [discovery] {ip}: device maybe offline (gave up after {count} tries)",
-                    super::timestamp()
-                );
-            } else {
-                dbg(&format!("probe failed: {ip} ({count}/{NON_API_FAIL_THRESHOLD})"));
+        let failure = match result {
+            Ok(dev) => {
+                inner.failures.remove(&ip);
+                dbg(&format!("probe ok: {} ({}) uuid={:?}", dev.name, dev.ip, dev.uuid));
+                let key = device_key(&dev.uuid, &dev.ip);
+                inner.devices.insert(key, dev);
+                drop(inner);
+                self.emit_by_name::<()>("discovery-updated", &[]);
+                return;
             }
+            Err(f) => f,
+        };
+
+        // *Every* failure kind goes through the same counter, `NoUuid`
+        // included. Recording a keyless reply instead (which this once did,
+        // under an `ip:{ip}` key) made `already_known` true in the `Alive`
+        // branch, so that address was never re-probed again for the rest of
+        // the run — the "retry when SSDP re-announces it" behaviour the
+        // counter otherwise provides for free, along with an eventual
+        // give-up rather than five TLS modes retried forever.
+        let count = inner.failures.entry(ip.clone()).or_insert(0);
+        *count += 1;
+        let count = *count;
+        if count < NON_API_FAIL_THRESHOLD {
+            dbg(&format!("probe failed: {ip} {failure:?} ({count}/{NON_API_FAIL_THRESHOLD})"));
+            return;
+        }
+
+        // The one unconditional line for this IP, and only for the outcomes
+        // a user can act on: full per-attempt errors already went to the
+        // debug log via `dbg_request_error()`, so stderr sees a short
+        // summary once, when discovery actually gives up. `NotLinkPlay`
+        // stays out of it deliberately — printing "not a LinkPlay device"
+        // once per random UPnP box on the network is the noise that made
+        // the old single give-up message untrustworthy.
+        match &failure {
+            ProbeFailure::Unreachable => eprintln!(
+                "{} [discovery] {ip}: nothing answered on any supported port \
+                 (gave up after {count} tries)",
+                super::timestamp()
+            ),
+            ProbeFailure::NoUuid { name } => eprintln!(
+                "{} [discovery] {ip}: {name:?} is a LinkPlay device but reports no UUID — \
+                 not added to the device list (gave up after {count} tries)",
+                super::timestamp()
+            ),
+            ProbeFailure::NotLinkPlay => dbg(&format!(
+                "{ip}: answered, but not a LinkPlay device (gave up after {count} tries)"
+            )),
         }
     }
 }
@@ -569,57 +667,105 @@ fn extract_ip_from_url(url: &str) -> Option<String> {
 
 // ── Device probing ────────────────────────────────────────────────────────────
 
-/// Try each TLS mode in `PROBE_MODES` order; return the first `DiscoveredDevice`
-/// whose API responds.  Falls back to the SSDP UPnP description URL if all
-/// API probes fail.
-async fn identify_device(ip: &str, location: &str) -> Option<DiscoveredDevice> {
+/// Try each TLS mode in `PROBE_MODES` order; return the first
+/// `DiscoveredDevice` whose API responds *with a uuid*.
+///
+/// On failure, reports the most informative outcome across every mode tried
+/// (`ProbeFailure::rank()`) rather than the last one: a device that answers
+/// properly on one port and refuses connections on the others should be
+/// described by the answer, not by the refusals.
+async fn identify_device(ip: &str, location: &str) -> Result<DiscoveredDevice, ProbeFailure> {
+    let mut worst = ProbeFailure::Unreachable;
     for &mode in PROBE_MODES {
-        if let Some((name, uuid)) = probe_api(ip, mode).await {
-            return Some(DiscoveredDevice { ip: ip.to_string(), name, uuid, tls_mode: mode });
-        }
-    }
-
-    // API probes all failed.  Try the SSDP UPnP description URL as a last resort —
-    // it at least confirms this is a WiiM/LinkPlay device so we can surface it in
-    // the UI even if we don't yet know the right protocol.
-    let client = build_reqwest_client(TlsMode::Http, PROBE_TIMEOUT);
-    if let Ok(resp) = client.get(location).send().await {
-        if let Ok(xml) = resp.text().await {
-            let lower = xml.to_lowercase();
-            if lower.contains("wiim") || lower.contains("linkplay") || lower.contains("wiimu") {
-                let name = extract_xml_tag(&xml, "friendlyName")
-                    .unwrap_or_else(|| format!("WiiM @ {ip}"));
-                return Some(DiscoveredDevice {
-                    ip: ip.to_string(),
-                    name,
-                    uuid: String::new(),
-                    tls_mode: TlsMode::HttpsWiiM,
-                });
+        match probe_api(ip, mode).await {
+            Ok((name, uuid)) => {
+                return Ok(DiscoveredDevice { ip: ip.to_string(), name, uuid, tls_mode: mode });
+            }
+            Err(f) => {
+                if f.rank() > worst.rank() { worst = f; }
             }
         }
     }
-    None
+    log_unreachable_linkplay(ip, location).await;
+    Err(worst)
+}
+
+/// Debug-only diagnostic: say so when the SSDP description document
+/// identifies a LinkPlay device that no API probe could reach.
+///
+/// This sniff used to *return* a `DiscoveredDevice` with an empty uuid, "so
+/// we can surface it in the UI even if we don't yet know the right
+/// protocol". Nothing without a resolved uuid is tracked anymore, so that
+/// device would be discarded downstream regardless — but the observation
+/// itself is still the one line that explains why something visibly present
+/// on the network never appears in the app, so it survives as a log line.
+///
+/// Skipped entirely unless `--debug=discovery` is on: it is purely
+/// explanatory, and it costs an extra HTTP round-trip against every
+/// announcing device on the network that isn't one of ours.
+async fn log_unreachable_linkplay(ip: &str, location: &str) {
+    if location.is_empty() || !DEBUG_DISCOVERY.load(Ordering::Relaxed) {
+        return;
+    }
+    let client = build_reqwest_client(TlsMode::Http, PROBE_TIMEOUT);
+    let Ok(resp) = client.get(location).send().await else { return };
+    let Ok(xml) = resp.text().await else { return };
+    let lower = xml.to_lowercase();
+    if lower.contains("wiim") || lower.contains("linkplay") || lower.contains("wiimu") {
+        let name = extract_xml_tag(&xml, "friendlyName").unwrap_or_else(|| "?".to_string());
+        dbg(&format!(
+            "SSDP + description.xml say LinkPlay at {ip} ({name}), \
+             but no API responded — not tracked"
+        ));
+    }
 }
 
 /// Call `getStatusEx` on the device and parse the response as `DeviceInfo`.
 /// Uses `DeviceId::detect()` from capabilities to confirm the device is a
 /// supported LinkPlay/WiiM variant.  Returns `(name, uuid)` on success.
-async fn probe_api(ip: &str, mode: TlsMode) -> Option<(String, String)> {
+///
+/// A uuid is **required**, not merely preferred: it is the key every layer
+/// above tracks the device under, and a keyless one can be neither
+/// deduplicated nor remembered. The three failure modes this can distinguish
+/// (a transport error, an unparseable reply, a valid reply with no uuid) are
+/// reported separately — collapsing them, as this once did, is what left the
+/// caller unable to say anything useful about why a device never showed up.
+async fn probe_api(ip: &str, mode: TlsMode) -> Result<(String, String), ProbeFailure> {
     let client = build_reqwest_client(mode, PROBE_TIMEOUT);
     let url    = format!("{}?command=getStatusEx", api_base_url(ip, mode));
     let text   = match client.get(&url).send().await {
-        Ok(r)  => r.text().await.ok()?,
+        Ok(r)  => match r.text().await {
+            Ok(t)  => t,
+            Err(e) => {
+                dbg_request_error(&format!("probe {ip} [{}] body", mode.description()), &e);
+                return Err(ProbeFailure::Unreachable);
+            }
+        },
         Err(e) => {
             dbg_request_error(&format!("probe {ip} [{}]", mode.description()), &e);
-            return None;
+            return Err(ProbeFailure::Unreachable);
         }
     };
 
     // Parse into DeviceInfo and run capabilities detection to confirm this is
     // a recognised LinkPlay/WiiM device (any DeviceId is accepted — even
     // LinkPlayGeneric means a valid but unrecognised LinkPlay device).
-    let info: DeviceInfo = serde_json::from_str(&text).ok()?;
-    if info.uuid.is_empty() && info.device_name.is_empty() { return None; }
+    let Ok(info) = serde_json::from_str::<DeviceInfo>(&text) else {
+        dbg(&format!("probe {ip} [{}]: reply is not a JSON object", mode.description()));
+        return Err(ProbeFailure::NotLinkPlay);
+    };
+    if info.uuid.is_empty() {
+        // Every `DeviceInfo` field is `#[serde(default)]`, so *any* JSON
+        // object parses — an all-empty result means some other service
+        // answered, not that a device withheld its uuid. A name with no uuid
+        // is the genuinely different case, and the only one worth reporting.
+        if info.device_name.is_empty() {
+            dbg(&format!("probe {ip} [{}]: JSON, but not a getStatusEx document", mode.description()));
+            return Err(ProbeFailure::NotLinkPlay);
+        }
+        dbg(&format!("probe {ip} [{}]: {:?} reports no uuid", mode.description(), info.device_name));
+        return Err(ProbeFailure::NoUuid { name: info.device_name });
+    }
 
     let device_id = DeviceId::detect(&info.project, &info.firmware);
     dbg(&format!("probe ok: {ip} [{:?}] id={device_id:?}", mode));
@@ -629,7 +775,7 @@ async fn probe_api(ip: &str, mode: TlsMode) -> Option<(String, String)> {
     } else {
         format!("Device @ {ip}")
     };
-    Some((name, info.uuid))
+    Ok((name, info.uuid))
 }
 
 // ── Header / XML helpers ──────────────────────────────────────────────────────

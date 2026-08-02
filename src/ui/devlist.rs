@@ -12,7 +12,7 @@ use glib::clone;
 use gtk::{glib, Orientation};
 
 use crate::config;
-use crate::device::discovery::DiscoveredDevice;
+use crate::device::discovery::{DiscoveredDevice, ProbeFailure};
 use crate::device::discovery_manager::{DiscoveryManager, ManagedEntry};
 use crate::device::state::DeviceState;
 use crate::ui::icons::IconSet;
@@ -210,7 +210,7 @@ impl DiscoveryWindow {
                 window.close();
 
                 let rt = manager.rt();
-                let (tx, rx) = async_channel::bounded::<Option<DiscoveredDevice>>(1);
+                let (tx, rx) = async_channel::bounded::<Result<DiscoveredDevice, ProbeFailure>>(1);
                 let ip2 = ip.clone();
                 rt.spawn(async move {
                     let result = crate::device::discovery::DiscoveryService::probe_device(&ip2).await;
@@ -218,18 +218,18 @@ impl DiscoveryWindow {
                 });
 
                 glib::spawn_future_local(clone!(#[strong] manager, async move {
-                    if let Ok(Some(dev)) = rx.recv().await {
-                        manager.add_manual(dev.name, dev.ip, dev.uuid, dev.tls_mode);
-                    } else {
+                    match rx.recv().await {
+                        Ok(Ok(dev)) => manager.add_manual(dev.name, dev.ip, dev.uuid, dev.tls_mode),
                         // Full per-attempt connection errors already went to the
                         // debug log (--debug=discovery) from probe_device()'s own
                         // identify_device()/probe_api() calls — this is just the
                         // short summary, matching discovery.rs's give-up line.
-                        eprintln!(
-                            "{} [devlist-ui] {ip}: device maybe offline or unsupported (tried {} ways)",
-                            crate::timestamp(),
-                            crate::device::discovery::PROBE_MODES.len(),
-                        );
+                        // Still stderr for now; a dialog is the next step.
+                        Ok(Err(failure)) => eprintln!(
+                            "{} [devlist-ui] {}", crate::timestamp(), failure.describe(&ip),
+                        ),
+                        // Sender dropped — nothing left to report to.
+                        Err(_) => {}
                     }
                 }));
             }
