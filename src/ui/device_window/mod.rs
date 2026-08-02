@@ -32,15 +32,19 @@ use chrome::*;
 
 struct DeviceWindowInner {
     ds:               DeviceState,
-    /// Acquired once, right after `ds` is obtained, for the lifetime of
-    /// this window (main + mini share the same `ds`, so one guard covers
-    /// both surfaces) — releases automatically when this struct drops
-    /// (window close/last-ref-drop), reverting `ds` to `Simple` mode.
-    /// `device::discovery_manager`'s own tracked devices never acquire
-    /// `Full` themselves (they only need `Simple`'s liveness+identity
-    /// polling), so a window closing is the only thing that ever drops
-    /// this back down. See `DeviceState::acquire_full()`.
-    _full_mode:       FullModeGuard,
+    /// Held for as long as this window's device is not a *dormant* group
+    /// follower (see `apply_follower_dormancy()`), main + mini sharing the
+    /// one guard since both surfaces come from the same `ds`. Unlike a
+    /// plain acquire-once-for-the-window's-lifetime guard, this toggles
+    /// live: dropped when the device becomes a follower (a dormant window
+    /// shows nothing but a banner, so it has no use for Full-mode polling
+    /// or the GENA session that comes with it), reacquired the moment it
+    /// stops being one. `device::discovery_manager`'s own tracked devices
+    /// never acquire `Full` themselves (they only need `Simple`'s
+    /// liveness+identity polling), so a window closing (dropping the whole
+    /// `RefCell`, whatever it currently holds) is the only other thing
+    /// that ever drops this back down. See `DeviceState::acquire_full()`.
+    full_mode:        RefCell<Option<FullModeGuard>>,
     show_devices_fn:  Rc<dyn Fn()>,
     /// Enters Kiosk mode bound to this window's own device — see
     /// `win.kiosk`'s registration in `wire_window_lifecycle()`.
@@ -453,11 +457,14 @@ impl DeviceWindow {
             config::resolved_gena_enabled(&device_spec.uuid),
             device_spec.try_connect,
         );
-        // A device window always wants Full mode — covers both branches
-        // above (main + mini share this one `ds`, so one guard is enough
-        // for both surfaces); released automatically when this window's
-        // `DeviceWindowInner` drops. See `_full_mode`'s doc comment.
-        let full_mode = ds.acquire_full();
+        // A device window wants Full mode unless its device is a dormant
+        // group follower — see `full_mode`'s and `apply_follower_dormancy()`'s
+        // doc comments. Not acquired here: the upcoming `populate_all()`
+        // call (below) runs `apply_follower_dormancy()` as its first step,
+        // which acquires it if `ds`'s already-cached group state (if any —
+        // e.g. reused via `DeviceManager`'s dedup) doesn't already say
+        // follower, and every subsequent `device-changed`/`group-changed`
+        // keeps it in sync from there.
 
         dbg_ui(&format!("DeviceWindow creating (uuid={})", cfg_uuid));
 
@@ -582,7 +589,7 @@ impl DeviceWindow {
 
         let inner = Rc::new(DeviceWindowInner {
             ds: ds.clone(),
-            _full_mode: full_mode,
+            full_mode: RefCell::new(None),
             show_devices_fn,
             enter_kiosk_fn,
             io,

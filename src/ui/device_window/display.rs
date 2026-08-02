@@ -180,6 +180,20 @@ impl DeviceWindowInner {
         // inert, so the window can still be moved, closed, or have its menu
         // opened.
         self.full_body.set_sensitive(!dormant);
+
+        // A dormant window shows nothing but the banner above, so it has
+        // no use for Full-mode polling (metadata, artwork, presets, output
+        // rotation) or the GENA session that comes with it — paying for
+        // those to render a banner was a real, measured cost on a
+        // multi-window group. Drop the guard while dormant, reacquire the
+        // moment it isn't; `acquire_full()` is cheap and safe to call
+        // redundantly, but only bother when we don't already hold one.
+        let mut full_mode = self.full_mode.borrow_mut();
+        if dormant {
+            *full_mode = None;
+        } else if full_mode.is_none() {
+            *full_mode = Some(self.ds.acquire_full());
+        }
     }
 
     pub(super) fn apply_device_info(self: &Rc<Self>) {

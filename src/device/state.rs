@@ -2850,6 +2850,27 @@ impl DeviceState {
     /// rotation. Reuses `handle_slow_poll_device_info()` unchanged — same
     /// liveness/identity-check logic as `Full` mode's `getStatusEx` phase,
     /// not a second implementation of it.
+    ///
+    /// Also runs `apply_group_from_http(None)` on every tick — `Full`
+    /// mode's own group detection is normally driven by its dedicated
+    /// slow-poll slave-list fetch (`SlowPollResult::DeviceInfo`,
+    /// `start_slow_poll_processor()`), which never runs in `Simple` mode at
+    /// all. Without this, an HTTP-access device sitting in `Simple` mode
+    /// (any `device::discovery_manager`-tracked device with no window open,
+    /// and — since `apply_follower_dormancy()` releases its `FullModeGuard`
+    /// while dormant — a group-follower window too) would never re-detect
+    /// its own group role again: a follower that left its group would stay
+    /// shown as one forever, since nothing would ever poll for the change.
+    /// No slave list to decode here (`None` — that part *is* `Full` mode's
+    /// job, for a leader whose member list needs rendering), but a
+    /// follower's own role needs none: `group::detect()`'s follower branch
+    /// resolves purely from `group`/`master_uuid`/`master_ip`, all of which
+    /// this tick's plain `getStatusEx` already carries. (A `UpnpPolled`
+    /// device doesn't need this fix — its own fast-poll `GetInfoEx` already
+    /// carries full topology and keeps running in `Simple` mode whenever
+    /// `simple_mode_song_info` is on — but running it unconditionally here
+    /// costs nothing beyond a cheap struct comparison and keeps this correct
+    /// regardless of access method or that setting.)
     fn start_simple_poll_processor(&self, rx: async_channel::Receiver<Option<DeviceInfo>>) {
         let ds_weak = self.downgrade();
         glib::spawn_future_local(async move {
@@ -2857,6 +2878,7 @@ impl DeviceState {
                 let Some(ds) = ds_weak.upgrade() else { break };
                 ds.imp().inner.borrow_mut().simple_poll_handle = None;
                 ds.handle_slow_poll_device_info(info);
+                ds.apply_group_from_http(None);
             }
         });
     }
