@@ -573,7 +573,17 @@ fn load_overview(inner: &Rc<Inner>) {
             inner.source_picker.set_sources(&sources, move |id| source_display(&inner2, id));
         }
 
-        let default = overview.first().cloned();
+        // Default to whichever target matches the device's actual current
+        // input (same `current_mode()` -> source-id mapping `InputView`'s
+        // own `select_input()` uses for the main window's Input dropdown),
+        // rather than an arbitrary first entry — falls back to `first()`
+        // when nothing matches (e.g. the current mode has no per-source EQ
+        // target at all).
+        let current_source = capabilities::mode_to_input_source(inner.ds.current_mode());
+        let default = overview.iter()
+            .find(|t| matches!(&t.target, EqTarget::Source(s) if s == current_source))
+            .or_else(|| overview.first())
+            .cloned();
         if let Some(t) = default {
             select_target(inner, t.target.clone(), t);
         }
