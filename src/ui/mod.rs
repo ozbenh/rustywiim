@@ -107,17 +107,25 @@ pub(crate) fn wire_window_actions(
     window.add_action(&preferences_action);
 }
 
-/// Ctrl-W (Cmd-W on macOS) closes `window` — for the non-`ApplicationWindow`
-/// windows (Preferences, Device Settings, the EQ panel) that deliberately
-/// never register with the `GtkApplication` at all (see
-/// `device_window/mod.rs`'s `cleanup()` doc comment: registering would make
-/// one count as "another visible window" for the last-window-closes-quits
-/// logic, which these windows must not affect). `main.rs`'s app-wide
-/// `win.close` accelerator only ever routes to a registered
-/// `GtkApplicationWindow`, so it silently does nothing for these — a plain,
-/// local `EventControllerKey` sidesteps the app's action/accelerator system
-/// entirely instead: no action, no registration, just "this key combo closes
-/// this window."
+/// Ctrl-W/Ctrl-Q (Cmd-W/Cmd-Q on macOS) close/quit from `window` — for the
+/// non-`ApplicationWindow` windows (Preferences, Device Settings, the EQ
+/// panel) that deliberately never register with the `GtkApplication` at all
+/// (see `device_window/mod.rs`'s `cleanup()` doc comment: registering would
+/// make one count as "another visible window" for the last-window-closes-
+/// quits logic, which these windows must not affect). `main.rs`'s app-wide
+/// `win.close`/`app.quit` accelerators are delivered through each window's
+/// own accelerator group, which only exists once a window is associated with
+/// the `GtkApplication` via `set_application()` — silently never happening
+/// for these, since they're built as plain `adw::Window`s with no
+/// `.application(...)` on the builder — so both shortcuts do nothing without
+/// this. A plain, local `EventControllerKey` sidesteps the app's action/
+/// accelerator system for `win.close`'s equivalent (`window.close()`
+/// directly — no action, no registration needed); `Ctrl-Q` still goes
+/// through the app-wide `"quit"` action (via `gio::Application::default()`,
+/// the process-wide singleton, reachable with no reference threading needed)
+/// rather than duplicating quit's real logic (cleanup, closing every other
+/// window, saving config — see `ui::AppState`'s own replacement of the
+/// `"quit"` action installed in `main.rs`) here a second time.
 pub(crate) fn wire_close_shortcut(window: &impl glib::object::IsA<gtk::Window>) {
     let window: &gtk::Window = window.as_ref();
     let key_ctrl = gtk::EventControllerKey::new();
@@ -125,13 +133,22 @@ pub(crate) fn wire_close_shortcut(window: &impl glib::object::IsA<gtk::Window>) 
     let weak = window.downgrade();
     key_ctrl.connect_key_pressed(move |_, keyval, _keycode, state| {
         let Some(window) = weak.upgrade() else { return glib::Propagation::Proceed };
-        let is_close_mod = if cfg!(target_os = "macos") {
+        let is_accel_mod = if cfg!(target_os = "macos") {
             state.contains(gtk::gdk::ModifierType::META_MASK) || state.contains(gtk::gdk::ModifierType::CONTROL_MASK)
         } else {
             state.contains(gtk::gdk::ModifierType::CONTROL_MASK)
         };
-        if is_close_mod && matches!(keyval, gtk::gdk::Key::w | gtk::gdk::Key::W) {
+        if !is_accel_mod {
+            return glib::Propagation::Proceed;
+        }
+        if matches!(keyval, gtk::gdk::Key::w | gtk::gdk::Key::W) {
             window.close();
+            return glib::Propagation::Stop;
+        }
+        if matches!(keyval, gtk::gdk::Key::q | gtk::gdk::Key::Q) {
+            if let Some(app) = gio::Application::default() {
+                app.activate_action("quit", None);
+            }
             return glib::Propagation::Stop;
         }
         glib::Propagation::Proceed
