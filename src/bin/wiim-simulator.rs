@@ -160,14 +160,22 @@ struct Device {
     /// real identity, even under `--global` (which only changes what address
     /// listeners actually *bind*, not what this device claims to be).
     host: String,
+    /// `"Simulated {model} #{n+1}"` — needed because captures are anonymised
+    /// (`DeviceName`/`GroupName` are scrubbed to `xxxx…`), so replaying one
+    /// verbatim would give every simulated instance the same blank-looking
+    /// identity. Patched into any JSON reply whose top-level `DeviceName`/
+    /// `GroupName` key is present (`patch_identity_fields()`) and into
+    /// `description.xml`'s `<friendlyName>` (`build_upnp_shared()`).
+    name: String,
     index: HashMap<String, CommandCapture>,
     state: Mutex<SimState>,
     upnp: Option<UpnpShared>,
     /// This instance's own identity — see `generate_fresh_uuid()`'s doc
     /// comment for why every instance gets one instead of replaying the
     /// capture's frozen value. Patched into every JSON reply that carries a
-    /// `uuid`/`upnp_uuid` field (`handle_command()`) and into the served
-    /// `description.xml`'s `<uuid>`/`<UDN>` tags (`build_upnp_shared()`).
+    /// `uuid`/`upnp_uuid` field (`patch_identity_fields()`) and into the
+    /// served `description.xml`'s `<uuid>`/`<UDN>` tags
+    /// (`build_upnp_shared()`).
     fresh_uuid: FreshUuid,
 }
 
@@ -364,17 +372,39 @@ fn patch_player_status(body: &mut serde_json::Value, state: &SimState) {
 
 // ── UPnP ──────────────────────────────────────────────────────────────────────
 
+/// Advertises this simulated device's HTTP API address inside the UPnP
+/// description, so `--connect <ip>` (a later step) can reach the API
+/// without knowing its port — a client that already found the device over
+/// UPnP reads this tag instead of guessing. **Only `wiim-simulator` ever
+/// emits this** — real LinkPlay firmware serves its API on 80/443 and needs
+/// no such advert; this exists purely because the simulator's API listeners
+/// default to unprivileged, non-standard ports. Namespaced the same way
+/// real firmware namespaces its own extensions (e.g. Tencent's
+/// `qq:X_QPlay_SoftwareCapability`, present in every real WiiM capture).
+const API_URL_TAG: &str = "X_RustyWiiM_ApiUrl";
+
 /// Builds the UPnP-serving state from whatever `wiim-capture` recorded.
 /// `None` when the capture has no `description.xml` at all — nothing to
 /// serve, so no UPnP listener is started (see `main()`). `fresh_uuid`'s
-/// `<uuid>`/`<UDN>` are patched in here, once, rather than per-request —
-/// `description.xml` is served verbatim otherwise, so this is the one
-/// place that needs to happen.
-fn build_upnp_shared(capture: &CaptureFile, fresh_uuid: &FreshUuid) -> Option<UpnpShared> {
+/// `<uuid>`/`<UDN>`, `name`'s `<friendlyName>`, and `api_url`'s advert tag
+/// are all patched in here, once, rather than per-request —
+/// `description.xml` is served verbatim otherwise, so this is the one place
+/// that needs to happen. `api_url` is a full `scheme://host:port` (not a
+/// bare port) so the tag is self-describing when read by hand and so a
+/// future consumer can resolve a `TlsMode` from it directly.
+fn build_upnp_shared(capture: &CaptureFile, name: &str, fresh_uuid: &FreshUuid, api_url: &str) -> Option<UpnpShared> {
     let upnp = capture.upnp.as_ref()?;
     let description_xml = upnp.description.as_ref()?.body.as_str()?.to_string();
     let description_xml = patch_tag(&description_xml, "uuid", &fresh_uuid.plain);
     let description_xml = patch_tag(&description_xml, "UDN", &fresh_uuid.dashed);
+    let description_xml = patch_tag(&description_xml, "friendlyName", name);
+    let advert = format!(
+        "<sim:{API_URL_TAG} xmlns:sim=\"https://github.com/rustywiim/simulator\">{api_url}</sim:{API_URL_TAG}>"
+    );
+    let description_xml = match description_xml.find("</device>") {
+        Some(pos) => format!("{}{advert}{}", &description_xml[..pos], &description_xml[pos..]),
+        None => description_xml,
+    };
     let info_ex_template = upnp
         .actions
         .iter()
@@ -673,21 +703,34 @@ fn render_body(cap: &CommandCapture) -> String {
     }
 }
 
-/// Rewrites a JSON body's top-level `uuid`/`upnp_uuid` fields (`getStatusEx`'s
-/// identity fields — confirmed present together on real hardware, see
-/// `FreshUuid`'s doc comment) to this instance's own fresh identity, if
-/// either key is present. A no-op for every other JSON reply (most captured
-/// commands have neither key), and for anything that isn't valid JSON.
-fn patch_uuid_fields(body: &str, fresh_uuid: &FreshUuid) -> String {
+/// Rewrites a JSON body's top-level `uuid`/`upnp_uuid`/`DeviceName`/
+/// `GroupName` fields to this device's own fresh identity, for whichever of
+/// the four keys are actually present — never adds a field the real
+/// response didn't have. Needed because captures are anonymised: `uuid`/
+/// `upnp_uuid` are scrubbed to `xxxx…` (see `FreshUuid`'s doc comment), and
+/// `DeviceName`/`GroupName` are often scrubbed too (see `Device::name`'s doc
+/// comment) — replaying either verbatim would make every simulated instance
+/// of the same capture look identical. A no-op for anything that isn't
+/// valid JSON, or a JSON reply with none of these four keys (most captured
+/// commands have none).
+fn patch_identity_fields(body: &str, dev: &Device) -> String {
     let Ok(mut value) = serde_json::from_str::<serde_json::Value>(body) else { return body.to_string() };
     let Some(obj) = value.as_object_mut() else { return body.to_string() };
     let mut patched = false;
     if obj.contains_key("uuid") {
-        obj.insert("uuid".into(), serde_json::Value::String(fresh_uuid.plain.clone()));
+        obj.insert("uuid".into(), serde_json::Value::String(dev.fresh_uuid.plain.clone()));
         patched = true;
     }
     if obj.contains_key("upnp_uuid") {
-        obj.insert("upnp_uuid".into(), serde_json::Value::String(fresh_uuid.dashed.clone()));
+        obj.insert("upnp_uuid".into(), serde_json::Value::String(dev.fresh_uuid.dashed.clone()));
+        patched = true;
+    }
+    if obj.contains_key("DeviceName") {
+        obj.insert("DeviceName".into(), serde_json::Value::String(dev.name.clone()));
+        patched = true;
+    }
+    if obj.contains_key("GroupName") {
+        obj.insert("GroupName".into(), serde_json::Value::String(dev.name.clone()));
         patched = true;
     }
     if patched { value.to_string() } else { body.to_string() }
@@ -698,16 +741,16 @@ fn patch_uuid_fields(body: &str, fresh_uuid: &FreshUuid) -> String {
 /// itself failed at capture time) has no real body to replay, so it serves
 /// the recorded status if there is one, else a generic 500 — still a
 /// response, but visibly not a real one. JSON replies get their identity
-/// fields patched to this instance's own fresh UUID (see
-/// `patch_uuid_fields()`) — unconditionally, regardless of `--no-stateful`,
-/// since a fresh per-instance identity isn't "mini-device simulation," it's
-/// basic test-tool correctness (two simulator instances replaying the same
-/// capture file must not present as the same device).
-fn handle_command(cap: &CommandCapture, fresh_uuid: &FreshUuid) -> (u16, String) {
+/// fields patched to this device's own fresh identity (see
+/// `patch_identity_fields()`) — unconditionally, regardless of
+/// `--no-stateful`, since a fresh per-instance identity isn't "mini-device
+/// simulation," it's basic test-tool correctness (two simulator instances
+/// replaying the same capture file must not present as the same device).
+fn handle_command(cap: &CommandCapture, dev: &Device) -> (u16, String) {
     if cap.outcome == Outcome::Ok {
         let body = render_body(cap);
         let body = if cap.format == Some(ResponseFormat::Json) {
-            patch_uuid_fields(&body, fresh_uuid)
+            patch_identity_fields(&body, dev)
         } else {
             body
         };
@@ -948,51 +991,32 @@ fn main() {
         .map(|i| (!args.no_upnp).then(|| upnp_port_per_device[i].last().copied().unwrap_or(DEFAULT_UPNP_PORT)))
         .collect();
 
-    let mut devices = Vec::with_capacity(ndevices);
-    for (i, capture) in captures.iter().enumerate() {
-        let index = index_by_path(capture);
-        let state = Mutex::new(init_state(capture));
-        let fresh_uuid = FreshUuid::new();
-        let host = host_for(args.base_ip, i);
-        eprintln!(
-            "[wiim-simulator][{}] identity: uuid={} upnp_uuid={} host={host}",
-            i + 1, fresh_uuid.plain, fresh_uuid.dashed,
-        );
-        let upnp = upnp_ports[i].is_some().then(|| build_upnp_shared(capture, &fresh_uuid)).flatten();
-        devices.push(Arc::new(Device { n: i, host, index, state, upnp, fresh_uuid }));
-    }
-    let fleet = Arc::new(Fleet { devices, stateful_http: !args.no_stateful });
-
     // One certificate, shared by every `--https` listener across the whole
     // fleet — generating it eagerly (only if actually needed) avoids paying
     // for it when every listener in the fleet is plain HTTP.
     let cert = ports.iter().any(|p| !p.https.is_empty()).then(generate_self_signed_cert);
 
-    let mut handles = Vec::new();
-    let mut any_device_bound = false;
+    // Phase 1: bind every device's HTTP(S) API listeners *before* building
+    // any `Device` — description.xml's API advert (built in phase 2) needs
+    // to know the real bound address, which for an OS-assigned port (0)
+    // only exists after the bind actually happens.
+    struct BoundListener {
+        https: bool,
+        port: u16,
+        server: tiny_http::Server,
+    }
+    let mut bound: Vec<Vec<BoundListener>> = Vec::with_capacity(ndevices);
     for i in 0..ndevices {
-        let dev = &fleet.devices[i];
         let tag = format!("[wiim-simulator][{}]", i + 1);
-        // Default (no --global): each device on its own loopback address,
-        // matching "don't accidentally expose this on the LAN" as the safer
-        // default for a test tool. --global (single-device only, enforced
-        // in parse_args) switches every listener to 0.0.0.0.
-        let bind_host = if args.global { "0.0.0.0".to_string() } else { dev.host.clone() };
-        let mut device_bound = false;
-
+        let host = host_for(args.base_ip, i);
+        let bind_host = if args.global { "0.0.0.0".to_string() } else { host };
+        let mut listeners = Vec::new();
         for &port in &ports[i].http {
             let addr = format!("{bind_host}:{port}");
             match tiny_http::Server::http(&addr) {
                 Ok(server) => {
                     let bound_port = server.server_addr().to_ip().map(|a| a.port()).unwrap_or(port);
-                    eprintln!(
-                        "{tag} serving {} on http://{bind_host}:{bound_port}{}",
-                        captures[i].model,
-                        if fleet.stateful_http { ", stateful mini-device on" } else { "" }
-                    );
-                    let fleet = Arc::clone(&fleet);
-                    handles.push(std::thread::spawn(move || serve(server, &fleet, i)));
-                    device_bound = true;
+                    listeners.push(BoundListener { https: false, port: bound_port, server });
                 }
                 Err(e) => report_bind_failure(&tag, "http", &addr, &e, args.standard_ports),
             }
@@ -1007,17 +1031,65 @@ fn main() {
             match tiny_http::Server::https(&addr, ssl_config) {
                 Ok(server) => {
                     let bound_port = server.server_addr().to_ip().map(|a| a.port()).unwrap_or(port);
-                    eprintln!(
-                        "{tag} serving {} on https://{bind_host}:{bound_port}{}",
-                        captures[i].model,
-                        if fleet.stateful_http { ", stateful mini-device on" } else { "" }
-                    );
-                    let fleet = Arc::clone(&fleet);
-                    handles.push(std::thread::spawn(move || serve(server, &fleet, i)));
-                    device_bound = true;
+                    listeners.push(BoundListener { https: true, port: bound_port, server });
                 }
                 Err(e) => report_bind_failure(&tag, "https", &addr, &e, args.standard_ports),
             }
+        }
+        bound.push(listeners);
+    }
+
+    // Phase 2: build each `Device` now that its bound API address(es) are
+    // known, so `build_upnp_shared()` can patch the real address into
+    // description.xml's advert. Prefers an http listener over https for the
+    // advert (fewer moving parts for a client resolving it).
+    let mut devices = Vec::with_capacity(ndevices);
+    for (i, capture) in captures.iter().enumerate() {
+        let index = index_by_path(capture);
+        let state = Mutex::new(init_state(capture));
+        let fresh_uuid = FreshUuid::new();
+        let host = host_for(args.base_ip, i);
+        let name = format!("Simulated {} #{}", capture.model, i + 1);
+        eprintln!(
+            "[wiim-simulator][{}] identity: {name} uuid={} upnp_uuid={} host={host}",
+            i + 1, fresh_uuid.plain, fresh_uuid.dashed,
+        );
+        let api_listener = bound[i].iter().find(|l| !l.https).or_else(|| bound[i].first());
+        let upnp = match (upnp_ports[i].is_some(), api_listener) {
+            (true, Some(l)) => {
+                let scheme = if l.https { "https" } else { "http" };
+                let api_url = format!("{scheme}://{host}:{}", l.port);
+                build_upnp_shared(capture, &name, &fresh_uuid, &api_url)
+            }
+            _ => None,
+        };
+        devices.push(Arc::new(Device { n: i, host, name, index, state, upnp, fresh_uuid }));
+    }
+    let fleet = Arc::new(Fleet { devices, stateful_http: !args.no_stateful });
+
+    // Phase 3: spawn threads for the listeners already bound in phase 1
+    // (now that `Fleet` exists to hand them), then bind+spawn each device's
+    // UPnP listener, since that depends on `Device.upnp` from phase 2.
+    let mut handles = Vec::new();
+    let mut any_device_bound = false;
+    for (i, listeners) in bound.into_iter().enumerate() {
+        let dev = &fleet.devices[i];
+        let tag = format!("[wiim-simulator][{}]", i + 1);
+        let bind_host = if args.global { "0.0.0.0".to_string() } else { dev.host.clone() };
+        let mut device_bound = false;
+
+        for l in listeners {
+            eprintln!(
+                "{tag} serving {} on {}://{bind_host}:{}{}",
+                captures[i].model,
+                if l.https { "https" } else { "http" },
+                l.port,
+                if fleet.stateful_http { ", stateful mini-device on" } else { "" }
+            );
+            let fleet = Arc::clone(&fleet);
+            let server = l.server;
+            handles.push(std::thread::spawn(move || serve(server, &fleet, i)));
+            device_bound = true;
         }
 
         match (upnp_ports[i], dev.upnp.is_some()) {
@@ -1101,16 +1173,16 @@ fn resolve_response(key: &str, command: Option<&str>, fleet: &Fleet, dev_idx: us
                             patch_player_status(&mut body, &state);
                             (200, body.to_string())
                         }
-                        None => handle_command(cap, &dev.fresh_uuid),
+                        None => handle_command(cap, dev),
                     },
-                    Some(cap) => handle_command(cap, &dev.fresh_uuid),
+                    Some(cap) => handle_command(cap, dev),
                     None => (404, "unknown command".to_string()),
                 };
             }
         }
     }
     match dev.index.get(key) {
-        Some(cap) => handle_command(cap, &dev.fresh_uuid),
+        Some(cap) => handle_command(cap, dev),
         None => (404, "unknown command".to_string()),
     }
 }
