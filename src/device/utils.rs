@@ -44,19 +44,22 @@
 //!   `GroupState::leader_uuid`)? It is already canonical. Do not re-normalise.
 //!   Reach for [`same_device`] only where a side may legitimately be empty, or
 //!   where tolerance is wanted on purpose.
-//! - Prefer keying maps on `discovery_manager::device_key()` (uuid, else
-//!   `ip:<addr>`) for anything that must line up with the existing device maps.
+//! - Prefer keying maps on the uuid directly for anything that must line up
+//!   with the existing device maps (`device::manager`'s registry,
+//!   `device::discovery_manager`'s tracked-device map, and
+//!   `ui::views::devlist`'s row-widget maps all key on plain uuid — nothing
+//!   without one is ever tracked, see `device::discovery::ProbeFailure`'s
+//!   doc comment).
 //!
 //! ## The deliberate exceptions
 //!
-//! Three interior sites re-normalise even though their inputs are provably
-//! canonical. All three are one-shot or near-enough, and each guards an
-//! identity invariant, so the cost is nil and they mark a seam worth marking:
-//! `discovery_manager::device_key()` (computed independently by `device/` and
-//! by `ui/`, so drift between the two would be invisible), `DeviceState::new()`
-//! (makes `uuid()` canonical by construction for the identity check against
-//! `getStatusEx`), and `DeviceManager::get_state()` (the lookup deciding
-//! whether a group member is driven directly or relayed through its leader).
+//! Two interior sites re-normalise even though their inputs are provably
+//! canonical. Both are one-shot or near-enough, and each guards an identity
+//! invariant, so the cost is nil and they mark a seam worth marking:
+//! `DeviceState::new()` (makes `uuid()` canonical by construction for the
+//! identity check against `getStatusEx`), and `DeviceManager::get_state()`
+//! (the lookup deciding whether a group member is driven directly or relayed
+//! through its leader).
 //! Anything beyond these three is redundant — strip it.
 
 // ── UUID normalisation ────────────────────────────────────────────────────────
@@ -118,5 +121,27 @@ where
 pub fn same_device(a: &str, b: &str) -> bool {
     let (a, b) = (normalize_uuid(a), normalize_uuid(b));
     !a.is_empty() && a == b
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalize_uuid_is_stable_across_the_shapes_a_uuid_actually_arrives_in() {
+        // Every source spells the same device differently. Comparing the
+        // raw string tracked one device under two keys and showed it twice
+        // — and, worse, made its own identity check reject it.
+        let canonical = normalize_uuid("FF280012BA8B2ABF53ECD9E4");
+        for raw in [
+            "ff280012ba8b2abf53ecd9e4",          // slave list (normalised)
+            "uuid:FF280012BA8B2ABF53ECD9E4",     // SSDP UDN
+            "uuid:ff280012-ba8b-2abf-53ec-d9e4",  // SSDP UDN, hyphenated
+            " FF280012BA8B2ABF53ECD9E4 ",         // stray whitespace
+        ] {
+            assert_eq!(normalize_uuid(raw), canonical, "{raw}");
+        }
+        assert_eq!(normalize_uuid(""), "");
+    }
 }
 

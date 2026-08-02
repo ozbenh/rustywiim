@@ -153,7 +153,8 @@ impl ProbeFailure {
 // ── Inner state (GTK-thread only) ─────────────────────────────────────────────
 
 struct Inner {
-    /// Key: UUID when non-empty, otherwise `"ip:<ip>"`.
+    /// Key: UUID — always non-empty, see `DiscoveredDevice::uuid`'s doc
+    /// comment.
     devices: HashMap<String, DiscoveredDevice>,
     /// IPs currently being probed — prevents duplicate probe tasks.
     probing: HashSet<String>,
@@ -418,10 +419,9 @@ impl DiscoveryService {
     ) {
         match event {
             SsdpEvent::Byebye { uuid, ip } => {
-                let key     = device_key(&uuid, &ip);
-                let removed = self.imp().inner.borrow_mut().devices.remove(&key).is_some();
+                let removed = self.imp().inner.borrow_mut().devices.remove(&uuid).is_some();
                 if removed {
-                    dbg(&format!("byebye: removed {key}"));
+                    dbg(&format!("byebye: removed {uuid} ({ip})"));
                     self.emit_by_name::<()>("discovery-updated", &[]);
                 }
             }
@@ -442,9 +442,11 @@ impl DiscoveryService {
 
                 let should_probe = {
                     let mut inner = self.imp().inner.borrow_mut();
-                    // Already known by UUID or IP key?
-                    let key = device_key(&uuid, &ip);
-                    let already_known = inner.devices.contains_key(&key);
+                    // Already known by UUID? An empty `uuid` here (a
+                    // malformed USN) never matches — nothing is ever
+                    // recorded under an empty key, see `DiscoveredDevice::uuid`'s
+                    // doc comment — so it always falls through to a probe.
+                    let already_known = inner.devices.contains_key(&uuid);
                     let confirmed_non_api = !IGNORE_DENYLIST.load(Ordering::Relaxed)
                         && inner.failures.get(&ip)
                             .is_some_and(|&n| n >= NON_API_FAIL_THRESHOLD);
@@ -478,8 +480,7 @@ impl DiscoveryService {
             Ok(dev) => {
                 inner.failures.remove(&ip);
                 dbg(&format!("probe ok: {} ({}) uuid={:?}", dev.name, dev.ip, dev.uuid));
-                let key = device_key(&dev.uuid, &dev.ip);
-                inner.devices.insert(key, dev);
+                inner.devices.insert(dev.uuid.clone(), dev);
                 drop(inner);
                 self.emit_by_name::<()>("discovery-updated", &[]);
                 return;
@@ -525,15 +526,6 @@ impl DiscoveryService {
             )),
         }
     }
-}
-
-/// Same algorithm as `discovery_manager::device_key()` — the two must agree
-/// or a device is tracked under one key here and another there. Kept
-/// separate only because this module is the lower layer; the uuids reaching
-/// it are already normalised (`extract_uuid_from_usn`, and `DeviceInfo`'s
-/// own deserializer), so this needs no normalisation of its own.
-fn device_key(uuid: &str, ip: &str) -> String {
-    if !uuid.is_empty() { uuid.to_string() } else { format!("ip:{ip}") }
 }
 
 // ── SSDP listener task ────────────────────────────────────────────────────────

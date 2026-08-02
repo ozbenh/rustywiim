@@ -10,8 +10,13 @@
 // the new window's `populate_all()` call handles the initial blank state
 // (showing "Connecting…" until the first poll result arrives).
 //
-// An empty UUID cannot be deduplicated; `get()` returns a fresh uncached
-// DeviceState every time for those.
+// Every caller resolves a real uuid before reaching this registry — nothing
+// without one may ever be tracked (see `device::discovery::ProbeFailure`'s
+// doc comment and `device::discovery_manager::adopt_group_members()`'s
+// no-uuid skip) — so `get()`/`create_and_configure()` need no empty-uuid
+// special case. `DeviceState::detached()` (Kiosk's "no device bound"
+// placeholder) is the one legitimate keyless `DeviceState` in the app, and it
+// bypasses this registry entirely rather than being an exception here.
 //
 // `configure-device` (param: the freshly-created `DeviceState`) fires
 // synchronously, before first contact, for every `DeviceState` this manager
@@ -139,8 +144,9 @@ impl DeviceManager {
     ///   caller happens to push it in), configured (`ip`/`tls`/client, and
     ///   an actual connection attempt too if `try_connect`), polling is
     ///   started, and a weak reference is stored.
-    /// * **Empty UUID**: creates an uncached standalone `DeviceState`
-    ///   (always with `try_connect` effectively forced true — see below).
+    ///
+    /// `uuid` must be non-empty — every caller resolves a real uuid before
+    /// reaching this registry (see this module's own doc comment).
     ///
     /// `try_connect` — whether to actually attempt a connection now
     /// (`DeviceState::set_device`'s `connect_now`). The caller (`ui/mod.rs`)
@@ -151,10 +157,7 @@ impl DeviceManager {
     /// that's already known to fail — the fresh `DeviceState` sits
     /// configured-but-`Disconnected` until its own `maybe_self_reconnect()`
     /// (or an external `mark_reachable()` call, for a caller that wants to
-    /// drive this itself) brings it back. Ignored (always `true`) for an
-    /// empty uuid — devlist has no presence to consult for a device it
-    /// doesn't know about (`--connect`/a brand new manual add), so there's
-    /// nothing to defer to.
+    /// drive this itself) brings it back.
     ///
     /// `access_override`/`mute_access_override`/`loop_mode_access_override`
     /// take the same `Option<AccessMethod>` shape
@@ -193,12 +196,10 @@ impl DeviceManager {
 
         let ds = DeviceState::new(self.rt(), uuid.to_string());
         ds.set_manager(self);
-        ds.set_device(ip, tls, access_override, mute_access_override, loop_mode_access_override, gena_enabled, try_connect || uuid.is_empty());
+        ds.set_device(ip, tls, access_override, mute_access_override, loop_mode_access_override, gena_enabled, try_connect);
         ds.start_polling();
 
-        if !uuid.is_empty() {
-            self.wire_and_insert(&ds, uuid);
-        }
+        self.wire_and_insert(&ds, uuid);
         ds
     }
 
@@ -243,9 +244,7 @@ impl DeviceManager {
         ds.set_device(ip, tls, access_override, mute_access_override, loop_mode_access_override, gena_enabled, true);
         ds.start_polling();
 
-        if !uuid.is_empty() {
-            self.wire_and_insert(&ds, uuid);
-        }
+        self.wire_and_insert(&ds, uuid);
         ds
     }
 
@@ -259,7 +258,6 @@ impl DeviceManager {
     /// on the caller's behalf.
     pub fn get_state(&self, uuid: &str) -> Option<DeviceState> {
         let uuid = crate::device::utils::normalize_uuid(uuid);
-        if uuid.is_empty() { return None; }
         self.imp().states.borrow().get(&uuid).and_then(|w| w.upgrade())
     }
 
@@ -306,7 +304,6 @@ impl DeviceManager {
     /// `list-changed` handler — so an open window reconnects to the right
     /// IP instead of retrying a dead one forever.
     pub fn update_ip(&self, uuid: &str, ip: &str, tls: TlsMode) {
-        if uuid.is_empty() { return; }
         let ds = {
             let states = self.imp().states.borrow();
             states.get(uuid).and_then(|w| w.upgrade())
@@ -335,12 +332,10 @@ impl DeviceManager {
     /// Shared prune-and-look-up prefix for `get()`/`create_and_configure()`
     /// — prunes stale (weak-ref-only, GC'd) entries lazily so the map
     /// doesn't grow unboundedly, then returns the existing entry for
-    /// `uuid` if there is one. Empty `uuid` never matches (can't be
-    /// deduplicated at all — see this module's own doc comment).
+    /// `uuid` if there is one.
     fn lookup_and_prune(&self, uuid: &str) -> Option<DeviceState> {
         let mut states = self.imp().states.borrow_mut();
         states.retain(|_, w| w.upgrade().is_some());
-        if uuid.is_empty() { return None; }
         states.get(uuid).and_then(|w| w.upgrade())
     }
 

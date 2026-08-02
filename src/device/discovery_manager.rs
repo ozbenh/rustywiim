@@ -141,7 +141,7 @@ pub enum EntryGroupRole {
     GroupHeader { follower_count: usize },
     /// A compact line beneath a `GroupHeader`: name and volume only.
     Member {
-        /// `device_key()` of the group this line belongs to, so the UI can
+        /// Uuid of the group (leader) this line belongs to, so the UI can
         /// tie a line back to its header without relying on adjacency.
         leader_key: String,
         /// False when this member is in the leader's slave list but is not
@@ -310,9 +310,9 @@ mod mgr_imp {
                 // FlipCover's flip-vs-fade logic there: a freshly
                 // reconstructed FlipCover never has "previous real art" on
                 // the same widget instance to flip from. Params: the
-                // tracked device's key (`device_key()`'s result — same
-                // string `entries()`'s rows/`current_entries` are indexed
-                // by) and the raw `playback_changed` bitmask. The mask
+                // tracked device's uuid (the same string `entries()`'s rows/
+                // `current_entries` are indexed by) and the raw
+                // `playback_changed` bitmask. The mask
                 // matters, not just the key — a handler that reran on
                 // *every* firing regardless of which bits changed would
                 // catch the gap where title/artist land before the async
@@ -404,8 +404,8 @@ impl DiscoveryManager {
     /// Single-entry counterpart to `entries()` — used by the
     /// `song-info-changed` handler to refresh just one row's content
     /// without recomputing (or rebuilding widgets for) every other tracked
-    /// device. `key` is `device_key()`'s result, same as `entries()`'s
-    /// rows are implicitly keyed by for row-widget lookup purposes.
+    /// device. `key` is the device's uuid, same as `entries()`'s rows are
+    /// implicitly keyed by for row-widget lookup purposes.
     pub fn entry_for(&self, key: &str) -> Option<ManagedEntry> {
         let inner = self.imp().inner.borrow();
         let song_info = inner.song_info;
@@ -516,13 +516,12 @@ impl DiscoveryManager {
 
     /// Add a manually-discovered device (already confirmed alive by the caller).
     pub fn add_manual(&self, name: String, ip: String, uuid: String, tls_mode: TlsMode) {
-        let key = device_key(&uuid, &ip);
-        if self.imp().inner.borrow().devices.contains_key(&key) {
+        if self.imp().inner.borrow().devices.contains_key(&uuid) {
             dbg(&format!("add manual: already known {name} ({ip}) uuid={uuid:?}"));
             return;
         }
         dbg(&format!("add manual: {name} ({ip}) uuid={uuid:?}"));
-        self.track_device(&key, &uuid, &ip, tls_mode, true, name, String::new(), String::new(), String::new(), false);
+        self.track_device(&uuid, &uuid, &ip, tls_mode, true, name, String::new(), String::new(), String::new(), false);
         self.emit_list_changed();
     }
 
@@ -541,8 +540,8 @@ impl DiscoveryManager {
     ///
     /// A member the leader reports with no uuid at all (`decode_member()`
     /// accepts ip-only entries) is skipped the same way — there is no key to
-    /// track it under (see this module's `device_key()`/the codebase-wide
-    /// "no key, no tracking" rule), and it still renders correctly via
+    /// track it under (see the codebase-wide "no key, no tracking" rule),
+    /// and it still renders correctly via
     /// `resolve_topology()`'s existing "named by the leader but not tracked"
     /// fallback, the same path a member discovery hasn't reached yet already
     /// uses.
@@ -560,17 +559,20 @@ impl DiscoveryManager {
             .unwrap_or(TlsMode::HttpsWiiM);
         let mut adopted = false;
         for m in g.members.iter() {
+            if m.uuid.is_empty() {
+                dbg(&format!("group: skipping member with no uuid {} ({})", m.name, m.ip));
+                continue;
+            }
             if m.ip.is_empty() || utils::is_wifi_direct_address(&m.ip) {
                 dbg(&format!("group: skipping unroutable member {} ({})", m.name, m.ip));
                 continue;
             }
-            let key = device_key(&m.uuid, &m.ip);
-            if self.imp().inner.borrow().devices.contains_key(&key) {
+            if self.imp().inner.borrow().devices.contains_key(&m.uuid) {
                 continue;
             }
             dbg(&format!("group: adopting member {} ({}) uuid={:?}", m.name, m.ip, m.uuid));
             self.track_device(
-                &key, &m.uuid, &m.ip, tls, false,
+                &m.uuid, &m.uuid, &m.ip, tls, false,
                 m.name.clone(), String::new(), String::new(), String::new(), false,
             );
             adopted = true;
@@ -590,8 +592,7 @@ impl DiscoveryManager {
     /// Fired whenever a single tracked device's now-playing content
     /// changes — see `song-info-changed`'s doc comment (`signals()`) for
     /// why this is separate from `list-changed`. The callback's `&str` is
-    /// the device's key (`device_key()`'s result); use `entry_for(key)` to
-    /// get its fresh content.
+    /// the device's uuid; use `entry_for(key)` to get its fresh content.
     pub fn connect_song_info_changed<F: Fn(&Self, &str, u32) + 'static>(&self, f: F) -> glib::SignalHandlerId {
         self.connect_local("song-info-changed", false, move |args| {
             let obj  = args[0].get::<Self>().unwrap();
@@ -784,7 +785,7 @@ impl DiscoveryManager {
     fn on_discovery_updated(&self, svc: &DiscoveryService) {
         let discovered = svc.devices();
         let disc_keys: std::collections::HashSet<String> = discovered.iter()
-            .map(|d| device_key(&d.uuid, &d.ip))
+            .map(|d| d.uuid.clone())
             .collect();
 
         {
@@ -804,7 +805,6 @@ impl DiscoveryManager {
         // like this for the lifetime of the app.
         let seed = self.imp().inner.borrow().seed.clone();
         for dev in &discovered {
-            let key = device_key(&dev.uuid, &dev.ip);
             let cached = seed.get(&dev.uuid);
             let name  = cached.and_then(|c| c.name.clone())
                 .filter(|n| !n.is_empty())
@@ -813,7 +813,7 @@ impl DiscoveryManager {
             let project  = cached.and_then(|c| c.project.clone()).unwrap_or_default();
             let firmware = cached.and_then(|c| c.firmware.clone()).unwrap_or_default();
             let pinned = cached.map_or(false, |c| c.pinned);
-            self.track_device(&key, &dev.uuid, &dev.ip, dev.tls_mode, pinned, name, model, project, firmware, true);
+            self.track_device(&dev.uuid, &dev.uuid, &dev.ip, dev.tls_mode, pinned, name, model, project, firmware, true);
         }
 
         let pruned = self.do_prune();
@@ -860,34 +860,15 @@ impl DiscoveryManager {
         for entry in seed.values() {
             if !entry.pinned && !entry.window_open { continue; }
             let Some(ref ip) = entry.last_ip else { continue };
-            let key = device_key(&entry.uuid, ip);
-            if self.imp().inner.borrow().devices.contains_key(&key) { continue; }
+            if self.imp().inner.borrow().devices.contains_key(&entry.uuid) { continue; }
             let name     = entry.name.clone().unwrap_or_else(|| format!("Device @ {ip}"));
             let model    = entry.model.clone().unwrap_or_default();
             let project  = entry.project.clone().unwrap_or_default();
             let firmware = entry.firmware.clone().unwrap_or_default();
             dbg(&format!("seed: {name} ({ip}) uuid={} pinned={}", entry.uuid, entry.pinned));
-            self.track_device(&key, &entry.uuid, ip, entry.tls_mode, entry.pinned, name, model, project, firmware, false);
+            self.track_device(&entry.uuid, &entry.uuid, ip, entry.tls_mode, entry.pinned, name, model, project, firmware, false);
         }
     }
-}
-
-/// `pub`, not private — `device/` and `ui/` are separate crates (see
-/// `lib.rs`'s doc comment), so `pub(crate)` wouldn't reach `ui::devlist`'s
-/// row-building code, which needs to compute the exact same key
-/// independently (to index its own `RowWidgets` map alongside this
-/// module's `Inner.devices`) — both sides must share this one algorithm
-/// rather than risk drifting apart.
-///
-/// Normalises the uuid (`utils::normalize_uuid`) as a belt-and-braces
-/// anchor: every uuid reaching here is already normalised at its entry
-/// boundary (SSDP `USN` extraction, `getStatusEx` deserialisation, config
-/// load), so this is idempotent — it exists so this key and any key an
-/// independent caller (`ui::devlist`) computes from the same inputs cannot
-/// drift apart, not because a raw value is expected to arrive.
-pub fn device_key(uuid: &str, ip: &str) -> String {
-    let uuid = utils::normalize_uuid(uuid);
-    if !uuid.is_empty() { uuid } else { format!("ip:{ip}") }
 }
 
 /// Turns a flat set of tracked devices into the ordered, topology-annotated
@@ -1079,24 +1060,6 @@ mod tests {
             EntryGroupRole::GroupHeader { .. } => "header",
             EntryGroupRole::Member { .. }   => "member",
         })).collect()
-    }
-
-    #[test]
-    fn device_key_is_stable_across_the_uuid_shapes_that_reach_it() {
-        // Every source spells the same device differently. Keying on the
-        // raw string tracked one device under two keys and showed it twice
-        // — and, worse, made its own identity check reject it.
-        let canonical = device_key("FF280012BA8B2ABF53ECD9E4", "10.1.1.77");
-        for raw in [
-            "ff280012ba8b2abf53ecd9e4",                 // slave list (normalised)
-            "uuid:FF280012BA8B2ABF53ECD9E4",            // SSDP UDN
-            "uuid:ff280012-ba8b-2abf-53ec-d9e4",        // SSDP UDN, hyphenated
-            " FF280012BA8B2ABF53ECD9E4 ",               // stray whitespace
-        ] {
-            assert_eq!(device_key(raw, "10.1.1.77"), canonical, "{raw}");
-        }
-        // No uuid at all still falls back to the address.
-        assert_eq!(device_key("", "10.1.1.77"), "ip:10.1.1.77");
     }
 
     #[test]

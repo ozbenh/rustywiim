@@ -8,7 +8,7 @@
 //! settings/close actions) — those stay with whichever window hosts it.
 //!
 //! Clicking a row doesn't open anything itself — it emits `device-selected`
-//! (the row's `device_key()`) so each host decides what "selected" means:
+//! (the row's uuid) so each host decides what "selected" means:
 //! `DiscoveryWindow` opens a device window; a future Kiosk-mode popover
 //! rebinds its active device instead.
 //!
@@ -60,17 +60,16 @@ pub mod imp {
             SIGNALS.get_or_init(|| {
                 vec![
                     // Host request: a row was clicked/activated. Carries the
-                    // row's device_key() (uuid, or "ip:{ip}" for an
-                    // unresolved manually-added device) rather than a
-                    // pre-built DeviceSpec/ManagedEntry — GObject signal
-                    // params must be glib::Value-able, and this mirrors
-                    // DiscoveryManager's own song-info-changed convention
-                    // (host resolves the key back via manager.entry_for()).
+                    // row's uuid rather than a pre-built DeviceSpec/
+                    // ManagedEntry — GObject signal params must be
+                    // glib::Value-able, and this mirrors DiscoveryManager's
+                    // own song-info-changed convention (host resolves the
+                    // key back via manager.entry_for()).
                     Signal::builder("device-selected")
                         .param_types([String::static_type()])
                         .build(),
                     // Host request: open settings scoped to one device.
-                    // Carries the same device_key() as `device-selected`.
+                    // Carries the same uuid as `device-selected`.
                     // A group member has no device window of its own — only
                     // the group does — so its member line's cog is the only
                     // route to that device's own settings.
@@ -110,7 +109,7 @@ use adw::subclass::prelude::*;
 use glib::clone;
 use gtk::{glib, Orientation};
 
-use crate::device::discovery_manager::{DevicePresence, DiscoveryManager, EntryGroupRole, ManagedEntry, device_key};
+use crate::device::discovery_manager::{DevicePresence, DiscoveryManager, EntryGroupRole, ManagedEntry};
 use crate::device::state::DeviceState;
 use crate::ui::flip_cover::FlipCover;
 use crate::ui::icons::IconSet;
@@ -123,7 +122,7 @@ glib::wrapper! {
 }
 
 /// The subset of a row's widgets `song-info-changed` needs to update in
-/// place — keyed by `device_key()`'s result, rebuilt (not incrementally
+/// place — keyed by uuid, rebuilt (not incrementally
 /// patched) whenever `rebuild_list()` runs. Only present for rows built
 /// while `entry.song_info_enabled` was true (see `build_row()`).
 /// A member line's volume controls. Kept apart from `RowWidgets` because a
@@ -434,7 +433,7 @@ impl DeviceListView {
     fn apply_group_levels_for_member(&self, mgr: &DiscoveryManager, key: &str) {
         let imp = self.imp();
         let leader_key = imp.current_entries.borrow().iter()
-            .find(|e| device_key(&e.uuid, &e.ip) == key)
+            .find(|e| e.uuid == key)
             .and_then(|e| match &e.group_role {
                 EntryGroupRole::Member { leader_key, .. } => Some(leader_key.clone()),
                 _ => None,
@@ -494,12 +493,12 @@ impl DeviceListView {
                         end += 1;
                     }
                     i = end;
-                    let key = device_key(&entry.uuid, &entry.ip);
+                    let key = entry.uuid.clone();
                     (self.build_group_card(entry, &entries[start..end], &manager), key)
                 }
                 _ => {
                     i += 1;
-                    let key = device_key(&entry.uuid, &entry.ip);
+                    let key = entry.uuid.clone();
                     (self.build_device_row(entry, &manager), key)
                 }
             };
@@ -550,7 +549,7 @@ impl DeviceListView {
         &self, entry: &ManagedEntry, manager: &DiscoveryManager, indent: i32,
     ) -> gtk::Box {
         let imp = self.imp();
-        let key = device_key(&entry.uuid, &entry.ip);
+        let key = entry.uuid.clone();
 
         let hbox = gtk::Box::builder()
             .orientation(Orientation::Horizontal)
@@ -661,7 +660,7 @@ impl DeviceListView {
     fn build_device_content(&self, entry: &ManagedEntry, manager: &DiscoveryManager) -> gtk::Box {
         let imp = self.imp();
         let icons = imp.icons.get().unwrap();
-        let key = device_key(&entry.uuid, &entry.ip);
+        let key = entry.uuid.clone();
 
         let hbox = gtk::Box::builder()
             .orientation(Orientation::Horizontal)

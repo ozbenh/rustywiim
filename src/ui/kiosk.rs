@@ -739,7 +739,7 @@ impl KioskWindow {
         (device_btn, settings_btn, sidebar_btn, exit_kiosk_btn)
     }
 
-    /// Resolves `key` (a `device_key()` result — see `DiscoveryManager`)
+    /// Resolves `key` (a device uuid — see `DiscoveryManager`)
     /// through `manager.device_state_for()`, tears down whatever was
     /// previously shown (dropping its `PlaybackView` and `FullModeGuard`
     /// together — `views/*`'s `dispose()` handles the view's own handler
