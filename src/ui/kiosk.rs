@@ -93,7 +93,12 @@ struct BoundDevice {
     /// needs to reach them directly yet).
     _presets: crate::ui::views::presets::PresetsView,
     _play_queue: crate::ui::views::play_queue::PlayQueueView,
-    _io:      crate::ui::views::io::InputOutputView,
+    _input:   crate::ui::views::input::InputView,
+    /// Same "rebuilt per bind, kept alive here only" story as `_input` —
+    /// `group_changed_handler` below reaches its `set_group_leader()`
+    /// through its own weak capture (taken before this struct is built),
+    /// not through this field.
+    _output:  crate::ui::views::output::OutputView,
     _full_mode: FullModeGuard,
     /// Disconnected explicitly when this binding is released — `ds` may
     /// outlive `BoundDevice` (`DeviceManager` dedups by uuid, so another
@@ -996,10 +1001,19 @@ impl KioskWindow {
         // styling (see modern.css), inert everywhere else.
         let presets = views::presets::PresetsView::new(&ds, &self.icons);
         let play_queue = views::play_queue::PlayQueueView::new(&ds);
-        let io = views::io::InputOutputView::new(&ds, &self.icons);
+        let input = views::input::InputView::new(&ds, &self.icons);
+        let output = views::output::OutputView::new(&ds, &self.icons);
+        // A leader's own output isn't the group's — see
+        // `views::output::OutputView`'s own doc comment. Seeded from `ds`'s
+        // already-known role before activation, kept live by
+        // `group_changed_handler` below for a role change while this stays
+        // bound (same story as `device_settings_btn`'s sensitivity, just
+        // below).
+        output.set_group_leader(ds.group_state().role == crate::device::group::GroupRole::Leader);
         presets.set_active(true);
-        io.set_active(true);
-        let left_pane = crate::ui::device_window::chrome::build_left_pane(&ds, &presets, &play_queue, &io);
+        input.set_active(true);
+        output.set_active(true);
+        let left_pane = crate::ui::device_window::chrome::build_left_pane(&ds, &presets, &play_queue, &input, &output);
         // margin_top matches sidebar_btn's own (see .kiosk-sidebar-btn) so
         // the panel's top edge lines up with the toggle button's, instead
         // of starting right at the very top of the window.
@@ -1113,11 +1127,14 @@ impl KioskWindow {
         );
         let group_changed_handler = ds.connect_group_changed({
             let weak = Rc::downgrade(self);
+            let output_weak = output.downgrade();
             move |ds| {
                 let Some(this) = weak.upgrade() else { return };
-                this.device_settings_btn.set_sensitive(
-                    has_real_device && ds.group_state().role != crate::device::group::GroupRole::Leader,
-                );
+                let is_leader = ds.group_state().role == crate::device::group::GroupRole::Leader;
+                this.device_settings_btn.set_sensitive(has_real_device && !is_leader);
+                if let Some(output) = output_weak.upgrade() {
+                    output.set_group_leader(is_leader);
+                }
             }
         });
 
@@ -1129,7 +1146,8 @@ impl KioskWindow {
             _status_bar: status_bar,
             _presets: presets,
             _play_queue: play_queue,
-            _io: io,
+            _input: input,
+            _output: output,
             playback_changed_handler,
             group_changed_handler,
         });
@@ -1214,10 +1232,11 @@ impl KioskWindow {
             0
         } else {
             // The real content's own natural width (the Presets/Queue tab
-            // switch + InputOutputView, whatever `left_pane` holds right
-            // now) plus a margin — not a fixed guess. A static width clipped the
-            // panel's content on some screen/content combinations; this
-            // guarantees it's fully visible regardless of screen size.
+            // switch + InputView/OutputView, whatever `left_pane` holds
+            // right now) plus a margin — not a fixed guess. A static width
+            // clipped the panel's content on some screen/content
+            // combinations; this guarantees it's fully visible regardless
+            // of screen size.
             let natural = self.sidebar_paned.start_child()
                 .map(|w| w.measure(gtk::Orientation::Horizontal, -1).1)
                 .unwrap_or(SIDEBAR_OPEN_WIDTH);

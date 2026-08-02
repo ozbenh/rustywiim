@@ -145,7 +145,7 @@ fn mark_clean(inner: &Rc<Inner>, kind: EqKind) {
 }
 
 /// Translated label + icon for a source (input) token — the same mapping
-/// `InputOutputView::populate_input()` uses (`capabilities::
+/// `InputView::populate_input()` uses (`capabilities::
 /// input_display_name()`/`icon_canon_for_input()` plus the device's own
 /// rename map), reused here rather than showing the raw wire token.
 fn source_display(inner: &Rc<Inner>, id: &str) -> (String, gtk::gdk::Paintable) {

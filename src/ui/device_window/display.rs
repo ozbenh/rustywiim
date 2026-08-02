@@ -171,6 +171,16 @@ impl DeviceWindowInner {
     pub(super) fn apply_follower_dormancy(self: &Rc<Self>) {
         let g = self.ds.group_state();
         let dormant = g.role == crate::device::group::GroupRole::Follower;
+        let is_leader = g.role == crate::device::group::GroupRole::Leader;
+
+        // A leader's own output isn't the group's — each member has its
+        // own — so the output row is hidden entirely rather than showing
+        // *this* device's output as though it applied to the whole group.
+        // Runs on every group-role change, same as the rest of this
+        // function (`wire_device_signals()`'s `group-changed` handler, via
+        // `populate_all()`). See `views::output::OutputView`'s own doc
+        // comment.
+        self.output.set_group_leader(is_leader);
 
         self.follower_banner.set_title(
             "Part of a group — controlled by the group leader",
@@ -206,7 +216,7 @@ impl DeviceWindowInner {
         // `group-changed` handler, via `populate_all()`) and a
         // `SimpleAction` lookup is cheap.
         if let Some(action) = self.window.lookup_action("device-settings").and_downcast::<gio::SimpleAction>() {
-            action.set_enabled(g.role != crate::device::group::GroupRole::Leader);
+            action.set_enabled(!is_leader);
         }
     }
 

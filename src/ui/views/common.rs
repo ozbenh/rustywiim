@@ -161,9 +161,9 @@ pub(crate) fn vol_icon(muted: bool, vol: f64) -> &'static str {
 
 // ── Icon + label rows ───────────────────────────────────────────────────────
 
-/// An icon + label row, shared by `InputOutputView`'s input/output
-/// dropdown factories and `ui::eq::chrome`'s source picker, so all three
-/// read the same (icon size, spacing) rather than drifting independently.
+/// An icon + label row, shared by `InputView`/`OutputView`'s dropdown
+/// factories and `ui::eq::chrome`'s source picker, so all three read the
+/// same (icon size, spacing) rather than drifting independently.
 /// Returns direct handles to the image/label so callers can update them
 /// without re-traversing children afterward.
 pub(crate) fn icon_label_row(icon_pixel_size: i32) -> (gtk::Box, gtk::Image, gtk::Label) {

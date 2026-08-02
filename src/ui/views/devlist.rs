@@ -228,9 +228,7 @@ fn apply_now_playing(flip: &FlipCover, icons: &IconSet, entry: &ManagedEntry) {
 /// Volume button + popover slider + mute button, same shape as
 /// `views::volume::VolumeControl` (see `.devlist-vol-*` CSS) sized for a
 /// compact row rather than a standalone window. Caller wires the actual
-/// click/drag/mute handlers. Replacing this with a real `VolumeControl` is
-/// `PLAYBACK_STACKS.md` Phase 3 material — rows don't hold a `DeviceState`
-/// to bind one to.
+/// click/drag/mute handlers. 
 fn build_devlist_vol_popover() -> (gtk::Button, gtk::Image, gtk::Label, gtk::Scale, gtk::Button, gtk::Popover) {
     let vol_icon_img = gtk::Image::builder()
         .icon_name("audio-volume-high-symbolic")

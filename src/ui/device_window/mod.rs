@@ -49,7 +49,12 @@ struct DeviceWindowInner {
     /// Enters Kiosk mode bound to this window's own device — see
     /// `win.kiosk`'s registration in `wire_window_lifecycle()`.
     enter_kiosk_fn:   Rc<dyn Fn()>,
-    io:             views::io::InputOutputView,
+    input:          views::input::InputView,
+    /// Hidden entirely for a group leader (`apply_follower_dormancy()`
+    /// calls `set_group_leader()`) — a leader's own output isn't
+    /// meaningful group-wide, since each member has its own. See
+    /// `views::output::OutputView`'s own doc comment.
+    output:         views::output::OutputView,
     /// Rebuilt in place by `toggle_layout()` ("L") rather than rebound —
     /// `views/mod.rs`'s "bound once, never rebound" contract is about a
     /// view's `DeviceState`, not its layout, so a fresh `PlaybackView`
@@ -473,8 +478,9 @@ impl DeviceWindow {
         let (header, sidebar_btn, kiosk_btn, mini_btn, connecting_spinner) = build_header(init_dev_cfg.panel_visible);
         let presets = views::presets::PresetsView::new(&ds, &icons);
         let play_queue = views::play_queue::PlayQueueView::new(&ds);
-        let io = views::io::InputOutputView::new(&ds, &icons);
-        let left_pane = build_left_pane(&ds, &presets, &play_queue, &io);
+        let input = views::input::InputView::new(&ds, &icons);
+        let output = views::output::OutputView::new(&ds, &icons);
+        let left_pane = build_left_pane(&ds, &presets, &play_queue, &input, &output);
         // Blurred-artwork background layer for the full window — built
         // before the playback view so the view can be handed a reference
         // (it feeds it artwork alongside its own FlipCover); attached to
@@ -594,7 +600,8 @@ impl DeviceWindow {
             full_mode: RefCell::new(None),
             show_devices_fn,
             enter_kiosk_fn,
-            io,
+            input,
+            output,
             playback: RefCell::new(playback),
             art_bg: art_bg.clone(),
             icons: Rc::clone(&icons),
@@ -669,17 +676,18 @@ impl DeviceWindow {
         // whatever the DeviceState already has cached.
         inner.populate_all();
 
-        // `io`/`status_bar` stay permanently active — each self-subscribes
-        // to the DeviceState signals it needs, and the old window-driven
-        // update paths refreshed them regardless of which panel was
-        // showing anyway. `presets`/`play_queue` (built in
+        // `input`/`output`/`status_bar` stay permanently active — each
+        // self-subscribes to the DeviceState signals it needs, and the old
+        // window-driven update paths refreshed them regardless of which
+        // panel was showing anyway. `presets`/`play_queue` (built in
         // `build_left_pane()`) are mode-following instead, same shape as
         // the two playback views below: exactly one active at a time,
         // Presets by default — its own toggle-button handler activates it,
         // this call just performs the equivalent of that initial toggle for
         // a widget that starts life already selected.
         inner.presets.set_active(true);
-        inner.io.set_active(true);
+        inner.input.set_active(true);
+        inner.output.set_active(true);
         inner.status_bar.set_active(true);
         inner.playback.borrow().set_active(!*inner.mini_mode.borrow());
         inner.mini.view.set_active(*inner.mini_mode.borrow());

@@ -162,7 +162,7 @@ pub mod source_picker_imp {
     impl ObjectImpl for EqSourcePicker {
         fn constructed(&self) {
             self.parent_constructed();
-            // Icon + label, matching `InputOutputView`'s input dropdown —
+            // Icon + label, matching `InputView`'s dropdown —
             // this button shows the same translated name/icon the Source
             // panel already does, not the raw wire token.
             let (content, icon, label) = crate::ui::views::common::icon_label_row(16);
@@ -267,7 +267,7 @@ impl EqSourcePicker {
 
     /// Rebuilds the source list. `display(source_token) -> (label, icon)`
     /// lets the host panel apply its own canonical-input-name/icon mapping
-    /// (the same one `InputOutputView`'s input dropdown uses) without this
+    /// (the same one `InputView`'s dropdown uses) without this
     /// widget needing to know about `capabilities::InputEntry` itself.
     /// Also stabilizes the button's own width to the widest label among
     /// `sources` — otherwise it visibly resized on every selection change.

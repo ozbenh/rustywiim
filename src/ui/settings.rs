@@ -21,10 +21,13 @@ use crate::config::{self, ThemeMode};
 use crate::ui::scroll_fade_label::{SPEED_MAX, SPEED_MIN};
 use crate::device::api::DeviceInfo;
 use crate::device::capabilities::DeviceCapabilities;
+use crate::device::group::GroupRole;
 use crate::device::playback::AccessMethod;
 use crate::device::state::{DeviceState, FullModeGuard};
 use crate::device::discovery_manager::DiscoveryManager;
+use crate::ui::icons::IconSet;
 use crate::ui::kiosk::kiosk_settings_changed;
+use crate::ui::views;
 use crate::ui::DEBUG_UI;
 use std::sync::atomic::Ordering;
 
@@ -216,14 +219,32 @@ impl DeviceSettingsWindow {
             about_holder.set_visible_child_name("offline");
         }
 
+        // A group leader's own input *is* the group's source (kept live in
+        // the playback window instead — no gap to fill here), but its own
+        // output is not the group's — each member has its own (see
+        // `views::output::OutputView`'s own doc comment) — so a leader
+        // gets neither page at all rather than one that means something
+        // different than it looks like it means. Computed once at
+        // construction, same as everything else this window shows about a
+        // device — see "About"'s own doc comment on why that's an accepted
+        // limitation here, not tracked live across a role change while the
+        // window stays open.
+        let is_leader = ds.group_state().role == GroupRole::Leader;
+        let io_holders = (!is_leader).then(|| build_io_pages(&ds, connected));
+
         let initial_title = match ds.device_info() {
             Some(i) => format!("Device Settings ({})", i.device_name),
             None    => "Device Settings".to_string(),
         };
-        let window = build_settings_window(&initial_title, vec![
+        let mut pages = vec![
             ("Advanced", "advanced", advanced_holder.clone().upcast()),
-            ("About",    "about",    about_holder.clone().upcast()),
-        ]);
+        ];
+        if let Some((input_holder, output_holder)) = &io_holders {
+            pages.push(("Input",  "input",  input_holder.clone().upcast()));
+            pages.push(("Output", "output", output_holder.clone().upcast()));
+        }
+        pages.push(("About", "about", about_holder.clone().upcast()));
+        let window = build_settings_window(&initial_title, pages);
 
         // Rows aren't reachable from `build_settings_window()`'s return
         // value (it only hands back the window), so sensitivity is set via
@@ -255,6 +276,12 @@ impl DeviceSettingsWindow {
         // keep them (and their whole subtree) alive right along with it,
         // the same class of leak `wire_access_row()` had.
         let was_connected = Cell::new(connected);
+        // `glib::clone!`'s `#[weak]` attribute needs a `Downgrade` type
+        // directly, which `Option<Stack>` isn't — downgrade the pair by
+        // hand instead, same weak-capture reasoning as `advanced_holder`/
+        // `about_holder` above (this closure is a permanent handler on
+        // `ds`, which can outlive this window).
+        let weak_io_holders = io_holders.as_ref().map(|(i, o)| (i.downgrade(), o.downgrade()));
         ds.connect_device_changed(glib::clone!(
             #[weak] advanced_holder, #[weak] about_holder,
             move |ds| {
@@ -275,6 +302,19 @@ impl DeviceSettingsWindow {
                 } else {
                     advanced_holder.set_visible_child_name("offline");
                     about_holder.set_visible_child_name("offline");
+                }
+                // Input/Output stay live on their own (their embedded
+                // views self-subscribe to `ds`), so unlike Advanced/About
+                // there's nothing to rebuild here — only which holder page
+                // is visible changes.
+                if let Some((input_weak, output_weak)) = &weak_io_holders {
+                    if let (Some(input_holder), Some(output_holder)) =
+                        (input_weak.upgrade(), output_weak.upgrade())
+                    {
+                        let name = if connected { "content" } else { "offline" };
+                        input_holder.set_visible_child_name(name);
+                        output_holder.set_visible_child_name(name);
+                    }
                 }
             }
         ));
@@ -1004,6 +1044,55 @@ fn build_offline_placeholder() -> gtk::Widget {
         .css_classes(["dim-label", "title-2"])
         .build()
         .upcast()
+}
+
+// ── Device -> Input / Output ────────────────────────────────────────────────
+
+/// Builds the "Input"/"Output" Device Settings pages — each a live
+/// `InputView`/`OutputView` (`views/input.rs`/`views/output.rs`, the same
+/// widgets the device window's own left panel and Kiosk embed) wrapped in
+/// the same offline-holder-`Stack` pattern Advanced/About use above, so a
+/// disconnected device shows the same "Offline" placeholder everywhere in
+/// this window rather than a dead "—" dropdown. Unlike Advanced/About's
+/// own pages (plain snapshots, rebuilt from scratch on reconnect), the
+/// embedded views are built once and stay live on their own — the caller
+/// only needs to swap which holder page is visible.
+///
+/// Each page wraps its view in its own `PreferencesGroup`, leaving obvious
+/// room below the selector for the per-input/per-output settings (max bit
+/// depth, sample rate, …) expected to land later — not built here, since
+/// none of that is in scope yet, but that group is where it belongs when
+/// it does; a flat device-level row here would have to be restructured
+/// instead.
+fn build_io_pages(ds: &DeviceState, connected: bool) -> (gtk::Stack, gtk::Stack) {
+    let icons = Rc::new(IconSet::load());
+    let initial = if connected { "content" } else { "offline" };
+
+    let input_view = views::input::InputView::new(ds, &icons);
+    input_view.set_active(true);
+    let input_group = adw::PreferencesGroup::new();
+    input_group.add(&input_view);
+    let input_page = adw::PreferencesPage::new();
+    input_page.add(&input_group);
+    let input_holder = gtk::Stack::builder()
+        .transition_type(gtk::StackTransitionType::None).build();
+    input_holder.add_named(&build_offline_placeholder(), Some("offline"));
+    input_holder.add_named(&input_page, Some("content"));
+    input_holder.set_visible_child_name(initial);
+
+    let output_view = views::output::OutputView::new(ds, &icons);
+    output_view.set_active(true);
+    let output_group = adw::PreferencesGroup::new();
+    output_group.add(&output_view);
+    let output_page = adw::PreferencesPage::new();
+    output_page.add(&output_group);
+    let output_holder = gtk::Stack::builder()
+        .transition_type(gtk::StackTransitionType::None).build();
+    output_holder.add_named(&build_offline_placeholder(), Some("offline"));
+    output_holder.add_named(&output_page, Some("content"));
+    output_holder.set_visible_child_name(initial);
+
+    (input_holder, output_holder)
 }
 
 fn build_advanced_page(ds: &DeviceState) -> adw::PreferencesPage {

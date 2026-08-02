@@ -20,7 +20,8 @@
 
 pub(crate) mod common;
 pub(crate) mod devlist;
-pub(crate) mod io;
+pub(crate) mod input;
+pub(crate) mod output;
 pub(crate) mod playback_full;
 pub(crate) mod playback_mini;
 pub(crate) mod play_queue;

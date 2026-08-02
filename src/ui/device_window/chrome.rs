@@ -124,7 +124,8 @@ pub(crate) fn build_left_pane(
     ds:         &DeviceState,
     presets:    &crate::ui::views::presets::PresetsView,
     play_queue: &crate::ui::views::play_queue::PlayQueueView,
-    io:         &crate::ui::views::io::InputOutputView,
+    input:      &crate::ui::views::input::InputView,
+    output:     &crate::ui::views::output::OutputView,
 ) -> gtk::Box {
     let presets_btn = gtk::ToggleButton::builder()
         .label("Presets").active(true)
@@ -202,7 +203,8 @@ pub(crate) fn build_left_pane(
         .build();
     left_pane.append(&tab_row);
     left_pane.append(&stack);
-    left_pane.append(io);
+    left_pane.append(input);
+    left_pane.append(output);
     left_pane
 }
 
