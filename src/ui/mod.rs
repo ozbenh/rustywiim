@@ -755,7 +755,17 @@ impl AppState {
                 let result = DiscoveryService::probe_known_scheme(&probe_ip, tls_mode).await;
                 let _ = tx.send(result).await;
             });
+            // The probe is async, so `activate()` returns with no window yet
+            // created. A GtkApplication whose window count is zero when
+            // `activate` finishes has nothing holding it alive and exits
+            // immediately (`g_application_run()`'s loop ends the moment the
+            // use count hits zero) — so hold the application across the
+            // probe. The guard is moved into the future and dropped once it
+            // completes, by which point the device window it opened is
+            // holding the count itself.
+            let hold = self_rc.app.hold();
             glib::spawn_future_local(async move {
+                let _hold = hold;
                 match rx.recv().await {
                     Ok(Ok(dev)) => {
                         // Marks this uuid as `--connect`'s ephemeral device
