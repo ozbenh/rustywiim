@@ -73,6 +73,15 @@ window.modern-bg-window {
 .preset-tile:hover {
     background-color: rgba(32, 32, 32, 0.7);
 }
+/* Devlist rows: same reasoning as .preset-tile just above — dark.css's flat
+   #141414 reads as a solid hole against the devices window's own Modern
+   gradient background instead of a translucent card. */
+list.devlist-rows > row {
+    background-color: rgba(20, 20, 20, 0.55);
+}
+list.devlist-rows > row:hover {
+    border-color: rgba(255, 255, 255, 0.35);
+}
 /* The tile's own wrapping flat button has Adwaita's default horizontal
    button padding (~12px a side), on top of presets_box's own
    margin_start/end(8) (Rust, shared with the classic theme) — trim just

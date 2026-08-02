@@ -363,9 +363,21 @@ impl DeviceListView {
         imp.manager.set(manager.clone()).unwrap();
         let _ = imp.icons.set(Rc::clone(icons));
 
+        // "devlist-rows" (styled per-theme, see system.css/dark.css) replaces
+        // libadwaita's own ".boxed-list" — that draws one solid card with
+        // thin dividers between rows, which gives a group's card (header +
+        // member lines, all inside one row) no visual boundary distinct
+        // from an adjacent standalone row. Individually rounded, gapped
+        // rows make a group's own edges legible among plain entries.
+        // `valign(Start)` (GtkListBox otherwise fills the viewport's full
+        // height) is what lets the empty space below the last row stay
+        // transparent instead of "boxed-list"'s solid card background
+        // extending to fill it — scrolling is unaffected once there are
+        // enough rows to actually need it.
         let list_box = gtk::ListBox::builder()
             .selection_mode(gtk::SelectionMode::None)
-            .css_classes(["boxed-list"])
+            .css_classes(["devlist-rows"])
+            .valign(gtk::Align::Start)
             .margin_top(12).margin_bottom(12)
             .margin_start(12).margin_end(12)
             .build();

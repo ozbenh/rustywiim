@@ -91,6 +91,26 @@
 .preset-art-small { min-width: 26px; min-height: 26px; padding: 7px; }
 .devlist-art  { border-radius: 4px; min-width: 32px; min-height: 32px; }
 
+/* Individually rounded, gapped "card" rows, replacing libadwaita's own
+   ".boxed-list" (one solid card, thin dividers between rows) -- this is
+   what lets a group's own row (header + member lines all inside it) read
+   as a distinct card among plain standalone entries. `@card_bg_color`/
+   `@card_fg_color` are libadwaita's own semantic names (the same ones
+   ".boxed-list" itself draws from), so this still follows the system
+   light/dark preference automatically. The list itself stays transparent
+   so empty space below the last row shows the window's own background
+   through, not a solid list backdrop. */
+list.devlist-rows { background-color: transparent; }
+list.devlist-rows > row {
+    background-color: @card_bg_color;
+    color: @card_fg_color;
+    border-radius: 10px;
+    margin: 6px 4px;
+}
+list.devlist-rows > row:hover {
+    border: 1px solid alpha(@window_fg_color, 0.25);
+}
+
 /* A multiroom group's own row, and the compact member lines beneath it.
    A member line has no artwork and no song info, so it needs far less
    vertical room than a device row -- min-height is what actually makes it
