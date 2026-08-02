@@ -133,8 +133,8 @@ impl DiscoveryWindow {
         ));
 
         // "Add device" button.
-        add_btn.connect_clicked(clone!(#[strong] manager, move |_| {
-            Self::show_add_dialog(&manager);
+        add_btn.connect_clicked(clone!(#[strong] manager, #[strong] window, move |_| {
+            Self::show_add_dialog(&manager, &window);
         }));
 
         // win.close action — lets Ctrl-W (set app-wide) close this window.
@@ -195,7 +195,7 @@ impl DiscoveryWindow {
     /// for the same reason: it's the one path in this codebase that also
     /// gets the on-screen keyboard (`KeyboardType::Numeric` — an IP address
     /// is digits and dots).
-    fn show_add_dialog(manager: &DiscoveryManager) {
+    fn show_add_dialog(manager: &DiscoveryManager, parent: &adw::ApplicationWindow) {
         let entry = crate::ui::prompt_entry::PromptEntry::new();
         entry.set_prompt("Enter the IP address of a WiiM device:");
         entry.set_placeholder("192.168.1.x");
@@ -205,7 +205,7 @@ impl DiscoveryWindow {
         let window = crate::ui::prompt_entry::present_prompt_window("Add Device", &entry);
 
         entry.connect_confirmed(clone!(
-            #[strong] manager, #[strong] window,
+            #[strong] manager, #[strong] window, #[strong] parent,
             move |_, ip| {
                 window.close();
 
@@ -217,17 +217,14 @@ impl DiscoveryWindow {
                     let _ = tx.send(result).await;
                 });
 
-                glib::spawn_future_local(clone!(#[strong] manager, async move {
+                glib::spawn_future_local(clone!(#[strong] manager, #[strong] parent, async move {
                     match rx.recv().await {
                         Ok(Ok(dev)) => manager.add_manual(dev.name, dev.ip, dev.uuid, dev.tls_mode),
                         // Full per-attempt connection errors already went to the
                         // debug log (--debug=discovery) from probe_device()'s own
                         // identify_device()/probe_api() calls — this is just the
                         // short summary, matching discovery.rs's give-up line.
-                        // Still stderr for now; a dialog is the next step.
-                        Ok(Err(failure)) => eprintln!(
-                            "{} [devlist-ui] {}", crate::timestamp(), failure.describe(&ip),
-                        ),
+                        Ok(Err(failure)) => Self::show_add_failure_dialog(&parent, &failure.describe(&ip)),
                         // Sender dropped — nothing left to report to.
                         Err(_) => {}
                     }
@@ -235,5 +232,19 @@ impl DiscoveryWindow {
             }
         ));
         entry.connect_cancelled(clone!(#[strong] window, move |_| window.close()));
+    }
+
+    /// One-button "couldn't add that device" dialog — `probe_device()`'s
+    /// `ProbeFailure::describe()` already reads as a complete sentence, so
+    /// this needs no heading beyond the generic one.
+    fn show_add_failure_dialog(parent: &adw::ApplicationWindow, message: &str) {
+        let dialog = adw::AlertDialog::builder()
+            .heading("Couldn't Add Device")
+            .body(message)
+            .close_response("ok")
+            .build();
+        dialog.add_response("ok", "OK");
+        dialog.set_default_response(Some("ok"));
+        dialog.present(Some(parent));
     }
 }
