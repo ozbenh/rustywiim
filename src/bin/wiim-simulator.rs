@@ -941,27 +941,157 @@ struct Args {
     groups: Vec<String>,
 }
 
-fn usage() -> ! {
-    eprintln!(
-        "usage: wiim-simulator <capture-file-or-dir>... [--http [N:]PORT] [--https [N:]PORT] \
-         [--upnp-port [N:]PORT] [--base-ip IP] [--standard-ports] [--no-upnp] [--no-stateful] \
-         [--global] [--keep-config] [--group=N,N[:left|:right],...]"
-    );
-    eprintln!("  (every non-flag argument is a capture path — one simulated device per path)");
-    eprintln!("  (--http/--https/--upnp-port take a bare PORT or an indexed N:PORT, 1-based;");
-    eprintln!("   a bare PORT is only valid with exactly one capture path)");
-    eprintln!("  (--http/--https are cumulative per device — repeat for more listeners; a");
-    eprintln!("   device given none defaults to one http + one https listener on random ports)");
-    eprintln!("  (--base-ip sets device 1's loopback address, default 127.0.0.2; device n binds");
-    eprintln!("   base_ip + (n-1))");
-    eprintln!("  (--standard-ports uses 443/80 instead of random ports for devices given none)");
-    eprintln!("  (stateful mini-device simulation is on by default; --no-stateful disables it)");
-    eprintln!("  (--upnp-port defaults to 49152, the port rustywiim's own UpnpClient looks for)");
-    eprintln!("  (--global listens on 0.0.0.0 instead of loopback — single capture path only)");
-    eprintln!("  (the printed rustywiim command line includes --no-config by default, since");
-    eprintln!("   every run mints fresh uuids; --keep-config drops it)");
-    eprintln!("  (--group=1,2,3 groups devices 1-based, first is the leader; repeat for a");
-    eprintln!("   second group; an optional :left/:right suffix sets that member's channel)");
+const USAGE_LINE: &str = "Usage: wiim-simulator <capture-file-or-dir>... [OPTION]...";
+
+/// One `--help` table entry: `flag` is the left column exactly as typed
+/// (including its metavariable, e.g. `"--http [N:]PORT"`); `desc` is
+/// plain prose, wrapped to fit the terminal by `print_help()` — no manual
+/// line breaks or alignment inside `desc` itself.
+struct OptHelp {
+    flag: &'static str,
+    desc: &'static str,
+}
+
+const OPTIONS: &[OptHelp] = &[
+    OptHelp {
+        flag: "--http [N:]PORT",
+        desc: "HTTP listener port for device N (1-based). A bare PORT (no \"N:\") is only \
+               valid with exactly one capture path. Cumulative per device — repeat for more \
+               listeners on the same device. A device given neither --http nor --https \
+               defaults to one of each, on a random OS-assigned port.",
+    },
+    OptHelp {
+        flag: "--https [N:]PORT",
+        desc: "HTTPS listener port for device N — same rules as --http.",
+    },
+    OptHelp {
+        flag: "--upnp-port [N:]PORT",
+        desc: "UPnP listener port for device N. Defaults to 49152 (the port rustywiim's own \
+               UpnpClient looks for) regardless of --standard-ports, since it's already \
+               unprivileged.",
+    },
+    OptHelp {
+        flag: "--base-ip IP",
+        desc: "Device 1's loopback address (default 127.0.0.2). Device n binds base_ip + \
+               (n-1).",
+    },
+    OptHelp {
+        flag: "--standard-ports",
+        desc: "Use 443/80 instead of a random port for any device given no explicit --http/\
+               --https.",
+    },
+    OptHelp {
+        flag: "--no-upnp",
+        desc: "Disable the UPnP listener entirely.",
+    },
+    OptHelp {
+        flag: "--no-stateful",
+        desc: "Disable the built-in mini-device simulation (on by default) in favor of pure \
+               verbatim capture replay.",
+    },
+    OptHelp {
+        flag: "--global",
+        desc: "Listen on 0.0.0.0 instead of loopback. Single capture path only — one host can \
+               only offer one 0.0.0.0:49152.",
+    },
+    OptHelp {
+        flag: "--keep-config",
+        desc: "Drop --no-config from the printed rustywiim command line. Omitted by default \
+               because every run mints fresh uuids, which would otherwise accumulate in a \
+               real config.json run after run.",
+    },
+    OptHelp {
+        flag: "--group=N,N[:left|:right],...",
+        desc: "Group devices into a multiroom fleet (1-based device numbers, first is the \
+               leader). Repeat for a second group. An optional :left/:right suffix on a \
+               member sets its channel.",
+    },
+    OptHelp {
+        flag: "-h, --help",
+        desc: "Show this help and exit.",
+    },
+];
+
+/// Column where every description starts; a `flag` longer than this puts its
+/// description on the following line instead of sharing the flag's own line
+/// (same convention `ls --help` uses for its longer GNU-style options).
+const HELP_COL: usize = 26;
+/// Assumed terminal width — this tool has no isatty/COLUMNS probe, so it
+/// just targets the conventional 80.
+const TERM_WIDTH: usize = 80;
+
+/// Greedy word-wrap: fills each line up to `width` without splitting words.
+/// No hyphenation, no unicode-width awareness — plain ASCII option text only.
+fn wrap_text(text: &str, width: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut current = String::new();
+    for word in text.split_whitespace() {
+        if current.is_empty() {
+            current.push_str(word);
+        } else if current.len() + 1 + word.len() <= width {
+            current.push(' ');
+            current.push_str(word);
+        } else {
+            lines.push(std::mem::take(&mut current));
+            current.push_str(word);
+        }
+    }
+    if !current.is_empty() {
+        lines.push(current);
+    }
+    lines
+}
+
+fn print_option(opt: &OptHelp) {
+    let indent = " ".repeat(HELP_COL);
+    let desc_width = TERM_WIDTH.saturating_sub(HELP_COL).max(20);
+    let mut lines = wrap_text(opt.desc, desc_width).into_iter();
+    let first = lines.next().unwrap_or_default();
+    if opt.flag.len() + 2 <= HELP_COL {
+        println!("  {:<width$}{first}", opt.flag, width = HELP_COL - 2);
+    } else {
+        println!("  {}", opt.flag);
+        println!("{indent}{first}");
+    }
+    for line in lines {
+        println!("{indent}{line}");
+    }
+}
+
+/// `-h`/`--help`: full, formatted help on stdout, exit 0.
+fn print_help() -> ! {
+    println!("{USAGE_LINE}");
+    println!();
+    for line in wrap_text(
+        "Replays one or more wiim-capture JSON files as a fleet of fake LinkPlay/WiiM HTTP(S) \
+         devices — for pointing rustywiim (or wiim-capture itself) at something other than \
+         real hardware, including a multiroom group.",
+        TERM_WIDTH,
+    ) {
+        println!("{line}");
+    }
+    println!();
+    for line in wrap_text(
+        "Every non-flag argument is a capture path — one simulated device per path (a \
+         directory picks the newest .json inside it).",
+        TERM_WIDTH,
+    ) {
+        println!("{line}");
+    }
+    println!();
+    println!("Options:");
+    for opt in OPTIONS {
+        print_option(opt);
+    }
+    std::process::exit(0);
+}
+
+/// A bad invocation: a short usage line + pointer to `--help`, on stderr,
+/// exit 2 — `print_help()`'s full table would drown out `msg` otherwise.
+fn usage_error(msg: &str) -> ! {
+    eprintln!("wiim-simulator: {msg}");
+    eprintln!("{USAGE_LINE}");
+    eprintln!("Try 'wiim-simulator --help' for more information.");
     std::process::exit(2);
 }
 
@@ -987,10 +1117,7 @@ fn try_parse_port_spec(flag: &str, spec: &str) -> Result<PortSpec, String> {
 }
 
 fn parse_port_spec(flag: &str, spec: &str) -> PortSpec {
-    try_parse_port_spec(flag, spec).unwrap_or_else(|msg| {
-        eprintln!("wiim-simulator: {msg}");
-        std::process::exit(2);
-    })
+    try_parse_port_spec(flag, spec).unwrap_or_else(|msg| usage_error(&msg))
 }
 
 fn parse_args() -> Args {
@@ -1009,28 +1136,21 @@ fn parse_args() -> Args {
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--http" | "--https" => {
-                let spec = args.next().unwrap_or_else(|| {
-                    eprintln!("wiim-simulator: {arg} requires a port number (or N:PORT)");
-                    std::process::exit(2);
-                });
+                let spec = args.next()
+                    .unwrap_or_else(|| usage_error(&format!("{arg} requires a port number (or N:PORT)")));
                 let parsed = parse_port_spec(&arg, &spec);
                 if arg == "--http" { http.push(parsed) } else { https.push(parsed) };
             }
             "--upnp-port" => {
-                let spec = args.next().unwrap_or_else(|| {
-                    eprintln!("wiim-simulator: --upnp-port requires a port number (or N:PORT)");
-                    std::process::exit(2);
-                });
+                let spec = args.next()
+                    .unwrap_or_else(|| usage_error("--upnp-port requires a port number (or N:PORT)"));
                 upnp_port.push(parse_port_spec("--upnp-port", &spec));
             }
             "--base-ip" => {
-                let spec = args.next().unwrap_or_else(|| {
-                    eprintln!("wiim-simulator: --base-ip requires an IPv4 address");
-                    std::process::exit(2);
-                });
+                let spec = args.next()
+                    .unwrap_or_else(|| usage_error("--base-ip requires an IPv4 address"));
                 base_ip = spec.parse().unwrap_or_else(|_| {
-                    eprintln!("wiim-simulator: --base-ip '{spec}' is not a valid IPv4 address");
-                    std::process::exit(2);
+                    usage_error(&format!("--base-ip '{spec}' is not a valid IPv4 address"))
                 });
             }
             "--standard-ports" => standard_ports = true,
@@ -1041,24 +1161,17 @@ fn parse_args() -> Args {
             "--no-stateful" => no_stateful = true,
             "--global" => global = true,
             "--keep-config" => keep_config = true,
-            "-h" | "--help" => usage(),
+            "-h" | "--help" => print_help(),
             other if other.starts_with("--group=") => groups.push(other["--group=".len()..].to_string()),
             other if !other.starts_with('-') => paths.push(other.to_string()),
-            other => {
-                eprintln!("wiim-simulator: unrecognized argument '{other}'");
-                usage();
-            }
+            other => usage_error(&format!("unrecognized argument '{other}'")),
         }
     }
     if paths.is_empty() {
-        usage();
+        usage_error("no capture path given");
     }
     if global && paths.len() > 1 {
-        eprintln!(
-            "wiim-simulator: --global only supports a single capture path \
-             (one host can only offer one 0.0.0.0:49152)"
-        );
-        std::process::exit(2);
+        usage_error("--global only supports a single capture path (one host can only offer one 0.0.0.0:49152)");
     }
     Args {
         paths, http, https, upnp_port, base_ip, standard_ports,
@@ -1124,10 +1237,7 @@ fn try_parse_groups(raw: &[String], ndevices: usize) -> Result<Vec<Group>, Strin
 }
 
 fn parse_groups(raw: Vec<String>, ndevices: usize) -> Vec<Group> {
-    try_parse_groups(&raw, ndevices).unwrap_or_else(|msg| {
-        eprintln!("wiim-simulator: {msg}");
-        std::process::exit(2);
-    })
+    try_parse_groups(&raw, ndevices).unwrap_or_else(|msg| usage_error(&msg))
 }
 
 /// Groups parsed `--http`/`--https`/`--upnp-port` occurrences by device
@@ -1925,5 +2035,33 @@ mod tests {
             groups: vec![],
         };
         assert_eq!(patch_follower_mode_field(body, &standalone, 0), body, "standalone must be untouched");
+    }
+
+    #[test]
+    fn wrap_text_never_exceeds_the_requested_width() {
+        let text = "HTTP listener port for device N (1-based). A bare PORT is only valid \
+                    with exactly one capture path.";
+        for line in wrap_text(text, 40) {
+            assert!(line.len() <= 40, "{line:?} is {} chars", line.len());
+        }
+    }
+
+    #[test]
+    fn wrap_text_preserves_every_word_in_order() {
+        let text = "one two three four five";
+        let rejoined = wrap_text(text, 10).join(" ");
+        assert_eq!(rejoined, text);
+    }
+
+    #[test]
+    fn wrap_text_handles_empty_input() {
+        assert!(wrap_text("", 40).is_empty());
+    }
+
+    #[test]
+    fn wrap_text_keeps_a_too_long_word_on_its_own_line_rather_than_splitting_it() {
+        let lines = wrap_text("a-very-long-unbreakable-word short", 10);
+        assert_eq!(lines[0], "a-very-long-unbreakable-word");
+        assert_eq!(lines[1], "short");
     }
 }
