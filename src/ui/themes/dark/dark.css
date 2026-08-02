@@ -182,7 +182,7 @@ list.devlist-rows { background-color: transparent; }
 list.devlist-rows > row {
     background-color: #141414;
     border-radius: 10px;
-    margin: 6px 4px;
+    margin: 3px 4px;
 }
 list.devlist-rows > row:hover {
     border: 1px solid rgba(255, 255, 255, 0.25);
