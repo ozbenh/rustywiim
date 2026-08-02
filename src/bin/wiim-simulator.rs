@@ -6,7 +6,16 @@
 //!
 //! Usage: `wiim-simulator <capture-file-or-dir>... [--http [N:]PORT]
 //! [--https [N:]PORT] [--upnp-port [N:]PORT] [--base-ip IP]
-//! [--standard-ports] [--no-upnp] [--no-stateful] [--global]`
+//! [--standard-ports] [--no-upnp] [--no-stateful] [--global] [--keep-config]`
+//!
+//! Once every device has finished binding, prints a summary of the fleet
+//! (name/model/uuid/api/upnp per device) and a ready-to-paste `rustywiim`
+//! command line with one `--connect` per device. The printed line includes
+//! `--no-config` by default — every run mints fresh uuids, so without it a
+//! user's real `config.json` would accumulate throwaway simulator devices
+//! (and any group members `rustywiim` auto-adopts) run after run;
+//! `--keep-config` drops it, for the runs where testing config persistence
+//! itself is the point.
 //!
 //! **Every non-flag argument is a capture path** — one simulated device per
 //! path, in the order given (a directory argument keeps its "newest `.json`
@@ -564,7 +573,12 @@ fn serve_upnp(server: tiny_http::Server, fleet: &Arc<Fleet>, dev_idx: usize) {
     }
 }
 
-fn load_capture(path: &std::path::Path) -> CaptureFile {
+/// Loads a capture file, returning its resolved file name (just the final
+/// path component — a directory argument resolves to whichever `.json`
+/// inside it was actually picked) alongside the parsed `CaptureFile`, for
+/// `main()`'s banner (step 3) to display without re-deriving the directory
+/// resolution logic below.
+fn load_capture(path: &std::path::Path) -> (String, CaptureFile) {
     let file_path = if path.is_dir() {
         let mut candidates: Vec<std::path::PathBuf> = std::fs::read_dir(path)
             .unwrap_or_else(|e| {
@@ -600,7 +614,8 @@ fn load_capture(path: &std::path::Path) -> CaptureFile {
         std::process::exit(1);
     });
     eprintln!("[wiim-simulator] loaded {} ({})", file_path.display(), capture.model);
-    capture
+    let file_name = file_path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    (file_name, capture)
 }
 
 /// Strips `scheme://host:port` off a captured URL, leaving the path+query
@@ -785,12 +800,14 @@ struct Args {
     no_stateful: bool,
     no_upnp: bool,
     global: bool,
+    keep_config: bool,
 }
 
 fn usage() -> ! {
     eprintln!(
         "usage: wiim-simulator <capture-file-or-dir>... [--http [N:]PORT] [--https [N:]PORT] \
-         [--upnp-port [N:]PORT] [--base-ip IP] [--standard-ports] [--no-upnp] [--no-stateful] [--global]"
+         [--upnp-port [N:]PORT] [--base-ip IP] [--standard-ports] [--no-upnp] [--no-stateful] \
+         [--global] [--keep-config]"
     );
     eprintln!("  (every non-flag argument is a capture path — one simulated device per path)");
     eprintln!("  (--http/--https/--upnp-port take a bare PORT or an indexed N:PORT, 1-based;");
@@ -803,6 +820,8 @@ fn usage() -> ! {
     eprintln!("  (stateful mini-device simulation is on by default; --no-stateful disables it)");
     eprintln!("  (--upnp-port defaults to 49152, the port rustywiim's own UpnpClient looks for)");
     eprintln!("  (--global listens on 0.0.0.0 instead of loopback — single capture path only)");
+    eprintln!("  (the printed rustywiim command line includes --no-config by default, since");
+    eprintln!("   every run mints fresh uuids; --keep-config drops it)");
     std::process::exit(2);
 }
 
@@ -844,6 +863,7 @@ fn parse_args() -> Args {
     let mut no_stateful = false;
     let mut no_upnp = false;
     let mut global = false;
+    let mut keep_config = false;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -879,6 +899,7 @@ fn parse_args() -> Args {
             "--stateful" => {}
             "--no-stateful" => no_stateful = true,
             "--global" => global = true,
+            "--keep-config" => keep_config = true,
             "-h" | "--help" => usage(),
             other if !other.starts_with('-') => paths.push(other.to_string()),
             other => {
@@ -897,7 +918,7 @@ fn parse_args() -> Args {
         );
         std::process::exit(2);
     }
-    Args { paths, http, https, upnp_port, base_ip, standard_ports, no_stateful, no_upnp, global }
+    Args { paths, http, https, upnp_port, base_ip, standard_ports, no_stateful, no_upnp, global, keep_config }
 }
 
 /// Groups parsed `--http`/`--https`/`--upnp-port` occurrences by device
@@ -965,7 +986,10 @@ struct DevicePorts {
 
 fn main() {
     let args = parse_args();
-    let captures: Vec<CaptureFile> = args.paths.iter().map(|p| load_capture(std::path::Path::new(p))).collect();
+    let loaded: Vec<(String, CaptureFile)> =
+        args.paths.iter().map(|p| load_capture(std::path::Path::new(p))).collect();
+    let source_names: Vec<&str> = loaded.iter().map(|(name, _)| name.as_str()).collect();
+    let captures: Vec<&CaptureFile> = loaded.iter().map(|(_, c)| c).collect();
     let ndevices = captures.len();
 
     let http_per_device = group_by_device(args.http, ndevices, "--http");
@@ -1044,6 +1068,12 @@ fn main() {
     // description.xml's advert. Prefers an http listener over https for the
     // advert (fewer moving parts for a client resolving it).
     let mut devices = Vec::with_capacity(ndevices);
+    // Collected alongside each `Device`, purely for the banner (below): every
+    // bound API address ("api" line) and the one preferred as this device's
+    // primary address — the same one patched into description.xml's advert
+    // and the one the printed --connect command line uses.
+    let mut all_api_urls: Vec<Vec<String>> = Vec::with_capacity(ndevices);
+    let mut primary_api_url: Vec<Option<String>> = Vec::with_capacity(ndevices);
     for (i, capture) in captures.iter().enumerate() {
         let index = index_by_path(capture);
         let state = Mutex::new(init_state(capture));
@@ -1054,15 +1084,19 @@ fn main() {
             "[wiim-simulator][{}] identity: {name} uuid={} upnp_uuid={} host={host}",
             i + 1, fresh_uuid.plain, fresh_uuid.dashed,
         );
+        all_api_urls.push(
+            bound[i]
+                .iter()
+                .map(|l| format!("{}://{host}:{}", if l.https { "https" } else { "http" }, l.port))
+                .collect(),
+        );
         let api_listener = bound[i].iter().find(|l| !l.https).or_else(|| bound[i].first());
-        let upnp = match (upnp_ports[i].is_some(), api_listener) {
-            (true, Some(l)) => {
-                let scheme = if l.https { "https" } else { "http" };
-                let api_url = format!("{scheme}://{host}:{}", l.port);
-                build_upnp_shared(capture, &name, &fresh_uuid, &api_url)
-            }
+        let this_primary_url = api_listener.map(|l| format!("{}://{host}:{}", if l.https { "https" } else { "http" }, l.port));
+        let upnp = match (upnp_ports[i].is_some(), &this_primary_url) {
+            (true, Some(api_url)) => build_upnp_shared(capture, &name, &fresh_uuid, api_url),
             _ => None,
         };
+        primary_api_url.push(this_primary_url);
         devices.push(Arc::new(Device { n: i, host, name, index, state, upnp, fresh_uuid }));
     }
     let fleet = Arc::new(Fleet { devices, stateful_http: !args.no_stateful });
@@ -1124,9 +1158,67 @@ fn main() {
         eprintln!("[wiim-simulator] no device came up, exiting");
         std::process::exit(1);
     }
+
+    print_banner(&fleet, &captures, &source_names, &all_api_urls, &primary_api_url, &upnp_ports, args.keep_config);
+
     for handle in handles {
         let _ = handle.join();
     }
+}
+
+/// Prints a one-time summary of the fleet plus a paste-ready `rustywiim`
+/// command line, once every device has finished binding. `--keep-config`
+/// drops the emitted line's `--no-config`: every run mints fresh uuids, and
+/// `--no-config` is what keeps those (and any group members `rustywiim`
+/// adopts) out of the user's real `config.json` — the escape hatch exists
+/// only for the runs where testing per-device config overrides is the
+/// point.
+#[allow(clippy::too_many_arguments)]
+fn print_banner(
+    fleet: &Fleet,
+    captures: &[&CaptureFile],
+    source_names: &[&str],
+    all_api_urls: &[Vec<String>],
+    primary_api_url: &[Option<String>],
+    upnp_ports: &[Option<u16>],
+    keep_config: bool,
+) {
+    eprintln!();
+    for (i, dev) in fleet.devices.iter().enumerate() {
+        eprintln!("[wiim-simulator] device {}  {}", i + 1, dev.name);
+        eprintln!("                 model     {}  ({})", captures[i].model, source_names[i]);
+        eprintln!("                 uuid      {}", dev.fresh_uuid.plain);
+        if all_api_urls[i].is_empty() {
+            eprintln!("                 api       (none — every listener failed to bind)");
+        } else {
+            eprintln!("                 api       {}", all_api_urls[i].join("   "));
+        }
+        if let (Some(port), true) = (upnp_ports[i], dev.upnp.is_some()) {
+            eprintln!("                 upnp      http://{}:{port}", dev.host);
+        }
+    }
+
+    eprintln!();
+    eprintln!("[wiim-simulator] run rustywiim against this fleet with:");
+    eprintln!();
+    // `--connect`'s second, comma-separated URL points rustywiim's UPnP
+    // discovery straight at this device's UPnP listener rather than relying
+    // on its default well-known-port probe (49152/59152) to happen to find
+    // it — always included when this device has one, since a custom
+    // `--upnp-port` can put it on neither of those two ports, in which case
+    // the probe wouldn't find it at all without this.
+    let connect_args: Vec<String> = (0..fleet.devices.len())
+        .filter_map(|i| {
+            let api_url = primary_api_url[i].as_ref()?;
+            match (upnp_ports[i], fleet.devices[i].upnp.is_some()) {
+                (Some(port), true) => Some(format!("--connect {api_url},http://{}:{port}", fleet.devices[i].host)),
+                _ => Some(format!("--connect {api_url}")),
+            }
+        })
+        .collect();
+    let no_config = if keep_config { "" } else { "--no-config " };
+    eprintln!("  target/debug/rustywiim {no_config}{}", connect_args.join(" "));
+    eprintln!();
 }
 
 /// Logs one HTTP(S) listener bind failure, with an extra remedy hint when
