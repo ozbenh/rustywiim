@@ -1,24 +1,48 @@
-//! `wiim-simulator` — replays a `wiim-capture` JSON file as a fake
-//! LinkPlay/WiiM HTTP(S) device, so `rustywiim` (or `wiim-capture` itself)
-//! can be pointed at something other than real hardware for testing.
+//! `wiim-simulator` — replays one or more `wiim-capture` JSON files as a
+//! fleet of fake LinkPlay/WiiM HTTP(S) devices, so `rustywiim` (or
+//! `wiim-capture` itself) can be pointed at something other than real
+//! hardware for testing — including a multiroom group, which needs at least
+//! two devices to exercise at all.
 //!
-//! Usage: `wiim-simulator <capture-file-or-dir> [--http PORT] [--https PORT]
-//! [--upnp-port PORT] [--no-upnp] [--no-stateful] [--global]`
+//! Usage: `wiim-simulator <capture-file-or-dir>... [--http [N:]PORT]
+//! [--https [N:]PORT] [--upnp-port [N:]PORT] [--base-ip IP]
+//! [--standard-ports] [--no-upnp] [--no-stateful] [--global]`
 //!
-//! `--http`/`--https` are **cumulative** — each occurrence opens one more
-//! listener (all serving the same capture file/state), not a single
-//! toggle-plus-port pair. With **neither** given, defaults to one HTTP and
-//! one HTTPS listener on **random OS-assigned ports** (`port: 0`, the
-//! standard "pick an ephemeral port" meaning) — the actually-assigned port is
-//! read back from each bound socket and printed as a ready-to-use URL, so
-//! there's nothing to guess and no fixed port to collide with something else
-//! already running locally. Each listener runs on its own OS thread; a bind
-//! failure on one listener is logged and skipped rather than aborting the
-//! others (the process only exits if *none* of them bind).
+//! **Every non-flag argument is a capture path** — one simulated device per
+//! path, in the order given (a directory argument keeps its "newest `.json`
+//! inside it" meaning, applied independently per path). Device *n* (1-based)
+//! binds `127.0.0.{n+1}` by default (`--base-ip` to change the starting
+//! address) — starting at `.2` keeps `127.0.0.1` (whatever the user already
+//! runs there) out of the way. Distinct per-device loopback IPs are what let
+//! every device serve UPnP on the real well-known port `49152` of its own
+//! address simultaneously, so `rustywiim`'s `UpnpClient::discover()` finds
+//! each one with no override needed.
 //!
-//! **Loopback-only by default** (`127.0.0.1`) — a safer default for a test
-//! tool than exposing it on the LAN. `--global` binds every listener to
-//! `0.0.0.0` instead (including the UPnP listener, if any).
+//! `--http`/`--https`/`--upnp-port` accept a bare `PORT` or an indexed
+//! `N:PORT` (1-based device number). With exactly one capture path, a bare
+//! `PORT` applies to that one device — today's meaning, and **cumulative**:
+//! repeat the flag for more listeners on that device, all serving the same
+//! capture/state. With more than one capture path, a bare `PORT` is a usage
+//! error (which device is it for?) — use `N:PORT`, e.g. `--http 2:9090`.
+//! Devices with no explicit port default to **random OS-assigned ports**
+//! (`port: 0`) — the actually-assigned port is read back from each bound
+//! socket and printed as a ready-to-use URL. `--standard-ports` opts every
+//! device without an explicit port into `443`/`80` instead, for the day
+//! privileges are arranged (`sysctl net.ipv4.ip_unprivileged_port_start=80`
+//! or `setcap`) — since each device binds its own IP, several devices can all
+//! use `443`/`80` at once with no collision. `--upnp-port` always defaults to
+//! `49152` regardless of `--standard-ports` (already unprivileged).
+//!
+//! Each listener runs on its own OS thread; a bind failure on one listener is
+//! logged and skipped rather than aborting the others. A device whose
+//! listeners *all* fail to bind is reported and skipped entirely; the
+//! process only exits non-zero if *no* device came up at all.
+//!
+//! **Loopback-only by default** (each device's own `127.0.0.N`) — a safer
+//! default for a test tool than exposing it on the LAN. `--global` binds
+//! every listener to `0.0.0.0` instead (including the UPnP listener, if any)
+//! — restricted to a single capture path, since one host can only ever offer
+//! one `0.0.0.0:49152`.
 //!
 //! **Pure replay by default**: every request is answered strictly from what's
 //! actually in the capture file, keyed by request path + query (not just the
@@ -123,18 +147,21 @@ struct UpnpShared {
     info_ex_template: Option<String>,
 }
 
-/// Everything a request-handling thread needs, shared read-only (`index`,
-/// `upnp`) or behind a `Mutex` (`state`) across every listener thread —
-/// including the UPnP one, when it exists.
-struct Shared {
+/// One simulated device — everything a request-handling thread needs for
+/// *this* device, shared read-only (`index`, `upnp`) or behind a `Mutex`
+/// (`state`) across every listener thread that serves it, including its own
+/// UPnP one, when it exists. A fleet of devices never share any of this —
+/// each gets its own `Device`, its own loopback address, and its own state.
+struct Device {
+    /// 0-based index into `Fleet::devices` — used for per-device log tags
+    /// (printed 1-based) and to derive this device's host from `--base-ip`.
+    n: usize,
+    /// This device's own loopback address, e.g. `"127.0.0.3"` — always its
+    /// real identity, even under `--global` (which only changes what address
+    /// listeners actually *bind*, not what this device claims to be).
+    host: String,
     index: HashMap<String, CommandCapture>,
     state: Mutex<SimState>,
-    /// Whether the main HTTP(S) command API applies `handle_mutation()`/
-    /// `patch_player_status()` — today's default, `--no-stateful` turns it
-    /// back off for pure verbatim replay. Doesn't affect the UPnP listener,
-    /// which always reads/writes `state` regardless (see this file's module
-    /// doc comment).
-    stateful_http: bool,
     upnp: Option<UpnpShared>,
     /// This instance's own identity — see `generate_fresh_uuid()`'s doc
     /// comment for why every instance gets one instead of replaying the
@@ -142,6 +169,20 @@ struct Shared {
     /// `uuid`/`upnp_uuid` field (`handle_command()`) and into the served
     /// `description.xml`'s `<uuid>`/`<UDN>` tags (`build_upnp_shared()`).
     fresh_uuid: FreshUuid,
+}
+
+/// The whole simulated fleet — one process, N devices. `stateful_http` is
+/// process-wide (`--no-stateful` affects every device identically) rather
+/// than per-device, since it's a testing-mode toggle, not part of any
+/// device's simulated identity.
+struct Fleet {
+    devices: Vec<Arc<Device>>,
+    /// Whether the main HTTP(S) command API applies `handle_mutation()`/
+    /// `patch_player_status()` — today's default, `--no-stateful` turns it
+    /// back off for pure verbatim replay. Doesn't affect the UPnP listener,
+    /// which always reads/writes `state` regardless (see this file's module
+    /// doc comment).
+    stateful_http: bool,
 }
 
 /// One simulator instance's fresh identity: the plain 24-hex-char LinkPlay
@@ -440,7 +481,13 @@ fn handle_soap_action(
 /// The UPnP listener's request loop — structurally parallel to `serve()`
 /// below (same `catch_unwind` panic-safety rationale) but answering GET
 /// `/description.xml` and SOAP `POST`s instead of the main command API.
-fn serve_upnp(server: tiny_http::Server, upnp: &UpnpShared, state: &Mutex<SimState>) {
+/// Takes the whole fleet plus this listener's device index (not just its
+/// `Device` directly) purely so the log tag below can name the device — the
+/// UPnP handling itself only ever touches `fleet.devices[dev_idx]`.
+fn serve_upnp(server: tiny_http::Server, fleet: &Arc<Fleet>, dev_idx: usize) {
+    let dev = &fleet.devices[dev_idx];
+    let upnp = dev.upnp.as_ref().expect("caller only starts this listener when upnp is Some");
+    let tag = format!("[wiim-simulator][{}]", dev.n + 1);
     for mut request in server.incoming_requests() {
         let is_description_get =
             *request.method() == tiny_http::Method::Get && request.url() == "/description.xml";
@@ -461,7 +508,7 @@ fn serve_upnp(server: tiny_http::Server, upnp: &UpnpShared, state: &Mutex<SimSta
                 let mut body = String::new();
                 let _ = request.as_reader().read_to_string(&mut body);
                 return match soap_action_header.as_deref().and_then(parse_soap_action) {
-                    Some((service, action)) => match handle_soap_action(service, action, &body, upnp, state) {
+                    Some((service, action)) => match handle_soap_action(service, action, &body, upnp, &dev.state) {
                         Some(xml) => (200, xml, "text/xml"),
                         None => (500, format!("simulator: no response modeled for {action}"), "text/plain"),
                     },
@@ -471,11 +518,11 @@ fn serve_upnp(server: tiny_http::Server, upnp: &UpnpShared, state: &Mutex<SimSta
             (404, String::new(), "text/plain")
         }));
         let (status, body, content_type) = result.unwrap_or_else(|_| {
-            eprintln!("[wiim-simulator] internal error handling UPnP request (see panic message above) -> 500");
+            eprintln!("{tag} internal error handling UPnP request (see panic message above) -> 500");
             (500, "internal simulator error".to_string(), "text/plain")
         });
         eprintln!(
-            "[wiim-simulator] upnp {} {} -> {status}",
+            "{tag} upnp {} {} -> {status}",
             if is_post { "POST" } else { "GET" },
             request.url(),
         );
@@ -669,82 +716,120 @@ fn handle_command(cap: &CommandCapture, fresh_uuid: &FreshUuid) -> (u16, String)
     (cap.http_status.unwrap_or(500), String::new())
 }
 
-#[derive(Clone, Copy, Debug)]
-enum Scheme {
-    Http,
-    Https,
-}
-
-impl Scheme {
-    fn as_str(self) -> &'static str {
-        match self {
-            Scheme::Http => "http",
-            Scheme::Https => "https",
-        }
-    }
-}
-
-/// `port: 0` means "let the OS pick an ephemeral port" (the standard TCP/IP
-/// meaning of binding to port 0) — used for the default two listeners so
-/// they never collide with anything already running locally; the actually-
-/// assigned port is read back from the bound socket and printed.
-struct Listener {
-    scheme: Scheme,
-    port: u16,
-}
-
 /// Primary well-known LinkPlay UPnP port — matches `device::upnp`'s own
 /// `DESCRIPTION_PORTS[0]`. See this file's module doc comment for why the
 /// UPnP listener needs to be on this exact port (or `59152`, the other of
 /// the two) to be discoverable by `rustywiim` at all.
 const DEFAULT_UPNP_PORT: u16 = 49152;
 
+/// `--base-ip`'s default — device *n* (1-based) binds `127.0.0.{n+1}`.
+/// Starting at `.2` keeps `127.0.0.1` (whatever the user already runs there)
+/// out of the way.
+const DEFAULT_BASE_IP: std::net::Ipv4Addr = std::net::Ipv4Addr::new(127, 0, 0, 2);
+
+/// One `--http`/`--https`/`--upnp-port` occurrence, parsed but not yet
+/// resolved against how many devices were actually given — `None` means "no
+/// `N:` prefix," valid only when there's exactly one capture path.
+type PortSpec = (Option<usize>, u16);
+
 struct Args {
-    path: String,
-    listeners: Vec<Listener>,
+    paths: Vec<String>,
+    http: Vec<PortSpec>,
+    https: Vec<PortSpec>,
+    upnp_port: Vec<PortSpec>,
+    base_ip: std::net::Ipv4Addr,
+    standard_ports: bool,
     no_stateful: bool,
     no_upnp: bool,
-    upnp_port: u16,
     global: bool,
 }
 
 fn usage() -> ! {
     eprintln!(
-        "usage: wiim-simulator <capture-file-or-dir> [--http PORT] [--https PORT] \
-         [--upnp-port PORT] [--no-upnp] [--no-stateful] [--global]"
+        "usage: wiim-simulator <capture-file-or-dir>... [--http [N:]PORT] [--https [N:]PORT] \
+         [--upnp-port [N:]PORT] [--base-ip IP] [--standard-ports] [--no-upnp] [--no-stateful] [--global]"
     );
-    eprintln!("  (--http/--https are cumulative — repeat for more listeners; with neither");
-    eprintln!("   given, defaults to one http + one https listener on random ports)");
+    eprintln!("  (every non-flag argument is a capture path — one simulated device per path)");
+    eprintln!("  (--http/--https/--upnp-port take a bare PORT or an indexed N:PORT, 1-based;");
+    eprintln!("   a bare PORT is only valid with exactly one capture path)");
+    eprintln!("  (--http/--https are cumulative per device — repeat for more listeners; a");
+    eprintln!("   device given none defaults to one http + one https listener on random ports)");
+    eprintln!("  (--base-ip sets device 1's loopback address, default 127.0.0.2; device n binds");
+    eprintln!("   base_ip + (n-1))");
+    eprintln!("  (--standard-ports uses 443/80 instead of random ports for devices given none)");
     eprintln!("  (stateful mini-device simulation is on by default; --no-stateful disables it)");
     eprintln!("  (--upnp-port defaults to 49152, the port rustywiim's own UpnpClient looks for)");
-    eprintln!("  (--global listens on 0.0.0.0 instead of the default 127.0.0.1-only)");
+    eprintln!("  (--global listens on 0.0.0.0 instead of loopback — single capture path only)");
     std::process::exit(2);
 }
 
+/// Parses one `--http`/`--https`/`--upnp-port` argument value: a bare `PORT`
+/// or an indexed `N:PORT` (1-based device number, returned 0-based). Pure —
+/// returns the usage-error message rather than exiting, so it's directly
+/// unit-testable; `parse_port_spec()` below is the CLI-facing wrapper that
+/// exits on `Err`.
+fn try_parse_port_spec(flag: &str, spec: &str) -> Result<PortSpec, String> {
+    if let Some((n, p)) = spec.split_once(':') {
+        let idx: usize = n.parse().map_err(|_| format!("{flag} device index '{n}' is not a number"))?;
+        if idx == 0 {
+            return Err(format!("{flag} device indices are 1-based"));
+        }
+        let port: u16 = p.parse().map_err(|_| format!("{flag} port '{p}' is not a number"))?;
+        Ok((Some(idx - 1), port))
+    } else {
+        let port: u16 = spec
+            .parse()
+            .map_err(|_| format!("{flag} requires a port number (or N:PORT)"))?;
+        Ok((None, port))
+    }
+}
+
+fn parse_port_spec(flag: &str, spec: &str) -> PortSpec {
+    try_parse_port_spec(flag, spec).unwrap_or_else(|msg| {
+        eprintln!("wiim-simulator: {msg}");
+        std::process::exit(2);
+    })
+}
+
 fn parse_args() -> Args {
-    let mut path = None;
-    let mut listeners = Vec::new();
+    let mut paths = Vec::new();
+    let mut http = Vec::new();
+    let mut https = Vec::new();
+    let mut upnp_port = Vec::new();
+    let mut base_ip = DEFAULT_BASE_IP;
+    let mut standard_ports = false;
     let mut no_stateful = false;
     let mut no_upnp = false;
-    let mut upnp_port = DEFAULT_UPNP_PORT;
     let mut global = false;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--http" | "--https" => {
-                let scheme = if arg == "--http" { Scheme::Http } else { Scheme::Https };
-                let port = args.next().and_then(|s| s.parse().ok()).unwrap_or_else(|| {
-                    eprintln!("wiim-simulator: {arg} requires a port number");
+                let spec = args.next().unwrap_or_else(|| {
+                    eprintln!("wiim-simulator: {arg} requires a port number (or N:PORT)");
                     std::process::exit(2);
                 });
-                listeners.push(Listener { scheme, port });
+                let parsed = parse_port_spec(&arg, &spec);
+                if arg == "--http" { http.push(parsed) } else { https.push(parsed) };
             }
             "--upnp-port" => {
-                upnp_port = args.next().and_then(|s| s.parse().ok()).unwrap_or_else(|| {
-                    eprintln!("wiim-simulator: --upnp-port requires a port number");
+                let spec = args.next().unwrap_or_else(|| {
+                    eprintln!("wiim-simulator: --upnp-port requires a port number (or N:PORT)");
+                    std::process::exit(2);
+                });
+                upnp_port.push(parse_port_spec("--upnp-port", &spec));
+            }
+            "--base-ip" => {
+                let spec = args.next().unwrap_or_else(|| {
+                    eprintln!("wiim-simulator: --base-ip requires an IPv4 address");
+                    std::process::exit(2);
+                });
+                base_ip = spec.parse().unwrap_or_else(|_| {
+                    eprintln!("wiim-simulator: --base-ip '{spec}' is not a valid IPv4 address");
                     std::process::exit(2);
                 });
             }
+            "--standard-ports" => standard_ports = true,
             "--no-upnp" => no_upnp = true,
             // Accepted (as a no-op) for anyone used to the old opt-in flag —
             // stateful is the default now, nothing left for it to enable.
@@ -752,19 +837,65 @@ fn parse_args() -> Args {
             "--no-stateful" => no_stateful = true,
             "--global" => global = true,
             "-h" | "--help" => usage(),
-            other if path.is_none() && !other.starts_with('-') => path = Some(other.to_string()),
+            other if !other.starts_with('-') => paths.push(other.to_string()),
             other => {
                 eprintln!("wiim-simulator: unrecognized argument '{other}'");
                 usage();
             }
         }
     }
-    let Some(path) = path else { usage() };
-    if listeners.is_empty() {
-        listeners.push(Listener { scheme: Scheme::Http, port: 0 });
-        listeners.push(Listener { scheme: Scheme::Https, port: 0 });
+    if paths.is_empty() {
+        usage();
     }
-    Args { path, listeners, no_stateful, no_upnp, upnp_port, global }
+    if global && paths.len() > 1 {
+        eprintln!(
+            "wiim-simulator: --global only supports a single capture path \
+             (one host can only offer one 0.0.0.0:49152)"
+        );
+        std::process::exit(2);
+    }
+    Args { paths, http, https, upnp_port, base_ip, standard_ports, no_stateful, no_upnp, global }
+}
+
+/// Groups parsed `--http`/`--https`/`--upnp-port` occurrences by device
+/// index, validating each against `ndevices`. A bare (unindexed) spec is
+/// only accepted when there's exactly one device, where it unambiguously
+/// means that device — otherwise it's a usage error, never a guess. Pure —
+/// see `try_parse_port_spec()`'s doc comment for why; `group_by_device()`
+/// below is the CLI-facing wrapper.
+fn try_group_by_device(specs: Vec<PortSpec>, ndevices: usize, flag: &str) -> Result<Vec<Vec<u16>>, String> {
+    let mut out: Vec<Vec<u16>> = vec![Vec::new(); ndevices];
+    for (idx, port) in specs {
+        let idx = match idx {
+            Some(i) => i,
+            None if ndevices == 1 => 0,
+            None => {
+                return Err(format!("{flag} needs a device index with several captures, e.g. {flag} 2:9090"));
+            }
+        };
+        if idx >= ndevices {
+            return Err(format!(
+                "{flag} device index {} out of range (only {ndevices} capture path(s) given)",
+                idx + 1
+            ));
+        }
+        out[idx].push(port);
+    }
+    Ok(out)
+}
+
+fn group_by_device(specs: Vec<PortSpec>, ndevices: usize, flag: &str) -> Vec<Vec<u16>> {
+    try_group_by_device(specs, ndevices, flag).unwrap_or_else(|msg| {
+        eprintln!("wiim-simulator: {msg}");
+        std::process::exit(2);
+    })
+}
+
+/// Device `i`'s (0-based) loopback address: `base_ip + i` in the last octet.
+fn host_for(base_ip: std::net::Ipv4Addr, i: usize) -> String {
+    let octets = base_ip.octets();
+    let last = octets[3] as usize + i;
+    format!("{}.{}.{}.{}", octets[0], octets[1], octets[2], last)
 }
 
 /// Generates a throwaway self-signed cert (fresh every run, never written to
@@ -779,93 +910,146 @@ fn generate_self_signed_cert() -> rcgen::CertifiedKey<rcgen::KeyPair> {
     })
 }
 
+/// Per-device resolved port lists — `[]` for a scheme means "no listener of
+/// this kind for this device," not "use a default"; defaults are only
+/// filled in for a device that got *no* explicit `--http`/`--https` at all
+/// (see the loop building this in `main()`), matching the original
+/// single-device tool's "neither given" meaning generalized per device.
+struct DevicePorts {
+    http: Vec<u16>,
+    https: Vec<u16>,
+}
+
 fn main() {
     let args = parse_args();
-    let capture = load_capture(std::path::Path::new(&args.path));
-    let index = index_by_path(&capture);
-    let state = Mutex::new(init_state(&capture));
-    let fresh_uuid = FreshUuid::new();
-    eprintln!(
-        "[wiim-simulator] this instance's identity: uuid={} upnp_uuid={}",
-        fresh_uuid.plain, fresh_uuid.dashed,
-    );
-    let upnp = (!args.no_upnp).then(|| build_upnp_shared(&capture, &fresh_uuid)).flatten();
-    let shared = Arc::new(Shared { index, state, stateful_http: !args.no_stateful, upnp, fresh_uuid });
+    let captures: Vec<CaptureFile> = args.paths.iter().map(|p| load_capture(std::path::Path::new(p))).collect();
+    let ndevices = captures.len();
 
-    // One certificate, shared by every `--https` listener — generating it
-    // eagerly (only if actually needed) avoids paying for it when every
-    // listener is plain HTTP.
-    let cert = args
-        .listeners
-        .iter()
-        .any(|l| matches!(l.scheme, Scheme::Https))
-        .then(generate_self_signed_cert);
+    let http_per_device = group_by_device(args.http, ndevices, "--http");
+    let https_per_device = group_by_device(args.https, ndevices, "--https");
+    let upnp_port_per_device = group_by_device(args.upnp_port, ndevices, "--upnp-port");
 
-    // Default (no --global): loopback-only, matching "don't accidentally
-    // expose this on the LAN" as the safer default for a test tool. --global
-    // switches every listener (including UPnP) to 0.0.0.0.
-    let bind_host = if args.global { "0.0.0.0" } else { "127.0.0.1" };
+    let default_http_port = if args.standard_ports { 80 } else { 0 };
+    let default_https_port = if args.standard_ports { 443 } else { 0 };
+    let ports: Vec<DevicePorts> = (0..ndevices)
+        .map(|i| {
+            let mut http = http_per_device[i].clone();
+            let mut https = https_per_device[i].clone();
+            if http.is_empty() && https.is_empty() {
+                http.push(default_http_port);
+                https.push(default_https_port);
+            }
+            DevicePorts { http, https }
+        })
+        .collect();
+    // UPnP always defaults to the well-known port regardless of
+    // --standard-ports (it's already unprivileged); `None` means --no-upnp.
+    let upnp_ports: Vec<Option<u16>> = (0..ndevices)
+        .map(|i| (!args.no_upnp).then(|| upnp_port_per_device[i].last().copied().unwrap_or(DEFAULT_UPNP_PORT)))
+        .collect();
+
+    let mut devices = Vec::with_capacity(ndevices);
+    for (i, capture) in captures.iter().enumerate() {
+        let index = index_by_path(capture);
+        let state = Mutex::new(init_state(capture));
+        let fresh_uuid = FreshUuid::new();
+        let host = host_for(args.base_ip, i);
+        eprintln!(
+            "[wiim-simulator][{}] identity: uuid={} upnp_uuid={} host={host}",
+            i + 1, fresh_uuid.plain, fresh_uuid.dashed,
+        );
+        let upnp = upnp_ports[i].is_some().then(|| build_upnp_shared(capture, &fresh_uuid)).flatten();
+        devices.push(Arc::new(Device { n: i, host, index, state, upnp, fresh_uuid }));
+    }
+    let fleet = Arc::new(Fleet { devices, stateful_http: !args.no_stateful });
+
+    // One certificate, shared by every `--https` listener across the whole
+    // fleet — generating it eagerly (only if actually needed) avoids paying
+    // for it when every listener in the fleet is plain HTTP.
+    let cert = ports.iter().any(|p| !p.https.is_empty()).then(generate_self_signed_cert);
 
     let mut handles = Vec::new();
-    for listener in &args.listeners {
-        let addr = format!("{bind_host}:{}", listener.port);
-        let server = match listener.scheme {
-            Scheme::Http => tiny_http::Server::http(&addr),
-            Scheme::Https => {
-                let cert = cert.as_ref().expect("cert generated above whenever an https listener exists");
-                let ssl_config = tiny_http::SslConfig {
-                    certificate: cert.cert.pem().into_bytes(),
-                    private_key: cert.signing_key.serialize_pem().into_bytes(),
-                };
-                tiny_http::Server::https(&addr, ssl_config)
-            }
-        };
-        let server = match server {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!(
-                    "[wiim-simulator] failed to bind {} on {addr}: {e} — skipping this listener",
-                    listener.scheme.as_str()
-                );
-                continue;
-            }
-        };
-        // With `port: 0` (the default), the OS picked an ephemeral port —
-        // read back what it actually bound to rather than printing "0".
-        let bound_port = server.server_addr().to_ip().map(|a| a.port()).unwrap_or(listener.port);
-        eprintln!(
-            "[wiim-simulator] serving {} on {}://{bind_host}:{bound_port}{}",
-            capture.model,
-            listener.scheme.as_str(),
-            if shared.stateful_http { ", stateful mini-device on" } else { "" }
-        );
-        let shared = Arc::clone(&shared);
-        handles.push(std::thread::spawn(move || serve(server, &shared)));
-    }
+    let mut any_device_bound = false;
+    for i in 0..ndevices {
+        let dev = &fleet.devices[i];
+        let tag = format!("[wiim-simulator][{}]", i + 1);
+        // Default (no --global): each device on its own loopback address,
+        // matching "don't accidentally expose this on the LAN" as the safer
+        // default for a test tool. --global (single-device only, enforced
+        // in parse_args) switches every listener to 0.0.0.0.
+        let bind_host = if args.global { "0.0.0.0".to_string() } else { dev.host.clone() };
+        let mut device_bound = false;
 
-    if shared.upnp.is_some() {
-        let addr = format!("{bind_host}:{}", args.upnp_port);
-        match tiny_http::Server::http(&addr) {
-            Ok(server) => {
-                eprintln!("[wiim-simulator] serving UPnP on http://{bind_host}:{}", args.upnp_port);
-                let shared = Arc::clone(&shared);
-                handles.push(std::thread::spawn(move || {
-                    serve_upnp(server, shared.upnp.as_ref().expect("checked above"), &shared.state)
-                }));
-            }
-            Err(e) => {
-                eprintln!(
-                    "[wiim-simulator] failed to bind UPnP listener on {addr}: {e} — skipping it \
-                     (GetInfoEx/GetMute/SetMute/GetQueueLoopMode/SetQueueLoopMode won't be reachable)"
-                );
+        for &port in &ports[i].http {
+            let addr = format!("{bind_host}:{port}");
+            match tiny_http::Server::http(&addr) {
+                Ok(server) => {
+                    let bound_port = server.server_addr().to_ip().map(|a| a.port()).unwrap_or(port);
+                    eprintln!(
+                        "{tag} serving {} on http://{bind_host}:{bound_port}{}",
+                        captures[i].model,
+                        if fleet.stateful_http { ", stateful mini-device on" } else { "" }
+                    );
+                    let fleet = Arc::clone(&fleet);
+                    handles.push(std::thread::spawn(move || serve(server, &fleet, i)));
+                    device_bound = true;
+                }
+                Err(e) => report_bind_failure(&tag, "http", &addr, &e, args.standard_ports),
             }
         }
-    } else if !args.no_upnp {
-        eprintln!("[wiim-simulator] no UPnP data in this capture — no UPnP listener started");
+        for &port in &ports[i].https {
+            let addr = format!("{bind_host}:{port}");
+            let cert = cert.as_ref().expect("cert generated above whenever an https listener exists");
+            let ssl_config = tiny_http::SslConfig {
+                certificate: cert.cert.pem().into_bytes(),
+                private_key: cert.signing_key.serialize_pem().into_bytes(),
+            };
+            match tiny_http::Server::https(&addr, ssl_config) {
+                Ok(server) => {
+                    let bound_port = server.server_addr().to_ip().map(|a| a.port()).unwrap_or(port);
+                    eprintln!(
+                        "{tag} serving {} on https://{bind_host}:{bound_port}{}",
+                        captures[i].model,
+                        if fleet.stateful_http { ", stateful mini-device on" } else { "" }
+                    );
+                    let fleet = Arc::clone(&fleet);
+                    handles.push(std::thread::spawn(move || serve(server, &fleet, i)));
+                    device_bound = true;
+                }
+                Err(e) => report_bind_failure(&tag, "https", &addr, &e, args.standard_ports),
+            }
+        }
+
+        match (upnp_ports[i], dev.upnp.is_some()) {
+            (Some(port), true) => {
+                let addr = format!("{bind_host}:{port}");
+                match tiny_http::Server::http(&addr) {
+                    Ok(server) => {
+                        eprintln!("{tag} serving UPnP on http://{bind_host}:{port}");
+                        let fleet = Arc::clone(&fleet);
+                        handles.push(std::thread::spawn(move || serve_upnp(server, &fleet, i)));
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "{tag} failed to bind UPnP listener on {addr}: {e} — skipping it \
+                             (GetInfoEx/GetMute/SetMute/GetQueueLoopMode/SetQueueLoopMode won't be reachable)"
+                        );
+                    }
+                }
+            }
+            (Some(_), false) => eprintln!("{tag} no UPnP data in this capture — no UPnP listener started"),
+            (None, _) => {}
+        }
+
+        if device_bound {
+            any_device_bound = true;
+        } else {
+            eprintln!("{tag} no listener could bind for this device — skipping it entirely");
+        }
     }
 
-    if handles.is_empty() {
-        eprintln!("[wiim-simulator] no listener could bind, exiting");
+    if !any_device_bound {
+        eprintln!("[wiim-simulator] no device came up, exiting");
         std::process::exit(1);
     }
     for handle in handles {
@@ -873,42 +1057,66 @@ fn main() {
     }
 }
 
-/// Resolves one request to a `(status, body)` reply. While `shared.stateful_http`
-/// is set (the default) and the request's `command=` value is a recognized
-/// mutator, `handle_mutation` handles it entirely (under `state`'s `Mutex`,
-/// shared with the UPnP listener); `getPlayerStatusEx`/`getPlayerStatus` get
-/// the current state patched in. Everything else (always, regardless of
-/// `stateful_http`) falls through to plain replay from `shared.index`, keyed
-/// by the request's full path+query.
-fn resolve_response(key: &str, command: Option<&str>, shared: &Shared) -> (u16, String) {
-    if shared.stateful_http {
+/// Logs one HTTP(S) listener bind failure, with an extra remedy hint when
+/// it's plausibly `--standard-ports` hitting an unprivileged-port
+/// restriction (`EACCES`) — the one failure mode worth telling the user how
+/// to actually fix, rather than just "it didn't work."
+fn report_bind_failure(
+    tag: &str,
+    scheme: &str,
+    addr: &str,
+    e: &Box<dyn std::error::Error + Send + Sync>,
+    standard_ports: bool,
+) {
+    eprintln!("{tag} failed to bind {scheme} on {addr}: {e} — skipping this listener");
+    let is_permission_denied = e
+        .downcast_ref::<std::io::Error>()
+        .is_some_and(|io_err| io_err.kind() == std::io::ErrorKind::PermissionDenied);
+    if standard_ports && is_permission_denied {
+        eprintln!("{tag} fix: sudo sysctl -w net.ipv4.ip_unprivileged_port_start=80");
+        eprintln!("{tag} or drop --standard-ports to use OS-assigned ports instead");
+    }
+}
+
+/// Resolves one request to a `(status, body)` reply for device `dev_idx` of
+/// `fleet`. While `fleet.stateful_http` is set (the default) and the
+/// request's `command=` value is a recognized mutator, `handle_mutation`
+/// handles it entirely (under this device's own `state` `Mutex`, shared with
+/// its own UPnP listener); `getPlayerStatusEx`/`getPlayerStatus` get the
+/// current state patched in. Everything else (always, regardless of
+/// `stateful_http`) falls through to plain replay from this device's own
+/// `index`, keyed by the request's full path+query.
+fn resolve_response(key: &str, command: Option<&str>, fleet: &Fleet, dev_idx: usize) -> (u16, String) {
+    let dev = &fleet.devices[dev_idx];
+    if fleet.stateful_http {
         if let Some(command) = command {
-            let mut state = shared.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut state = dev.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             if let Some(body) = handle_mutation(command, &mut state) {
                 return (200, body);
             }
             if matches!(command, "getPlayerStatusEx" | "getPlayerStatus") {
-                return match shared.index.get(key) {
+                return match dev.index.get(key) {
                     Some(cap) if cap.outcome == Outcome::Ok => match cap.body.clone() {
                         Some(mut body) => {
                             patch_player_status(&mut body, &state);
                             (200, body.to_string())
                         }
-                        None => handle_command(cap, &shared.fresh_uuid),
+                        None => handle_command(cap, &dev.fresh_uuid),
                     },
-                    Some(cap) => handle_command(cap, &shared.fresh_uuid),
+                    Some(cap) => handle_command(cap, &dev.fresh_uuid),
                     None => (404, "unknown command".to_string()),
                 };
             }
         }
     }
-    match shared.index.get(key) {
-        Some(cap) => handle_command(cap, &shared.fresh_uuid),
+    match dev.index.get(key) {
+        Some(cap) => handle_command(cap, &dev.fresh_uuid),
         None => (404, "unknown command".to_string()),
     }
 }
 
-fn serve(server: tiny_http::Server, shared: &Arc<Shared>) {
+fn serve(server: tiny_http::Server, fleet: &Arc<Fleet>, dev_idx: usize) {
+    let tag = format!("[wiim-simulator][{}]", fleet.devices[dev_idx].n + 1);
     for request in server.incoming_requests() {
         let key = request.url().to_string();
         let command = extract_command(&key);
@@ -917,17 +1125,17 @@ fn serve(server: tiny_http::Server, shared: &Arc<Shared>) {
         // found this way — see `percent_decode`'s doc comment). A panic here
         // becomes a 500, and the loop moves on to the next request instead.
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            resolve_response(&key, command.as_deref(), shared)
+            resolve_response(&key, command.as_deref(), fleet, dev_idx)
         }));
         let (status, body) = result.unwrap_or_else(|_| {
             eprintln!(
-                "[wiim-simulator] internal error handling {} (see panic message above) -> 500",
+                "{tag} internal error handling {} (see panic message above) -> 500",
                 command.as_deref().unwrap_or(&key)
             );
             (500, "internal simulator error".to_string())
         });
         eprintln!(
-            "[wiim-simulator] {} -> {status}",
+            "{tag} {} -> {status}",
             command.as_deref().unwrap_or(&key)
         );
         let response = tiny_http::Response::from_string(body).with_status_code(status).with_header(
@@ -935,5 +1143,63 @@ fn serve(server: tiny_http::Server, shared: &Arc<Shared>) {
                 .expect("static header is valid"),
         );
         let _ = request.respond(response);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bare_port_parses_with_no_device_index() {
+        assert_eq!(try_parse_port_spec("--http", "8080"), Ok((None, 8080)));
+    }
+
+    #[test]
+    fn indexed_port_parses_one_based_to_zero_based() {
+        assert_eq!(try_parse_port_spec("--http", "2:9090"), Ok((Some(1), 9090)));
+    }
+
+    #[test]
+    fn indexed_port_rejects_zero_as_one_based() {
+        assert!(try_parse_port_spec("--http", "0:9090").is_err());
+    }
+
+    #[test]
+    fn port_spec_rejects_non_numeric_port() {
+        assert!(try_parse_port_spec("--http", "abc").is_err());
+        assert!(try_parse_port_spec("--http", "2:abc").is_err());
+    }
+
+    #[test]
+    fn group_by_device_accepts_bare_port_with_one_device() {
+        let grouped = try_group_by_device(vec![(None, 8080)], 1, "--http").unwrap();
+        assert_eq!(grouped, vec![vec![8080]]);
+    }
+
+    #[test]
+    fn group_by_device_rejects_bare_port_with_several_devices() {
+        let err = try_group_by_device(vec![(None, 8080)], 2, "--http").unwrap_err();
+        assert!(err.contains("needs a device index"), "{err}");
+    }
+
+    #[test]
+    fn group_by_device_rejects_out_of_range_index() {
+        let err = try_group_by_device(vec![(Some(5), 8080)], 2, "--http").unwrap_err();
+        assert!(err.contains("out of range"), "{err}");
+    }
+
+    #[test]
+    fn group_by_device_collects_cumulative_ports_for_the_same_device() {
+        let grouped = try_group_by_device(vec![(Some(0), 8080), (Some(0), 8081)], 2, "--http").unwrap();
+        assert_eq!(grouped, vec![vec![8080, 8081], vec![]]);
+    }
+
+    #[test]
+    fn host_for_increments_the_last_octet_from_base_ip() {
+        let base = std::net::Ipv4Addr::new(127, 0, 0, 2);
+        assert_eq!(host_for(base, 0), "127.0.0.2");
+        assert_eq!(host_for(base, 1), "127.0.0.3");
+        assert_eq!(host_for(base, 5), "127.0.0.7");
     }
 }
