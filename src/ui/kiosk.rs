@@ -849,8 +849,15 @@ impl KioskWindow {
                 // Remembered so a future unbound entry (discovery window's
                 // menu, or a fresh `--kiosk` launch) can restore this
                 // device instead of starting with nothing selected — see
-                // `AppState::enter_kiosk()`.
-                config::update(|cfg| cfg.kiosk_last_uuid = Some(key.clone()));
+                // `AppState::enter_kiosk()`. Not persisted for `--connect`'s
+                // ephemeral device: its uuid is regenerated every run (a
+                // simulator) or belongs to a session that deliberately
+                // leaves no trace, so remembering it would make the next
+                // normal launch try to restore a device that no longer
+                // exists.
+                if !config::is_ephemeral_uuid(&key) {
+                    config::update(|cfg| cfg.kiosk_last_uuid = Some(key.clone()));
+                }
                 (key, ds, label)
             }
             None => {
@@ -858,26 +865,6 @@ impl KioskWindow {
             }
         };
         self.finish_bind(key, ds, label);
-    }
-
-    /// Binds directly to an already-constructed `DeviceState`, skipping
-    /// `manager.device_state_for()`'s `DeviceManager` lookup entirely —
-    /// for `--connect --kiosk` together, where the device comes from
-    /// `--connect`'s own direct-connection path (see `DIRECT_CONNECT`'s
-    /// doc comment: it deliberately bypasses discovery/SSDP, so there's no
-    /// tracked entry/uuid for `bind_device()`'s normal resolution to find).
-    /// Not persisted as `kiosk_last_uuid` — the uuid isn't known yet
-    /// either (unresolved until `getStatusEx` answers), and re-selecting
-    /// it from the popover later isn't meaningful the way a discovered
-    /// device's is.
-    pub(crate) fn bind_direct(self: &Rc<Self>, ds: DeviceState, label: &str) {
-        if let Some(old) = self.bound.borrow_mut().take() {
-            self.release_bound(old);
-        }
-        while let Some(child) = self.content_holder.first_child() {
-            self.content_holder.remove(&child);
-        }
-        self.finish_bind(String::new(), ds, label.to_string());
     }
 
     /// Tears down a released `BoundDevice`'s Kiosk-specific state: the
@@ -897,7 +884,7 @@ impl KioskWindow {
         }
     }
 
-    /// Shared tail of `bind_device()`/`bind_direct()`: builds the fresh
+    /// Shared tail of `bind_device()`: builds the fresh
     /// `PlaybackView`/`StatusBarView` for `ds` and installs the new
     /// `BoundDevice`. Caller has already released the old binding and
     /// cleared `content_holder`.
@@ -1158,8 +1145,8 @@ impl KioskWindow {
     /// "L" — swaps between the Classic and WideRight playback layouts and
     /// rebuilds the view for whatever's currently bound (a no-op on the
     /// binding itself if nothing is: the new layout still takes effect on
-    /// the next `bind_device()`/`bind_direct()` either way, since both
-    /// read `self.layout` fresh). Reuses the same `key`/`ds` `finish_bind()`
+    /// the next `bind_device()` either way, since it reads `self.layout`
+    /// fresh). Reuses the same `key`/`ds` `finish_bind()`
     /// already has, rather than going through `bind_device()`'s
     /// `DeviceManager` resolution again — this isn't a device switch.
     pub(crate) fn toggle_layout(self: &Rc<Self>) {

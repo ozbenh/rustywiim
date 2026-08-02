@@ -52,7 +52,7 @@ pub fn set_ephemeral_uuid(uuid: String) {
     let _ = EPHEMERAL_UUID.set(uuid);
 }
 
-fn is_ephemeral_uuid(uuid: &str) -> bool {
+pub(crate) fn is_ephemeral_uuid(uuid: &str) -> bool {
     EPHEMERAL_UUID.get().is_some_and(|e| e == uuid)
 }
 

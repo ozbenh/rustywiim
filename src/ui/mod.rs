@@ -156,11 +156,16 @@ pub struct DeviceSpec {
 
 /// `--connect <scheme://ip[:port]>` override: when set, `AppState::activate()`
 /// skips discovery entirely, resolves this address's uuid with one direct
-/// `DiscoveryService::probe_known_scheme()` call, and opens exactly one
-/// device window straight at it — for pointing the app directly at
-/// `wiim-simulator` without it needing to be discoverable via SSDP. Must be
-/// set (via `set_direct_connect`) before `activate()` runs — in practice,
-/// during `main.rs`'s `connect_handle_local_options`.
+/// `DiscoveryService::probe_known_scheme()` call, tracks the resolved device
+/// exactly like an add-by-IP entry (`DeviceManager::add_manual()` — so it
+/// gets a picker row and a live Device Settings entry point, same as any
+/// other device), and opens exactly one device window straight at it — for
+/// pointing the app directly at `wiim-simulator` without it needing to be
+/// discoverable via SSDP. Config never sees it regardless: every write for
+/// its uuid is routed to scratch storage instead (see
+/// `config::Config::device_mut()`). Must be set (via `set_direct_connect`)
+/// before `activate()` runs — in practice, during `main.rs`'s
+/// `connect_handle_local_options`.
 static DIRECT_CONNECT: std::sync::OnceLock<(String, TlsMode)> = std::sync::OnceLock::new();
 
 pub fn set_direct_connect(ip: String, tls_mode: TlsMode) {
@@ -734,11 +739,11 @@ impl AppState {
         // directly rather than walking `PROBE_MODES` the way a plain
         // manual-add-by-IP does.
         //
-        // `--connect --kiosk` together hands the resolved `DeviceState` to
-        // Kiosk mode via `enter_kiosk_with_device()` instead of
-        // `open_device_spec()`, which is what lets the two flags combine:
-        // Kiosk mode pre-bound to the `--connect` target rather than a plain
-        // `DeviceWindow`.
+        // The resolved device is tracked exactly like an add-by-IP device
+        // (see the `add_manual()` call below), so `--connect --kiosk`
+        // together can use the normal `enter_kiosk()`/`bind_device()` path
+        // instead of a bespoke bind — Kiosk mode pre-bound to the
+        // `--connect` target rather than a plain `DeviceWindow`.
         if let Some((ip, tls_mode)) = DIRECT_CONNECT.get() {
             let start_in_kiosk = START_IN_KIOSK.load(Ordering::Relaxed);
             dbg_state(&format!(
@@ -778,9 +783,20 @@ impl AppState {
                         // see `config::Config::device_mut()`'s own doc
                         // comment for exactly what this suppresses.
                         config::set_ephemeral_uuid(dev.uuid.clone());
+                        // Tracked exactly like an add-by-IP device, so it
+                        // appears in the picker, gets a Device Settings
+                        // entry point, and renders as a group member/leader
+                        // like any other. Config never sees it: every write
+                        // for this uuid goes to scratch storage instead
+                        // (see `config::Config::device_mut()`), which is
+                        // why tracking it is safe. Track *before* opening
+                        // anything so the window's lookup below is a hit,
+                        // not a second creation.
+                        self_rc.device_manager.add_manual(
+                            dev.name.clone(), dev.ip.clone(), dev.uuid.clone(), dev.tls_mode,
+                        );
                         if start_in_kiosk {
-                            let ds = self_rc.device_manager.create_and_configure(&dev.uuid, &dev.ip, dev.tls_mode);
-                            Self::enter_kiosk_with_device(&self_rc, ds, dev.name);
+                            Self::enter_kiosk(&self_rc, Some(dev.uuid.clone()));
                         } else {
                             Self::open_device_spec(&self_rc, DeviceSpec {
                                 ip:          dev.ip,
@@ -973,20 +989,7 @@ impl AppState {
         }
     }
 
-    /// Same as `enter_kiosk`, but for `--connect`'s already-constructed
-    /// `DeviceState` — `--connect` deliberately bypasses discovery/SSDP
-    /// entirely (see `DIRECT_CONNECT`'s doc comment), so there's no
-    /// `DeviceManager` entry/uuid for `KioskWindow::bind_device()` to
-    /// resolve; `bind_direct()` skips that lookup and uses `ds` as-is.
-    /// No fallback-watching needed either, since the device is already
-    /// known synchronously — unlike the uuid path, nothing here depends on
-    /// discovery ever completing.
-    pub(crate) fn enter_kiosk_with_device(self_rc: &Rc<Self>, ds: DeviceState, label: String) {
-        let kw = Self::enter_kiosk_window(self_rc);
-        kw.bind_direct(ds, &label);
-    }
-
-    /// Shared by `enter_kiosk()`/`enter_kiosk_with_device()`: returns the
+    /// Shared by `enter_kiosk()`'s callers: returns the
     /// existing `KioskWindow` if already in Kiosk mode (retargeting is the
     /// caller's job), otherwise builds and presents a fresh `KioskWindow`
     /// and closes everything else — all before either caller binds a
