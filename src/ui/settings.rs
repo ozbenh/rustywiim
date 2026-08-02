@@ -21,7 +21,6 @@ use crate::config::{self, ThemeMode};
 use crate::ui::scroll_fade_label::{SPEED_MAX, SPEED_MIN};
 use crate::device::api::DeviceInfo;
 use crate::device::capabilities::DeviceCapabilities;
-use crate::device::group::GroupRole;
 use crate::device::playback::AccessMethod;
 use crate::device::state::{DeviceState, FullModeGuard};
 use crate::device::manager::DeviceManager;
@@ -237,27 +236,20 @@ impl DeviceSettingsWindow {
             about_holder.set_visible_child_name("offline");
         }
 
-        // A group leader's own input *is* the group's source (kept live in
-        // the playback window instead — no gap to fill here), but its own
-        // output is not the group's — each member has its own (see
-        // `views::output::OutputView`'s own doc comment) — so a leader
-        // gets neither page at all rather than one that means something
-        // different than it looks like it means. Computed once at
-        // construction, same as everything else this window shows about a
-        // device — see "About"'s own doc comment on why that's an accepted
-        // limitation here, not tracked live across a role change while the
-        // window stays open.
-        let is_leader = ds.group_state().role == GroupRole::Leader;
-        let io_holders = (!is_leader).then(|| build_io_pages(&ds, connected));
+        // Unlike the main device window (which hides Outputs for a group
+        // leader, since the *group's* output isn't any one member's — see
+        // `views::output::OutputView`'s own doc comment), Device Settings
+        // always shows both pages regardless of role: this window is about
+        // the physical device itself, not about what's meaningful to
+        // control through it right now.
+        let (input_holder, output_holder) = build_io_pages(&ds, connected);
 
         let initial_title = device_settings_title(&ds);
         let mut pages = vec![
             ("Advanced", "advanced", advanced_holder.clone().upcast()),
+            ("Input",    "input",    input_holder.clone().upcast()),
+            ("Output",   "output",   output_holder.clone().upcast()),
         ];
-        if let Some((input_holder, output_holder)) = &io_holders {
-            pages.push(("Input",  "input",  input_holder.clone().upcast()));
-            pages.push(("Output", "output", output_holder.clone().upcast()));
-        }
         pages.push(("About", "about", about_holder.clone().upcast()));
         let window = build_settings_window(&initial_title, pages);
 
@@ -287,14 +279,9 @@ impl DeviceSettingsWindow {
         // keep them (and their whole subtree) alive right along with it,
         // the same class of leak `wire_access_row()` had.
         let was_connected = Cell::new(connected);
-        // `glib::clone!`'s `#[weak]` attribute needs a `Downgrade` type
-        // directly, which `Option<Stack>` isn't — downgrade the pair by
-        // hand instead, same weak-capture reasoning as `advanced_holder`/
-        // `about_holder` above (this closure is a permanent handler on
-        // `ds`, which can outlive this window).
-        let weak_io_holders = io_holders.as_ref().map(|(i, o)| (i.downgrade(), o.downgrade()));
         ds.connect_device_changed(glib::clone!(
             #[weak] advanced_holder, #[weak] about_holder,
+            #[weak] input_holder, #[weak] output_holder,
             move |ds| {
                 let connected = ds.device_info().is_some();
                 if connected == was_connected.get() { return; }
@@ -318,15 +305,9 @@ impl DeviceSettingsWindow {
                 // views self-subscribe to `ds`), so unlike Advanced/About
                 // there's nothing to rebuild here — only which holder page
                 // is visible changes.
-                if let Some((input_weak, output_weak)) = &weak_io_holders {
-                    if let (Some(input_holder), Some(output_holder)) =
-                        (input_weak.upgrade(), output_weak.upgrade())
-                    {
-                        let name = if connected { "content" } else { "offline" };
-                        input_holder.set_visible_child_name(name);
-                        output_holder.set_visible_child_name(name);
-                    }
-                }
+                let name = if connected { "content" } else { "offline" };
+                input_holder.set_visible_child_name(name);
+                output_holder.set_visible_child_name(name);
             }
         ));
 
