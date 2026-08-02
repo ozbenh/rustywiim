@@ -24,12 +24,13 @@ pub struct DiscoveryWindow {
 
 impl DiscoveryWindow {
     pub fn new(
-        app:           &adw::Application,
-        manager:       &DiscoveryManager,
-        open_device:   Rc<dyn Fn(&ManagedEntry)>,
-        enter_kiosk:   Rc<dyn Fn()>,
-        open_settings: Rc<dyn Fn(Option<DeviceState>)>,
-        forget_device: Rc<dyn Fn(&str)>,
+        app:                  &adw::Application,
+        manager:              &DiscoveryManager,
+        open_device:          Rc<dyn Fn(&ManagedEntry)>,
+        enter_kiosk:          Rc<dyn Fn()>,
+        open_preferences:     Rc<dyn Fn()>,
+        open_device_settings: Rc<dyn Fn(DeviceState)>,
+        forget_device:        Rc<dyn Fn(&str)>,
     ) -> Self {
         let (init_w, init_h) = config::with(|cfg| (
             if cfg.discovery_window_width  > 0 { cfg.discovery_window_width  } else { 500 },
@@ -90,7 +91,7 @@ impl DiscoveryWindow {
             .build();
         header.pack_end(&add_btn);
         header.pack_end(&super::menu::build_menu_button(false));
-        super::wire_window_actions(&window, None, Rc::clone(&open_settings));
+        super::wire_window_actions(&window, Rc::clone(&open_preferences));
 
         // Device list — the actual rendering/live-updating is entirely
         // `DeviceListView`'s job now; this window just embeds it and
@@ -102,12 +103,15 @@ impl DiscoveryWindow {
             }
         }));
 
-        // A group member's settings cog. That device has no window of its
-        // own — opening one from this list opens the group — so this is the
-        // only way to reach its own settings.
+        // A row's settings cog — a standalone device's own row, or a group
+        // member's line (that device has no window of its own — opening
+        // one from this list opens the group — so this is the only way to
+        // reach its own settings).
         device_list.connect_device_settings(clone!(
-            #[strong] manager, #[strong] open_settings, move |_, key| {
-                open_settings(manager.device_state_for(key));
+            #[strong] manager, #[strong] open_device_settings, move |_, key| {
+                if let Some(ds) = manager.device_state_for(key) {
+                    open_device_settings(ds);
+                }
             }
         ));
 

@@ -15,9 +15,10 @@
 //! panel toggle rather than its own separate corner, by request. A
 //! transparent top-right button showing the bound device's name opens a
 //! popover containing a `DeviceListView` to switch devices, grouped
-//! (`top_right_group`, same shape as `top_left_group`) with a stop-gap
-//! Settings button to its left — opens the same plain, non-modal
-//! `SettingsWindow` every other window uses.
+//! (`top_right_group`, same shape as `top_left_group`) with a Preferences
+//! button and a Device Settings button to its left — opening the same
+//! plain, non-modal `PreferencesWindow`/`DeviceSettingsWindow` every other
+//! window uses.
 //!
 //! Keyboard shortcuts are owned entirely by this window, not shared with
 //! `DeviceWindow`'s own controller — "K" exits kiosk mode here; there is
@@ -97,6 +98,11 @@ struct BoundDevice {
     /// window can hold its own strong ref), so dropping `BoundDevice` alone
     /// doesn't guarantee the signal connection goes away with it.
     playback_changed_handler: glib::SignalHandlerId,
+    /// Keeps `device_settings_btn`'s sensitivity live across a group
+    /// role change while bound (e.g. this device becomes/stops being a
+    /// leader) — same disconnect-on-release story as
+    /// `playback_changed_handler`.
+    group_changed_handler: glib::SignalHandlerId,
 }
 
 pub(crate) struct KioskWindow {
@@ -113,9 +119,16 @@ pub(crate) struct KioskWindow {
     /// since `gtk::Overlay` z-orders purely by add order.
     content_holder: gtk::Box,
     device_btn:    gtk::Button,
-    /// Groups `device_btn` with the stop-gap Settings button (see
-    /// `KioskWindow::new()`'s `open_settings` param) so they move/fade
-    /// together as one unit — same shape as `top_left_group` below.
+    /// Enabled only while a real device (not the unbound/detached
+    /// placeholder) is bound and it isn't a group leader — a leader's
+    /// surface *is* the group's, which has no single device to configure.
+    /// Kept sensitivity live by `finish_bind()`'s own `group-changed`
+    /// wiring, not just set once at bind time.
+    device_settings_btn: gtk::Button,
+    /// Groups `device_btn` with the Preferences/Device Settings buttons
+    /// (see `KioskWindow::new()`'s `open_preferences`/`open_device_settings`
+    /// params) so they move/fade together as one unit — same shape as
+    /// `top_left_group` below.
     top_right_group: gtk::Box,
     popover:       gtk::Popover,
     /// Splits the side panel (presets/IO, start child) from the playback
@@ -264,14 +277,15 @@ fn group_display_name(ds: &DeviceState, device_name: &str) -> String {
 
 impl KioskWindow {
     pub(crate) fn new(
-        app:              &adw::Application,
-        manager:          &DiscoveryManager,
-        icons:            &Rc<IconSet>,
-        exit_kiosk:       Rc<dyn Fn()>,
-        open_settings:    Rc<dyn Fn(Option<DeviceState>)>,
-        forget_device:    Rc<dyn Fn(&str)>,
-        initial_layout:   PlaybackLayout,
-        kiosk_only:       bool,
+        app:                  &adw::Application,
+        manager:              &DiscoveryManager,
+        icons:                &Rc<IconSet>,
+        exit_kiosk:           Rc<dyn Fn()>,
+        open_preferences:     Rc<dyn Fn()>,
+        open_device_settings: Rc<dyn Fn(DeviceState)>,
+        forget_device:        Rc<dyn Fn(&str)>,
+        initial_layout:       PlaybackLayout,
+        kiosk_only:           bool,
     ) -> Rc<Self> {
         // resizable(false) is deliberately *not* set here, unlike the mini
         // window — that flag exists there specifically to keep GNOME/Mutter
@@ -347,7 +361,7 @@ impl KioskWindow {
         // content_holder so it always stacks on top (gtk::Overlay z-orders
         // purely by add order) — the device-name button and the sidebar
         // toggle, symmetric to it on the opposite corner.
-        let (device_btn, settings_btn, sidebar_btn, exit_kiosk_btn) = Self::build_floating_buttons(&overlay);
+        let (device_btn, preferences_btn, device_settings_btn, sidebar_btn, exit_kiosk_btn) = Self::build_floating_buttons(&overlay);
         let top_right_group = device_btn.parent().and_downcast::<gtk::Box>()
             .expect("device_btn's parent is the top_right_group Box built alongside it");
         // `--kiosk:only`: no exit path at all, not even hidden-but-wired —
@@ -414,6 +428,7 @@ impl KioskWindow {
             art_bg,
             content_holder,
             device_btn: device_btn.clone(),
+            device_settings_btn: device_settings_btn.clone(),
             top_right_group: top_right_group.clone(),
             popover: popover.clone(),
             sidebar_paned,
@@ -572,13 +587,24 @@ impl KioskWindow {
                 if let Some(this) = weak.upgrade() { this.note_activity("device-popover-closed"); }
             }
         });
-        settings_btn.connect_clicked({
+        preferences_btn.connect_clicked({
+            let open_preferences = Rc::clone(&open_preferences);
+            move |_| open_preferences()
+        });
+        device_settings_btn.connect_clicked({
             let weak = Rc::downgrade(&this);
-            let open_settings = Rc::clone(&open_settings);
+            let open_device_settings = Rc::clone(&open_device_settings);
             move |_| {
                 let Some(this) = weak.upgrade() else { return };
-                let ds = this.bound.borrow().as_ref().map(|b| b.ds.clone());
-                open_settings(ds);
+                // The button's own sensitivity already gates this (see
+                // `device_settings_btn`'s doc comment) — this check is
+                // defensive, not load-bearing.
+                let ds = this.bound.borrow().as_ref()
+                    .filter(|b| !b.key.is_empty())
+                    .map(|b| b.ds.clone());
+                if let Some(ds) = ds {
+                    open_device_settings(ds);
+                }
             }
         });
         sidebar_btn.connect_clicked({
@@ -697,29 +723,41 @@ impl KioskWindow {
     /// after `content_holder`, so they always stack on top of whichever
     /// `PlaybackView` is currently showing), all added from this one place
     /// rather than scattered through `new()`. Returns them specifically
-    /// since `new()` still needs both to wire up their click handling.
-    fn build_floating_buttons(overlay: &gtk::Overlay) -> (gtk::Button, gtk::Button, gtk::Button, gtk::Button) {
+    /// since `new()` still needs all of them to wire up their click handling.
+    fn build_floating_buttons(overlay: &gtk::Overlay) -> (gtk::Button, gtk::Button, gtk::Button, gtk::Button, gtk::Button) {
         let device_btn = gtk::Button::builder()
             .label("Select device")
             .css_classes(["kiosk-device-btn"])
             .build();
-        // Stop-gap Settings entry point for Kiosk mode (see `KioskWindow::new()`'s
-        // `open_settings` param doc comment) — no dedicated Kiosk icon yet,
-        // just the stock Adwaita "system" emblem. Grouped with device_btn
-        // (not its own floating corner) the same way sidebar_btn/
-        // exit_kiosk_btn share `top_left_group` below, so both move/fade as
-        // one unit.
-        let settings_btn = gtk::Button::builder()
+        // Two entry points where DeviceWindow/DiscoveryWindow each only
+        // need one, since Kiosk mode has no menu bar to hold a
+        // "Preferences…"/"Device Settings…" pair instead (see
+        // `KioskWindow::new()`'s own params) — no dedicated Kiosk icons
+        // yet, just the stock Adwaita "system"/"properties" emblems.
+        // Grouped with device_btn (not their own floating corner) the same
+        // way sidebar_btn/exit_kiosk_btn share `top_left_group` below, so
+        // all three move/fade as one unit.
+        let preferences_btn = gtk::Button::builder()
             .icon_name("emblem-system-symbolic")
-            .tooltip_text("Settings")
+            .tooltip_text("Preferences")
             .css_classes(["kiosk-sidebar-btn"])
+            .build();
+        // Starts insensitive — `finish_bind()`'s first call (during `new()`,
+        // below) sets the real state before this is ever shown, but the
+        // sensible default before that is "no device to configure yet".
+        let device_settings_btn = gtk::Button::builder()
+            .icon_name("preferences-other-symbolic")
+            .tooltip_text("Device Settings")
+            .css_classes(["kiosk-sidebar-btn"])
+            .sensitive(false)
             .build();
         let top_right_group = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal).spacing(8)
             .halign(gtk::Align::End).valign(gtk::Align::Start)
             .margin_end(20)
             .build();
-        top_right_group.append(&settings_btn);
+        top_right_group.append(&preferences_btn);
+        top_right_group.append(&device_settings_btn);
         top_right_group.append(&device_btn);
         overlay.add_overlay(&top_right_group);
 
@@ -751,7 +789,7 @@ impl KioskWindow {
         top_left_group.append(&exit_kiosk_btn);
         overlay.add_overlay(&top_left_group);
 
-        (device_btn, settings_btn, sidebar_btn, exit_kiosk_btn)
+        (device_btn, preferences_btn, device_settings_btn, sidebar_btn, exit_kiosk_btn)
     }
 
     /// Resolves `key` (a device uuid — see `DiscoveryManager`)
@@ -825,6 +863,7 @@ impl KioskWindow {
     /// whatever replaces it is also playing).
     fn release_bound(&self, old: BoundDevice) {
         old.ds.disconnect(old.playback_changed_handler);
+        old.ds.disconnect(old.group_changed_handler);
         if config::with(|cfg| cfg.kiosk_inhibit_screensaver) == InhibitSystemScreensaver::WhenPlaying {
             if let Some(cookie) = self.inhibit_cookie.take() {
                 crate::ui::dbg_ui(&format!("kiosk inhibit: released cookie={cookie} (device unbound)"));
@@ -1043,6 +1082,27 @@ impl KioskWindow {
         });
         self.on_playback_changed(&ds);
 
+        // device_settings_btn: enabled only for a real bound device (not
+        // the unbound/detached placeholder — `key` is empty for that, see
+        // `bind_device()`'s "no device" branch) that isn't currently a
+        // group leader (a leader's surface is the group's, which has no
+        // single device to configure). Set once here from `ds`'s
+        // already-known role, then kept live by the group-changed handler
+        // below for a role change while this stays bound.
+        let has_real_device = !key.is_empty();
+        self.device_settings_btn.set_sensitive(
+            has_real_device && ds.group_state().role != crate::device::group::GroupRole::Leader,
+        );
+        let group_changed_handler = ds.connect_group_changed({
+            let weak = Rc::downgrade(self);
+            move |ds| {
+                let Some(this) = weak.upgrade() else { return };
+                this.device_settings_btn.set_sensitive(
+                    has_real_device && ds.group_state().role != crate::device::group::GroupRole::Leader,
+                );
+            }
+        });
+
         *self.bound.borrow_mut() = Some(BoundDevice {
             key,
             _full_mode: ds.acquire_full(),
@@ -1053,6 +1113,7 @@ impl KioskWindow {
             _play_queue: play_queue,
             _io: io,
             playback_changed_handler,
+            group_changed_handler,
         });
     }
 
@@ -1093,14 +1154,15 @@ impl KioskWindow {
         self.note_activity(activity_source);
 
         // Not a device switch — reuses the same `ds`, so only its
-        // playback-changed handler needs disconnecting (finish_bind()
-        // connects a fresh one) rather than the full release_bound() (that
-        // would also mark the device "closed" and drop a WhenPlaying
-        // inhibit it's still entitled to hold).
+        // playback-changed/group-changed handlers need disconnecting
+        // (finish_bind() connects fresh ones) rather than the full
+        // release_bound() (that would also mark the device "closed" and
+        // drop a WhenPlaying inhibit it's still entitled to hold).
         let Some(old) = self.bound.borrow_mut().take() else {
             return;
         };
         old.ds.disconnect(old.playback_changed_handler);
+        old.ds.disconnect(old.group_changed_handler);
         let (key, ds) = (old.key, old.ds);
         let label = self.device_btn.label().map(|s| s.to_string()).unwrap_or_default();
         while let Some(child) = self.content_holder.first_child() {

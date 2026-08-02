@@ -853,6 +853,24 @@ impl DeviceListView {
             }));
             hbox.append(&forget_btn);
         }
+
+        // Settings cog — every standalone row gets one (a group header
+        // does not, same reasoning as the trashcan above: a group isn't a
+        // device). Reuses the same `device-settings` signal a group
+        // member's own line already emits (`build_member_content()`), so
+        // both hosts (`DiscoveryWindow`, Kiosk's device popover) need only
+        // the one handler.
+        let cog = gtk::Button::builder()
+            .icon_name("emblem-system-symbolic")
+            .tooltip_text("Device settings")
+            .valign(gtk::Align::Center)
+            .css_classes(["flat"])
+            .build();
+        cog.connect_clicked(clone!(#[weak(rename_to = this)] self, #[strong] key, move |_| {
+            this.emit_by_name::<()>("device-settings", &[&key]);
+        }));
+        hbox.append(&cog);
+
         hbox
     }
 }

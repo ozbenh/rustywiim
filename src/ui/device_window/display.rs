@@ -194,6 +194,20 @@ impl DeviceWindowInner {
         } else if full_mode.is_none() {
             *full_mode = Some(self.ds.acquire_full());
         }
+        drop(full_mode);
+
+        // win.device-settings: greyed for a group leader, whose window
+        // *is* the group's — no single device to configure. Gated on
+        // leader-ness only, not `dormant` (a follower's own window is
+        // dormant anyway, but its device settings should still be
+        // reachable — that's the one device the window *is*). Looked up
+        // by name rather than stored separately, since this already runs
+        // on every group-role change (`wire_device_signals()`'s
+        // `group-changed` handler, via `populate_all()`) and a
+        // `SimpleAction` lookup is cheap.
+        if let Some(action) = self.window.lookup_action("device-settings").and_downcast::<gio::SimpleAction>() {
+            action.set_enabled(g.role != crate::device::group::GroupRole::Leader);
+        }
     }
 
     pub(super) fn apply_device_info(self: &Rc<Self>) {

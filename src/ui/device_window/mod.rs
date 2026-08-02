@@ -428,10 +428,11 @@ impl DeviceWindow {
         device_manager: DeviceManager,
         show_devices_fn: Rc<dyn Fn()>,
         enter_kiosk_fn: Rc<dyn Fn()>,
-        open_settings:  Rc<dyn Fn(Option<DeviceState>)>,
+        open_preferences: Rc<dyn Fn()>,
+        open_device_settings: Rc<dyn Fn(DeviceState)>,
         spec:           DeviceSpec,
     ) -> Self {
-        Self::new_inner(app, device_manager, show_devices_fn, enter_kiosk_fn, open_settings, spec)
+        Self::new_inner(app, device_manager, show_devices_fn, enter_kiosk_fn, open_preferences, open_device_settings, spec)
     }
 
     fn new_inner(
@@ -439,7 +440,8 @@ impl DeviceWindow {
         device_manager:  DeviceManager,
         show_devices_fn: Rc<dyn Fn()>,
         enter_kiosk_fn:  Rc<dyn Fn()>,
-        open_settings:   Rc<dyn Fn(Option<DeviceState>)>,
+        open_preferences: Rc<dyn Fn()>,
+        open_device_settings: Rc<dyn Fn(DeviceState)>,
         device_spec:     DeviceSpec,
     ) -> Self {
         let icons = Rc::new(icons::IconSet::load());
@@ -693,7 +695,7 @@ impl DeviceWindow {
 
         wire_mini_chrome(&inner);
 
-        wire_window_lifecycle(&inner, open_settings);
+        wire_window_lifecycle(&inner, open_preferences, open_device_settings);
 
         if init_dev_cfg.mini_mode {
             // `mini_mode` itself is already correctly seeded above (before
@@ -834,18 +836,19 @@ fn wire_mini_chrome(inner: &Rc<DeviceWindowInner>) {
 }
 
 /// The window-scoped actions (win.close/win.devices/win.about/
-/// win.settings) and the close-request/destroy lifecycle handlers that
-/// funnel into `DeviceWindowInner::cleanup()`.
+/// win.preferences/win.device-settings) and the close-request/destroy
+/// lifecycle handlers that funnel into `DeviceWindowInner::cleanup()`.
 fn wire_window_lifecycle(
-    inner:         &Rc<DeviceWindowInner>,
-    open_settings: Rc<dyn Fn(Option<DeviceState>)>,
+    inner:                &Rc<DeviceWindowInner>,
+    open_preferences:     Rc<dyn Fn()>,
+    open_device_settings: Rc<dyn Fn(DeviceState)>,
 ) {
     let window = inner.window.clone();
     let ds = inner.ds.clone();
     // ── Window actions ────────────────────────────────────────────────────────
-    // win.close (Ctrl-W), win.devices, win.about, win.settings — one
-    // registration each now, on the one shared window (previously
-    // duplicated onto a separate mini_win too).
+    // win.close (Ctrl-W), win.devices, win.about, win.preferences,
+    // win.device-settings — one registration each now, on the one shared
+    // window (previously duplicated onto a separate mini_win too).
     let close_action = gio::SimpleAction::new("close", None);
     {
         let win_for_close = window.clone();
@@ -881,7 +884,27 @@ fn wire_window_lifecycle(
         }
     });
 
-    wire_window_actions(&window, Some(ds.clone()), open_settings);
+    // win.device-settings — only a device window ever registers this (see
+    // `wire_window_actions()`'s own doc comment for why it isn't built
+    // there alongside win.preferences/win.about). Its enabled state is
+    // greyed for a group leader, whose window *is* the group's — no
+    // single device to configure. Seeded here from `ds`'s already-known
+    // role (this runs *after* `populate_all()`'s first call — see
+    // `new_inner()`'s call order — so `apply_follower_dormancy()`'s own
+    // identical check hasn't had an action to find yet the first time
+    // through); kept live from there on by that same function, which
+    // reruns on every group-role change.
+    let device_settings_action = gio::SimpleAction::new("device-settings", None);
+    device_settings_action.set_enabled(ds.group_state().role != crate::device::group::GroupRole::Leader);
+    {
+        let ds_weak = ds.downgrade();
+        device_settings_action.connect_activate(move |_, _| {
+            if let Some(ds) = ds_weak.upgrade() { open_device_settings(ds); }
+        });
+    }
+    window.add_action(&device_settings_action);
+
+    wire_window_actions(&window, open_preferences);
 
     // close-request fires on any close attempt: the native titlebar X
     // button (full mode only — mini mode is undecorated), win.close()

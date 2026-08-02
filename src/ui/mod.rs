@@ -72,13 +72,17 @@ static ENTERING_KIOSK: std::sync::atomic::AtomicBool = std::sync::atomic::Atomic
 
 // ── Shared window actions ─────────────────────────────────────────────────────
 
-/// Register `win.about` and `win.settings` on any ApplicationWindow.
-/// Both the device window, discovery window, and mini window share these actions.
-/// `ds` is `None` for the discovery window (settings window title has no device name).
+/// Register `win.about` and `win.preferences` on any ApplicationWindow.
+/// The device window, discovery window, and mini window share these
+/// actions. `win.device-settings` is *not* registered here — only a device
+/// window needs it, and only that window has the group-role live wiring
+/// (leader greying) and the `DeviceState` a device-scoped action needs; see
+/// `device_window::wire_window_lifecycle()`, which builds its own alongside
+/// this call rather than this function taking an `Option<DeviceState>` for
+/// a case only one caller ever has.
 pub(crate) fn wire_window_actions(
-    window:        &impl glib::object::IsA<gtk::ApplicationWindow>,
-    ds:            Option<DeviceState>,
-    open_settings: Rc<dyn Fn(Option<DeviceState>)>,
+    window:           &impl glib::object::IsA<gtk::ApplicationWindow>,
+    open_preferences: Rc<dyn Fn()>,
 ) {
     let window = window.upcast_ref::<gtk::ApplicationWindow>().clone();
     let about_action = gio::SimpleAction::new("about", None);
@@ -97,15 +101,11 @@ pub(crate) fn wire_window_actions(
     });
     window.add_action(&about_action);
 
-    // Use a WeakRef so the closure does not keep the DeviceState alive after the
-    // device window closes.  Upgrading on activation gives the same device (or
-    // None if it has already been freed, which opens global settings — harmless).
-    let ds_weak: Option<glib::WeakRef<DeviceState>> = ds.as_ref().map(|d| d.downgrade());
-    let settings_action = gio::SimpleAction::new("settings", None);
-    settings_action.connect_activate(move |_, _| {
-        open_settings(ds_weak.as_ref().and_then(|w| w.upgrade()));
+    let preferences_action = gio::SimpleAction::new("preferences", None);
+    preferences_action.connect_activate(move |_, _| {
+        open_preferences();
     });
-    window.add_action(&settings_action);
+    window.add_action(&preferences_action);
 }
 
 // ── DeviceSpec ────────────────────────────────────────────────────────────────
@@ -227,7 +227,18 @@ pub(crate) struct AppState {
     disc_mgr:       DiscoveryManager,
     device_manager: DeviceManager,
     registry:       RefCell<Vec<DeviceWindow>>,
-    settings_reg:   RefCell<Vec<settings::SettingsWindow>>,
+    /// Exactly one instance process-wide — see `PreferencesWindow`'s own
+    /// doc comment. `None` when not currently open; `open_preferences()`
+    /// lazily creates it and clears this back to `None` on close (the
+    /// window is fully destroyed on close, unlike `disc_win` below, which
+    /// hides instead — so re-presenting a stale, already-destroyed handle
+    /// isn't an option here).
+    preferences_win: RefCell<Option<settings::PreferencesWindow>>,
+    /// One entry per currently-open `DeviceSettingsWindow`, deduplicated by
+    /// uuid in `open_device_settings()`. Unlike `preferences_win` this
+    /// isn't a singleton — a different device's settings can be open at
+    /// the same time.
+    device_settings_reg: RefCell<Vec<settings::DeviceSettingsWindow>>,
     disc_win:       RefCell<Option<devlist::DiscoveryWindow>>,
     kiosk_win:      RefCell<Option<Rc<kiosk::KioskWindow>>>,
     /// Set while `exit_kiosk()` is waiting for the Kiosk window to finish
@@ -291,60 +302,57 @@ impl AppState {
             disc_mgr,
             device_manager,
             registry:       RefCell::new(Vec::new()),
-            settings_reg:   RefCell::new(Vec::new()),
+            preferences_win: RefCell::new(None),
+            device_settings_reg: RefCell::new(Vec::new()),
             disc_win:       RefCell::new(None),
             kiosk_win:      RefCell::new(None),
             kiosk_exiting:  Cell::new(false),
         })
     }
 
-    /// Open (or re-present) the settings window for `ds`, deduplicating by UUID.
-    fn open_settings(self_rc: &Rc<Self>, ds: Option<DeviceState>) {
-        let ds_uuid = ds.as_ref()
-            .and_then(|d| d.device_info())
-            .map(|i| i.uuid.clone())
-            .filter(|u| !u.is_empty());
-        {
-            let reg = self_rc.settings_reg.borrow();
-            for sw in reg.iter() {
-                if sw.device_uuid() == ds_uuid {
-                    dbg_state(&format!("settings: presenting existing for {:?}", ds_uuid));
-                    sw.present();
-                    return;
-                }
+    /// Builds the `notify_kiosk_changed` callback `PreferencesWindow` needs
+    /// (its Kiosk page live-pushes certain settings into a currently-open
+    /// `KioskWindow` — a no-op when none is open). Shared by
+    /// `open_preferences()`; its own small function only so that one isn't
+    /// cluttered with this closure's construction.
+    fn kiosk_notify_fn(self_rc: &Rc<Self>) -> Rc<dyn Fn(u32)> {
+        let state = Rc::clone(self_rc);
+        Rc::new(move |mask: u32| {
+            if let Some(kiosk) = state.kiosk_win.borrow().as_ref() {
+                kiosk.on_settings_changed(mask);
             }
-        }
-        dbg_state(&format!("settings: opening new for {:?}", ds_uuid));
-        let notify_kiosk_changed = {
-            let state = Rc::clone(self_rc);
-            Rc::new(move |mask: u32| {
-                if let Some(kiosk) = state.kiosk_win.borrow().as_ref() {
-                    kiosk.on_settings_changed(mask);
-                }
-            }) as Rc<dyn Fn(u32)>
-        };
-        let s = settings::SettingsWindow::new(ds, &self_rc.disc_mgr, notify_kiosk_changed);
-        let win_clone  = s.window_ref().clone();
-        let weak_self  = Rc::downgrade(self_rc);
-        let close_uuid = ds_uuid.clone();
+        })
+    }
+
+    /// Registers the Kiosk-idle-timer/cursor interplay and the
+    /// destroy-on-close teardown a settings-family window (Preferences or
+    /// Device Settings) needs — the part that's identical between the two
+    /// regardless of what's actually in the window. `on_closed` runs first,
+    /// inside the close-request handler, so the caller can drop its own
+    /// registry entry before the generic Kiosk/destroy handling below runs.
+    fn wire_settings_window_close(
+        self_rc:   &Rc<Self>,
+        window:    &adw::Window,
+        on_closed: impl Fn(&Rc<Self>) + 'static,
+    ) {
         // Kiosk's own screensaver/auto-hide idle timers used to keep
-        // running the whole time Settings was open (still a plain
-        // separate toplevel, not an overlay within Kiosk's own window),
-        // so closing back to Kiosk could land on a black screensaver (or
-        // hidden chrome) despite the user having been actively working
-        // in Settings — see `KioskWindow::external_window_opened()`'s own
-        // doc comment. Also hides Settings' own cursor to match, on a
-        // touch screen where Kiosk already permanently hides its own.
+        // running the whole time a settings window was open (still a plain
+        // separate toplevel, not an overlay within Kiosk's own window), so
+        // closing back to Kiosk could land on a black screensaver (or
+        // hidden chrome) despite the user having been actively working in
+        // it — see `KioskWindow::external_window_opened()`'s own doc
+        // comment. Also hides the settings window's own cursor to match,
+        // on a touch screen where Kiosk already permanently hides its own.
         if let Some(kiosk) = self_rc.kiosk_win.borrow().as_ref() {
-            kiosk.external_window_opened(s.window_ref());
+            kiosk.external_window_opened(window);
             if kiosk.should_hide_cursor() {
-                s.window_ref().set_cursor_from_name(Some("none"));
+                window.set_cursor_from_name(Some("none"));
             }
         }
-        s.window_ref().connect_close_request(move |win| {
-            dbg_state(&format!("settings: closed for {:?}", close_uuid));
+        let weak_self = Rc::downgrade(self_rc);
+        window.connect_close_request(move |win| {
             if let Some(state) = weak_self.upgrade() {
-                state.settings_reg.borrow_mut().retain(|w| w.window_ref() != &win_clone);
+                on_closed(&state);
                 if let Some(kiosk) = state.kiosk_win.borrow().as_ref() {
                     kiosk.external_window_closed(win);
                 }
@@ -356,13 +364,54 @@ impl AppState {
             // even after those were fixed to hold `ds` weakly — see
             // `wire_access_row()`'s doc comment). Without an explicit
             // destroy() here nothing actually confirmed the window's widget
-            // tree itself was ever torn down, only that `settings_reg`
+            // tree itself was ever torn down, only that the registry
             // dropped its own reference to it.
             win.destroy();
             glib::Propagation::Proceed
         });
+    }
+
+    /// Open (or re-present) the one app-wide Preferences window.
+    fn open_preferences(self_rc: &Rc<Self>) {
+        if let Some(pw) = self_rc.preferences_win.borrow().as_ref() {
+            dbg_state("preferences: presenting existing");
+            pw.present();
+            return;
+        }
+        dbg_state("preferences: opening new");
+        let notify_kiosk_changed = Self::kiosk_notify_fn(self_rc);
+        let pw = settings::PreferencesWindow::new(&self_rc.disc_mgr, notify_kiosk_changed);
+        Self::wire_settings_window_close(self_rc, pw.window_ref(), |state| {
+            dbg_state("preferences: closed");
+            *state.preferences_win.borrow_mut() = None;
+        });
+        pw.present();
+        *self_rc.preferences_win.borrow_mut() = Some(pw);
+    }
+
+    /// Open (or re-present) the Device Settings window for `ds`,
+    /// deduplicating by uuid.
+    fn open_device_settings(self_rc: &Rc<Self>, ds: DeviceState) {
+        let uuid = ds.uuid();
+        {
+            let reg = self_rc.device_settings_reg.borrow();
+            for sw in reg.iter() {
+                if sw.device_uuid().as_deref() == Some(uuid.as_str()) {
+                    dbg_state(&format!("device settings: presenting existing for {uuid}"));
+                    sw.present();
+                    return;
+                }
+            }
+        }
+        dbg_state(&format!("device settings: opening new for {uuid}"));
+        let s = settings::DeviceSettingsWindow::new(ds);
+        let win_clone = s.window_ref().clone();
+        Self::wire_settings_window_close(self_rc, s.window_ref(), move |state| {
+            dbg_state(&format!("device settings: closed for {uuid}"));
+            state.device_settings_reg.borrow_mut().retain(|w| w.window_ref() != &win_clone);
+        });
         s.present();
-        self_rc.settings_reg.borrow_mut().push(s);
+        self_rc.device_settings_reg.borrow_mut().push(s);
     }
 
     /// Show (or lazily create) the device-list window.
@@ -375,10 +424,14 @@ impl AppState {
                 Rc::new(move |entry: &ManagedEntry| Self::open_device(&state, entry))
                     as Rc<dyn Fn(&ManagedEntry)>
             };
-            let open_settings_fn = {
+            let open_preferences_fn = {
                 let state = Rc::clone(self_rc);
-                Rc::new(move |ds| Self::open_settings(&state, ds))
-                    as Rc<dyn Fn(Option<DeviceState>)>
+                Rc::new(move || Self::open_preferences(&state)) as Rc<dyn Fn()>
+            };
+            let open_device_settings_fn = {
+                let state = Rc::clone(self_rc);
+                Rc::new(move |ds| Self::open_device_settings(&state, ds))
+                    as Rc<dyn Fn(DeviceState)>
             };
             let enter_kiosk_fn = {
                 let state = Rc::clone(self_rc);
@@ -393,7 +446,8 @@ impl AppState {
                 &self_rc.disc_mgr,
                 open_device_fn,
                 enter_kiosk_fn,
-                open_settings_fn,
+                open_preferences_fn,
+                open_device_settings_fn,
                 forget_device_fn,
             ));
         }
@@ -474,16 +528,21 @@ impl AppState {
             let uuid = log_uuid.clone();
             Rc::new(move || Self::enter_kiosk(&state, Some(uuid.clone()))) as Rc<dyn Fn()>
         };
-        let open_settings_fn = {
+        let open_preferences_fn = {
             let state = Rc::clone(self_rc);
-            Rc::new(move |ds| Self::open_settings(&state, ds)) as Rc<dyn Fn(Option<DeviceState>)>
+            Rc::new(move || Self::open_preferences(&state)) as Rc<dyn Fn()>
+        };
+        let open_device_settings_fn = {
+            let state = Rc::clone(self_rc);
+            Rc::new(move |ds| Self::open_device_settings(&state, ds)) as Rc<dyn Fn(DeviceState)>
         };
         let dw = DeviceWindow::new_for_device(
             &self_rc.app,
             self_rc.device_manager.clone(),
             show_fn,
             enter_kiosk_fn,
-            open_settings_fn,
+            open_preferences_fn,
+            open_device_settings_fn,
             spec,
         );
         let gtk_win   = dw.window.clone();
@@ -502,17 +561,18 @@ impl AppState {
                         .find(|w| w.window == win_key)
                         .and_then(|w| w.uuid());
                     s.registry.borrow_mut().retain(|w| w.window != win_key);
-                    // Also close any Settings window open for this device.
-                    // SettingsWindow holds a *strong* DeviceState clone
-                    // (settings_reg, until the settings window itself
-                    // closes) — without this, closing the device window
-                    // leaves that strong clone alive, the DeviceState
-                    // GObject never disposes, and polling keeps running
-                    // indefinitely even though no window looks associated
-                    // with the device anymore. Clone the window handle and
-                    // drop the settings_reg borrow before calling close() —
-                    // close() re-enters this same RefCell synchronously via
-                    // its own close-request handler.
+                    // Also close any Device Settings window open for this
+                    // device. DeviceSettingsWindow holds a *strong*
+                    // DeviceState clone (device_settings_reg, until the
+                    // window itself closes) — without this, closing the
+                    // device window leaves that strong clone alive, the
+                    // DeviceState GObject never disposes, and polling keeps
+                    // running indefinitely even though no window looks
+                    // associated with the device anymore. Clone the window
+                    // handle and drop the device_settings_reg borrow before
+                    // calling close() — close() re-enters this same
+                    // RefCell synchronously via its own close-request
+                    // handler.
                     if let Some(uuid) = live_uuid.filter(|u| !u.is_empty()) {
                         Self::close_settings_window_for(&s, &uuid);
                     }
@@ -530,15 +590,15 @@ impl AppState {
         });
     }
 
-    /// Closes the Settings window open for `uuid`, if any. Shared by
+    /// Closes the Device Settings window open for `uuid`, if any. Shared by
     /// `open_device_spec()`'s own close-request cascade (a device window
-    /// closing shouldn't leave its Settings window behind, holding a
-    /// strong `DeviceState` clone that keeps polling with nothing visibly
-    /// attached to it anymore) and `forget_device()` below, which may need
-    /// to close one with no device window behind it at all — opened
-    /// straight from the device list's cog.
+    /// closing shouldn't leave its Device Settings window behind, holding
+    /// a strong `DeviceState` clone that keeps polling with nothing
+    /// visibly attached to it anymore) and `forget_device()` below, which
+    /// may need to close one with no device window behind it at all —
+    /// opened straight from the device list's cog.
     fn close_settings_window_for(self_rc: &Rc<Self>, uuid: &str) {
-        let target = self_rc.settings_reg.borrow().iter()
+        let target = self_rc.device_settings_reg.borrow().iter()
             .find(|sw| sw.device_uuid().as_deref() == Some(uuid))
             .map(|sw| sw.window_ref().clone());
         if let Some(win) = target {
@@ -854,11 +914,15 @@ impl AppState {
             let state = Rc::clone(self_rc);
             Rc::new(move || Self::exit_kiosk(&state)) as Rc<dyn Fn()>
         };
-        // Same shared, plain non-modal open_settings_fn every other window
-        // uses (DeviceWindow/DiscoveryWindow).
-        let open_settings_fn = {
+        // Same shared, plain non-modal open_preferences_fn/open_device_settings_fn
+        // every other window uses (DeviceWindow/DiscoveryWindow).
+        let open_preferences_fn = {
             let state = Rc::clone(self_rc);
-            Rc::new(move |ds| Self::open_settings(&state, ds)) as Rc<dyn Fn(Option<DeviceState>)>
+            Rc::new(move || Self::open_preferences(&state)) as Rc<dyn Fn()>
+        };
+        let open_device_settings_fn = {
+            let state = Rc::clone(self_rc);
+            Rc::new(move |ds| Self::open_device_settings(&state, ds)) as Rc<dyn Fn(DeviceState)>
         };
         let forget_device_fn = {
             let state = Rc::clone(self_rc);
@@ -869,7 +933,8 @@ impl AppState {
             Some(KioskLayoutOverride::WideRight) | None => views::playback_full::PlaybackLayout::WideRight,
         };
         let kw = kiosk::KioskWindow::new(
-            &self_rc.app, &self_rc.disc_mgr, &icons, exit_fn, open_settings_fn, forget_device_fn,
+            &self_rc.app, &self_rc.disc_mgr, &icons, exit_fn,
+            open_preferences_fn, open_device_settings_fn, forget_device_fn,
             initial_layout, kiosk_only(),
         );
         kw.present();

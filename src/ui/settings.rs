@@ -1,12 +1,15 @@
-// Settings window — non-modal, GNOME-style split layout.
+// Two non-modal, GNOME-style split-layout windows sharing the same page
+// builders below: `PreferencesWindow` (Appearance/Kiosk/General — app-global,
+// no device involved, exactly one instance process-wide) and
+// `DeviceSettingsWindow` (Advanced/About — always scoped to one concrete
+// `DeviceState`, one instance per device uuid). Splitting them out of what
+// used to be a single `SettingsWindow` (gated on `Option<DeviceState>`, with
+// two coordinated `gtk::ListBox`es since GTK's selection model is
+// per-`ListBox`) removes that coordination entirely — each window now has
+// exactly one sidebar section, so there's nothing to keep in sync.
 //
 // Left sidebar: section-titled navigation list (gtk::ListBox .navigation-sidebar).
 // Right panel:  gtk::Stack of adw::PreferencesPage widgets, one per topic.
-//
-// `ds` carries the associated DeviceState when opened from a device window.
-// When `ds` is None the window was opened from the device list and shows only
-// application-wide settings.  Device-specific pages (added in the future) must
-// check `ds.is_some()` before rendering.
 
 use adw::prelude::*;
 use gtk::glib;
@@ -34,333 +37,253 @@ fn rgba_to_hex(c: &gtk::gdk::RGBA) -> String {
     )
 }
 
-// ── Public handle ─────────────────────────────────────────────────────────────
+// ── Shared window chrome ──────────────────────────────────────────────────────
 
-pub(crate) struct SettingsWindow {
-    window: adw::Window,
-    /// Non-None when opened from a device window; None from the device list.
-    /// Stored for future device-specific settings pages.
-    #[allow(dead_code)]
-    pub(crate) ds: Option<DeviceState>,
-    /// Acquired once, right after `ds` is obtained, for the lifetime of
-    /// this window — same pattern as `DeviceWindowInner::_full_mode`.
-    /// Independent of whatever guard the parent device window already
-    /// holds (`acquire_full()` is refcounted and safe to call
-    /// redundantly): today a Settings window can only ever be opened
-    /// from an already-open device window, which force-closes it in turn
-    /// (see `open_device_spec()`'s close-request handler) — but that's
-    /// coupling between two separate windows/handlers, not this window
-    /// owning its own requirement. Without its own guard, the Advanced/
-    /// About pages' live device reads (`DeviceInfo`/`DeviceCapabilities`,
-    /// `player_status` diagnostics) would be reading from a device that
-    /// could have already reverted to `Simple` mode's reduced polling for
-    /// however long it takes the paired close to actually finish tearing
-    /// this window down.
-    #[allow(dead_code)]
-    _full_mode: Option<FullModeGuard>,
+/// Builds the sidebar-`ListBox` | content-`Stack` layout both windows use —
+/// title selection, `adw::Window` construction (including the
+/// `modern-bg-window` CSS-gradient background — see the inline comment at
+/// its `add_css_class()` call for why a real `ArtBackground` was tried and
+/// reverted here), and the row-index -> stack-page-name wiring. `pages` is
+/// `(row title, stack page name, page widget)` in sidebar order; the first
+/// entry is selected initially.
+fn build_settings_window(title: &str, pages: Vec<(&str, &str, gtk::Widget)>) -> adw::Window {
+    let sidebar_list = gtk::ListBox::builder()
+        .selection_mode(gtk::SelectionMode::Single)
+        .css_classes(["navigation-sidebar"])
+        .build();
+
+    let content_stack = gtk::Stack::builder()
+        .transition_type(gtk::StackTransitionType::None)
+        .vexpand(true)
+        .hexpand(true)
+        .build();
+
+    let mut names = Vec::with_capacity(pages.len());
+    for (row_title, page_name, page) in pages {
+        let row = adw::ActionRow::builder()
+            .title(row_title)
+            .selectable(true)
+            .activatable(true)
+            .build();
+        sidebar_list.append(&row);
+        content_stack.add_named(&page, Some(page_name));
+        names.push(page_name.to_string());
+    }
+
+    sidebar_list.select_row(sidebar_list.row_at_index(0).as_ref());
+    sidebar_list.connect_row_selected({
+        let stack = content_stack.clone();
+        move |_, row| {
+            let Some(row) = row else { return };
+            let idx = row.index();
+            if idx < 0 { return; }
+            if let Some(name) = names.get(idx as usize) {
+                stack.set_visible_child_name(name);
+            }
+        }
+    });
+
+    let sidebar_scroll = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .vexpand(true)
+        .build();
+    sidebar_scroll.set_child(Some(&sidebar_list));
+
+    let paned = gtk::Paned::new(Orientation::Horizontal);
+    paned.set_start_child(Some(&sidebar_scroll));
+    paned.set_end_child(Some(&content_stack));
+    paned.set_position(220);
+    paned.set_shrink_start_child(false);
+    paned.set_shrink_end_child(false);
+    paned.set_resize_start_child(false);
+    paned.set_resize_end_child(true);
+
+    let header = adw::HeaderBar::new();
+    let toolbar_view = adw::ToolbarView::new();
+    toolbar_view.add_top_bar(&header);
+    toolbar_view.set_content(Some(&paned));
+
+    let window = adw::Window::builder()
+        .title(title)
+        .default_width(720)
+        .default_height(520)
+        .modal(false)
+        .build();
+    // `.add_css_class()` *after* construction, not `.css_classes([...])`
+    // in the builder above — see `EqPanel::present()`'s identical fix
+    // for the full story (the builder property replaces the whole
+    // class list, wiping out the `background`/`csd` classes
+    // GTK/libadwaita set up during construction, which is what was
+    // actually breaking this window's rounded corners all along).
+    // "modern-bg-window" is a plain CSS background-image gradient under
+    // RustyWiiM Modern (modern.css) — a real `ArtBackground` + `Overlay`
+    // (the main window's own approach) was tried first and reverted: making
+    // a bare `gtk::Overlay` the window's *direct* content, instead of
+    // `adw::ToolbarView`, lost the window's rounded corners and its
+    // content-driven minimum size, and (once `ArtBackground` hides itself
+    // outside Modern) left a genuinely transparent hole clean through to
+    // the desktop under System/Dark themes — libadwaita windows use an
+    // alpha-capable surface for their CSD shadows/rounded corners, so an
+    // unpainted region really is a hole, not just a visual gap (confirmed
+    // live; same root cause `344e9ca` "Fix transparent background with
+    // modern theme" already hit for `ArtBackground` itself). A plain CSS
+    // gradient keeps this window's structure/content exactly as it was
+    // otherwise.
+    window.add_css_class("modern-bg-window");
+    window.set_content(Some(&toolbar_view));
+    window
 }
 
-impl SettingsWindow {
-    pub(crate) fn new(ds: Option<DeviceState>, disc_mgr: &DiscoveryManager, notify_kiosk_changed: Rc<dyn Fn(u32)>) -> Self {
-        let full_mode = ds.as_ref().map(|d| d.acquire_full());
-        // ── Navigation sidebar ─────────────────────────────────────────────────
-        let sidebar_box = gtk::Box::builder()
-            .orientation(Orientation::Vertical)
-            .build();
+// ── Preferences (app-global) ──────────────────────────────────────────────────
 
-        // "Application" section header
-        let app_label = gtk::Label::builder()
-            .label("Application")
-            .xalign(0.0)
-            .css_classes(["caption", "dim-label"])
-            .margin_start(12).margin_end(12)
-            .margin_top(12).margin_bottom(4)
-            .build();
-        sidebar_box.append(&app_label);
+pub(crate) struct PreferencesWindow {
+    window: adw::Window,
+}
 
-        let sidebar_list = gtk::ListBox::builder()
-            .selection_mode(gtk::SelectionMode::Single)
-            .css_classes(["navigation-sidebar"])
-            .build();
+impl PreferencesWindow {
+    pub(crate) fn new(disc_mgr: &DiscoveryManager, notify_kiosk_changed: Rc<dyn Fn(u32)>) -> Self {
+        let window = build_settings_window("Preferences", vec![
+            ("Appearance", "appearance", build_appearance_page().upcast()),
+            ("Kiosk",      "kiosk",      build_kiosk_page(notify_kiosk_changed).upcast()),
+            ("General",    "general",    build_general_page(disc_mgr).upcast()),
+        ]);
 
-        let appearance_row = adw::ActionRow::builder()
-            .title("Appearance")
-            .selectable(true)
-            .activatable(true)
-            .build();
-        sidebar_list.append(&appearance_row);
-
-        let kiosk_row = adw::ActionRow::builder()
-            .title("Kiosk")
-            .selectable(true)
-            .activatable(true)
-            .build();
-        sidebar_list.append(&kiosk_row);
-
-        let general_row = adw::ActionRow::builder()
-            .title("General")
-            .selectable(true)
-            .activatable(true)
-            .build();
-        sidebar_list.append(&general_row);
-        sidebar_box.append(&sidebar_list);
-
-        // "Device" section — only when opened from a device window (`ds`
-        // carries the DeviceState in that case; `None` means opened from the
-        // device list, global-settings-only). Its own ListBox (GTK's
-        // selection model is per-ListBox), coordinated with `sidebar_list`
-        // below so only one row across both sections ever reads as selected.
-        let device_list = gtk::ListBox::builder()
-            .selection_mode(gtk::SelectionMode::Single)
-            .css_classes(["navigation-sidebar"])
-            .build();
-        // Built together with the sidebar rows (rather than deferred to the
-        // "Content stack" section below, where this file used to build
-        // `advanced_page`/`about_page` directly) because both the rows and
-        // the holder stacks need to be reachable from the same
-        // connect/disconnect handler further down — `None` when `ds` is
-        // `None` (global settings, no per-device panels at all).
-        let device_panels = ds.as_ref().map(|d| {
-            let device_label = gtk::Label::builder()
-                .label("Device")
-                .xalign(0.0)
-                .css_classes(["caption", "dim-label"])
-                .margin_start(12).margin_end(12)
-                .margin_top(12).margin_bottom(4)
-                .build();
-            sidebar_box.append(&device_label);
-
-            let advanced_row = adw::ActionRow::builder()
-                .title("Advanced")
-                .selectable(true)
-                .activatable(true)
-                .build();
-            device_list.append(&advanced_row);
-
-            let about_row = adw::ActionRow::builder()
-                .title("About")
-                .selectable(true)
-                .activatable(true)
-                .build();
-            device_list.append(&about_row);
-
-            sidebar_box.append(&device_list);
-
-            // Greyed out (row insensitive) and showing a centered "Offline"
-            // placeholder instead of the real panel whenever there's no
-            // live `device_info` — both at construction (the device may
-            // still be `Connecting`/`Disconnected` right when Settings
-            // opens) and live thereafter, wired below once the window
-            // itself exists. Each panel is a small holder `Stack` (rather
-            // than swapping the row's sensitivity alone) specifically so a
-            // panel that's already selected when the device drops shows
-            // "Offline" instead of leaving its last-rendered (now stale)
-            // content on screen.
-            let connected = d.device_info().is_some();
-            advanced_row.set_sensitive(connected);
-            about_row.set_sensitive(connected);
-
-            let advanced_holder = gtk::Stack::builder()
-                .transition_type(gtk::StackTransitionType::None).build();
-            advanced_holder.add_named(&build_offline_placeholder(), Some("offline"));
-            let about_holder = gtk::Stack::builder()
-                .transition_type(gtk::StackTransitionType::None).build();
-            about_holder.add_named(&build_offline_placeholder(), Some("offline"));
-
-            if connected {
-                advanced_holder.add_named(&build_advanced_page(d), Some("content"));
-                advanced_holder.set_visible_child_name("content");
-                about_holder.add_named(&build_about_page(d), Some("content"));
-                about_holder.set_visible_child_name("content");
-            } else {
-                advanced_holder.set_visible_child_name("offline");
-                about_holder.set_visible_child_name("offline");
-            }
-
-            (advanced_row, advanced_holder, about_row, about_holder)
-        });
-
-        let sidebar_scroll = gtk::ScrolledWindow::builder()
-            .hscrollbar_policy(gtk::PolicyType::Never)
-            .vexpand(true)
-            .build();
-        sidebar_scroll.set_child(Some(&sidebar_box));
-
-        // ── Content stack ──────────────────────────────────────────────────────
-        let content_stack = gtk::Stack::builder()
-            .transition_type(gtk::StackTransitionType::None)
-            .vexpand(true)
-            .hexpand(true)
-            .build();
-
-        let appearance_page = build_appearance_page();
-        content_stack.add_named(&appearance_page, Some("appearance"));
-
-        let kiosk_page = build_kiosk_page(notify_kiosk_changed);
-        content_stack.add_named(&kiosk_page, Some("kiosk"));
-
-        let general_page = build_general_page(disc_mgr);
-        content_stack.add_named(&general_page, Some("general"));
-
-        if let Some((_, ref advanced_holder, _, ref about_holder)) = device_panels {
-            content_stack.add_named(advanced_holder, Some("advanced"));
-            content_stack.add_named(about_holder, Some("about"));
+        if DEBUG_UI.load(Ordering::Relaxed) || crate::device::state::DEBUG_STATE.load(Ordering::Relaxed) {
+            println!("{} [ui] PreferencesWindow created", crate::timestamp());
+            window.connect_destroy(move |_| {
+                println!("{} [ui] PreferencesWindow destroyed", crate::timestamp());
+            });
         }
 
-        // Select "Appearance" by default
-        sidebar_list.select_row(sidebar_list.row_at_index(0).as_ref());
+        Self { window }
+    }
 
-        sidebar_list.connect_row_selected({
-            let stack  = content_stack.clone();
-            let device_list = device_list.clone();
-            move |_, row| {
-                let Some(row) = row else { return };
-                device_list.unselect_all();
-                let name = match row.index() {
-                    0 => "appearance",
-                    1 => "kiosk",
-                    2 => "general",
-                    _ => return,
-                };
-                stack.set_visible_child_name(name);
-            }
-        });
+    pub(crate) fn present(&self) {
+        self.window.present();
+    }
 
-        device_list.connect_row_selected({
-            let stack = content_stack.clone();
-            let sidebar_list = sidebar_list.clone();
-            move |_, row| {
-                let Some(row) = row else { return };
-                sidebar_list.unselect_all();
-                let name = match row.index() {
-                    0 => "advanced",
-                    1 => "about",
-                    _ => return,
-                };
-                stack.set_visible_child_name(name);
-            }
-        });
+    pub(crate) fn window_ref(&self) -> &adw::Window { &self.window }
+}
 
-        // ── Layout: sidebar | content ──────────────────────────────────────────
-        let paned = gtk::Paned::new(Orientation::Horizontal);
-        paned.set_start_child(Some(&sidebar_scroll));
-        paned.set_end_child(Some(&content_stack));
-        paned.set_position(220);
-        paned.set_shrink_start_child(false);
-        paned.set_shrink_end_child(false);
-        paned.set_resize_start_child(false);
-        paned.set_resize_end_child(true);
+// ── Device Settings (per-device) ──────────────────────────────────────────────
 
-        let header = adw::HeaderBar::new();
-        let toolbar_view = adw::ToolbarView::new();
-        toolbar_view.add_top_bar(&header);
-        toolbar_view.set_content(Some(&paned));
+pub(crate) struct DeviceSettingsWindow {
+    window: adw::Window,
+    ds:     DeviceState,
+    /// Acquired once, right after `ds` is obtained, for the lifetime of
+    /// this window. Independent of whatever guard a parent device window
+    /// already holds (`acquire_full()` is refcounted and safe to call
+    /// redundantly) — this window can also be opened straight from the
+    /// device list with no device window behind it at all, so it owns its
+    /// own requirement rather than assuming one already exists. Without
+    /// it, the Advanced/About pages' live device reads
+    /// (`DeviceInfo`/`DeviceCapabilities`, `player_status` diagnostics)
+    /// could be reading from a device sitting at `Simple` mode's reduced
+    /// polling instead.
+    #[allow(dead_code)]
+    _full_mode: FullModeGuard,
+}
 
-        let initial_title = match ds.as_ref().and_then(|d| d.device_info()) {
-            Some(i) => format!("Settings ({})", i.device_name),
-            None    => "Settings".to_string(),
+impl DeviceSettingsWindow {
+    pub(crate) fn new(ds: DeviceState) -> Self {
+        let full_mode = ds.acquire_full();
+
+        // Greyed out (row insensitive) and showing a centered "Offline"
+        // placeholder instead of the real panel whenever there's no live
+        // `device_info` — both at construction (the device may still be
+        // `Connecting`/`Disconnected` right when this opens) and live
+        // thereafter, wired below once the window itself exists. Each
+        // panel is a small holder `Stack` (rather than swapping the row's
+        // sensitivity alone) specifically so a panel that's already
+        // selected when the device drops shows "Offline" instead of
+        // leaving its last-rendered (now stale) content on screen.
+        let connected = ds.device_info().is_some();
+
+        let advanced_holder = gtk::Stack::builder()
+            .transition_type(gtk::StackTransitionType::None).build();
+        advanced_holder.add_named(&build_offline_placeholder(), Some("offline"));
+        let about_holder = gtk::Stack::builder()
+            .transition_type(gtk::StackTransitionType::None).build();
+        about_holder.add_named(&build_offline_placeholder(), Some("offline"));
+
+        if connected {
+            advanced_holder.add_named(&build_advanced_page(&ds), Some("content"));
+            advanced_holder.set_visible_child_name("content");
+            about_holder.add_named(&build_about_page(&ds), Some("content"));
+            about_holder.set_visible_child_name("content");
+        } else {
+            advanced_holder.set_visible_child_name("offline");
+            about_holder.set_visible_child_name("offline");
+        }
+
+        let initial_title = match ds.device_info() {
+            Some(i) => format!("Device Settings ({})", i.device_name),
+            None    => "Device Settings".to_string(),
         };
+        let window = build_settings_window(&initial_title, vec![
+            ("Advanced", "advanced", advanced_holder.clone().upcast()),
+            ("About",    "about",    about_holder.clone().upcast()),
+        ]);
 
-        // "modern-bg-window" is a plain CSS background-image gradient
-        // under RustyWiiM Modern (modern.css) — a real `ArtBackground` +
-        // `Overlay` (the main window's own approach) was tried first and
-        // reverted: making a bare `gtk::Overlay` the window's *direct*
-        // content, instead of `adw::ToolbarView`, lost the window's
-        // rounded corners and its content-driven minimum size, and (once
-        // `ArtBackground` hides itself outside Modern) left a genuinely
-        // transparent hole clean through to the desktop under
-        // System/Dark themes — libadwaita windows use an alpha-capable
-        // surface for their CSD shadows/rounded corners, so an unpainted
-        // region really is a hole, not just a visual gap (confirmed live;
-        // same root cause `344e9ca` "Fix transparent background with
-        // modern theme" already hit for `ArtBackground` itself). A plain
-        // CSS gradient keeps this window's structure/content exactly as
-        // it was otherwise.
-        let window = adw::Window::builder()
-            .title(&initial_title)
-            .default_width(720)
-            .default_height(520)
-            .modal(false)
-            .build();
-        // `.add_css_class()` *after* construction, not `.css_classes([...])`
-        // in the builder above — see `EqPanel::present()`'s identical fix
-        // for the full story (the builder property replaces the whole
-        // class list, wiping out the `background`/`csd` classes
-        // GTK/libadwaita set up during construction, which is what was
-        // actually breaking this window's rounded corners all along).
-        window.add_css_class("modern-bg-window");
-        window.set_content(Some(&toolbar_view));
+        // Rows aren't reachable from `build_settings_window()`'s return
+        // value (it only hands back the window), so sensitivity is set via
+        // the holder `Stack`s' own selectability instead — simpler than
+        // threading the `ActionRow`s back out, and the offline placeholder
+        // already communicates the same thing a greyed row would.
+        // (`advanced_holder`/`about_holder` above already reflect initial
+        // connectivity; the closure below keeps them live.)
 
-        if let Some(ref d) = ds {
-            d.connect_device_changed(glib::clone!(#[weak] window, move |ds| {
-                let title = match ds.device_info() {
-                    Some(i) => format!("Settings ({})", i.device_name),
-                    None    => "Settings".to_string(),
-                };
-                window.set_title(Some(&title));
-            }));
-        }
+        ds.connect_device_changed(glib::clone!(#[weak] window, move |ds| {
+            let title = match ds.device_info() {
+                Some(i) => format!("Device Settings ({})", i.device_name),
+                None    => "Device Settings".to_string(),
+            };
+            window.set_title(Some(&title));
+        }));
 
-        // React to the device connecting/disconnecting while Settings is
-        // open: grey out (disable) the per-device panel rows and swap their
-        // content to the "Offline" placeholder, live — this window used to
-        // have no equivalent of `reset_device_ui()` at all, so its Advanced
-        // panel stayed fully interactive (and About kept showing a stale
-        // snapshot) even after the device it was for went offline.
+        // React to the device connecting/disconnecting while this window is
+        // open: swap the per-device panels' content to/from the "Offline"
+        // placeholder, live.
         //
         // `device-changed` fires on every device_info update while
         // connected too, not just at actual connect/disconnect transitions
         // — `was_connected` filters down to just the edges. Weak captures
         // (matching the title-update closure above): this closure is a
         // permanent signal handler on `ds`, which can easily outlive this
-        // window (e.g. the owning device window keeps `ds` alive after
-        // Settings is closed) — a strong capture of these child widgets
-        // would keep them (and their whole subtree) alive right along with
-        // it, the same class of leak `wire_access_row()` had.
-        if let Some((advanced_row, advanced_holder, about_row, about_holder)) = device_panels {
-            if let Some(ref d) = ds {
-                let was_connected = Cell::new(d.device_info().is_some());
-                d.connect_device_changed(glib::clone!(
-                    #[weak] advanced_row, #[weak] advanced_holder,
-                    #[weak] about_row, #[weak] about_holder
-                   , move |ds| {
-                        let connected = ds.device_info().is_some();
-                        if connected == was_connected.get() { return; }
-                        was_connected.set(connected);
-                        advanced_row.set_sensitive(connected);
-                        about_row.set_sensitive(connected);
-                        if connected {
-                            if let Some(old) = advanced_holder.child_by_name("content") {
-                                advanced_holder.remove(&old);
-                            }
-                            advanced_holder.add_named(&build_advanced_page(ds), Some("content"));
-                            advanced_holder.set_visible_child_name("content");
-                            if let Some(old) = about_holder.child_by_name("content") {
-                                about_holder.remove(&old);
-                            }
-                            about_holder.add_named(&build_about_page(ds), Some("content"));
-                            about_holder.set_visible_child_name("content");
-                        } else {
-                            advanced_holder.set_visible_child_name("offline");
-                            about_holder.set_visible_child_name("offline");
-                        }
+        // window (e.g. a parent device window keeps `ds` alive after this
+        // one is closed) — a strong capture of these child widgets would
+        // keep them (and their whole subtree) alive right along with it,
+        // the same class of leak `wire_access_row()` had.
+        let was_connected = Cell::new(connected);
+        ds.connect_device_changed(glib::clone!(
+            #[weak] advanced_holder, #[weak] about_holder,
+            move |ds| {
+                let connected = ds.device_info().is_some();
+                if connected == was_connected.get() { return; }
+                was_connected.set(connected);
+                if connected {
+                    if let Some(old) = advanced_holder.child_by_name("content") {
+                        advanced_holder.remove(&old);
                     }
-                ));
+                    advanced_holder.add_named(&build_advanced_page(ds), Some("content"));
+                    advanced_holder.set_visible_child_name("content");
+                    if let Some(old) = about_holder.child_by_name("content") {
+                        about_holder.remove(&old);
+                    }
+                    about_holder.add_named(&build_about_page(ds), Some("content"));
+                    about_holder.set_visible_child_name("content");
+                } else {
+                    advanced_holder.set_visible_child_name("offline");
+                    about_holder.set_visible_child_name("offline");
+                }
             }
-        }
+        ));
 
-        // Gated on DEBUG_UI *or* DEBUG_STATE — this print pairs with the
-        // "settings: closed"/"destroy() called" DEBUG_STATE-gated prints in
-        // `AppState::open_settings()`, and running with only one of the two
-        // flags on made it genuinely ambiguous whether "destroyed" simply
-        // never printed (flag off) or whether destroy() really wasn't
-        // tearing the window down.
         if DEBUG_UI.load(Ordering::Relaxed) || crate::device::state::DEBUG_STATE.load(Ordering::Relaxed) {
-            let uuid = ds.as_ref().and_then(|d| d.device_info()).map(|i| i.uuid)
-                .unwrap_or_else(|| "global".to_string());
-            println!("{} [ui] SettingsWindow created (uuid={uuid})", crate::timestamp());
+            let uuid = ds.uuid();
+            println!("{} [ui] DeviceSettingsWindow created (uuid={uuid})", crate::timestamp());
             window.connect_destroy(move |_| {
-                println!("{} [ui] SettingsWindow destroyed (uuid={uuid})", crate::timestamp());
+                println!("{} [ui] DeviceSettingsWindow destroyed (uuid={uuid})", crate::timestamp());
             });
         }
 
@@ -373,14 +296,15 @@ impl SettingsWindow {
 
     pub(crate) fn window_ref(&self) -> &adw::Window { &self.window }
 
-    /// Returns the UUID of the device this window is for, or None for global settings.
+    /// Uuid of the device this window is for. Stable — `DeviceState::uuid()`
+    /// is fixed at construction and survives a `Failed`/disconnect
+    /// transition, unlike `device_info().uuid` (which goes back to empty
+    /// then and would let two simultaneously-offline devices' windows
+    /// collide on the same `None` key).
     pub(crate) fn device_uuid(&self) -> Option<String> {
-        self.ds.as_ref()
-            .and_then(|d| d.device_info())
-            .map(|i| i.uuid)
-            .filter(|u| !u.is_empty())
+        let uuid = self.ds.uuid();
+        (!uuid.is_empty()).then_some(uuid)
     }
-
 }
 
 // ── Per-page builders ─────────────────────────────────────────────────────────
@@ -755,7 +679,7 @@ fn format_mmss(secs: u32) -> String {
 }
 
 /// Settings live-update a running `KioskWindow` via `notify_kiosk_changed`
-/// (built by `AppState::open_settings()`, calling `KioskWindow::on_settings_changed()`
+/// (built by `AppState::open_preferences()`, calling `KioskWindow::on_settings_changed()`
 /// if one is currently open — a no-op otherwise) — the `kiosk::kiosk_settings_changed`
 /// bitmask, mirroring Appearance's own `broadcast_appearance_changed()`. Most
 /// of these fields are already re-read fresh from config on every
@@ -1069,7 +993,7 @@ fn wire_access_row(
 
 /// Shown in place of `build_advanced_page()`/`build_about_page()`'s real
 /// content whenever there's no live `device_info` — see the
-/// `connect_device_changed` wiring in `SettingsWindow::new()`.
+/// `connect_device_changed` wiring in `DeviceSettingsWindow::new()`.
 fn build_offline_placeholder() -> gtk::Widget {
     gtk::Label::builder()
         .label("Offline")

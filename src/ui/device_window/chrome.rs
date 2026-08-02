@@ -63,6 +63,19 @@ pub(super) fn build_header(
 
     header.pack_end(&crate::ui::menu::build_menu_button(true));
 
+    // Header-bar entry point for Device Settings, next to the menu button
+    // — action-bound (`win.device-settings`, registered by
+    // `wire_window_lifecycle()`) rather than wired with its own click
+    // handler, so its enabled state (greyed for a group leader — see
+    // `apply_follower_dormancy()`) comes for free instead of needing a
+    // second place to keep in sync.
+    let device_settings_btn = gtk::Button::builder()
+        .icon_name("emblem-system-symbolic")
+        .tooltip_text("Device Settings")
+        .action_name("win.device-settings")
+        .build();
+    header.pack_end(&device_settings_btn);
+
     // Plain Button, not ToggleButton: clicking it only ever means "switch to
     // mini mode" — a one-shot action, not a persistent on/off state. It also
     // only ever lives in the full panel's header (invisible whenever mini
