@@ -80,6 +80,149 @@ fn rewrite_kiosk_arg(args: impl Iterator<Item = String>) -> Vec<String> {
     }).collect()
 }
 
+// ── `--help` ──────────────────────────────────────────────────────────────────
+//
+// GLib's own GOptionContext auto-generates `-h`/`--help`, but it doesn't wrap
+// descriptions to the terminal width at all — every option's help text (some
+// of them several sentences) lands on one unbroken line. `main()` intercepts
+// `-h`/`--help` itself, before `app.run_with_args()` ever hands argv to GLib,
+// and prints this hand-formatted table instead (`ls --help`-style: flags in a
+// left column, descriptions wrapped in a right column). GLib's own option
+// registration (`add_main_option()` below) is unaffected — it still validates
+// real invocations and still backs `--help-all`/`--help-gapplication`, which
+// are power-user-only and left to GLib's own renderer.
+
+/// One `--help` table entry — kept in the same declaration order the actual
+/// `add_main_option()` calls use below, so the two can't quietly drift apart.
+struct OptHelp {
+    flag: &'static str,
+    desc: &'static str,
+}
+
+const OPTIONS: &[OptHelp] = &[
+    OptHelp {
+        flag: "--debug=LIST",
+        desc: "Enable debug output: comma-separated list of api, state, device, discovery, \
+               upnp, gena, ui, config, or all. api/upnp/gena (and all) may add \":verbose\" \
+               (e.g. upnp:verbose) for full request/response content instead of a one-line \
+               summary.",
+    },
+    OptHelp {
+        flag: "--tls=MODE",
+        desc: "Override TLS mode: wiim (default), audio-pro, any, http.",
+    },
+    OptHelp {
+        flag: "--connect=TARGET",
+        desc: "Connect directly to a device, opening a window for it immediately instead of \
+               discovery/config-restored windows (repeatable, one device per occurrence — for \
+               a multi-device wiim-simulator fleet). Three forms: scheme://ip[:port] (exact, \
+               no probing); ip,port (API port known, scheme walked); or a bare ip, which \
+               resolves the API address itself via the UPnP advert wiim-simulator emits, \
+               falling back to a plain probe if there isn't one.",
+    },
+    OptHelp {
+        flag: "--no-config",
+        desc: "Don't load or save the config file — every run behaves like a fresh install.",
+    },
+    OptHelp {
+        flag: "--config-file=PATH",
+        desc: "Use an alternate config file path instead of the default (for testing).",
+    },
+    OptHelp {
+        flag: "--try-all-upnp",
+        desc: "Ignore discovery's non-LinkPlay denylists (both the SSDP-header denylist and \
+               the consecutive-failure counter) so every announced device is probed every \
+               time — for testing discovery against devices normally denylisted on this \
+               network.",
+    },
+    OptHelp {
+        flag: "--kiosk:opts=OPTS",
+        desc: "Start directly in Kiosk mode (a single fullscreen window), with suboptions, \
+               comma-separated, any order: \"layout:1\" (Classic) or \"layout:2\" (WideRight, \
+               the default), and/or \"only\" (lock the session into Kiosk mode permanently — \
+               no exit button, no \"K\" key).",
+    },
+    OptHelp {
+        flag: "--kiosk",
+        desc: "Start directly in Kiosk mode. See --kiosk:opts for suboptions (--kiosk=<opts> \
+               also accepted — deprecated syntax, alias for --kiosk:opts=<opts>).",
+    },
+    OptHelp {
+        flag: "-h, --help",
+        desc: "Show this help and exit.",
+    },
+];
+
+/// Column where every description starts; a `flag` longer than this puts its
+/// description on the following line instead of sharing the flag's own line
+/// (same convention `ls --help` uses for its longer GNU-style options).
+const HELP_COL: usize = 22;
+/// Assumed terminal width — this tool has no isatty/COLUMNS probe, so it
+/// just targets the conventional 80.
+const TERM_WIDTH: usize = 80;
+
+/// Greedy word-wrap: fills each line up to `width` without splitting words.
+/// No hyphenation, no unicode-width awareness — plain ASCII option text only.
+fn wrap_text(text: &str, width: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut current = String::new();
+    for word in text.split_whitespace() {
+        if current.is_empty() {
+            current.push_str(word);
+        } else if current.len() + 1 + word.len() <= width {
+            current.push(' ');
+            current.push_str(word);
+        } else {
+            lines.push(std::mem::take(&mut current));
+            current.push_str(word);
+        }
+    }
+    if !current.is_empty() {
+        lines.push(current);
+    }
+    lines
+}
+
+fn print_option(opt: &OptHelp) {
+    let indent = " ".repeat(HELP_COL);
+    let desc_width = TERM_WIDTH.saturating_sub(HELP_COL).max(20);
+    let mut lines = wrap_text(opt.desc, desc_width).into_iter();
+    let first = lines.next().unwrap_or_default();
+    if opt.flag.len() + 2 <= HELP_COL {
+        println!("  {:<width$}{first}", opt.flag, width = HELP_COL - 2);
+    } else {
+        println!("  {}", opt.flag);
+        println!("{indent}{first}");
+    }
+    for line in lines {
+        println!("{indent}{line}");
+    }
+}
+
+/// `-h`/`--help`: full, formatted help on stdout, exit 0 — checked before
+/// `app.run_with_args()` even runs, so GLib's own cruder renderer never gets
+/// a chance to fire for this. Doesn't touch `app`/option registration at
+/// all: those still exist for the real parse on every other invocation.
+fn print_help_and_exit() -> ! {
+    println!("Usage: rustywiim [OPTION]...");
+    println!();
+    for line in wrap_text(
+        "A GTK4/libadwaita desktop app that controls WiiM/LinkPlay network audio players over \
+         their LAN HTTP API — playback, volume, input/output switching, presets, discovery. \
+         With no options, starts normally: restores previously-open device windows (or shows \
+         the device picker if none were), and starts SSDP discovery in the background.",
+        TERM_WIDTH,
+    ) {
+        println!("{line}");
+    }
+    println!();
+    println!("Options:");
+    for opt in OPTIONS {
+        print_option(opt);
+    }
+    std::process::exit(0);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -140,6 +283,21 @@ mod tests {
             ui::ConnectTarget::ViaUpnp { ip } => assert_eq!(ip, "127.0.0.2"),
             other => panic!("expected ViaUpnp, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn wrap_text_never_exceeds_the_requested_width() {
+        for opt in OPTIONS {
+            for line in wrap_text(opt.desc, TERM_WIDTH - HELP_COL) {
+                assert!(line.len() <= TERM_WIDTH - HELP_COL, "{:?}: {line:?} is {} chars", opt.flag, line.len());
+            }
+        }
+    }
+
+    #[test]
+    fn wrap_text_preserves_every_word_in_order() {
+        let text = "one two three four five";
+        assert_eq!(wrap_text(text, 10).join(" "), text);
     }
 }
 
@@ -217,6 +375,13 @@ fn setup_macos_bundle_env() {
 }
 
 fn main() -> glib::ExitCode {
+    // Checked before GLib ever sees argv — see the "`--help`" section
+    // above for why this bypasses `add_main_option()`'s own auto-generated
+    // (unwrapped) help renderer instead of relying on it.
+    if std::env::args().skip(1).any(|a| a == "-h" || a == "--help") {
+        print_help_and_exit();
+    }
+
     #[cfg(target_os = "macos")]
     setup_macos_bundle_env();
 
