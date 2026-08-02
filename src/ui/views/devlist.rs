@@ -295,14 +295,20 @@ fn build_devlist_vol_popover() -> (gtk::Button, gtk::Image, gtk::Label, gtk::Sca
 /// `sync_devlist_vol_display()`'s counterpart for a member line, which has
 /// the same volume widgets but none of the artwork/subtitle ones.
 fn sync_member_vol_display(mw: &MemberWidgets, ds: &DeviceState) {
+    apply_member_vol_display(mw, ds.playback_state().volume as f64, ds.muted());
+}
+
+/// `sync_member_vol_display()`'s raw-value counterpart, for a relay-only
+/// member: it has no `DeviceState` of its own to read, only whatever its
+/// leader's `member_level()` reports from the cached slave list.
+fn apply_member_vol_display(mw: &MemberWidgets, vol: f64, muted: bool) {
     if mw.vol_drag_timer.borrow().is_some() {
         return;
     }
-    let vol = ds.playback_state().volume as f64;
     mw.vol_scale.set_value(vol);
     mw.vol_label.set_label(&format!("{}", vol as u32));
-    mw.vol_icon_img.set_icon_name(Some(vol_icon(ds.muted(), vol)));
-    mw.mute_btn.set_icon_name(if ds.muted() { "audio-volume-muted-symbolic" } else { "audio-volume-high-symbolic" });
+    mw.vol_icon_img.set_icon_name(Some(vol_icon(muted, vol)));
+    mw.mute_btn.set_icon_name(if muted { "audio-volume-muted-symbolic" } else { "audio-volume-high-symbolic" });
 }
 
 fn sync_devlist_vol_display(rw: &RowWidgets, ds: &DeviceState) {
@@ -425,6 +431,7 @@ impl DeviceListView {
         if mask & PC::VOLUME != 0 {
             self.apply_member_volume(mgr, key);
             self.apply_group_levels_for_member(mgr, key);
+            self.refresh_relay_member_lines(mgr, key);
         }
         let widgets = imp.row_widgets.borrow();
         let Some(rw) = widgets.get(key) else { return };
@@ -471,6 +478,33 @@ impl DeviceListView {
         let Some(rw) = widgets.get(&leader_key) else { return };
         let Some(leader_ds) = mgr.device_state_for(&leader_key) else { return };
         sync_devlist_vol_display(rw, &leader_ds);
+    }
+
+    /// Refreshes every relay-only member line under `leader_key`, when
+    /// `leader_key`'s *own* volume just changed.
+    ///
+    /// A relay-only member (no `DeviceState`, see `build_member_content()`)
+    /// has no way to emit its own `song-info-changed` — only its leader
+    /// does, whether that's a whole-group `set_group_volume()`/
+    /// `set_group_muted()` shifting every member at once, or
+    /// `DeviceState::set_member_volume()`/`set_member_muted()` driving just
+    /// this one. So unlike `apply_group_levels_for_member()` (member →
+    /// header), this direction has to walk from the header back out to its
+    /// member lines instead of relying on a per-member signal.
+    fn refresh_relay_member_lines(&self, mgr: &DiscoveryManager, leader_key: &str) {
+        let imp = self.imp();
+        let Some(leader_ds) = mgr.device_state_for(leader_key) else { return };
+        let member_uuids: Vec<String> = imp.current_entries.borrow().iter()
+            .filter(|e| matches!(&e.group_role,
+                EntryGroupRole::Member { leader_key: lk, tracked: false } if lk == leader_key))
+            .map(|e| e.uuid.clone())
+            .collect();
+        let widgets = imp.member_widgets.borrow();
+        for uuid in member_uuids {
+            let Some(mw) = widgets.get(&uuid) else { continue };
+            let Some((vol, muted)) = leader_ds.member_level(&uuid) else { continue };
+            apply_member_vol_display(mw, vol as f64, muted);
+        }
     }
 
     fn rebuild_list(&self) {
@@ -595,15 +629,34 @@ impl DeviceListView {
         name.add_css_class("caption");
         hbox.append(&name);
 
-        // A member the leader named but that nothing has connected to has
-        // no `DeviceState`, so there is nothing to drive a slider with.
-        // Render the line without controls rather than with dead ones —
-        // same reasoning extends to an offline member: hide the volume
-        // control outright rather than show a stale/zeroed reading (see
-        // `build_device_content()`'s own volume-widgets comment).
-        let tracked = matches!(entry.group_role, EntryGroupRole::Member { tracked: true, .. });
-        let show_vol = tracked && entry.presence == DevicePresence::Active;
-        if let (true, Some(ds)) = (show_vol, manager.device_state_for(&key)) {
+        let (tracked, leader_key) = match &entry.group_role {
+            EntryGroupRole::Member { tracked, leader_key } => (*tracked, leader_key.clone()),
+            _ => (false, String::new()),
+        };
+
+        // A member with no `DeviceState` normally has nothing to drive a
+        // slider with — except a *relay-only* one (the leader named it but
+        // this host has no connection of its own to it, including the
+        // unroutable WiFi-Direct case), which is still controllable by
+        // relaying through its leader
+        // (`DeviceState::set_member_volume()`/`set_member_muted()`).
+        // `entry.presence` for such a member is always `Offline`
+        // (`resolve_topology()`'s own doc comment — "the leader's word is
+        // not a connection"), so it can't gate this the way a standalone
+        // row's does; a reported `ip` is what `group::member_is_relayable()`
+        // actually tests, mirrored here.
+        let relay_only = !tracked && !entry.ip.is_empty();
+        enum VolSource { Own(DeviceState), Relay(DeviceState) }
+        let vol_source = if tracked {
+            manager.device_state_for(&key)
+                .filter(|_| entry.presence == DevicePresence::Active)
+                .map(VolSource::Own)
+        } else if relay_only {
+            manager.device_state_for(&leader_key).map(VolSource::Relay)
+        } else {
+            None
+        };
+        if let Some(source) = vol_source {
             let (vol_btn, vol_icon_img, vol_label, vol_scale, mute_btn, vol_popover) =
                 build_devlist_vol_popover();
             vol_btn.connect_clicked(clone!(#[weak] vol_popover, move |_| {
@@ -617,34 +670,71 @@ impl DeviceListView {
                 vol_scale: vol_scale.clone(), mute_btn: mute_btn.clone(),
                 vol_popover: vol_popover.clone(), vol_drag_timer: vol_drag_timer.clone(),
             };
-            sync_member_vol_display(&mw, &ds);
 
-            mute_btn.connect_clicked(clone!(#[strong] ds, move |_| {
-                ds.do_set_mute(!ds.muted());
-            }));
-            vol_scale.connect_change_value(clone!(
-                #[strong] ds, #[strong] vol_icon_img, #[strong] vol_label, #[strong] vol_drag_timer,
-                move |_, _, vol| {
-                    let icon = vol_icon(ds.muted(), vol);
-                    vol_icon_img.set_icon_name(Some(icon));
-                    vol_label.set_label(&format!("{}", vol as u32));
-                    // A member line is that device's own volume, never the
-                    // group's — the group's lives on the row above.
-                    ds.do_set_volume(vol as u32);
-                    if let Some(id) = vol_drag_timer.borrow_mut().take() { id.remove(); }
-                    let timer_cell = Rc::clone(&vol_drag_timer);
-                    let id = glib::timeout_add_local_once(std::time::Duration::from_millis(500), move || {
-                        timer_cell.borrow_mut().take();
-                    });
-                    *vol_drag_timer.borrow_mut() = Some(id);
-                    glib::Propagation::Proceed
+            match source {
+                VolSource::Own(ds) => {
+                    sync_member_vol_display(&mw, &ds);
+                    mute_btn.connect_clicked(clone!(#[strong] ds, move |_| {
+                        ds.do_set_mute(!ds.muted());
+                    }));
+                    vol_scale.connect_change_value(clone!(
+                        #[strong] ds, #[strong] vol_icon_img, #[strong] vol_label, #[strong] vol_drag_timer,
+                        move |_, _, vol| {
+                            let icon = vol_icon(ds.muted(), vol);
+                            vol_icon_img.set_icon_name(Some(icon));
+                            vol_label.set_label(&format!("{}", vol as u32));
+                            // A member line is that device's own volume,
+                            // never the group's — the group's lives on the
+                            // row above.
+                            ds.do_set_volume(vol as u32);
+                            if let Some(id) = vol_drag_timer.borrow_mut().take() { id.remove(); }
+                            let timer_cell = Rc::clone(&vol_drag_timer);
+                            let id = glib::timeout_add_local_once(std::time::Duration::from_millis(500), move || {
+                                timer_cell.borrow_mut().take();
+                            });
+                            *vol_drag_timer.borrow_mut() = Some(id);
+                            glib::Propagation::Proceed
+                        }
+                    ));
                 }
-            ));
+                VolSource::Relay(leader_ds) => {
+                    if let Some((vol, muted)) = leader_ds.member_level(&key) {
+                        apply_member_vol_display(&mw, vol as f64, muted);
+                    }
+                    mute_btn.connect_clicked(clone!(#[strong] leader_ds, #[strong] key, move |_| {
+                        let muted = leader_ds.member_level(&key).is_none_or(|(_, m)| !m);
+                        leader_ds.set_member_muted(&key, muted);
+                    }));
+                    vol_scale.connect_change_value(clone!(
+                        #[strong] leader_ds, #[strong] key,
+                        #[strong] vol_icon_img, #[strong] vol_label, #[strong] vol_drag_timer,
+                        move |_, _, vol| {
+                            let muted = leader_ds.member_level(&key).is_some_and(|(_, m)| m);
+                            let icon = vol_icon(muted, vol);
+                            vol_icon_img.set_icon_name(Some(icon));
+                            vol_label.set_label(&format!("{}", vol as u32));
+                            // Relayed through the leader, not driven
+                            // directly — this member has no `DeviceState`
+                            // of its own.
+                            leader_ds.set_member_volume(&key, vol as u32);
+                            if let Some(id) = vol_drag_timer.borrow_mut().take() { id.remove(); }
+                            let timer_cell = Rc::clone(&vol_drag_timer);
+                            let id = glib::timeout_add_local_once(std::time::Duration::from_millis(500), move || {
+                                timer_cell.borrow_mut().take();
+                            });
+                            *vol_drag_timer.borrow_mut() = Some(id);
+                            glib::Propagation::Proceed
+                        }
+                    ));
+                }
+            }
             imp.member_widgets.borrow_mut().insert(key.clone(), mw);
         }
 
         // The only route to a member's own settings: a member has no
         // device window, since opening one from this list opens the group.
+        // A relay-only member has no `DeviceState` at all, so — same as
+        // before this line gained a volume control — it gets none either.
         let cog = gtk::Button::builder()
             .icon_name("emblem-system-symbolic")
             .tooltip_text("Device settings")

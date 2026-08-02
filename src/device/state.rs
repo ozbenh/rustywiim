@@ -4793,6 +4793,69 @@ impl DeviceState {
         self.emit_by_name::<()>("playback-changed", &[&playback_changed::VOLUME]);
     }
 
+    /// A relay-only group member's current level — this device's cached
+    /// slave-list `volume`/`muted` for `member_uuid`, the only source that
+    /// exists for a member with no `DeviceState` of its own (see
+    /// `group::member_is_relayable()`). `None` if this device isn't leading
+    /// a group, or doesn't currently list `member_uuid`.
+    pub fn member_level(&self, member_uuid: &str) -> Option<(u32, bool)> {
+        let inner = self.imp().inner.borrow();
+        if inner.group.role != group::GroupRole::Leader {
+            return None;
+        }
+        inner.group.members.iter()
+            .find(|m| m.uuid == member_uuid)
+            .map(|m| (m.volume as u32, m.muted))
+    }
+
+    /// Adjusts one relay-only member's volume by relaying through this
+    /// leader — the per-member counterpart to `set_group_volume()`, for a
+    /// devlist row driving a single member's own slider rather than the
+    /// whole group's. No-op unless this device currently leads a group that
+    /// lists `member_uuid` with a relayable address; a member with its own
+    /// `DeviceState` should be driven directly through that instead
+    /// (`do_set_volume()`), never through here.
+    pub fn set_member_volume(&self, member_uuid: &str, vol: u32) {
+        let ip = {
+            let mut inner = self.imp().inner.borrow_mut();
+            if inner.group.role != group::GroupRole::Leader {
+                return;
+            }
+            let cached = std::rc::Rc::make_mut(&mut inner.group.members);
+            // `!ip.is_empty()` is `group::member_is_relayable()`'s whole
+            // test — inlined here rather than constructing a throwaway
+            // `GroupMember` just to call it.
+            let Some(slot) = cached.iter_mut().find(|m| m.uuid == member_uuid && !m.ip.is_empty())
+                else { return };
+            slot.volume = vol as u8;
+            slot.ip.clone()
+        };
+        self.queue_relay_volume(vec![(ip, vol as u8)]);
+        self.emit_by_name::<()>("playback-changed", &[&playback_changed::VOLUME]);
+    }
+
+    /// Mutes or unmutes one relay-only member, relayed through this leader
+    /// — the per-member counterpart to `set_group_muted()`. Same scope
+    /// restriction as `set_member_volume()`.
+    pub fn set_member_muted(&self, member_uuid: &str, muted: bool) {
+        let ip = {
+            let mut inner = self.imp().inner.borrow_mut();
+            if inner.group.role != group::GroupRole::Leader {
+                return;
+            }
+            let cached = std::rc::Rc::make_mut(&mut inner.group.members);
+            let Some(slot) = cached.iter_mut().find(|m| m.uuid == member_uuid && !m.ip.is_empty())
+                else { return };
+            slot.muted = muted;
+            slot.ip.clone()
+        };
+        let Some(client) = self.imp().inner.borrow().client.clone() else { return };
+        self.rt().spawn(async move {
+            let _ = client.set_slave_mute(&ip, muted).await;
+        });
+        self.emit_by_name::<()>("playback-changed", &[&playback_changed::VOLUME]);
+    }
+
     /// Applies a volume optimistically and decides whether it may go out
     /// now, **without emitting anything or touching the network**. `Some`
     /// means send it; `None` means the debounce window swallowed it and the
