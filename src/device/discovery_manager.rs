@@ -42,7 +42,6 @@ use std::sync::Arc;
 
 use glib::prelude::*;
 use glib::subclass::prelude::*;
-use gtk::glib;
 
 use crate::device::api::TlsMode;
 use crate::device::capabilities;

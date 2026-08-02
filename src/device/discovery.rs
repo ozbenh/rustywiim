@@ -36,7 +36,6 @@ use std::time::Duration;
 
 use glib::prelude::*;
 use glib::subclass::prelude::*;
-use gtk::glib;
 
 use super::api::{DeviceInfo, TlsMode, api_base_url, build_reqwest_client};
 use super::capabilities::DeviceId;

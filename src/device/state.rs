@@ -140,7 +140,6 @@ const NO_MUSIC_SELECTED: &str = "No music selected";
 
 use glib::prelude::*;
 use glib::subclass::prelude::*;
-use gtk::glib;
 
 pub static DEBUG_STATE: AtomicBool = AtomicBool::new(false);
 
