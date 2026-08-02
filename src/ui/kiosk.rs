@@ -649,7 +649,8 @@ impl KioskWindow {
             let weak = Rc::downgrade(&this);
             move |_, key| {
                 let Some(this) = weak.upgrade() else { return };
-                let name = this.manager.entry_for(key).map(|e| e.name).unwrap_or_else(|| key.to_string());
+                let name = crate::ui::display_name_for(key, this.manager.device_state_for(key).as_ref());
+                let name = if name.is_empty() { key.to_string() } else { name };
                 crate::ui::confirm_forget_device(&this.window, &name, key.to_string(), Rc::clone(&forget_device));
             }
         });
@@ -843,7 +844,8 @@ impl KioskWindow {
         let resolved = key.and_then(|k| self.manager.device_state_for(k).map(|ds| (k.to_string(), ds)));
         let (key, ds, label) = match resolved {
             Some((key, ds)) => {
-                let label = self.manager.entry_for(&key).map(|e| e.name).unwrap_or_else(|| key.clone());
+                let label = crate::ui::display_name_for(&key, Some(&ds));
+                let label = if label.is_empty() { key.clone() } else { label };
                 // Remembered so a future unbound entry (discovery window's
                 // menu, or a fresh `--kiosk` launch) can restore this
                 // device instead of starting with nothing selected — see

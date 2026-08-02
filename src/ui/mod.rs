@@ -222,6 +222,38 @@ pub(crate) fn confirm_forget_device(
     dialog.present(Some(parent));
 }
 
+/// A device's display name: what it currently reports, else what config
+/// remembers from the last time it connected, else empty. The config
+/// fallback is why this can't just read `DeviceState` alone — a known
+/// device that hasn't connected yet this session (or ever) has no
+/// `device_info()` at all, and would otherwise render with no name.
+///
+/// Part of moving name resolution out of `device::discovery_manager`'s
+/// cached `ManagedEntry` and into `ui/` (NEWGROUP-ITEM9.md step 3) — `ui/` is
+/// the one place that can read both a live `DeviceState` *and* `config`, so
+/// it's the natural owner of "what do we call this device right now."
+///
+/// No `display_model_for()` counterpart — unlike the name, `ManagedEntry`'s
+/// `model` field isn't touched by this resolver at all (`entries()` reads it
+/// straight from `DeviceRecord.entry.model`, kept fresh by
+/// `on_tracked_device_changed()` independently), and nothing in `ui/` reads
+/// a device's model outside that already-correct field, so there was no
+/// caller to build one for.
+pub(crate) fn display_name_for(uuid: &str, ds: Option<&DeviceState>) -> String {
+    if let Some(name) = ds.and_then(|ds| ds.device_info()).map(|i| i.device_name).filter(|n| !n.is_empty()) {
+        return name;
+    }
+    config::with(|cfg| cfg.device(uuid).name.clone()).unwrap_or_default()
+}
+
+/// Builds the `DiscoveryManager::entries()` display-name resolver bound to
+/// `mgr` — every call site below wants the same `display_name_for()`
+/// resolution, just bound to whichever `DiscoveryManager` reference is in
+/// scope there.
+pub(crate) fn name_resolver_for(mgr: &DiscoveryManager) -> impl Fn(&str) -> String + '_ {
+    move |uuid: &str| display_name_for(uuid, mgr.device_state_for(uuid).as_ref())
+}
+
 pub(crate) struct AppState {
     app:            adw::Application,
     disc_mgr:       DiscoveryManager,
@@ -511,7 +543,7 @@ impl AppState {
         if discovery_open || !has_pending_windows {
             Self::show_devices(self_rc);
         }
-        Self::open_windows_pending_in_config(self_rc, self_rc.disc_mgr.entries());
+        Self::open_windows_pending_in_config(self_rc, self_rc.disc_mgr.entries(&name_resolver_for(&self_rc.disc_mgr)));
     }
 
     /// Create a device window for `spec`, register it, and present it.
@@ -770,7 +802,7 @@ impl AppState {
             let s = Rc::downgrade(self_rc);
             self_rc.disc_mgr.connect_initial_load(move |mgr| {
                 let Some(self_rc) = s.upgrade() else { return };
-                Self::open_windows_pending_in_config(&self_rc, mgr.entries());
+                Self::open_windows_pending_in_config(&self_rc, mgr.entries(&name_resolver_for(mgr)));
             });
         }
 
@@ -802,14 +834,30 @@ impl AppState {
         // entry outright is `forget_device()`'s job, not this — this loop
         // only ever updates fields for a still-tracked device.
         self_rc.disc_mgr.connect_list_changed(|mgr| {
-            let entries = mgr.entries();
+            let entries = mgr.entries(&name_resolver_for(mgr));
             config::update(|cfg| {
                 for e in &entries {
                     if e.uuid.is_empty() { continue; }
                     let dev = cfg.device_mut(&e.uuid);
                     dev.last_ip = Some(e.ip.clone());
                     dev.tls_mode = Some(e.tls_mode as u8);
-                    dev.name = Some(e.name.clone());
+                    // Deliberately the device's own reported name
+                    // (`device_info()`), never `e.name` — `entries()` above
+                    // already resolves that through this very config
+                    // fallback (`name_resolver_for()`/`display_name_for()`),
+                    // so writing it back here would feed a name into its
+                    // own fallback: a device that hasn't connected this
+                    // session would keep re-persisting whatever was already
+                    // in config instead of leaving it untouched. Skipped
+                    // entirely (not even overwritten with nothing) when
+                    // there's no live reported name yet.
+                    if let Some(name) = mgr.device_state_for(&e.uuid)
+                        .and_then(|ds| ds.device_info())
+                        .map(|i| i.device_name)
+                        .filter(|n| !n.is_empty())
+                    {
+                        dev.name = Some(name);
+                    }
                     if !e.model.is_empty()    { dev.model = Some(e.model.clone()); }
                     if !e.project.is_empty()  { dev.project = Some(e.project.clone()); }
                     if !e.firmware.is_empty() { dev.firmware = Some(e.firmware.clone()); }
@@ -971,7 +1019,7 @@ impl AppState {
                 return Some(uuid);
             }
         }
-        let active: Vec<_> = mgr.entries().into_iter()
+        let active: Vec<_> = mgr.entries(&name_resolver_for(mgr)).into_iter()
             .filter(|e| e.presence == DevicePresence::Active)
             .collect();
         active.iter()

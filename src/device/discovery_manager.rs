@@ -222,6 +222,7 @@ struct DeviceRecord {
     ds: DeviceState,
 }
 
+#[derive(Default)]
 struct Inner {
     devices: HashMap<String, DeviceRecord>,
     /// Config-derived cache of every known device's identity, handed in
@@ -233,12 +234,6 @@ struct Inner {
     /// one) — see `load_seed()`'s doc comment for why a boot-time-only
     /// snapshot is safe here.
     seed: HashMap<String, SeedEntry>,
-}
-
-impl Default for Inner {
-    fn default() -> Self {
-        Self { devices: HashMap::new(), seed: HashMap::new() }
-    }
 }
 
 // ── DiscoveryManager GObject ──────────────────────────────────────────────────
@@ -380,12 +375,21 @@ impl DiscoveryManager {
     /// contributes a `GroupHeader` followed by one `Member` line per
     /// member, the leader included; ungrouped devices keep their normal
     /// row. See `resolve_topology()`, which holds the actual rules.
-    pub fn entries(&self) -> Vec<ManagedEntry> {
+    ///
+    /// `display_name` resolves a uuid to what should be shown for it — this
+    /// module cannot read `config` itself (same rule as everywhere else in
+    /// `device/`), so it asks rather than reads; `ui::name_resolver_for()`
+    /// builds the resolver every real caller passes
+    /// (`display_name_for()` — a device's own reported name, falling back to
+    /// what config remembers). Every returned `ManagedEntry.name` — standalone,
+    /// group header (via `group::auto_group_name()`), or a tracked member's own
+    /// line — is resolved through this, never read from a cached field.
+    pub fn entries(&self, display_name: &dyn Fn(&str) -> String) -> Vec<ManagedEntry> {
         let inner = self.imp().inner.borrow();
         let inputs: Vec<TopoInput> = inner.devices.iter()
             .map(|(key, r)| TopoInput {
                 key: key.clone(), uuid: r.entry.uuid.clone(),
-                name: r.entry.name.clone(), ip: r.entry.ip.clone(),
+                name: display_name(&r.entry.uuid), ip: r.entry.ip.clone(),
                 group: r.ds.group_state(),
             })
             .collect();

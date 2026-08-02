@@ -509,7 +509,7 @@ impl DeviceListView {
         let imp = self.imp();
         let manager = imp.manager.get().unwrap().clone();
         let list_box = imp.list_box.get().unwrap().clone();
-        let entries = manager.entries();
+        let entries = manager.entries(&crate::ui::name_resolver_for(&manager));
 
         // Explicit `unparent()` before the row widgets themselves are torn
         // down below — see `RowWidgets::vol_popover`'s doc comment.

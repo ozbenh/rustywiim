@@ -121,7 +121,8 @@ impl DiscoveryWindow {
         // entry.
         device_list.connect_device_forget(clone!(
             #[strong] manager, #[strong] forget_device, #[strong] window, move |_, key| {
-                let name = manager.entry_for(key).map(|e| e.name).unwrap_or_else(|| key.to_string());
+                let name = crate::ui::display_name_for(key, manager.device_state_for(key).as_ref());
+                let name = if name.is_empty() { key.to_string() } else { name };
                 crate::ui::confirm_forget_device(&window, &name, key.to_string(), Rc::clone(&forget_device));
             }
         ));
