@@ -538,6 +538,14 @@ impl DiscoveryManager {
     /// Members on a WiFi-Direct leader's private subnet are deliberately
     /// skipped: those addresses are not routable from this host, so probing
     /// them only produces failures for devices that are fine.
+    ///
+    /// A member the leader reports with no uuid at all (`decode_member()`
+    /// accepts ip-only entries) is skipped the same way — there is no key to
+    /// track it under (see this module's `device_key()`/the codebase-wide
+    /// "no key, no tracking" rule), and it still renders correctly via
+    /// `resolve_topology()`'s existing "named by the leader but not tracked"
+    /// fallback, the same path a member discovery hasn't reached yet already
+    /// uses.
     fn adopt_group_members(&self, leader_key: &str, ds: &DeviceState) {
         let g = ds.group_state();
         if g.role != group::GroupRole::Leader {
