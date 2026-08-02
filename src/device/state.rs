@@ -5183,6 +5183,22 @@ impl DeviceState {
         self.imp().inner.borrow().current_mode
     }
 
+    /// The `ui::icons::IconSet` lookup key for this device's current input,
+    /// used as the artwork fallback wherever there is no album art to show.
+    /// Resolves the raw wire `mode` to a canonical source id and then applies
+    /// the device profile's own icon override (a "line-in" that is physically
+    /// a 3.5mm jack, say), so every surface showing a no-art fallback — the
+    /// main window, the mini window, a device-list row — shows the same icon
+    /// for the same device. `ui/` turns the key into a paintable; mapping a
+    /// wire mode number to it is `device/`'s job, not the caller's.
+    pub fn input_icon_key(&self) -> String {
+        let source_id = capabilities::mode_to_input_source(self.current_mode());
+        match self.capabilities() {
+            Some(caps) => capabilities::icon_canon_for_input(source_id, caps.device_id).to_string(),
+            None       => source_id.to_string(),
+        }
+    }
+
     // ── Typed signal connectors ───────────────────────────────────────────────
 
     pub fn connect_device_changed<F: Fn(&Self) + 'static>(&self, f: F) -> glib::SignalHandlerId {

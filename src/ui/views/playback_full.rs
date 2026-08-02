@@ -143,7 +143,6 @@ use gtk::glib;
 use gtk::{Align, Box as GtkBox, Button, Label, Orientation, Scale};
 
 use crate::config;
-use crate::device::capabilities;
 use crate::device::playback::PlaybackStatus;
 use crate::device::state::{playback_changed, ConnectionState, DeviceState};
 use crate::ui::art_background::ArtBackground;
@@ -2183,18 +2182,13 @@ impl PlaybackView {
             if let Some(bg) = art_bg { bg.set_art(Some(tex), art_key); }
             flip.set_art(Some(tex), art_key);
         } else {
-            let mode = ds.current_mode();
-            let source_id = capabilities::mode_to_input_source(mode);
-            let icon_key = match ds.capabilities() {
-                Some(caps) => capabilities::icon_canon_for_input(source_id, caps.device_id),
-                None       => source_id,
-            };
+            let icon_key = ds.input_icon_key();
             // Fixed key (not per-source) so switching between different
             // no-art sources doesn't re-trigger the background fade for a
             // gradient that looks the same either way.
             if let Some(bg) = art_bg { bg.set_art(None, "__no_art__"); }
             flip.set_icon(
-                imp.icons.get().unwrap().source_paintable(icon_key), 128.0,
+                imp.icons.get().unwrap().source_paintable(&icon_key), 128.0,
                 &format!("icon:{icon_key}"));
         }
     }
