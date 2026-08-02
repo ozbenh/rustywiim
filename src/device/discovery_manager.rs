@@ -202,24 +202,26 @@ pub struct SeedEntry {
 
 // ── Internal record ───────────────────────────────────────────────────────────
 
-/// One tracked device: cached rendering identity (refreshed from
-/// `ds.device_info()`/`ds.capabilities()` whenever `ds` connects — see
-/// `on_tracked_device_changed()`) plus the strong `DeviceState` handle that
-/// keeps it alive/polling for as long as this record exists. `ds` is what
-/// makes "forgetting a device" plain refcounting: dropping this record
-/// (`forget()`) drops the last reference this module holds, and once no
-/// device window holds one either, the `DeviceState` itself goes away.
+/// One tracked device: cached rendering identity, refreshed from
+/// `ds.device_info()`/`ds.capabilities()` whenever `ds` connects (see
+/// `on_tracked_device_changed()`). No `DeviceState` handle of its own
+/// `device::manager::DeviceManager` is the sole strong holder now,
+/// reached via `device_manager().get_state(key)` wherever
+/// this module needs the live object. `forget()`'s job is correspondingly
+/// split: dropping this record removes the *metadata*; the underlying
+/// `DeviceState` only actually finalises once `device_manager().forget()`
+/// also drops its own strong reference (which `forget()` does, right after)
+/// **and** nothing else — a device or settings window — still holds a clone
+/// of its own.
+///
+/// The `device-changed`/`playback-changed`/`group-changed` handlers
+/// connected in `create_and_track()` are never explicitly disconnected —
+/// no `SignalHandlerId` kept for them anywhere. Each closure captures this
+/// `DiscoveryManager` only weakly, so a handler simply becomes a no-op the
+/// moment every strong reference to *this object itself* is gone; it never
+/// depended on `ds` disposing first, even back when this struct held one.
 struct DeviceRecord {
     entry: ManagedEntry,
-    /// The `device-changed`/`playback-changed` handlers connected in
-    /// `create_and_track()` are never explicitly disconnected here — no
-    /// `SignalHandlerId` kept for them. `forget()` handles that instead, by
-    /// requiring its callers to have already closed any window that might
-    /// hold its own strong `ds` clone (see `forget()`'s doc comment) — at
-    /// that point `device::manager::DeviceManager`'s own weak-only refs mean
-    /// `ds` below is guaranteed to have no other strong holder, so dropping
-    /// this record finalizes `ds` outright, connection included.
-    ds: DeviceState,
 }
 
 #[derive(Default)]
@@ -386,15 +388,25 @@ impl DiscoveryManager {
     /// line — is resolved through this, never read from a cached field.
     pub fn entries(&self, display_name: &dyn Fn(&str) -> String) -> Vec<ManagedEntry> {
         let inner = self.imp().inner.borrow();
+        let device_manager = self.device_manager();
+        // `filter_map`, not `map`: a tracked record with no matching
+        // registry entry shouldn't happen (this module always creates
+        // through `device_manager().create_and_configure()` and always
+        // `forget()`s both together), but skipping it rather than
+        // unwrapping keeps a violated invariant from becoming a panic —
+        // the row just silently doesn't render that tick.
         let inputs: Vec<TopoInput> = inner.devices.iter()
-            .map(|(key, r)| TopoInput {
-                key: key.clone(), uuid: r.entry.uuid.clone(),
-                name: display_name(&r.entry.uuid), ip: r.entry.ip.clone(),
-                group: r.ds.group_state(),
+            .filter_map(|(key, r)| {
+                let ds = device_manager.get_state(key)?;
+                Some(TopoInput {
+                    key: key.clone(), uuid: r.entry.uuid.clone(),
+                    name: display_name(&r.entry.uuid), ip: r.entry.ip.clone(),
+                    group: ds.group_state(),
+                })
             })
             .collect();
         resolve_topology(inputs).into_iter()
-            .map(|row| build_entry_for_row(&inner.devices, row))
+            .map(|row| build_entry_for_row(&inner.devices, device_manager, row))
             .collect()
     }
 
@@ -405,15 +417,26 @@ impl DiscoveryManager {
     /// implicitly keyed by for row-widget lookup purposes.
     pub fn entry_for(&self, key: &str) -> Option<ManagedEntry> {
         let inner = self.imp().inner.borrow();
-        inner.devices.get(key).map(build_managed_entry)
+        let r = inner.devices.get(key)?;
+        let ds = self.device_manager().get_state(key)?;
+        Some(build_managed_entry(r, &ds))
     }
 
     /// The tracked `DeviceState` for `key` — cheap to clone (GObject
     /// refcount). Used for a picker row's volume/mute control, which talks
     /// to the device directly rather than going through `ManagedEntry`
     /// (volume isn't part of the rendered snapshot anywhere else).
+    ///
+    /// Existence-checked against *this module's* tracked set first, not
+    /// just handed straight to `device_manager().get_state()` — the
+    /// registry can hold devices this picker-list backend never tracked at
+    /// all (e.g. `--connect`'s), and this accessor answers "is the picker
+    /// list showing this," not "does the registry know this uuid."
     pub fn device_state_for(&self, key: &str) -> Option<DeviceState> {
-        self.imp().inner.borrow().devices.get(key).map(|r| r.ds.clone())
+        if !self.imp().inner.borrow().devices.contains_key(key) {
+            return None;
+        }
+        self.device_manager().get_state(key)
     }
 
     /// The one place `list-changed` actually fires — dumps the full
@@ -454,17 +477,22 @@ impl DiscoveryManager {
     /// the registry now that retention is known-by-default (see this
     /// module's own doc comment). No-op if `uuid` isn't tracked.
     ///
-    /// This only drops this module's own strong `DeviceState` reference —
-    /// it does not know about, or close, any device/settings window that
-    /// might hold a strong clone of its own, and it does not touch config.
-    /// The caller (`ui/mod.rs`, which owns both of those) must close any
+    /// Drops this module's own metadata record *and* tells
+    /// `device_manager()` to drop its strong reference (the only one left,
+    /// this module holds none of its own anymore).
+    /// That still doesn't guarantee the underlying `DeviceState`
+    /// actually finalises — a device or settings window may hold a clone of
+    /// its own — and this method knows nothing about windows or config
+    /// either way. The caller (`ui/mod.rs`, which owns both) must close any
     /// such window *before* calling this — see that module's own
-    /// `forget_device()`, the one place both halves happen together in the
-    /// right order — and delete the uuid's config entry afterward, or the
-    /// device simply reappears the next time `load_seed()`/`start()` runs.
+    /// `forget_device()`, the one place every part of removal happens
+    /// together in the right order — and delete the uuid's config entry
+    /// afterward, or the device simply reappears the next time
+    /// `load_seed()`/`start()` runs.
     pub fn forget(&self, uuid: &str) {
         let removed = self.imp().inner.borrow_mut().devices.remove(uuid).is_some();
         if removed {
+            self.device_manager().forget(uuid);
             dbg(&format!("forget: {uuid}"));
             self.emit_list_changed();
         }
@@ -697,7 +725,7 @@ impl DiscoveryManager {
             let Some(mgr) = weak2.upgrade() else { return };
             mgr.emit_song_info_changed(&key_for_song_info, mask);
         });
-        self.imp().inner.borrow_mut().devices.insert(key.to_string(), DeviceRecord { entry, ds });
+        self.imp().inner.borrow_mut().devices.insert(key.to_string(), DeviceRecord { entry });
     }
 
     /// Fired whenever a tracked device's `DeviceState` emits
@@ -922,16 +950,21 @@ fn resolve_topology(rows: Vec<TopoInput>) -> Vec<TopoRow> {
 /// why this is a plain function of `role`, not something `resolve_topology()`
 /// itself needs to carry.
 ///
-/// An **untracked** member row (`devices` has no entry for `row.key` — the
-/// leader named a device discovery hasn't reached) builds the minimal
-/// fallback entirely from what the leader reported: `Offline` presence,
-/// because nothing has ever actually reached it — the leader's word is not a
-/// connection.
-fn build_entry_for_row(devices: &HashMap<String, DeviceRecord>, row: TopoRow) -> ManagedEntry {
+/// An **untracked** member row (`devices` has no entry for `row.key`, or —
+/// shouldn't happen, see `entries()`'s own comment — its `DeviceState` has
+/// gone missing from `device_manager`) builds the minimal fallback entirely
+/// from what the leader reported: `Offline` presence, because nothing has
+/// ever actually reached it — the leader's word is not a connection.
+fn build_entry_for_row(
+    devices: &HashMap<String, DeviceRecord>,
+    device_manager: &DeviceManager,
+    row: TopoRow,
+) -> ManagedEntry {
     let is_member = matches!(row.role, EntryGroupRole::Member { .. });
-    match devices.get(&row.key) {
-        Some(rec) => {
-            let mut entry = build_managed_entry(rec);
+    let tracked = devices.get(&row.key).zip(device_manager.get_state(&row.key));
+    match tracked {
+        Some((rec, ds)) => {
+            let mut entry = build_managed_entry(rec, &ds);
             entry.name = row.name;
             entry.group_role = row.role;
             if is_member {
@@ -953,11 +986,11 @@ fn build_entry_for_row(devices: &HashMap<String, DeviceRecord>, row: TopoRow) ->
 /// Shared by `entries()`/`entry_for()` — one record's cached identity
 /// fields plus a freshly-computed `now_playing` snapshot, gated on
 /// `song_info` and the record's own presence.
-fn build_managed_entry(r: &DeviceRecord) -> ManagedEntry {
+fn build_managed_entry(r: &DeviceRecord, ds: &DeviceState) -> ManagedEntry {
     let mut entry = r.entry.clone();
     entry.song_info_enabled = true;
     entry.now_playing = (entry.presence == DevicePresence::Active)
-        .then(|| compute_now_playing(&r.ds));
+        .then(|| compute_now_playing(ds));
     entry
 }
 

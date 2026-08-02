@@ -1,14 +1,13 @@
-// Device-state manager — single source of truth for live DeviceState objects.
-//
-// `DeviceManager` keeps a `WeakRef<DeviceState>` per UUID.  The DeviceState
-// lives as long as at least one consumer (device window, settings window,
-// `device::discovery_manager`'s picker-list tracking, …) holds a strong ref.
-// When the last consumer drops its ref the GObject is finalised, polling
-// stops, and the weak entry here goes stale.
-//
-// On re-open, `get()` finds the stale entry, creates a fresh DeviceState, and
-// the new window's `populate_all()` call handles the initial blank state
-// (showing "Connecting…" until the first poll result arrives).
+// Device-state registry — single source of truth for live DeviceState
+// objects, and the sole strong holder of each.
+// `DeviceManager` keeps a `DeviceState` per UUID for as long as it's
+// known — there is no independent lifetime tracking beyond that anymore;
+// `track()`'s callers (device windows, settings windows,
+// `device::discovery_manager`'s picker-list tracking, …) borrow it, they
+// don't own it. The only way an entry leaves is `forget()`, an explicit
+// removal — "known by default, forgetting is the explicit act" applies here
+// exactly as it does to `discovery_manager`'s own tracked-device set (see
+// that module's doc comment), since the two are converging into one registr
 //
 // Every caller resolves a real uuid before reaching this registry — nothing
 // without one may ever be tracked (see `device::discovery::ProbeFailure`'s
@@ -46,7 +45,7 @@ mod imp {
 
     pub struct DeviceManager {
         pub(super) rt:     std::cell::OnceCell<Arc<tokio::runtime::Runtime>>,
-        pub(super) states: RefCell<HashMap<String, glib::WeakRef<DeviceState>>>,
+        pub(super) states: RefCell<HashMap<String, DeviceState>>,
     }
 
     impl Default for DeviceManager {
@@ -133,16 +132,18 @@ impl DeviceManager {
 
     /// Return a live `DeviceState` for `uuid` + `ip` + `tls`.
     ///
-    /// * **Existing entry**: if a live `DeviceState` for this UUID is already
-    ///   held by a consumer, that same object is returned.  The `ip`/`tls`/
-    ///   `access_override`/`try_connect` arguments are ignored (the device
-    ///   is already connected and configured).
-    /// * **New / stale entry**: a fresh `DeviceState` is created, given
+    /// * **Existing entry**: if this uuid is already tracked, that same
+    ///   object is returned. The `ip`/`tls`/`access_override`/`try_connect`
+    ///   arguments are ignored (the device is already connected and
+    ///   configured).
+    /// * **New entry**: a fresh `DeviceState` is created, given
     ///   `access_override` up front (before polling starts, so the very
     ///   first poll tick already uses it, not just ones after some later
     ///   caller happens to push it in), configured (`ip`/`tls`/client, and
     ///   an actual connection attempt too if `try_connect`), polling is
-    ///   started, and a weak reference is stored.
+    ///   started, and it's stored — for as long as this uuid stays known,
+    ///   not just for as long as some caller keeps its own clone (see this
+    ///   module's own doc comment).
     ///
     /// `uuid` must be non-empty — every caller resolves a real uuid before
     /// reaching this registry (see this module's own doc comment).
@@ -189,7 +190,7 @@ impl DeviceManager {
         gena_enabled: bool,
         try_connect: bool,
     ) -> DeviceState {
-        if let Some(ds) = self.lookup_and_prune(uuid) {
+        if let Some(ds) = self.lookup(uuid) {
             return ds;
         }
 
@@ -229,7 +230,7 @@ impl DeviceManager {
     /// `set_gena_enabled()` before making first contact
     /// (`set_device(..., connect_now: true)`).
     pub fn create_and_configure(&self, uuid: &str, ip: &str, tls: TlsMode) -> DeviceState {
-        if let Some(ds) = self.lookup_and_prune(uuid) {
+        if let Some(ds) = self.lookup(uuid) {
             return ds;
         }
 
@@ -257,7 +258,7 @@ impl DeviceManager {
     /// on the caller's behalf.
     pub fn get_state(&self, uuid: &str) -> Option<DeviceState> {
         let uuid = crate::device::utils::normalize_uuid(uuid);
-        self.imp().states.borrow().get(&uuid).and_then(|w| w.upgrade())
+        self.imp().states.borrow().get(&uuid).cloned()
     }
 
     /// Look up an already-tracked `DeviceState` by address.
@@ -273,22 +274,17 @@ impl DeviceManager {
     pub fn get_state_by_ip(&self, ip: &str) -> Option<DeviceState> {
         if ip.is_empty() { return None; }
         self.imp().states.borrow().values()
-            .filter_map(|w| w.upgrade())
             .find(|ds| ds.ip() == ip)
+            .cloned()
     }
 
-    /// Calls `f` for every currently-live `DeviceState` this manager still
-    /// tracks (upgradable `WeakRef`s only — a stale entry is silently
-    /// skipped, not pruned; pruning happens lazily wherever
-    /// `lookup_and_prune()` already runs). Used to re-push an app-wide
-    /// setting change (the GENA on/off switch) to every open device at
-    /// once, rather than only the one `DeviceState` a Settings window
-    /// happens to be scoped to.
+    /// Calls `f` for every currently-tracked `DeviceState`. Used to re-push
+    /// an app-wide setting change (the GENA on/off switch) to every known
+    /// device at once, rather than only the one `DeviceState` a Settings
+    /// window happens to be scoped to.
     pub fn for_each_live(&self, f: impl Fn(&DeviceState)) {
-        for weak in self.imp().states.borrow().values() {
-            if let Some(ds) = weak.upgrade() {
-                f(&ds);
-            }
+        for ds in self.imp().states.borrow().values() {
+            f(ds);
         }
     }
 
@@ -305,7 +301,7 @@ impl DeviceManager {
     pub fn update_ip(&self, uuid: &str, ip: &str, tls: TlsMode) {
         let ds = {
             let states = self.imp().states.borrow();
-            states.get(uuid).and_then(|w| w.upgrade())
+            states.get(uuid).cloned()
         };
         if let Some(ds) = ds {
             if ds.ip() != ip {
@@ -328,14 +324,11 @@ impl DeviceManager {
         }
     }
 
-    /// Shared prune-and-look-up prefix for `get()`/`create_and_configure()`
-    /// — prunes stale (weak-ref-only, GC'd) entries lazily so the map
-    /// doesn't grow unboundedly, then returns the existing entry for
-    /// `uuid` if there is one.
-    fn lookup_and_prune(&self, uuid: &str) -> Option<DeviceState> {
-        let mut states = self.imp().states.borrow_mut();
-        states.retain(|_, w| w.upgrade().is_some());
-        states.get(uuid).and_then(|w| w.upgrade())
+    /// Shared look-up prefix for `get()`/`create_and_configure()` — returns
+    /// the existing entry for `uuid`, if there is one. No pruning needed:
+    /// with strong storage, an entry only ever leaves via `forget()`.
+    fn lookup(&self, uuid: &str) -> Option<DeviceState> {
+        self.imp().states.borrow().get(uuid).cloned()
     }
 
     /// Shared map-insertion tail, used by `get()` and
@@ -350,6 +343,21 @@ impl DeviceManager {
     /// behavior once the picker-list backend stopped independently
     /// health-checking, not a regression.
     fn wire_and_insert(&self, ds: &DeviceState, uuid: &str) {
-        self.imp().states.borrow_mut().insert(uuid.to_string(), ds.downgrade());
+        self.imp().states.borrow_mut().insert(uuid.to_string(), ds.clone());
+    }
+
+    /// Drop this registry's strong reference to `uuid`, removing it from
+    /// the known set — the **only** way an entry leaves (see this module's
+    /// own doc comment). No-op if `uuid` isn't tracked.
+    ///
+    /// This alone does not guarantee the underlying `DeviceState` actually
+    /// finalises — a device window or settings window may still hold its
+    /// own strong clone. Callers that need the device to actually stop
+    /// polling (the device-list trashcan's "forget this device," not a
+    /// device window's ordinary close) must close every such window
+    /// *before* calling this — see `ui/mod.rs`'s `forget_device()`, the one
+    /// place that ordering is enforced.
+    pub fn forget(&self, uuid: &str) {
+        self.imp().states.borrow_mut().remove(uuid);
     }
 }
