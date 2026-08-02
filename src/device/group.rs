@@ -110,21 +110,37 @@ pub struct GroupMember {
     pub masked: bool,
 }
 
-/// Whether `member`'s reported address is routable from this host at all —
-/// false for an empty address or one on a WiFi-Direct leader's private
-/// `10.10.10.x` subnet (see `GroupMember::ip`'s own doc comment). This is
-/// purely a property of the address; it says nothing about whether the
-/// registry has actually connected to the member (a separate question —
-/// see `GroupMember::ds` sites in `state.rs`, which combine this with their
-/// own "no live `DeviceState`" check to decide whether a member belongs in
-/// a relay batch).
+/// Whether **this host** can open its own connection to `member` — false for
+/// an empty address or one on a WiFi-Direct leader's private `10.10.10.x`
+/// subnet, which is not routable from here (see `GroupMember::ip`'s own doc
+/// comment). The test for *adopting* a member as a tracked device.
 ///
-/// One predicate, one home: `discovery_manager.rs`'s `adopt_group_members()`
-/// and `state.rs`'s `set_group_muted()`/`set_group_volume()` all used to
-/// spell this same `ip.is_empty() || is_wifi_direct_address(ip)` check
-/// slightly differently.
-pub fn member_is_reachable(member: &GroupMember) -> bool {
+/// Deliberately **not** the test for whether a member can be commanded — see
+/// `member_is_relayable()` below, which answers a different question and
+/// gives a different answer for exactly the WiFi-Direct case.
+pub fn member_is_directly_reachable(member: &GroupMember) -> bool {
     !member.ip.is_empty() && !utils::is_wifi_direct_address(&member.ip)
+}
+
+/// Whether `member` can be driven by **relaying through its leader**
+/// (`multiroom:SlaveVolume`/`SlaveMute`, addressed by member IP but sent to
+/// the leader). All that takes is having an address to name the member by:
+/// the leader does the routing, so this host's own reachability is
+/// irrelevant.
+///
+/// **This is why it differs from `member_is_directly_reachable()`, and the
+/// difference is the whole point.** A WiFi-Direct member sits on the
+/// leader's private subnet precisely so the *leader* can reach it; relaying
+/// is the only way to control such a member, so testing our own routability
+/// here would exclude the exact members this path exists to serve. Getting
+/// that wrong left `10.10.10.x` members uncontrollable — neither adopted
+/// (correctly) nor relayed (incorrectly).
+///
+/// The address is always available for a real member: `decode_member()`
+/// takes it straight from the leader's own `multiroom:getSlaveList`, which
+/// reports the member's private-subnet address like any other.
+pub fn member_is_relayable(member: &GroupMember) -> bool {
+    !member.ip.is_empty()
 }
 
 /// One device's view of its group. Lives once per device and is updated in
@@ -818,14 +834,27 @@ mod tests {
     }
 
     #[test]
-    fn member_is_reachable_rejects_empty_and_wifi_direct_addresses() {
+    fn direct_reachability_and_relayability_differ_only_for_wifi_direct() {
         let member = |ip: &str| GroupMember {
             uuid: "aa".into(), name: "A".into(), ip: ip.into(),
             volume: 20, muted: false, role: ChannelRole::Stereo, masked: false,
         };
-        assert!(member_is_reachable(&member("1.1.1.5")));
-        assert!(!member_is_reachable(&member("")));
-        assert!(!member_is_reachable(&member("10.10.10.92")));
+
+        // An ordinary LAN member: both, and nothing interesting happens.
+        assert!(member_is_directly_reachable(&member("1.1.1.5")));
+        assert!(member_is_relayable(&member("1.1.1.5")));
+
+        // No address at all: neither. Nothing to connect to, and nothing to
+        // name the member by in a `multiroom:Slave*` command either.
+        assert!(!member_is_directly_reachable(&member("")));
+        assert!(!member_is_relayable(&member("")));
+
+        // The case the split exists for: unroutable from *here*, so never
+        // adopted — but perfectly reachable by its own leader, so still
+        // relayable. Testing our own routability for the relay path is what
+        // left these members uncontrollable.
+        assert!(!member_is_directly_reachable(&member("10.10.10.92")));
+        assert!(member_is_relayable(&member("10.10.10.92")));
     }
 
     #[test]

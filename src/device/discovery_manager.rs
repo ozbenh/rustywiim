@@ -545,8 +545,13 @@ impl DiscoveryManager {
                 dbg(&format!("group: skipping member with no uuid {} ({})", m.name, m.ip));
                 continue;
             }
-            if !group::member_is_reachable(m) {
-                dbg(&format!("group: skipping unroutable member {} ({})", m.name, m.ip));
+            if !group::member_is_directly_reachable(m) {
+                // Not a dead end for the member — it stays in the group's
+                // topology and is still controllable by relay through its
+                // leader (see `group::member_is_relayable()`); it just
+                // can't have a `DeviceState` of its own, since nothing
+                // here can open a connection to it.
+                dbg(&format!("group: not adopting unroutable member {} ({}) — relay only", m.name, m.ip));
                 continue;
             }
             if self.imp().inner.borrow().devices.contains_key(&m.uuid) {
