@@ -156,7 +156,7 @@ impl InputView {
 
         let in_box = GtkBox::builder()
             .orientation(Orientation::Vertical).spacing(4)
-            .margin_top(4).margin_bottom(4).margin_start(8).margin_end(8)
+            .margin_top(8).margin_bottom(4).margin_start(8).margin_end(8)
             .build();
         in_box.append(
             &Label::builder()

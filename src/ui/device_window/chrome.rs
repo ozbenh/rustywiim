@@ -207,11 +207,14 @@ pub(crate) fn build_left_pane(
     // owned by this panel, not by `InputView` itself: `InputView` is also
     // embedded standalone (no tab-stack above it) in Device Settings' own
     // Input page, where a leading separator would be a stray line with
-    // nothing to divide from. Margins replicate the spacing the old
-    // in-`InputView` separator had via its parent box's own margin/spacing.
+    // nothing to divide from. `margin_start`/`margin_end` match `tab_row`'s
+    // own (above) and `in_box`/`out_box`'s own (below, in `input.rs`/
+    // `output.rs`) — so the line's width lines up with the Presets/Queue
+    // row above and the Input/Output dropdowns below instead of spanning
+    // the full card edge-to-edge.
     let stack_input_divider = gtk::Separator::builder()
         .orientation(Orientation::Horizontal)
-        .margin_top(4).margin_bottom(4)
+        .margin_top(8).margin_bottom(8).margin_start(8).margin_end(8)
         .build();
     left_pane.append(&stack_input_divider);
     left_pane.append(input);
