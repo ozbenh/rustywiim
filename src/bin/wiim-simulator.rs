@@ -1479,40 +1479,77 @@ fn resolve_response(key: &str, command: Option<&str>, fleet: &Fleet, dev_idx: us
     if command == Some("multiroom:getSlaveList") {
         return (200, group_slave_list_body(fleet, dev_idx));
     }
-    if fleet.stateful_http {
-        if let Some(command) = command {
-            let mut state = dev.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            if let Some(body) = handle_mutation(command, &mut state) {
-                return (200, body);
-            }
-            if matches!(command, "getPlayerStatusEx" | "getPlayerStatus") {
-                return match dev.index.get(key) {
-                    Some(cap) if cap.outcome == Outcome::Ok => match cap.body.clone() {
-                        Some(mut body) => {
-                            patch_player_status(&mut body, &state);
-                            (200, body.to_string())
-                        }
-                        None => handle_command(cap, dev),
-                    },
-                    Some(cap) => handle_command(cap, dev),
-                    None => (404, "unknown command".to_string()),
-                };
-            }
+    // Same reasoning as `multiroom:getSlaveList` above — a relay command is
+    // explicit topology the user asked for with `--group`, not optional
+    // mini-device fidelity, so it applies regardless of `--no-stateful` too.
+    if let Some(command) = command {
+        if let Some(result) = handle_group_mutation(command, fleet, dev_idx) {
+            return result;
         }
     }
-    let (status, body) = match dev.index.get(key) {
-        Some(cap) => handle_command(cap, dev),
-        None => (404, "unknown command".to_string()),
+    let (status, body) = 'resolved: {
+        if fleet.stateful_http {
+            if let Some(command) = command {
+                let mut state = dev.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                if let Some(body) = handle_mutation(command, &mut state) {
+                    break 'resolved (200, body);
+                }
+                if matches!(command, "getPlayerStatusEx" | "getPlayerStatus") {
+                    break 'resolved match dev.index.get(key) {
+                        Some(cap) if cap.outcome == Outcome::Ok => match cap.body.clone() {
+                            Some(mut body) => {
+                                patch_player_status(&mut body, &state);
+                                (200, body.to_string())
+                            }
+                            None => handle_command(cap, dev),
+                        },
+                        Some(cap) => handle_command(cap, dev),
+                        None => (404, "unknown command".to_string()),
+                    };
+                }
+            }
+        }
+        match dev.index.get(key) {
+            Some(cap) => handle_command(cap, dev),
+            None => (404, "unknown command".to_string()),
+        }
     };
+    if status != 200 {
+        return (status, body);
+    }
     // Every role, including Standalone, gets its group/master_uuid/master_ip
     // fields overwritten — never only "when grouped" — since a capture can
     // carry stale group state (a real device recorded while it happened to
     // be in a group) that would otherwise leak into a simulated standalone
     // or differently-grouped run.
-    if status == 200 && command == Some("getStatusEx") {
+    if command == Some("getStatusEx") {
         return (status, patch_group_status_fields(&body, fleet, dev_idx));
     }
+    // A real follower's own mode/status report reads mode 99 ("Follower" in
+    // pywiim's SOURCE_CAPABILITIES table, `device/playback.rs`'s own
+    // `loop_tier_http()` doc comment) rather than whatever source it was
+    // last playing standalone — it's receiving relayed audio, not running
+    // its own source. Applies regardless of `--no-stateful` for the same
+    // reason the group fields above do: this is real firmware behavior for
+    // any follower, not optional playback-mutation fidelity.
+    if matches!(command, Some("getPlayerStatusEx") | Some("getPlayerStatus")) {
+        return (status, patch_follower_mode_field(&body, fleet, dev_idx));
+    }
     (status, body)
+}
+
+/// Overwrites `getPlayerStatusEx`/`getPlayerStatus`'s `mode` field to `"99"`
+/// when this device is currently a group follower — see the call site's doc
+/// comment for why. A no-op for every other role, and for anything that
+/// isn't a JSON object.
+fn patch_follower_mode_field(body: &str, fleet: &Fleet, dev_idx: usize) -> String {
+    if !matches!(role_of(fleet, dev_idx), SimRole::Follower(_)) {
+        return body.to_string();
+    }
+    let Ok(mut value) = serde_json::from_str::<serde_json::Value>(body) else { return body.to_string() };
+    let Some(obj) = value.as_object_mut() else { return body.to_string() };
+    obj.insert("mode".into(), serde_json::Value::String("99".to_string()));
+    value.to_string()
 }
 
 /// The leader's `multiroom:getSlaveList` body, in the 4.3 schema real WiiM
@@ -1591,6 +1628,53 @@ fn patch_group_status_fields(body: &str, fleet: &Fleet, dev_idx: usize) -> Strin
     obj.insert("master_uuid".into(), serde_json::Value::String(master_uuid));
     obj.insert("master_ip".into(), serde_json::Value::String(master_ip));
     value.to_string()
+}
+
+/// `multiroom:SlaveVolume:<ip>:<vol>` / `multiroom:SlaveMute:<ip>:<0|1>` —
+/// what the app sends to a *leader* to control a *member*. `<ip>` is matched
+/// against the target member's own bound address, tolerating both the bare
+/// host and the full `host:port` form (the app sends back exactly what the
+/// slave list gave it — `host:port` — but there's no reason to be fragile
+/// about it). Only the target's own `SimState` lock is taken; the leader's
+/// own state (this device's, `dev_idx`) is never touched, so this can't
+/// cross-lock with anything `handle_soap_action()`'s `GetInfoEx` arm is
+/// doing concurrently on the leader.
+///
+/// `None` when `command` isn't one of these two — the caller falls through
+/// to normal replay. Anything else (sent to a non-leader, or naming a
+/// device that isn't actually a member of *this* leader's group) is a 404
+/// with a message naming the address that didn't resolve — visible absence,
+/// never a silently-accepted no-op.
+fn handle_group_mutation(command: &str, fleet: &Fleet, dev_idx: usize) -> Option<(u16, String)> {
+    let (ip, value, is_mute) = if let Some(rest) = command.strip_prefix("multiroom:SlaveVolume:") {
+        let (ip, vol) = rest.rsplit_once(':')?;
+        (ip, vol, false)
+    } else if let Some(rest) = command.strip_prefix("multiroom:SlaveMute:") {
+        let (ip, mute) = rest.rsplit_once(':')?;
+        (ip, mute, true)
+    } else {
+        return None;
+    };
+
+    let SimRole::Leader(gi) = role_of(fleet, dev_idx) else {
+        return Some((404, format!("simulator: no such group member {ip}")));
+    };
+    let target = fleet.groups[gi]
+        .members
+        .iter()
+        .map(|m| &fleet.devices[m.dev])
+        .find(|d| d.api_addr.as_deref() == Some(ip) || d.host == ip);
+    let Some(target) = target else {
+        return Some((404, format!("simulator: no such group member {ip}")));
+    };
+
+    let mut state = target.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if is_mute {
+        state.mute = value.trim() == "1";
+    } else if let Ok(vol) = value.parse::<u32>() {
+        state.vol = vol.min(100);
+    }
+    Some((200, "OK".to_string()))
 }
 
 fn serve(server: tiny_http::Server, fleet: &Arc<Fleet>, dev_idx: usize) {
@@ -1781,5 +1865,65 @@ mod tests {
         assert_eq!(value["group"], "1");
         assert_eq!(value["master_uuid"], fleet.devices[0].fresh_uuid.plain);
         assert_eq!(value["master_ip"], fleet.devices[0].host);
+    }
+
+    #[test]
+    fn slave_volume_relay_mutates_the_members_own_state_not_the_leaders() {
+        let fleet = test_fleet_with_one_group();
+        let member_addr = fleet.devices[1].api_addr.clone().unwrap();
+        let (status, body) = handle_group_mutation(
+            &format!("multiroom:SlaveVolume:{member_addr}:77"),
+            &fleet,
+            0,
+        )
+        .unwrap();
+        assert_eq!(status, 200);
+        assert_eq!(body, "OK");
+        assert_eq!(fleet.devices[1].state.lock().unwrap().vol, 77);
+        assert_eq!(fleet.devices[0].state.lock().unwrap().vol, 30, "leader's own volume must be untouched");
+    }
+
+    #[test]
+    fn slave_mute_relay_accepts_the_bare_host_form_too() {
+        let fleet = test_fleet_with_one_group();
+        let (status, _) = handle_group_mutation("multiroom:SlaveMute:127.0.0.3:1", &fleet, 0).unwrap();
+        assert_eq!(status, 200);
+        assert!(fleet.devices[1].state.lock().unwrap().mute);
+    }
+
+    #[test]
+    fn slave_volume_relay_rejects_a_non_leader() {
+        let fleet = test_fleet_with_one_group();
+        let member_addr = fleet.devices[1].api_addr.clone().unwrap();
+        let (status, body) =
+            handle_group_mutation(&format!("multiroom:SlaveVolume:{member_addr}:50"), &fleet, 1).unwrap();
+        assert_eq!(status, 404);
+        assert!(body.contains("no such group member"), "{body}");
+    }
+
+    #[test]
+    fn slave_volume_relay_rejects_an_unknown_address() {
+        let fleet = test_fleet_with_one_group();
+        let (status, body) = handle_group_mutation("multiroom:SlaveVolume:10.0.0.99:50", &fleet, 0).unwrap();
+        assert_eq!(status, 404);
+        assert!(body.contains("no such group member"), "{body}");
+    }
+
+    #[test]
+    fn follower_mode_field_is_forced_to_99_but_leader_and_standalone_are_untouched() {
+        let fleet = test_fleet_with_one_group();
+        let body = r#"{"mode":"10","vol":"30"}"#;
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&patch_follower_mode_field(body, &fleet, 1)).unwrap()["mode"],
+            "99"
+        );
+        assert_eq!(patch_follower_mode_field(body, &fleet, 0), body, "leader must be untouched");
+
+        let standalone = Fleet {
+            devices: vec![test_device(0, "127.0.0.2", "Solo", 30, false)],
+            stateful_http: true,
+            groups: vec![],
+        };
+        assert_eq!(patch_follower_mode_field(body, &standalone, 0), body, "standalone must be untouched");
     }
 }
