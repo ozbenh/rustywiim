@@ -134,6 +134,12 @@ fn build_settings_window(title: &str, pages: Vec<(&str, &str, gtk::Widget)>) -> 
     // otherwise.
     window.add_css_class("modern-bg-window");
     window.set_content(Some(&toolbar_view));
+    // Neither PreferencesWindow nor DeviceSettingsWindow (the only two
+    // callers) register with the GtkApplication — see
+    // `crate::ui::wire_close_shortcut()`'s own doc comment for why that
+    // means the app-wide Ctrl-W/Cmd-W accelerator doesn't reach them on its
+    // own.
+    crate::ui::wire_close_shortcut(&window);
     window
 }
 
@@ -169,6 +175,18 @@ impl PreferencesWindow {
 }
 
 // ── Device Settings (per-device) ──────────────────────────────────────────────
+
+/// "Device Settings (name)" — or bare "Device Settings" only when nothing at
+/// all is known yet (a device this session has never connected to *and*
+/// config has no remembered name for either). Goes through
+/// `crate::ui::display_name_for()` rather than reading `ds.device_info()`
+/// directly, so an *offline* device still shows its remembered name here —
+/// the same "device's own report, else config's cached copy" fallback the
+/// device list itself uses, not just "connected right now or nothing."
+fn device_settings_title(ds: &DeviceState) -> String {
+    let name = crate::ui::display_name_for(&ds.uuid(), Some(ds));
+    if name.is_empty() { "Device Settings".to_string() } else { format!("Device Settings ({name})") }
+}
 
 pub(crate) struct DeviceSettingsWindow {
     window: adw::Window,
@@ -232,10 +250,7 @@ impl DeviceSettingsWindow {
         let is_leader = ds.group_state().role == GroupRole::Leader;
         let io_holders = (!is_leader).then(|| build_io_pages(&ds, connected));
 
-        let initial_title = match ds.device_info() {
-            Some(i) => format!("Device Settings ({})", i.device_name),
-            None    => "Device Settings".to_string(),
-        };
+        let initial_title = device_settings_title(&ds);
         let mut pages = vec![
             ("Advanced", "advanced", advanced_holder.clone().upcast()),
         ];
@@ -255,11 +270,7 @@ impl DeviceSettingsWindow {
         // connectivity; the closure below keeps them live.)
 
         ds.connect_device_changed(glib::clone!(#[weak] window, move |ds| {
-            let title = match ds.device_info() {
-                Some(i) => format!("Device Settings ({})", i.device_name),
-                None    => "Device Settings".to_string(),
-            };
-            window.set_title(Some(&title));
+            window.set_title(Some(&device_settings_title(ds)));
         }));
 
         // React to the device connecting/disconnecting while this window is

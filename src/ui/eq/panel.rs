@@ -389,6 +389,11 @@ impl EqPanel {
         // class of bug the device window's own `.add_css_class("player-window")`
         // (also post-construction) already avoided by construction.
         window.add_css_class("modern-bg-window");
+        // The EQ panel never registers with the GtkApplication — see
+        // `crate::ui::wire_close_shortcut()`'s own doc comment for why that
+        // means the app-wide Ctrl-W/Cmd-W accelerator doesn't reach it on
+        // its own.
+        crate::ui::wire_close_shortcut(&window);
 
         let inner = Rc::new(Inner {
             ds: ds.clone(),

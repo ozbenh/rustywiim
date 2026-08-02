@@ -107,6 +107,38 @@ pub(crate) fn wire_window_actions(
     window.add_action(&preferences_action);
 }
 
+/// Ctrl-W (Cmd-W on macOS) closes `window` — for the non-`ApplicationWindow`
+/// windows (Preferences, Device Settings, the EQ panel) that deliberately
+/// never register with the `GtkApplication` at all (see
+/// `device_window/mod.rs`'s `cleanup()` doc comment: registering would make
+/// one count as "another visible window" for the last-window-closes-quits
+/// logic, which these windows must not affect). `main.rs`'s app-wide
+/// `win.close` accelerator only ever routes to a registered
+/// `GtkApplicationWindow`, so it silently does nothing for these — a plain,
+/// local `EventControllerKey` sidesteps the app's action/accelerator system
+/// entirely instead: no action, no registration, just "this key combo closes
+/// this window."
+pub(crate) fn wire_close_shortcut(window: &impl glib::object::IsA<gtk::Window>) {
+    let window: &gtk::Window = window.as_ref();
+    let key_ctrl = gtk::EventControllerKey::new();
+    key_ctrl.set_propagation_phase(gtk::PropagationPhase::Capture);
+    let weak = window.downgrade();
+    key_ctrl.connect_key_pressed(move |_, keyval, _keycode, state| {
+        let Some(window) = weak.upgrade() else { return glib::Propagation::Proceed };
+        let is_close_mod = if cfg!(target_os = "macos") {
+            state.contains(gtk::gdk::ModifierType::META_MASK) || state.contains(gtk::gdk::ModifierType::CONTROL_MASK)
+        } else {
+            state.contains(gtk::gdk::ModifierType::CONTROL_MASK)
+        };
+        if is_close_mod && matches!(keyval, gtk::gdk::Key::w | gtk::gdk::Key::W) {
+            window.close();
+            return glib::Propagation::Stop;
+        }
+        glib::Propagation::Proceed
+    });
+    window.upcast_ref::<gtk::Widget>().add_controller(key_ctrl);
+}
+
 // ── DeviceSpec ────────────────────────────────────────────────────────────────
 
 /// Describes a specific device to connect to when creating a new device window.
