@@ -50,6 +50,7 @@ use crate::device::discovery::{DEBUG_DISCOVERY, DiscoveryService};
 use crate::device::group;
 use crate::device::manager::DeviceManager;
 use crate::device::state::{ConnectionState, DeviceState};
+#[cfg(test)]
 use crate::device::utils;
 
 /// `[disc-mgr]` — this module's own tracking/presence/persistence-signal
@@ -544,7 +545,7 @@ impl DiscoveryManager {
                 dbg(&format!("group: skipping member with no uuid {} ({})", m.name, m.ip));
                 continue;
             }
-            if m.ip.is_empty() || utils::is_wifi_direct_address(&m.ip) {
+            if !group::member_is_reachable(m) {
                 dbg(&format!("group: skipping unroutable member {} ({})", m.name, m.ip));
                 continue;
             }

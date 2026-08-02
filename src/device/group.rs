@@ -110,6 +110,23 @@ pub struct GroupMember {
     pub masked: bool,
 }
 
+/// Whether `member`'s reported address is routable from this host at all —
+/// false for an empty address or one on a WiFi-Direct leader's private
+/// `10.10.10.x` subnet (see `GroupMember::ip`'s own doc comment). This is
+/// purely a property of the address; it says nothing about whether the
+/// registry has actually connected to the member (a separate question —
+/// see `GroupMember::ds` sites in `state.rs`, which combine this with their
+/// own "no live `DeviceState`" check to decide whether a member belongs in
+/// a relay batch).
+///
+/// One predicate, one home: `discovery_manager.rs`'s `adopt_group_members()`
+/// and `state.rs`'s `set_group_muted()`/`set_group_volume()` all used to
+/// spell this same `ip.is_empty() || is_wifi_direct_address(ip)` check
+/// slightly differently.
+pub fn member_is_reachable(member: &GroupMember) -> bool {
+    !member.ip.is_empty() && !utils::is_wifi_direct_address(&member.ip)
+}
+
 /// One device's view of its group. Lives once per device and is updated in
 /// place rather than rebuilt.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -798,6 +815,17 @@ mod tests {
         assert!(!utils::is_wifi_direct_address("10.1.1.77"));
         assert!(!utils::is_wifi_direct_address("192.168.1.5"));
         assert!(!utils::is_wifi_direct_address(""));
+    }
+
+    #[test]
+    fn member_is_reachable_rejects_empty_and_wifi_direct_addresses() {
+        let member = |ip: &str| GroupMember {
+            uuid: "aa".into(), name: "A".into(), ip: ip.into(),
+            volume: 20, muted: false, role: ChannelRole::Stereo, masked: false,
+        };
+        assert!(member_is_reachable(&member("1.1.1.5")));
+        assert!(!member_is_reachable(&member("")));
+        assert!(!member_is_reachable(&member("10.10.10.92")));
     }
 
     #[test]

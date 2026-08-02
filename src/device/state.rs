@@ -4568,9 +4568,7 @@ impl DeviceState {
             let cached = std::rc::Rc::make_mut(&mut inner.group.members);
             for (slot, member) in cached.iter_mut().zip(members.iter()) {
                 slot.muted = muted;
-                if member.ds.is_none() && !slot.ip.is_empty()
-                    && !utils::is_wifi_direct_address(&slot.ip)
-                {
+                if member.ds.is_none() && group::member_is_reachable(slot) {
                     relayed.push((slot.ip.clone(), muted));
                 }
             }
@@ -4653,9 +4651,7 @@ impl DeviceState {
                 // `group_volume()` stays right for a member whose own
                 // `DeviceState` is momentarily unavailable.
                 slot.volume = *next as u8;
-                if member.ds.is_none() && !slot.ip.is_empty()
-                    && !utils::is_wifi_direct_address(&slot.ip)
-                {
+                if member.ds.is_none() && group::member_is_reachable(slot) {
                     relayed.push((slot.ip.clone(), *next as u8));
                 }
             }
