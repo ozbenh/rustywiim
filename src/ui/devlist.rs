@@ -29,6 +29,7 @@ impl DiscoveryWindow {
         open_device:   Rc<dyn Fn(&ManagedEntry)>,
         enter_kiosk:   Rc<dyn Fn()>,
         open_settings: Rc<dyn Fn(Option<DeviceState>)>,
+        forget_device: Rc<dyn Fn(&str)>,
     ) -> Self {
         let (init_w, init_h) = config::with(|cfg| (
             if cfg.discovery_window_width  > 0 { cfg.discovery_window_width  } else { 500 },
@@ -107,6 +108,13 @@ impl DiscoveryWindow {
         device_list.connect_device_settings(clone!(
             #[strong] manager, #[strong] open_settings, move |_, key| {
                 open_settings(manager.device_state_for(key));
+            }
+        ));
+
+        // Offline-only trashcan — see DeviceListView's own doc comment.
+        device_list.connect_device_forget(clone!(
+            #[strong] forget_device, move |_, key| {
+                forget_device(key);
             }
         ));
 

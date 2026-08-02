@@ -1,9 +1,20 @@
-// Picker-list backend: tracks every known device (SSDP-discovered, pinned/
-// remembered from a config-derived seed, or manually added by IP) as a real
+// Picker-list backend: tracks every known device (SSDP-discovered, seeded
+// from config, manually added by IP, or adopted as a group member) as a real
 // `device::manager::DeviceManager`-owned `DeviceState` — holding a strong
-// reference to it for as long as the device is "known" (see `do_prune()`),
-// which is what keeps it alive and polling (Simple mode, unless a device
-// window also holds an `acquire_full()` guard) even with no window open.
+// reference to it for as long as the device is known, which is what keeps it
+// alive and polling (Simple mode, unless a device window also holds an
+// `acquire_full()` guard) even with no window open.
+//
+// Retention is known-by-default: a device that has ever been successfully
+// identified (a real, resolved uuid — see the codebase-wide "no key, no
+// tracking" rule in `device::utils`) stays tracked forever, with no
+// presence-based eviction. There is no pinning, no "in discovery scope"
+// exemption, no "has an open window" exemption — none of that machinery is
+// needed once staying known no longer depends on a heuristic. The only way a
+// device stops being tracked is `forget()`, an explicit user action (the
+// device list's offline-only trashcan button) — see that method's doc
+// comment for what it does and doesn't handle.
+//
 // There is no separate health-check poll: Simple-mode polling's own
 // `getStatusEx` *is* the liveness check, and presence for rendering
 // (`DevicePresence::compute()`) is read straight off each tracked
@@ -16,11 +27,13 @@
 // abstraction with no implicit knowledge of the UI/config layer). Instead:
 // `ui/` calls `load_seed()` once at startup with a config-derived snapshot
 // (`SeedEntry`), and listens to the existing `list-changed` signal to persist
-// whatever this module learns back to config — see `load_seed()`'s and
-// `set_song_info()`'s doc comments for the full seed-in/report-out story.
+// whatever this module learns back to config — see `load_seed()`'s doc
+// comment for the full seed-in/report-out story. `forget()` additionally
+// needs `ui/` to delete that uuid's config entry itself, or the device would
+// simply be re-seeded on the next launch — see `forget()`'s doc comment.
 //
 // `ui::devlist::DiscoveryWindow` is the actual on-screen picker — it renders
-// `entries()` and calls back into this module (`set_pinned()`, `add_manual()`,
+// `entries()` and calls back into this module (`forget()`, `add_manual()`,
 // etc.) but owns no tracking state of its own.
 
 use std::cell::RefCell;
@@ -68,20 +81,13 @@ fn describe_playback_mask(mask: u32) -> String {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DevicePresence {
-    Active, // ConnectionState::Connected
-    Ghost,  // pinned, not Connected
-    Dead,   // not pinned, not Connected
+    Active,  // ConnectionState::Connected
+    Offline, // anything else — known-by-default means no "pinned vs not" split
 }
 
 impl DevicePresence {
-    fn compute(state: ConnectionState, pinned: bool) -> Self {
-        if state == ConnectionState::Connected {
-            Self::Active
-        } else if pinned {
-            Self::Ghost
-        } else {
-            Self::Dead
-        }
+    fn compute(state: ConnectionState) -> Self {
+        if state == ConnectionState::Connected { Self::Active } else { Self::Offline }
     }
 }
 
@@ -98,7 +104,6 @@ pub struct ManagedEntry {
     pub firmware: String,
     pub ip:       String,
     pub tls_mode: TlsMode,
-    pub pinned:   bool,
     pub presence: DevicePresence,
     /// Mirrors song-info display's on/off state at the moment `entries()`
     /// was called — separate from `now_playing` below so `ui/`'s row
@@ -190,7 +195,6 @@ pub struct SeedEntry {
     pub model:        Option<String>,
     pub project:      Option<String>,
     pub firmware:     Option<String>,
-    pub pinned:       bool,
     pub last_ip:      Option<String>,
     pub tls_mode:     TlsMode,
     pub window_open:  bool,
@@ -203,29 +207,18 @@ pub struct SeedEntry {
 /// `on_tracked_device_changed()`) plus the strong `DeviceState` handle that
 /// keeps it alive/polling for as long as this record exists. `ds` is what
 /// makes "forgetting a device" plain refcounting: dropping this record
-/// (`do_prune()`) drops the last reference this module holds, and once no
+/// (`forget()`) drops the last reference this module holds, and once no
 /// device window holds one either, the `DeviceState` itself goes away.
 struct DeviceRecord {
     entry: ManagedEntry,
-    /// Whether this uuid/ip is currently visible in the live SSDP scan —
-    /// exempts an otherwise-prunable entry, same as `has_open_window`
-    /// below (see `do_prune()`).
-    in_discovery: bool,
-    /// Whether a device window is currently open for this uuid — set via
-    /// `set_window_open()`, called by `ui::mod`'s `AppState` whenever a
-    /// device window opens/closes. Exempts the entry from `do_prune()`: a
-    /// device the user has an open, now-"Disconnected" window for
-    /// shouldn't vanish from the picker list out from under them just
-    /// because it's unpinned and offline.
-    has_open_window: bool,
     /// The `device-changed`/`playback-changed` handlers connected in
-    /// `create_and_track()` are never explicitly disconnected — no
-    /// `SignalHandlerId` kept for them — because `do_prune()` only ever
-    /// drops a record while `has_open_window` is false, and
-    /// `device::manager::DeviceManager` itself only ever keeps *weak*
-    /// refs, so `ds` below is guaranteed to have no other strong holder at
-    /// that point: dropping this record finalizes `ds` outright,
-    /// connection included.
+    /// `create_and_track()` are never explicitly disconnected here — no
+    /// `SignalHandlerId` kept for them. `forget()` handles that instead, by
+    /// requiring its callers to have already closed any window that might
+    /// hold its own strong `ds` clone (see `forget()`'s doc comment) — at
+    /// that point `device::manager::DeviceManager`'s own weak-only refs mean
+    /// `ds` below is guaranteed to have no other strong holder, so dropping
+    /// this record finalizes `ds` outright, connection included.
     ds: DeviceState,
 }
 
@@ -240,9 +233,11 @@ struct Inner {
     /// Config-derived cache of every known device's identity, handed in
     /// once via `load_seed()`. Consulted (never mutated) by
     /// `on_discovery_updated()` to enrich a freshly-SSDP-seen device that
-    /// `load_seed()`/`start()` didn't already eagerly track (a known but
-    /// unpinned device seen again this session) — see `load_seed()`'s doc
-    /// comment for why a boot-time-only snapshot is safe here.
+    /// `load_seed()`/`start()` didn't already eagerly track — the one case
+    /// that still happens with known-by-default retention is a config entry
+    /// with no `last_ip` yet (nothing to connect to until discovery supplies
+    /// one) — see `load_seed()`'s doc comment for why a boot-time-only
+    /// snapshot is safe here.
     seed: HashMap<String, SeedEntry>,
 }
 
@@ -354,15 +349,16 @@ impl DiscoveryManager {
     /// Hand in a config-derived snapshot — this module's only view of
     /// config, since it can't read config itself. Must be called exactly
     /// once, before `start()`. Stores `song_info` and the full `seed` map
-    /// (keyed by uuid) in `Inner`; `start()` is what actually eagerly
-    /// tracks the `pinned || window_open` subset of it.
+    /// (keyed by uuid) in `Inner`; `start()` is what actually eagerly tracks
+    /// every entry in it (known-by-default — see this module's own doc
+    /// comment) that already has an address to connect to.
     ///
     /// A boot-time-only snapshot (never refreshed after this call) is
     /// safe, not just convenient: the app is the sole config writer while
     /// running, and `seed` is only ever consulted for a uuid *not yet*
     /// tracked (`on_discovery_updated()`) — once a device becomes tracked
-    /// it's kept live via `on_tracked_device_changed()`/`set_pinned()`
-    /// instead, never falling back to `seed` again.
+    /// it's kept live via `on_tracked_device_changed()` instead, never
+    /// falling back to `seed` again.
     pub fn load_seed(&self, seed: Vec<SeedEntry>, song_info: bool) {
         let mut inner = self.imp().inner.borrow_mut();
         inner.song_info = song_info;
@@ -446,33 +442,11 @@ impl DiscoveryManager {
         dbg(&format!("── device list: {} tracked ──", recs.len()));
         if recs.is_empty() { dbg("  (none)"); }
         for (key, rec) in recs {
-            let mut flags = Vec::new();
-            if rec.entry.pinned    { flags.push("pinned"); }
-            if rec.in_discovery    { flags.push("in-discovery"); }
-            if rec.has_open_window { flags.push("window-open"); }
-            let flags_str = if flags.is_empty() { String::new() } else { format!(" [{}]", flags.join(",")) };
             let presence = format!("{:?}", rec.entry.presence);
             dbg(&format!(
-                "  {:<24} {:<17} {presence:<8}{flags_str} key={key:?}",
+                "  {:<24} {:<17} {presence:<8} key={key:?}",
                 rec.entry.name, rec.entry.ip,
             ));
-        }
-    }
-
-    pub fn set_pinned(&self, uuid: &str, pinned: bool) {
-        let changed = {
-            let mut inner = self.imp().inner.borrow_mut();
-            if let Some(rec) = inner.devices.get_mut(uuid) {
-                let was = rec.entry.pinned;
-                rec.entry.pinned = pinned;
-                rec.entry.presence = DevicePresence::compute(rec.ds.connection_state(), pinned);
-                was != pinned
-            } else { false }
-        };
-        if changed {
-            dbg(&format!("pin: {uuid} → {pinned}"));
-            self.do_prune();
-            self.emit_list_changed();
         }
     }
 
@@ -501,16 +475,23 @@ impl DiscoveryManager {
         self.emit_list_changed();
     }
 
-    /// Records whether a device window is currently open for `uuid` — see
-    /// `DeviceRecord::has_open_window`'s doc comment. Called by `ui::mod`'s
-    /// `AppState` on window open/close. No-op if `uuid` is empty or
-    /// unknown to this module (a window with nothing here to mark — e.g. a
-    /// first-ever manual connect whose uuid isn't resolved yet).
-    pub fn set_window_open(&self, uuid: &str, open: bool) {
-        if uuid.is_empty() { return; }
-        let mut inner = self.imp().inner.borrow_mut();
-        if let Some(rec) = inner.devices.get_mut(uuid) {
-            rec.has_open_window = open;
+    /// Explicitly forgets a device — the only way a tracked device leaves
+    /// the registry now that retention is known-by-default (see this
+    /// module's own doc comment). No-op if `uuid` isn't tracked.
+    ///
+    /// This only drops this module's own strong `DeviceState` reference —
+    /// it does not know about, or close, any device/settings window that
+    /// might hold a strong clone of its own, and it does not touch config.
+    /// The caller (`ui/mod.rs`, which owns both of those) must close any
+    /// such window *before* calling this — see that module's own
+    /// `forget_device()`, the one place both halves happen together in the
+    /// right order — and delete the uuid's config entry afterward, or the
+    /// device simply reappears the next time `load_seed()`/`start()` runs.
+    pub fn forget(&self, uuid: &str) {
+        let removed = self.imp().inner.borrow_mut().devices.remove(uuid).is_some();
+        if removed {
+            dbg(&format!("forget: {uuid}"));
+            self.emit_list_changed();
         }
     }
 
@@ -521,7 +502,7 @@ impl DiscoveryManager {
             return;
         }
         dbg(&format!("add manual: {name} ({ip}) uuid={uuid:?}"));
-        self.track_device(&uuid, &uuid, &ip, tls_mode, true, name, String::new(), String::new(), String::new(), false);
+        self.track_device(&uuid, &uuid, &ip, tls_mode, name, String::new(), String::new(), String::new());
         self.emit_list_changed();
     }
 
@@ -572,8 +553,8 @@ impl DiscoveryManager {
             }
             dbg(&format!("group: adopting member {} ({}) uuid={:?}", m.name, m.ip, m.uuid));
             self.track_device(
-                &m.uuid, &m.uuid, &m.ip, tls, false,
-                m.name.clone(), String::new(), String::new(), String::new(), false,
+                &m.uuid, &m.uuid, &m.ip, tls,
+                m.name.clone(), String::new(), String::new(), String::new(),
             );
             adopted = true;
         }
@@ -644,9 +625,8 @@ impl DiscoveryManager {
     #[allow(clippy::too_many_arguments)]
     fn track_device(
         &self,
-        key: &str, uuid: &str, ip: &str, tls: TlsMode, pinned: bool,
+        key: &str, uuid: &str, ip: &str, tls: TlsMode,
         name: String, model: String, project: String, firmware: String,
-        in_discovery: bool,
     ) {
         // No explicit persist/emit here on the "moved" path — every caller
         // of `track_device()` (`on_discovery_updated()`, `add_manual()`,
@@ -657,7 +637,7 @@ impl DiscoveryManager {
         let mut inner = self.imp().inner.borrow_mut();
         let Some(rec) = inner.devices.get_mut(key) else {
             drop(inner);
-            self.create_and_track(key, uuid, ip, tls, pinned, name, model, project, firmware, in_discovery);
+            self.create_and_track(key, uuid, ip, tls, name, model, project, firmware);
             return;
         };
         if rec.entry.ip != ip || rec.entry.tls_mode != tls {
@@ -669,7 +649,6 @@ impl DiscoveryManager {
             // the corrected IP too.
             self.device_manager().update_ip(uuid, ip, tls);
         }
-        rec.in_discovery = rec.in_discovery || in_discovery;
     }
 
     /// The actual creation half of `track_device()`, split out only so its
@@ -683,17 +662,16 @@ impl DiscoveryManager {
     #[allow(clippy::too_many_arguments)]
     fn create_and_track(
         &self,
-        key: &str, uuid: &str, ip: &str, tls: TlsMode, pinned: bool,
+        key: &str, uuid: &str, ip: &str, tls: TlsMode,
         name: String, model: String, project: String, firmware: String,
-        in_discovery: bool,
     ) {
         dbg(&format!("track_device: new {name} ({ip}) uuid={uuid:?} key={key:?}"));
         let ds = self.device_manager().create_and_configure(uuid, ip, tls);
         ds.configure_simple_mode(self.imp().inner.borrow().song_info);
         let entry = ManagedEntry {
             uuid: uuid.to_string(), name, model, project, firmware,
-            ip: ip.to_string(), tls_mode: tls, pinned,
-            presence: DevicePresence::compute(ds.connection_state(), pinned),
+            ip: ip.to_string(), tls_mode: tls,
+            presence: DevicePresence::compute(ds.connection_state()),
             song_info_enabled: self.imp().inner.borrow().song_info,
             now_playing: None,
             // Resolved per-render by `entries()`, which is the only place
@@ -742,18 +720,14 @@ impl DiscoveryManager {
                 mgr.emit_song_info_changed(&key_for_song_info, mask);
             }
         });
-        self.imp().inner.borrow_mut().devices.insert(key.to_string(), DeviceRecord {
-            entry, in_discovery, has_open_window: false, ds,
-        });
+        self.imp().inner.borrow_mut().devices.insert(key.to_string(), DeviceRecord { entry, ds });
     }
 
     /// Fired whenever a tracked device's `DeviceState` emits
     /// `device-changed` — i.e. it just connected, just failed, or its
     /// identity was otherwise confirmed/updated. Refreshes this record's
     /// rendering fields from the live `DeviceState` (never a redundant
-    /// separate probe — `ds` already did the work), re-prunes (a
-    /// transition can make an entry newly prunable, e.g. it just went
-    /// offline and isn't pinned/open/in-discovery), and always re-renders
+    /// separate probe — `ds` already did the work) and always re-renders
     /// (`ui/`'s `list-changed` listener persists identity changes back to
     /// config unconditionally — see `set_song_info()`'s doc comment for
     /// why this module doesn't gate that itself).
@@ -764,7 +738,7 @@ impl DiscoveryManager {
                 dbg(&format!("device-changed: {key} no longer tracked, ignoring"));
                 return;
             };
-            let new_presence = DevicePresence::compute(ds.connection_state(), rec.entry.pinned);
+            let new_presence = DevicePresence::compute(ds.connection_state());
             if rec.entry.presence != new_presence {
                 dbg(&format!("device-changed: {} {:?} → {new_presence:?}", rec.entry.name, rec.entry.presence));
                 rec.entry.presence = new_presence;
@@ -778,26 +752,11 @@ impl DiscoveryManager {
                 if !caps.model.is_empty() { rec.entry.model = caps.model.clone(); }
             }
         }
-        self.do_prune();
         self.emit_list_changed();
     }
 
     fn on_discovery_updated(&self, svc: &DiscoveryService) {
         let discovered = svc.devices();
-        let disc_keys: std::collections::HashSet<String> = discovered.iter()
-            .map(|d| d.uuid.clone())
-            .collect();
-
-        {
-            let mut inner = self.imp().inner.borrow_mut();
-            for (key, rec) in inner.devices.iter_mut() {
-                let was = rec.in_discovery;
-                rec.in_discovery = disc_keys.contains(key);
-                if was && !rec.in_discovery {
-                    dbg(&format!("discovery: {} ({}) left SSDP scope", rec.entry.name, rec.entry.ip));
-                }
-            }
-        }
 
         // Snapshot, not a live borrow held across `track_device()` below
         // (which re-borrows `inner` itself) — see `load_seed()`'s doc
@@ -812,61 +771,30 @@ impl DiscoveryManager {
             let model    = cached.and_then(|c| c.model.clone()).unwrap_or_default();
             let project  = cached.and_then(|c| c.project.clone()).unwrap_or_default();
             let firmware = cached.and_then(|c| c.firmware.clone()).unwrap_or_default();
-            let pinned = cached.map_or(false, |c| c.pinned);
-            self.track_device(&dev.uuid, &dev.uuid, &dev.ip, dev.tls_mode, pinned, name, model, project, firmware, true);
+            self.track_device(&dev.uuid, &dev.uuid, &dev.ip, dev.tls_mode, name, model, project, firmware);
         }
 
-        let pruned = self.do_prune();
         self.emit_list_changed();
-        let _ = pruned; // list-changed already covers both cases; kept named for clarity at call site
     }
 
-    /// Remove entries that are `Dead` (not pinned, not `Connected`) and no
-    /// longer visible in the SSDP discovery list, dropping this module's
-    /// strong `DeviceState` reference — the actual "forgetting" (see this
-    /// module's own doc comment: a device goes away for good once no
-    /// window holds a reference either). Returns true if anything was
-    /// removed.
-    fn do_prune(&self) -> bool {
-        let mut inner = self.imp().inner.borrow_mut();
-        let before = inner.devices.len();
-        inner.devices.retain(|key, rec| {
-            let keep = rec.entry.pinned
-                || rec.entry.presence == DevicePresence::Active
-                || rec.in_discovery
-                || rec.has_open_window;
-            // No explicit `ds.disconnect(device_changed_id)` needed here:
-            // `has_open_window` being false (a precondition for `!keep`) means
-            // no device window holds its own strong ref to `rec.ds` either
-            // (`device::manager::DeviceManager` only ever keeps weak refs),
-            // so dropping `rec` below drops the last strong reference and
-            // finalizes the `DeviceState` — signal connection included —
-            // outright.
-            if !keep {
-                dbg(&format!("prune: forgetting {} ({key})", rec.entry.name));
-            }
-            keep
-        });
-        inner.devices.len() < before
-    }
-
-    /// Eagerly track every seeded device with `pinned || window_open` set
-    /// (same condition `ui/devlist.rs`'s old `load_known_devices_from_config()`
-    /// used) — the rest of `seed` stays around purely as
-    /// `on_discovery_updated()`'s enrichment cache. Called once from
-    /// `start()`, after `load_seed()` has already populated `Inner.seed`.
+    /// Eagerly track every seeded device that already has an address to
+    /// connect to — known-by-default means the whole config-derived seed,
+    /// not just a `pinned || window_open` subset (see this module's own doc
+    /// comment). A seed entry with no `last_ip` yet is skipped here and
+    /// left for `on_discovery_updated()`'s enrichment path to pick up once
+    /// SSDP actually finds it. Called once from `start()`, after
+    /// `load_seed()` has already populated `Inner.seed`.
     fn track_seeded_devices(&self) {
         let seed = self.imp().inner.borrow().seed.clone();
         for entry in seed.values() {
-            if !entry.pinned && !entry.window_open { continue; }
             let Some(ref ip) = entry.last_ip else { continue };
             if self.imp().inner.borrow().devices.contains_key(&entry.uuid) { continue; }
             let name     = entry.name.clone().unwrap_or_else(|| format!("Device @ {ip}"));
             let model    = entry.model.clone().unwrap_or_default();
             let project  = entry.project.clone().unwrap_or_default();
             let firmware = entry.firmware.clone().unwrap_or_default();
-            dbg(&format!("seed: {name} ({ip}) uuid={} pinned={}", entry.uuid, entry.pinned));
-            self.track_device(&entry.uuid, &entry.uuid, ip, entry.tls_mode, entry.pinned, name, model, project, firmware, false);
+            dbg(&format!("seed: {name} ({ip}) uuid={}", entry.uuid));
+            self.track_device(&entry.uuid, &entry.uuid, ip, entry.tls_mode, name, model, project, firmware);
         }
     }
 }
@@ -950,8 +878,8 @@ fn resolve_topology(rows: Vec<(String, ManagedEntry, group::GroupState)>) -> Vec
             let mut line = match member_key.and_then(|k| tracked.get(k.as_str())) {
                 Some(e) => (*e).clone(),
                 // Reported by the leader but not tracked. Presence is
-                // `Dead` because nothing has ever reached it — the leader's
-                // word is not a connection.
+                // `Offline` because nothing has ever reached it — the
+                // leader's word is not a connection.
                 None => ManagedEntry {
                     uuid:     m.uuid.clone(),
                     name:     m.name.clone(),
@@ -960,8 +888,7 @@ fn resolve_topology(rows: Vec<(String, ManagedEntry, group::GroupState)>) -> Vec
                     firmware: String::new(),
                     ip:       m.ip.clone(),
                     tls_mode: TlsMode::HttpsWiiM,
-                    pinned:   false,
-                    presence: DevicePresence::Dead,
+                    presence: DevicePresence::Offline,
                     song_info_enabled: false,
                     now_playing:       None,
                     group_role:        EntryGroupRole::Standalone,
@@ -1021,7 +948,7 @@ mod tests {
         ManagedEntry {
             uuid: utils::normalize_uuid(uuid), name: name.to_string(), model: String::new(),
             project: String::new(), firmware: String::new(), ip: ip.to_string(),
-            tls_mode: TlsMode::HttpsWiiM, pinned: false, presence: DevicePresence::Active,
+            tls_mode: TlsMode::HttpsWiiM, presence: DevicePresence::Active,
             song_info_enabled: true, now_playing: None,
             group_role: EntryGroupRole::Standalone,
         }
@@ -1131,7 +1058,7 @@ mod tests {
         let ghost = out.last().unwrap();
         assert_eq!(ghost.group_role, EntryGroupRole::Member { leader_key: "L".into(), tracked: false });
         assert_eq!(ghost.ip, "1.1.1.9");
-        assert_eq!(ghost.presence, DevicePresence::Dead);
+        assert_eq!(ghost.presence, DevicePresence::Offline);
     }
 
     #[test]

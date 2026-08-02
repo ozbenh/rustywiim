@@ -143,16 +143,12 @@ pub struct DeviceConfig {
     /// its width is user-resizable.
     #[serde(default)]
     pub mini_window_width: i32,
-    /// Keep in the device list even when not seen on the network.
-    /// `None` means the device predates the pinning feature (legacy entry);
-    /// it is treated as a ghost candidate until the user explicitly pins or
-    /// unpins it, which writes `Some(true)` / `Some(false)` and ends legacy treatment.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pinned: Option<bool>,
     /// Whether the device's main window was open when the app last exited.
     #[serde(default)]
     pub window_open: bool,
-    /// Last known IP — used to reconnect pinned ghosts on startup.
+    /// Last known IP — every device we have ever successfully identified is
+    /// known-by-default (see `device::discovery_manager`'s own doc comment)
+    /// and gets tracked/reconnected on startup using this address.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_ip: Option<String>,
     /// Last known friendly name — displayed while connecting / offline.
@@ -244,7 +240,6 @@ impl Default for DeviceConfig {
             panel_visible:   true,
             mini_mode:       false,
             mini_window_width: 0,
-            pinned:          None,
             window_open:     false,
             last_ip:         None,
             name:            None,
@@ -592,10 +587,6 @@ impl Config {
             if dev.last_ip.is_none() {
                 dev.last_ip = Some(ip);
             }
-            // Pin the device so it is visible in the discovery window after migration.
-            if dev.pinned.is_none() {
-                dev.pinned = Some(true);
-            }
         }
         true
     }
@@ -684,7 +675,7 @@ mod tests {
         // `kiosk_last_uuid` uses a different spelling of the same device.
         let json = r#"{
             "devices": {
-                "UUID:FF98F7F4-075B-5A90-FA95-72C3": { "name": "Kitchen", "pinned": true }
+                "UUID:FF98F7F4-075B-5A90-FA95-72C3": { "name": "Kitchen" }
             },
             "kiosk_last_uuid": "ff98f7f4075b5a90fa9572c3",
             "last_uuid": "FF98F7F4075B5A90FA9572C3"

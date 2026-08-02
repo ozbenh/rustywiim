@@ -249,7 +249,7 @@ impl AppState {
         });
 
         // `disc_mgr` now owns the *entire* known-device registry (SSDP
-        // consumption, pinned/config-remembered devices, presence — see
+        // consumption, config-remembered devices, presence — see
         // `device::discovery_manager`'s module doc comment) — it holds
         // `device_manager` directly rather than through a hook/callback
         // pair, since both live in `device/` now.
@@ -353,12 +353,17 @@ impl AppState {
                 let state = Rc::clone(self_rc);
                 Rc::new(move || Self::enter_kiosk(&state, None)) as Rc<dyn Fn()>
             };
+            let forget_device_fn = {
+                let state = Rc::clone(self_rc);
+                Rc::new(move |uuid: &str| Self::forget_device(&state, uuid)) as Rc<dyn Fn(&str)>
+            };
             *dw = Some(devlist::DiscoveryWindow::new(
                 &self_rc.app,
                 &self_rc.disc_mgr,
                 open_device_fn,
                 enter_kiosk_fn,
                 open_settings_fn,
+                forget_device_fn,
             ));
         }
         dbg_state("device list: presenting");
@@ -453,11 +458,6 @@ impl AppState {
         let gtk_win   = dw.window.clone();
         dw.present();
         self_rc.registry.borrow_mut().push(dw);
-        // Exempts this device from devlist's do_prune() for as long as this
-        // window is open — see DeviceRecord::has_open_window's doc comment.
-        // No-op if log_uuid is empty (uuid not resolved yet) or unknown to
-        // devlist.
-        self_rc.disc_mgr.set_window_open(&log_uuid, true);
         let win_key   = gtk_win.clone();
         let weak_self = Rc::downgrade(self_rc);
         gtk_win.connect_close_request({
@@ -483,12 +483,7 @@ impl AppState {
                     // close() re-enters this same RefCell synchronously via
                     // its own close-request handler.
                     if let Some(uuid) = live_uuid.filter(|u| !u.is_empty()) {
-                        let target = s.settings_reg.borrow().iter()
-                            .find(|sw| sw.device_uuid().as_deref() == Some(uuid.as_str()))
-                            .map(|sw| sw.window_ref().clone());
-                        if let Some(win) = target {
-                            win.close();
-                        }
+                        Self::close_settings_window_for(&s, &uuid);
                     }
                 }
                 glib::Propagation::Proceed
@@ -500,9 +495,68 @@ impl AppState {
             dbg_state(&format!("device window: destroyed uuid={log_uuid}"));
             if let Some(s) = weak_self.upgrade() {
                 s.registry.borrow_mut().retain(|w| w.window != win_key);
-                s.disc_mgr.set_window_open(&log_uuid, false);
             }
         });
+    }
+
+    /// Closes the Settings window open for `uuid`, if any. Shared by
+    /// `open_device_spec()`'s own close-request cascade (a device window
+    /// closing shouldn't leave its Settings window behind, holding a
+    /// strong `DeviceState` clone that keeps polling with nothing visibly
+    /// attached to it anymore) and `forget_device()` below, which may need
+    /// to close one with no device window behind it at all — opened
+    /// straight from the device list's cog.
+    fn close_settings_window_for(self_rc: &Rc<Self>, uuid: &str) {
+        let target = self_rc.settings_reg.borrow().iter()
+            .find(|sw| sw.device_uuid().as_deref() == Some(uuid))
+            .map(|sw| sw.window_ref().clone());
+        if let Some(win) = target {
+            win.close();
+        }
+    }
+
+    /// User-initiated device removal — the device list's offline-only
+    /// trashcan button (see `views::devlist::build_device_content()`).
+    ///
+    /// Force-closes any open device window for `uuid` first (its own
+    /// close-request handler already cascades into closing a Settings
+    /// window behind it — see `close_settings_window_for()`'s doc
+    /// comment); if there's no device window but a Settings window is
+    /// still open on its own (opened straight from the device list's cog),
+    /// closes that directly. Leaving either open would keep it driving a
+    /// `DeviceState` the registry no longer tracks via a strong ref of its
+    /// own.
+    ///
+    /// Rebinds Kiosk mode away from the forgotten device if it's the one
+    /// currently shown there, rather than leaving it displaying a device
+    /// that's no longer in the list.
+    ///
+    /// `disc_mgr.forget()` alone would only be half the job — the config
+    /// entry is what would otherwise re-seed this exact device the next
+    /// time `load_seed()`/`start()` runs (known-by-default retention — see
+    /// `DiscoveryManager`'s own doc comment), so deleting it is what makes
+    /// this removal actually stick.
+    fn forget_device(self_rc: &Rc<Self>, uuid: &str) {
+        if uuid.is_empty() { return; }
+        dbg_state(&format!("forget device: {uuid}"));
+
+        let win = self_rc.registry.borrow().iter()
+            .find(|w| w.uuid().as_deref() == Some(uuid))
+            .map(|w| w.window.clone());
+        if let Some(win) = win {
+            win.close();
+        } else {
+            Self::close_settings_window_for(self_rc, uuid);
+        }
+
+        if let Some(kw) = self_rc.kiosk_win.borrow().as_ref() {
+            if kw.current_key() == uuid {
+                kw.bind_device(None);
+            }
+        }
+
+        self_rc.disc_mgr.forget(uuid);
+        config::update(|cfg| { cfg.devices.remove(uuid); });
     }
 
     /// Called once from `app.connect_activate`.
@@ -631,8 +685,9 @@ impl AppState {
 
         // Seed the manager from config — it can't read config itself (same
         // rule `device::manager::DeviceManager` already follows). Must
-        // happen before `start()`, which eagerly tracks the pinned/
-        // window_open subset of this synchronously.
+        // happen before `start()`, which eagerly tracks every entry in it
+        // that already has an address (known-by-default — see
+        // `DiscoveryManager`'s own doc comment).
         let seed: Vec<SeedEntry> = config::with(|cfg| {
             cfg.devices.iter().map(|(uuid, d)| SeedEntry {
                 uuid:        uuid.clone(),
@@ -640,7 +695,6 @@ impl AppState {
                 model:       d.model.clone(),
                 project:     d.project.clone(),
                 firmware:    d.firmware.clone(),
-                pinned:      d.pinned == Some(true),
                 last_ip:     d.last_ip.clone(),
                 tls_mode:    d.tls_mode.map(|n| TlsMode::from_usize(n as usize)).unwrap_or(TlsMode::HttpsWiiM),
                 window_open: d.window_open,
@@ -650,20 +704,19 @@ impl AppState {
         self_rc.disc_mgr.load_seed(seed, devlist_song_info);
 
         // `disc_mgr` can't persist to config itself either — this is the
-        // "report out" half of the same rule, replacing what used to be an
-        // internal `persist_pinned()` call scattered across several of its
-        // own methods. Fires unconditionally on every `list-changed`
-        // (pin toggle, identity update, presence flip, ...) rather than
-        // being selectively triggered — cheap and safe since
+        // "report out" half of the same rule. Fires unconditionally on
+        // every `list-changed` (identity update, presence flip, ...)
+        // rather than being selectively triggered — cheap and safe since
         // `config::update()` already diffs the whole `Config` before
-        // deciding whether to actually write to disk.
+        // deciding whether to actually write to disk. Deleting a config
+        // entry outright is `forget_device()`'s job, not this — this loop
+        // only ever updates fields for a still-tracked device.
         self_rc.disc_mgr.connect_list_changed(|mgr| {
             let entries = mgr.entries();
             config::update(|cfg| {
                 for e in &entries {
                     if e.uuid.is_empty() { continue; }
                     let dev = cfg.device_mut(&e.uuid);
-                    dev.pinned = Some(e.pinned); // Explicit Some(true/false) ends legacy treatment.
                     dev.last_ip = Some(e.ip.clone());
                     dev.tls_mode = Some(e.tls_mode as u8);
                     dev.name = Some(e.name.clone());
@@ -717,8 +770,8 @@ impl AppState {
         // arrive well after `disc_mgr.start()` returns — confirmed live, a
         // fresh `--kiosk` launch reaches this point before any real device
         // has actually responded, so the immediate resolution above finds
-        // nothing even for an already-known kiosk_last_uuid device that
-        // isn't otherwise pinned/previously-open). The first time a device
+        // nothing even for an already-known kiosk_last_uuid device seeded
+        // with no `last_ip` yet). The first time a device
         // becomes available — the persisted device reappearing, or failing
         // that any Active device — bind it, unless the user has already
         // picked something else by then (checked via `current_key()`).
@@ -776,12 +829,17 @@ impl AppState {
             let state = Rc::clone(self_rc);
             Rc::new(move |ds| Self::open_settings(&state, ds)) as Rc<dyn Fn(Option<DeviceState>)>
         };
+        let forget_device_fn = {
+            let state = Rc::clone(self_rc);
+            Rc::new(move |uuid: &str| Self::forget_device(&state, uuid)) as Rc<dyn Fn(&str)>
+        };
         let initial_layout = match KIOSK_LAYOUT_OVERRIDE.get() {
             Some(KioskLayoutOverride::Classic) => views::playback_full::PlaybackLayout::Classic,
             Some(KioskLayoutOverride::WideRight) | None => views::playback_full::PlaybackLayout::WideRight,
         };
         let kw = kiosk::KioskWindow::new(
-            &self_rc.app, &self_rc.disc_mgr, &icons, exit_fn, open_settings_fn, initial_layout, kiosk_only(),
+            &self_rc.app, &self_rc.disc_mgr, &icons, exit_fn, open_settings_fn, forget_device_fn,
+            initial_layout, kiosk_only(),
         );
         kw.present();
         *self_rc.kiosk_win.borrow_mut() = Some(Rc::clone(&kw));

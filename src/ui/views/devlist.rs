@@ -1,11 +1,12 @@
 //! # DeviceListView
 //!
 //! Renders `device::discovery_manager::DiscoveryManager`'s tracked-device
-//! list: artwork/icon, title/subtitle, a compact volume popover, and a
-//! pin/unpin toggle per row — the exact same widget shapes `DiscoveryWindow`
-//! always built, just relocated here so more than one host can embed the
-//! list. Owns no window chrome (header, "Add device" dialog, menu,
-//! settings/close actions) — those stay with whichever window hosts it.
+//! list: artwork/icon, title/subtitle, a compact volume popover, and an
+//! offline-only "forget this device" trashcan per row — the exact same
+//! widget shapes `DiscoveryWindow` always built, just relocated here so more
+//! than one host can embed the list. Owns no window chrome (header, "Add
+//! device" dialog, menu, settings/close actions) — those stay with whichever
+//! window hosts it.
 //!
 //! Clicking a row doesn't open anything itself — it emits `device-selected`
 //! (the row's uuid) so each host decides what "selected" means:
@@ -74,6 +75,15 @@ pub mod imp {
                     // the group does — so its member line's cog is the only
                     // route to that device's own settings.
                     Signal::builder("device-settings")
+                        .param_types([String::static_type()])
+                        .build(),
+                    // Host request: forget a standalone, offline device —
+                    // the trashcan button (see `build_device_content()`).
+                    // Carries the same uuid convention as the other two
+                    // signals here; the host owns the actual removal
+                    // (closing windows, dropping config), this view only
+                    // ever reports the click.
+                    Signal::builder("device-forget")
                         .param_types([String::static_type()])
                         .build(),
                 ]
@@ -317,6 +327,15 @@ impl DeviceListView {
         })
     }
 
+    pub(crate) fn connect_device_forget<F: Fn(&Self, &str) + 'static>(&self, f: F) -> glib::SignalHandlerId {
+        self.connect_local("device-forget", false, move |args| {
+            let this = args[0].get::<Self>().unwrap();
+            let key  = args[1].get::<String>().unwrap();
+            f(&this, &key);
+            None
+        })
+    }
+
     pub(crate) fn connect_device_selected<F: Fn(&Self, &str) + 'static>(&self, f: F) -> glib::SignalHandlerId {
         self.connect_local("device-selected", false, move |args| {
             let obj = args[0].get::<Self>().unwrap();
@@ -348,7 +367,7 @@ impl DeviceListView {
         self.rebuild_list();
 
         // List rebuild: structural changes only (device added/removed/
-        // renamed/pinned/moved, presence flips) — see DiscoveryManager's
+        // renamed/moved, presence flips) — see DiscoveryManager's
         // `signals()`.
         let h_list = manager.connect_list_changed({
             let weak = self.downgrade();
@@ -643,8 +662,8 @@ impl DeviceListView {
     fn build_device_row(&self, entry: &ManagedEntry, manager: &DiscoveryManager) -> gtk::ListBoxRow {
         let hbox = self.build_device_content(entry, manager);
         let status_suffix = match entry.presence {
-            DevicePresence::Active => String::new(),
-            DevicePresence::Ghost | DevicePresence::Dead => " · offline".to_string(),
+            DevicePresence::Active  => String::new(),
+            DevicePresence::Offline => " · offline".to_string(),
         };
         let row = gtk::ListBoxRow::builder()
             .activatable(true)
@@ -673,7 +692,7 @@ impl DeviceListView {
         // CSS min-width/min-height) whenever song-info display is on
         // globally, regardless of whether *this* device currently has
         // anything to show there, so the row's right-hand side (volume
-        // control, pin button) never shifts as devices update. Same
+        // control, trashcan button) never shifts as devices update. Same
         // FlipCover widget (flip/crossfade between real art and the
         // fallback icon) the main and mini windows use, not a separate
         // plain-image path.
@@ -793,27 +812,32 @@ impl DeviceListView {
             });
         }
 
-        // Pin / unpin toggle button. A group header has none: pinning is a
-        // per-device concept and a group is not a device, so the member
-        // lines below own it instead.
+        // Offline-only "forget this device" trashcan. A group header gets
+        // none — a group isn't a device, so it has nothing to forget (its
+        // member lines are a separate, standalone-only concept too: a
+        // member is reachable through its leader, so "offline" doesn't
+        // apply to it the way this button means). Restricted to `Offline`
+        // rather than shown unconditionally: removing a reachable device
+        // would just have it reappear at the next discovery pass, and a
+        // button whose effect visibly undoes itself seconds later reads as
+        // broken. Tooltip deliberately doesn't say "delete"/"remove
+        // permanently" for the same reason — the device really can come
+        // back if it's seen again.
         if matches!(entry.group_role, EntryGroupRole::GroupHeader { .. }) {
             return hbox;
         }
-        let pin_btn = gtk::ToggleButton::builder()
-            .icon_name(if entry.pinned { "starred-symbolic" } else { "non-starred-symbolic" })
-            .tooltip_text(if entry.pinned { "Unpin device" } else { "Pin device" })
-            .active(entry.pinned)
-            .valign(gtk::Align::Center)
-            .css_classes(["flat"])
-            .build();
-        if entry.pinned {
-            pin_btn.add_css_class("accent");
+        if entry.presence == DevicePresence::Offline {
+            let forget_btn = gtk::Button::builder()
+                .icon_name("user-trash-symbolic")
+                .tooltip_text("Remove from list")
+                .valign(gtk::Align::Center)
+                .css_classes(["flat"])
+                .build();
+            forget_btn.connect_clicked(clone!(#[weak(rename_to = this)] self, #[strong] key, move |_| {
+                this.emit_by_name::<()>("device-forget", &[&key]);
+            }));
+            hbox.append(&forget_btn);
         }
-        let uuid_for_pin = entry.uuid.clone();
-        pin_btn.connect_toggled(clone!(#[strong] manager, move |btn| {
-            manager.set_pinned(&uuid_for_pin, btn.is_active());
-        }));
-        hbox.append(&pin_btn);
         hbox
     }
 }

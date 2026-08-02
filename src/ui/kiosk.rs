@@ -73,8 +73,7 @@ pub(crate) mod kiosk_settings_changed {
 /// dropping this (on unbind/rebind, or the whole window closing) releases
 /// it, same as a `DeviceWindow` does for its own `DeviceState`. `key` is
 /// empty when nothing is really selected (see `bind_device()`'s "no
-/// device" branch) — `DiscoveryManager::set_window_open()` no-ops on an
-/// empty key, so that case needs no special-casing elsewhere.
+/// device" branch).
 struct BoundDevice {
     key:        String,
     ds:         DeviceState,
@@ -270,6 +269,7 @@ impl KioskWindow {
         icons:            &Rc<IconSet>,
         exit_kiosk:       Rc<dyn Fn()>,
         open_settings:    Rc<dyn Fn(Option<DeviceState>)>,
+        forget_device:    Rc<dyn Fn(&str)>,
         initial_layout:   PlaybackLayout,
         kiosk_only:       bool,
     ) -> Rc<Self> {
@@ -602,6 +602,14 @@ impl KioskWindow {
                 this.popover.popdown();
             }
         });
+        // Offline-only trashcan — see DeviceListView's own doc comment.
+        // `forget_device()` (ui/mod.rs) already rebinds Kiosk mode away
+        // from a forgotten device if it's the one currently bound, so
+        // nothing further needs doing here.
+        device_list.connect_device_forget({
+            let forget_device = Rc::clone(&forget_device);
+            move |_, key| forget_device(key)
+        });
 
         // Keyboard: "K" exits kiosk mode (unless `--kiosk:only` — see
         // `ui::kiosk_only()`'s own doc comment, same reasoning as the exit
@@ -752,10 +760,8 @@ impl KioskWindow {
     /// rather than adding a distinct "no device at all" mode to it.
     pub(crate) fn bind_device(self: &Rc<Self>, key: Option<&str>) {
         // Release whichever device was shown before, regardless of what
-        // (if anything) replaces it — mirrors DeviceWindow's own
-        // set_window_open bookkeeping so DiscoveryManager's prune logic
-        // doesn't think a stale device is still "open" here. No-ops for
-        // the empty key the "no device" branch below uses.
+        // (if anything) replaces it. No-ops for the empty key the "no
+        // device" branch below uses.
         if let Some(old) = self.bound.borrow_mut().take() {
             self.release_bound(old);
         }
@@ -769,7 +775,6 @@ impl KioskWindow {
         let resolved = key.and_then(|k| self.manager.device_state_for(k).map(|ds| (k.to_string(), ds)));
         let (key, ds, label) = match resolved {
             Some((key, ds)) => {
-                self.manager.set_window_open(&key, true);
                 let label = self.manager.entry_for(&key).map(|e| e.name).unwrap_or_else(|| key.clone());
                 // Remembered so a future unbound entry (discovery window's
                 // menu, or a fresh `--kiosk` launch) can restore this
@@ -812,7 +817,6 @@ impl KioskWindow {
     /// `finish_bind()`'s own initial `on_playback_changed()` call if
     /// whatever replaces it is also playing).
     fn release_bound(&self, old: BoundDevice) {
-        self.manager.set_window_open(&old.key, false);
         old.ds.disconnect(old.playback_changed_handler);
         if config::with(|cfg| cfg.kiosk_inhibit_screensaver) == InhibitSystemScreensaver::WhenPlaying {
             if let Some(cookie) = self.inhibit_cookie.take() {
