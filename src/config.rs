@@ -38,6 +38,47 @@ pub fn set_config_path_override(path: PathBuf) {
     let _ = CONFIG_PATH_OVERRIDE.set(path);
 }
 
+/// `--connect`'s resolved uuid, once known — see `Config::device_mut()`'s
+/// own doc comment for exactly what this suppresses and why. Set once, from
+/// `ui/mod.rs`'s `--connect` handling, the moment the probe resolves a real
+/// uuid (necessarily later than `NO_CONFIG`/`CONFIG_PATH_OVERRIDE` above,
+/// which are set before anything touches config at all — this one can't be,
+/// since resolving a uuid needs a live probe). `OnceLock` here for the same
+/// reason as those: `--connect` only ever resolves one device per process,
+/// so "only the first call sticks" is never actually exercised twice.
+static EPHEMERAL_UUID: OnceLock<String> = OnceLock::new();
+
+pub fn set_ephemeral_uuid(uuid: String) {
+    let _ = EPHEMERAL_UUID.set(uuid);
+}
+
+fn is_ephemeral_uuid(uuid: &str) -> bool {
+    EPHEMERAL_UUID.get().is_some_and(|e| e == uuid)
+}
+
+/// A field present on `Config` purely so `device_mut()` can hand back a real
+/// `&mut DeviceConfig` for the `--connect` ephemeral-uuid case (see
+/// `Config::scratch_device`), but excluded from both serialization
+/// (`#[serde(skip)]` needs no help from this) and — the part plain
+/// `#[serde(skip)]` can't do alone — from `Config`'s derived `PartialEq`.
+/// Without the latter, every scratch write would make `update()`'s
+/// before/after diff see a "change" that was never meant to reach disk in
+/// the first place, defeating the whole point of routing it through scratch
+/// storage rather than `self.devices`.
+#[derive(Debug, Clone, Default)]
+struct Ignored<T>(T);
+
+impl<T> std::ops::Deref for Ignored<T> {
+    type Target = T;
+    fn deref(&self) -> &T { &self.0 }
+}
+impl<T> std::ops::DerefMut for Ignored<T> {
+    fn deref_mut(&mut self) -> &mut T { &mut self.0 }
+}
+impl<T> PartialEq for Ignored<T> {
+    fn eq(&self, _other: &Self) -> bool { true }
+}
+
 fn default_panel_visible() -> bool { true }
 fn default_animations() -> bool { true }
 fn default_mini_modern() -> bool { true }
@@ -377,6 +418,17 @@ pub struct Config {
     /// — see `OskMode`'s own doc comment. Defaults to `Auto`.
     #[serde(default)]
     pub osk_mode: OskMode,
+    /// Scratch `DeviceConfig` `device_mut()` returns for the `--connect`
+    /// ephemeral uuid (see `EPHEMERAL_UUID`) instead of ever inserting into
+    /// `devices` — a real, writable `&mut DeviceConfig` whose mutations are
+    /// simply overwritten on the next call and never persist. `#[serde(skip)]`
+    /// keeps it off disk (needs `Ignored<T>: Default` to fill the field back
+    /// in on deserialize, which it derives); wrapping it in `Ignored<T>` is
+    /// the other half — see that type's own doc comment for why a scratch
+    /// write must also be invisible to `update()`'s `PartialEq` diff, not
+    /// just to serialization.
+    #[serde(skip)]
+    scratch_device: Ignored<DeviceConfig>,
 }
 
 impl Default for Config {
@@ -405,6 +457,7 @@ impl Default for Config {
             kiosk_screensaver_include_phys_inputs: default_kiosk_screensaver_include_phys_inputs(),
             kiosk_hide_cursor_on_touch: default_kiosk_hide_cursor_on_touch(),
             osk_mode: OskMode::default(),
+            scratch_device: Ignored::default(),
         }
     }
 }
@@ -523,7 +576,27 @@ impl Config {
 
     /// Return a mutable reference to the per-device config for `uuid`,
     /// inserting a default entry if none exists yet.
+    ///
+    /// **Except** for `--connect`'s ephemeral uuid (`EPHEMERAL_UUID`, set
+    /// once the flag's probe resolves one) — every write for it goes to
+    /// `scratch_device` instead, discarded before the next call, and
+    /// `self.devices` is never touched on its behalf at all, whether or not
+    /// it already holds a real entry for that uuid.
+    ///
+    /// a new entry: `--connect` pointed at a simulator replaying a capture
+    /// of a device the user also owns for real resolves to that same real
+    /// uuid, and letting *any* write through in that case (even just
+    /// `last_ip`) would corrupt the real entry with the simulator's address
+    /// — self-healing on the next normal launch, per discovery's own
+    /// `update_ip()`, but a needless risk for what's meant to be an isolated
+    /// diagnostic session. Reads (`device()`, below) are unaffected — a
+    /// `--connect` session against an already-known uuid still correctly
+    /// inherits that device's saved overrides, exactly as documented.
     pub fn device_mut(&mut self, uuid: &str) -> &mut DeviceConfig {
+        if is_ephemeral_uuid(uuid) {
+            self.scratch_device = Ignored::default();
+            return &mut self.scratch_device;
+        }
         self.devices.entry(uuid.to_string()).or_default()
     }
 
@@ -724,5 +797,53 @@ mod tests {
         let json = r#"{"devices": {"u": {"playback_access_override": "upnp_polled"}}}"#;
         let cfg: Config = serde_json::from_str(json).unwrap();
         assert_eq!(cfg.devices.get("u").unwrap().playback_access_override, Some(AccessMethod::UpnpPolled));
+    }
+
+    /// `EPHEMERAL_UUID` is a process-global `OnceLock` — only the first
+    /// `set_ephemeral_uuid()` call across the whole test binary sticks, so
+    /// this is deliberately the *one* test that ever calls it, covering
+    /// both cases (`device_mut()`'s never-create and never-touch-a-real-
+    /// entry behaviour) in a single test rather than risking a second test
+    /// silently no-op'ing against an already-set uuid.
+    #[test]
+    fn device_mut_never_persists_the_connect_ephemeral_uuid() {
+        set_ephemeral_uuid("ephemeral-test-uuid".to_string());
+
+        let mut cfg = Config::default();
+
+        // Case 1: no entry exists yet — must not be created.
+        cfg.device_mut("ephemeral-test-uuid").last_ip = Some("127.0.0.1:18080".to_string());
+        assert!(
+            !cfg.devices.contains_key("ephemeral-test-uuid"),
+            "an ephemeral-uuid write must never create a real config entry"
+        );
+
+        // Case 2: a real entry already exists (the "--connect at a
+        // simulator replaying my own device's capture" case) — must not be
+        // touched either, not even addressing fields.
+        cfg.devices.insert("ephemeral-test-uuid".to_string(), DeviceConfig {
+            last_ip: Some("192.168.1.50".to_string()), ..Default::default()
+        });
+        cfg.device_mut("ephemeral-test-uuid").last_ip = Some("127.0.0.1:18080".to_string());
+        assert_eq!(
+            cfg.devices.get("ephemeral-test-uuid").and_then(|d| d.last_ip.clone()),
+            Some("192.168.1.50".to_string()),
+            "an already-real entry must survive an ephemeral-uuid write untouched"
+        );
+
+        // An ordinary uuid is completely unaffected by any of the above.
+        cfg.device_mut("real-uuid").last_ip = Some("192.168.1.60".to_string());
+        assert_eq!(
+            cfg.devices.get("real-uuid").and_then(|d| d.last_ip.clone()),
+            Some("192.168.1.60".to_string()),
+        );
+
+        // Writing through the ephemeral scratch entry must not make
+        // `update()`'s PartialEq diff see a spurious change — that's the
+        // whole reason `scratch_device` is wrapped in `Ignored<T>` rather
+        // than just `#[serde(skip)]`.
+        let mut other = cfg.clone();
+        other.device_mut("ephemeral-test-uuid").last_ip = Some("10.0.0.1".to_string());
+        assert_eq!(cfg, other, "a scratch-only write must not affect Config equality");
     }
 }

@@ -730,6 +730,16 @@ impl AppState {
             glib::spawn_future_local(async move {
                 match rx.recv().await {
                     Ok(Ok(dev)) => {
+                        // Marks this uuid as `--connect`'s ephemeral device
+                        // *before* anything below can write to config for
+                        // it (`create_and_configure()`'s `configure-device`
+                        // handler already reads config for overrides — a
+                        // read, unaffected — but `device_manager.rt()`'s
+                        // callers and the window-opening path that follows
+                        // both eventually reach `config::device_mut()`) —
+                        // see `config::Config::device_mut()`'s own doc
+                        // comment for exactly what this suppresses.
+                        config::set_ephemeral_uuid(dev.uuid.clone());
                         if start_in_kiosk {
                             let ds = self_rc.device_manager.create_and_configure(&dev.uuid, &dev.ip, dev.tls_mode);
                             Self::enter_kiosk_with_device(&self_rc, ds, dev.name);
