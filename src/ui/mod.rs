@@ -213,6 +213,25 @@ pub fn set_direct_connect(targets: Vec<ConnectTarget>) {
     let _ = DIRECT_CONNECT.set(targets);
 }
 
+/// `--no-discovery`: skip starting SSDP discovery entirely. Independent of
+/// `--connect` — `--connect` used to imply this (on the reasoning that it
+/// points at an isolated test target), but that meant there was no way to
+/// point `--connect` at one device while still discovering everything else
+/// normally on the network. `--connect` now starts discovery like any other
+/// launch unless this flag says otherwise; combine the two (along with
+/// `--no-config`) for the old fully-isolated-test-run behavior. Set (via
+/// `set_no_discovery`) before `activate()` runs, same lifecycle as
+/// `DIRECT_CONNECT`/`START_IN_KIOSK`.
+static NO_DISCOVERY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn set_no_discovery(v: bool) {
+    NO_DISCOVERY.store(v, Ordering::Relaxed);
+}
+
+fn no_discovery() -> bool {
+    NO_DISCOVERY.load(Ordering::Relaxed)
+}
+
 /// `--kiosk`: when set, `AppState::activate()` starts directly in Kiosk
 /// mode, skipping the normal device-list-first-or-restore-per-device-
 /// windows startup sequence entirely. Set (via `set_start_in_kiosk`)
@@ -366,14 +385,14 @@ impl AppState {
     // `disc_svc.start()` must run inside `connect_activate` so that
     // `glib::spawn_future_local` has an active main context.
     //
-    // Skipped entirely under `--connect`: that mode exists to point the app
-    // at an isolated target (e.g. `wiim-simulator`) without touching the
-    // real network, so starting SSDP discovery in the background would
-    // defeat the purpose (and send real traffic) even though `activate()`
-    // never shows its results.
+    // Skipped only under the explicit `--no-discovery` flag, not under
+    // `--connect` — `--connect` no longer implies an isolated test run on
+    // its own (see `NO_DISCOVERY`'s own doc comment for why); combine it
+    // with `--no-discovery` (and usually `--no-config`) for the old
+    // behavior.
     pub(crate) fn new(app: &adw::Application, rt: Arc<tokio::runtime::Runtime>) -> Rc<Self> {
         let disc_svc = DiscoveryService::new(rt.clone());
-        if DIRECT_CONNECT.get().is_none() {
+        if !no_discovery() {
             disc_svc.start();
         }
         let device_manager = DeviceManager::new(rt, disc_svc.clone());
@@ -772,14 +791,15 @@ impl AppState {
 
         Self::install_quit_action(self_rc);
 
-        // `--connect` override: skip discovery/config-restored windows entirely
-        // and resolve each target straight at its given address, then open
-        // a window per resolved device that isn't a group follower (nothing
-        // without a resolved uuid may ever be tracked — see
-        // `device::discovery::ProbeFailure`'s doc comment). `ConnectTarget::
-        // Explicit` already names the scheme, so it probes that one TLS
-        // mode directly; `ConnectTarget::Port` walks `PROBE_MODES` the way a
-        // plain manual-add-by-IP does.
+        // `--connect` override: resolve each target straight at its given
+        // address, on top of — not instead of — the normal startup sequence
+        // below (config-seeded devices, restored windows, SSDP discovery
+        // unless `--no-discovery`), then open a window per resolved device
+        // that isn't a group follower (nothing without a resolved uuid may
+        // ever be tracked — see `device::discovery::ProbeFailure`'s doc
+        // comment). `ConnectTarget::Explicit` already names the scheme, so
+        // it probes that one TLS mode directly; `ConnectTarget::Port` walks
+        // `PROBE_MODES` the way a plain manual-add-by-IP does.
         //
         // Every resolved device is tracked exactly like an add-by-IP device
         // (see the `add_manual()` call below), so `--connect --kiosk`
@@ -927,7 +947,15 @@ impl AppState {
                     drop(hold);
                 });
             }
-            return;
+            // Deliberately no `return` here: `--connect` is additive on top
+            // of an otherwise-normal launch (config-seeded devices, restored
+            // windows, SSDP discovery) unless `--no-config`/`--no-discovery`
+            // say otherwise — see `NO_DISCOVERY`'s own doc comment for why
+            // it no longer implies isolation on its own. The `start_in_kiosk`
+            // guard on the *unbound* `enter_kiosk()` call further down skips
+            // itself when `--connect` is also set, so Kiosk mode doesn't get
+            // entered twice (once unbound here, once properly bound once the
+            // probe above resolves).
         }
 
         // Reconnecting an already-open window to a corrected IP happens
@@ -1041,7 +1069,12 @@ impl AppState {
 
         self_rc.device_manager.start();
 
-        if start_in_kiosk {
+        // Skipped when `--connect` is also set: that branch above already
+        // enters Kiosk mode itself once its target(s) resolve, bound to the
+        // first one (`bind_kiosk`) — entering it again here, unbound, would
+        // just be a redundant (if harmless) extra bind that briefly shows
+        // "Select device" before the real one lands moments later.
+        if start_in_kiosk && DIRECT_CONNECT.get().is_none() {
             dbg_state("activate: --kiosk, entering Kiosk mode unbound");
             Self::enter_kiosk(self_rc, None);
         }

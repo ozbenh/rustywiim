@@ -125,6 +125,13 @@ const OPTIONS: &[OptHelp] = &[
         desc: "Don't load or save the config file — every run behaves like a fresh install.",
     },
     OptHelp {
+        flag: "--no-discovery",
+        desc: "Don't start SSDP discovery. Combine with --no-config for a fully isolated test \
+               run (e.g. against wiim-simulator) that neither reads/writes the real config \
+               file nor sends real network traffic; --connect on its own does neither by \
+               default.",
+    },
+    OptHelp {
         flag: "--config-file=PATH",
         desc: "Use an alternate config file path instead of the default (for testing).",
     },
@@ -433,6 +440,16 @@ fn main() -> glib::ExitCode {
         None,
     );
     app.add_main_option(
+        "no-discovery",
+        glib::Char(0),
+        glib::OptionFlags::NONE,
+        glib::OptionArg::None,
+        "Don't start SSDP discovery. Combine with --no-config for a fully isolated test run \
+         (e.g. against wiim-simulator) that neither reads/writes the real config file nor \
+         sends real network traffic; --connect on its own does neither by default",
+        None,
+    );
+    app.add_main_option(
         "config-file",
         glib::Char(0),
         glib::OptionFlags::NONE,
@@ -542,6 +559,9 @@ fn main() -> glib::ExitCode {
         }
         if opts.lookup::<bool>("no-config").ok().flatten().unwrap_or(false) {
             config::set_no_config(true);
+        }
+        if opts.lookup::<bool>("no-discovery").ok().flatten().unwrap_or(false) {
+            ui::set_no_discovery(true);
         }
         if opts.lookup::<bool>("try-all-upnp").ok().flatten().unwrap_or(false) {
             device::discovery::IGNORE_DENYLIST.store(true, Ordering::Relaxed);
