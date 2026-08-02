@@ -131,6 +131,14 @@ impl DiscoveryWindow {
         toolbar_view.add_top_bar(&header);
         toolbar_view.set_content(Some(&content));
         window.set_content(Some(&toolbar_view));
+        // Same plain CSS gradient background as Settings/Preferences/EQ
+        // under RustyWiiM Modern (`modern.css`'s `window.modern-bg-window`
+        // rule) — added after construction/`set_content()`, not via the
+        // builder's `.css_classes([...])`, for the same reason those
+        // windows do: the builder property would replace the whole class
+        // list libadwaita sets up during construction (rounded corners/CSD
+        // shadow), not just add to it.
+        window.add_css_class("modern-bg-window");
 
         // Scanning indicator: clear only when the SSDP scan cycle reports in.
         let scanning = Rc::new(std::cell::Cell::new(true));

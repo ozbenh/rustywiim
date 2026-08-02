@@ -137,15 +137,17 @@ pub mod imp {
                 // a slight cool tint to actually read as a gradient rather
                 // than flat grey (a first version used two very close grey
                 // stops top-to-bottom and was indistinguishable from solid
-                // colour). top-left corner to bottom-right corner.
+                // colour). Lightest at the top-left corner, darkest at the
+                // bottom-right, so it reads as one consistent light source
+                // (top-left) across every window that uses this fallback.
                 snapshot.append_linear_gradient(
                     &bounds,
                     &graphene::Point::new(0.0, 0.0),
                     &graphene::Point::new(w, h),
                     &[
-                        gsk::ColorStop::new(0.0, gdk::RGBA::new(0.039, 0.039, 0.039, 1.0)), // #0a0a0a, matches window bg
+                        gsk::ColorStop::new(0.0, gdk::RGBA::new(0.14,  0.17,  0.20,  1.0)),  // #232b33
                         gsk::ColorStop::new(0.55, gdk::RGBA::new(0.09,  0.11,  0.13,  1.0)), // #171c21, faint cool tint
-                        gsk::ColorStop::new(1.0, gdk::RGBA::new(0.14,  0.17,  0.20,  1.0)),  // #232b33
+                        gsk::ColorStop::new(1.0, gdk::RGBA::new(0.039, 0.039, 0.039, 1.0)), // #0a0a0a, matches window bg
                     ],
                 );
             }
