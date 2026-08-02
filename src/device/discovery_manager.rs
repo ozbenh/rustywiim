@@ -382,10 +382,16 @@ impl DiscoveryManager {
     /// row. See `resolve_topology()`, which holds the actual rules.
     pub fn entries(&self) -> Vec<ManagedEntry> {
         let inner = self.imp().inner.borrow();
-        let rows: Vec<(String, ManagedEntry, group::GroupState)> = inner.devices.iter()
-            .map(|(key, r)| (key.clone(), build_managed_entry(r), r.ds.group_state()))
+        let inputs: Vec<TopoInput> = inner.devices.iter()
+            .map(|(key, r)| TopoInput {
+                key: key.clone(), uuid: r.entry.uuid.clone(),
+                name: r.entry.name.clone(), ip: r.entry.ip.clone(),
+                group: r.ds.group_state(),
+            })
             .collect();
-        resolve_topology(rows)
+        resolve_topology(inputs).into_iter()
+            .map(|row| build_entry_for_row(&inner.devices, row))
+            .collect()
     }
 
     /// Single-entry counterpart to `entries()` — used by the
@@ -766,6 +772,35 @@ impl DiscoveryManager {
     }
 }
 
+/// One tracked device, as topology resolution sees it — identity, address,
+/// display name and group role, and nothing else. Deliberately not
+/// `ManagedEntry` (a full render snapshot dragging model/project/firmware/
+/// tls_mode/presence/song_info_enabled/now_playing along for no reason the
+/// algorithm below needs) and not `DeviceState` (a GObject the unit tests
+/// would have to construct one of just to exercise pure data-shuffling).
+/// `entries()` builds these from `Inner.devices`; the tests build them by
+/// hand via `row()`.
+struct TopoInput {
+    key:   String,
+    uuid:  String,
+    name:  String,
+    ip:    String,
+    group: group::GroupState,
+}
+
+/// One resolved row — what `resolve_topology()` decided this device's place
+/// in the list is. `entries()` maps each of these back to a full
+/// `ManagedEntry` by looking `key` up in `Inner.devices` (or, for an
+/// untracked member, building the minimal fallback the `None` case
+/// describes below) — see `build_entry_for_row()`.
+struct TopoRow {
+    key:  String,
+    uuid: String,
+    name: String,
+    ip:   String,
+    role: EntryGroupRole,
+}
+
 /// Turns a flat set of tracked devices into the ordered, topology-annotated
 /// list the device list renders.
 ///
@@ -788,89 +823,127 @@ impl DiscoveryManager {
 ///   `tracked: false` so the UI can render it without controls.
 /// - Ordering is by name across headers and standalone rows; a group's
 ///   member lines stay immediately after their header.
-fn resolve_topology(rows: Vec<(String, ManagedEntry, group::GroupState)>) -> Vec<ManagedEntry> {
+fn resolve_topology(rows: Vec<TopoInput>) -> Vec<TopoRow> {
     // uuid -> key, since a follower knows its leader only by uuid.
-    // `e.uuid` is already canonical (normalized at its entry boundary), so
+    // `r.uuid` is already canonical (normalized at its entry boundary), so
     // this is a plain lookup, not a re-normalization.
     let by_uuid: HashMap<String, String> = rows.iter()
-        .filter(|(_, e, _)| !e.uuid.is_empty())
-        .map(|(key, e, _)| (e.uuid.clone(), key.clone()))
+        .filter(|r| !r.uuid.is_empty())
+        .map(|r| (r.uuid.clone(), r.key.clone()))
         .collect();
     let is_leader: HashSet<String> = rows.iter()
-        .filter(|(_, _, g)| g.role == group::GroupRole::Leader)
-        .map(|(key, _, _)| key.clone())
+        .filter(|r| r.group.role == group::GroupRole::Leader)
+        .map(|r| r.key.clone())
         .collect();
 
     let absorbed: HashSet<String> = rows.iter()
-        .filter(|(_, _, g)| g.role == group::GroupRole::Follower)
-        .filter(|(_, _, g)| g.leader_uuid.as_deref()
+        .filter(|r| r.group.role == group::GroupRole::Follower)
+        .filter(|r| r.group.leader_uuid.as_deref()
             .and_then(|u| by_uuid.get(u))
             .is_some_and(|lk| is_leader.contains(lk)))
-        .map(|(key, _, _)| key.clone())
+        .map(|r| r.key.clone())
         .collect();
 
-    let tracked: HashMap<&str, &ManagedEntry> =
-        rows.iter().map(|(key, e, _)| (key.as_str(), e)).collect();
+    let tracked: HashMap<&str, &TopoInput> =
+        rows.iter().map(|r| (r.key.as_str(), r)).collect();
 
-    let mut heads: Vec<&(String, ManagedEntry, group::GroupState)> = rows.iter()
-        .filter(|(key, _, _)| !absorbed.contains(key))
+    let mut heads: Vec<&TopoInput> = rows.iter()
+        .filter(|r| !absorbed.contains(&r.key))
         .collect();
     // Sort on the name as it will be displayed, which for a group is its
     // group name rather than the leader's device name.
-    heads.sort_by_cached_key(|(_, e, g)| match g.role {
-        group::GroupRole::Leader => group::auto_group_name(&e.name, g.follower_count()),
-        _ => e.name.clone(),
+    heads.sort_by_cached_key(|r| match r.group.role {
+        group::GroupRole::Leader => group::auto_group_name(&r.name, r.group.follower_count()),
+        _ => r.name.clone(),
     });
 
     let mut out = Vec::with_capacity(rows.len());
-    for (key, entry, g) in heads {
-        if g.role != group::GroupRole::Leader {
-            out.push(entry.clone());
+    for input in heads {
+        if input.group.role != group::GroupRole::Leader {
+            out.push(TopoRow {
+                key: input.key.clone(), uuid: input.uuid.clone(),
+                name: input.name.clone(), ip: input.ip.clone(),
+                role: EntryGroupRole::Standalone,
+            });
             continue;
         }
 
-        let mut header = entry.clone();
-        header.name = group::auto_group_name(&entry.name, g.follower_count());
-        header.group_role = EntryGroupRole::GroupHeader { follower_count: g.follower_count() };
-        out.push(header);
+        out.push(TopoRow {
+            key: input.key.clone(), uuid: input.uuid.clone(),
+            name: group::auto_group_name(&input.name, input.group.follower_count()),
+            ip: input.ip.clone(),
+            role: EntryGroupRole::GroupHeader { follower_count: input.group.follower_count() },
+        });
 
-        let mut line = entry.clone();
-        line.song_info_enabled = false;
-        line.now_playing = None;
-        line.group_role = EntryGroupRole::Member { leader_key: key.clone(), tracked: true };
-        out.push(line);
+        out.push(TopoRow {
+            key: input.key.clone(), uuid: input.uuid.clone(),
+            name: input.name.clone(), ip: input.ip.clone(),
+            role: EntryGroupRole::Member { leader_key: input.key.clone(), tracked: true },
+        });
 
-        for m in g.members.iter() {
+        for m in input.group.members.iter() {
             let member_key = by_uuid.get(&m.uuid);
-            let mut line = match member_key.and_then(|k| tracked.get(k.as_str())) {
-                Some(e) => (*e).clone(),
-                // Reported by the leader but not tracked. Presence is
-                // `Offline` because nothing has ever reached it — the
-                // leader's word is not a connection.
-                None => ManagedEntry {
-                    uuid:     m.uuid.clone(),
-                    name:     m.name.clone(),
-                    model:    String::new(),
-                    project:  String::new(),
-                    firmware: String::new(),
-                    ip:       m.ip.clone(),
-                    tls_mode: TlsMode::HttpsWiiM,
-                    presence: DevicePresence::Offline,
-                    song_info_enabled: false,
-                    now_playing:       None,
-                    group_role:        EntryGroupRole::Standalone,
+            let (key, uuid, name, ip) = match member_key.and_then(|k| tracked.get(k.as_str())) {
+                Some(e) => (e.key.clone(), e.uuid.clone(), e.name.clone(), e.ip.clone()),
+                // Reported by the leader but not tracked — nothing in
+                // `Inner.devices` to look up, so `build_entry_for_row()`
+                // falls back to a minimal offline entry built straight from
+                // what the leader reported (see that function's doc
+                // comment).
+                None => (m.uuid.clone(), m.uuid.clone(), m.name.clone(), m.ip.clone()),
+            };
+            out.push(TopoRow {
+                key, uuid, name, ip,
+                role: EntryGroupRole::Member {
+                    leader_key: input.key.clone(),
+                    tracked:    member_key.is_some(),
                 },
-            };
-            line.song_info_enabled = false;
-            line.now_playing = None;
-            line.group_role = EntryGroupRole::Member {
-                leader_key: key.clone(),
-                tracked:    member_key.is_some(),
-            };
-            out.push(line);
+            });
         }
     }
     out
+}
+
+/// Resolves one `TopoRow` back into a full `ManagedEntry` — the counterpart
+/// to `resolve_topology()` taking a `TopoInput` seam instead of a full
+/// `ManagedEntry`. `devices` is `Inner.devices`; called once per row from
+/// `entries()`.
+///
+/// A tracked row (`devices` has `row.key`) gets its real identity/presence/
+/// now-playing content from `build_managed_entry()`, with `name`/`group_role`
+/// overridden from the resolved row (a group header's name is the group's,
+/// not the leader's own device name). A **member** row additionally drops
+/// song info — member lines are compact by design (no artwork, no song),
+/// regardless of what the underlying device would otherwise show — which is
+/// why this is a plain function of `role`, not something `resolve_topology()`
+/// itself needs to carry.
+///
+/// An **untracked** member row (`devices` has no entry for `row.key` — the
+/// leader named a device discovery hasn't reached) builds the minimal
+/// fallback entirely from what the leader reported: `Offline` presence,
+/// because nothing has ever actually reached it — the leader's word is not a
+/// connection.
+fn build_entry_for_row(devices: &HashMap<String, DeviceRecord>, row: TopoRow) -> ManagedEntry {
+    let is_member = matches!(row.role, EntryGroupRole::Member { .. });
+    match devices.get(&row.key) {
+        Some(rec) => {
+            let mut entry = build_managed_entry(rec);
+            entry.name = row.name;
+            entry.group_role = row.role;
+            if is_member {
+                entry.song_info_enabled = false;
+                entry.now_playing = None;
+            }
+            entry
+        }
+        None => ManagedEntry {
+            uuid: row.uuid, name: row.name, model: String::new(),
+            project: String::new(), firmware: String::new(), ip: row.ip,
+            tls_mode: TlsMode::HttpsWiiM, presence: DevicePresence::Offline,
+            song_info_enabled: false, now_playing: None,
+            group_role: row.role,
+        },
+    }
 }
 
 /// Shared by `entries()`/`entry_for()` — one record's cached identity
@@ -906,18 +979,15 @@ mod tests {
     use super::*;
     use std::rc::Rc;
 
-    /// `uuid` is normalized here for the same reason every real
-    /// `ManagedEntry` holds a canonical one: it is only ever built from a
-    /// source that normalized at its own entry boundary (`DeviceInfo`, SSDP,
-    /// the config seed). Fixtures spell it raw so the tests can show the
-    /// shapes the different sources actually produce.
-    fn entry(uuid: &str, name: &str, ip: &str) -> ManagedEntry {
-        ManagedEntry {
-            uuid: utils::normalize_uuid(uuid), name: name.to_string(), model: String::new(),
-            project: String::new(), firmware: String::new(), ip: ip.to_string(),
-            tls_mode: TlsMode::HttpsWiiM, presence: DevicePresence::Active,
-            song_info_enabled: true, now_playing: None,
-            group_role: EntryGroupRole::Standalone,
+    /// `uuid` is normalized here for the same reason every real `TopoInput`
+    /// holds a canonical one: it is only ever built from a source that
+    /// normalized at its own entry boundary (`DeviceInfo`, SSDP, the config
+    /// seed). Fixtures spell it raw so the tests can show the shapes the
+    /// different sources actually produce.
+    fn row(key: &str, uuid: &str, name: &str, ip: &str, group: group::GroupState) -> TopoInput {
+        TopoInput {
+            key: key.to_string(), uuid: utils::normalize_uuid(uuid),
+            name: name.to_string(), ip: ip.to_string(), group,
         }
     }
 
@@ -944,12 +1014,8 @@ mod tests {
         }
     }
 
-    fn row(key: &str, e: ManagedEntry, g: group::GroupState) -> (String, ManagedEntry, group::GroupState) {
-        (key.to_string(), e, g)
-    }
-
-    fn shape(out: &[ManagedEntry]) -> Vec<(String, &'static str)> {
-        out.iter().map(|e| (e.name.clone(), match e.group_role {
+    fn shape(out: &[TopoRow]) -> Vec<(String, &'static str)> {
+        out.iter().map(|r| (r.name.clone(), match r.role {
             EntryGroupRole::Standalone      => "standalone",
             EntryGroupRole::GroupHeader { .. } => "header",
             EntryGroupRole::Member { .. }   => "member",
@@ -959,8 +1025,8 @@ mod tests {
     #[test]
     fn ungrouped_devices_render_as_plain_rows_sorted_by_name() {
         let out = resolve_topology(vec![
-            row("b", entry("BBB", "Zulu", "1.1.1.2"), group::GroupState::default()),
-            row("a", entry("AAA", "Alpha", "1.1.1.1"), group::GroupState::default()),
+            row("b", "BBB", "Zulu", "1.1.1.2", group::GroupState::default()),
+            row("a", "AAA", "Alpha", "1.1.1.1", group::GroupState::default()),
         ]);
         assert_eq!(shape(&out), vec![
             ("Alpha".into(), "standalone"),
@@ -971,9 +1037,9 @@ mod tests {
     #[test]
     fn a_group_becomes_a_header_followed_by_a_line_per_member() {
         let out = resolve_topology(vec![
-            row("L", entry("LEAD", "WiiM WorkBu", "1.1.1.1"),
+            row("L", "LEAD", "WiiM WorkBu", "1.1.1.1",
                 leader_of(vec![member("F1", "WiiM MiniBu", "1.1.1.2")])),
-            row("F", entry("F1", "WiiM MiniBu", "1.1.1.2"), follower_of("LEAD")),
+            row("F", "F1", "WiiM MiniBu", "1.1.1.2", follower_of("LEAD")),
         ]);
         // The leader gets a line of its own as well as the header: the
         // header's volume is the group's, so the leader still needs
@@ -984,28 +1050,33 @@ mod tests {
             ("WiiM MiniBu".into(),     "member"),
         ]);
         // The follower contributes no top-level row of its own.
-        assert!(!out.iter().any(|e| e.name == "WiiM MiniBu"
-            && e.group_role == EntryGroupRole::Standalone));
+        assert!(!out.iter().any(|r| r.name == "WiiM MiniBu"
+            && r.role == EntryGroupRole::Standalone));
     }
 
     #[test]
-    fn member_lines_carry_their_leaders_key_and_drop_song_info() {
+    fn member_lines_carry_their_leaders_key_and_are_flagged_tracked() {
+        // "Drop song info" used to be asserted here too, back when this
+        // test operated on full `ManagedEntry`s — that's now a two-line,
+        // purely-a-function-of-`role` decision in `build_entry_for_row()`
+        // (not something `resolve_topology()` itself computes anymore), so
+        // it isn't `resolve_topology()`'s own behaviour to pin here. What
+        // *is* still this function's job — and still fiddly enough to be
+        // worth a dedicated assertion — is that every member line correctly
+        // carries its leader's key and is flagged tracked.
         let out = resolve_topology(vec![
-            row("L", entry("LEAD", "Lead", "1.1.1.1"),
+            row("L", "LEAD", "Lead", "1.1.1.1",
                 leader_of(vec![member("F1", "Follower", "1.1.1.2")])),
-            row("F", entry("F1", "Follower", "1.1.1.2"), follower_of("LEAD")),
+            row("F", "F1", "Follower", "1.1.1.2", follower_of("LEAD")),
         ]);
-        for e in out.iter().filter(|e| matches!(e.group_role, EntryGroupRole::Member { .. })) {
-            match &e.group_role {
+        for r in out.iter().filter(|r| matches!(r.role, EntryGroupRole::Member { .. })) {
+            match &r.role {
                 EntryGroupRole::Member { leader_key, tracked } => {
                     assert_eq!(leader_key, "L");
-                    assert!(*tracked, "{} should be tracked", e.name);
+                    assert!(*tracked, "{} should be tracked", r.name);
                 }
                 _ => unreachable!(),
             }
-            // Member lines are compact: no artwork, no song.
-            assert!(!e.song_info_enabled, "{}", e.name);
-            assert!(e.now_playing.is_none(), "{}", e.name);
         }
     }
 
@@ -1014,7 +1085,7 @@ mod tests {
         // Until discovery reaches it, the leader's word is all we have —
         // omitting it would show a two-device group as one device.
         let out = resolve_topology(vec![
-            row("L", entry("LEAD", "Lead", "1.1.1.1"),
+            row("L", "LEAD", "Lead", "1.1.1.1",
                 leader_of(vec![member("GHOST", "Unknown Speaker", "1.1.1.9")])),
         ]);
         assert_eq!(shape(&out), vec![
@@ -1023,9 +1094,9 @@ mod tests {
             ("Unknown Speaker".into(), "member"),
         ]);
         let ghost = out.last().unwrap();
-        assert_eq!(ghost.group_role, EntryGroupRole::Member { leader_key: "L".into(), tracked: false });
+        assert_eq!(ghost.role, EntryGroupRole::Member { leader_key: "L".into(), tracked: false });
+        assert_eq!(ghost.uuid, utils::normalize_uuid("GHOST"));
         assert_eq!(ghost.ip, "1.1.1.9");
-        assert_eq!(ghost.presence, DevicePresence::Offline);
     }
 
     #[test]
@@ -1034,7 +1105,7 @@ mod tests {
         // the list because its leader happens to be offline or
         // undiscovered.
         let out = resolve_topology(vec![
-            row("F", entry("F1", "Orphan", "1.1.1.2"), follower_of("MISSING")),
+            row("F", "F1", "Orphan", "1.1.1.2", follower_of("MISSING")),
         ]);
         assert_eq!(shape(&out), vec![("Orphan".into(), "standalone")]);
     }
@@ -1045,8 +1116,8 @@ mod tests {
         // absorbing it under a device that reports no members would produce
         // a header with nothing under it.
         let out = resolve_topology(vec![
-            row("A", entry("AAA", "Alpha", "1.1.1.1"), group::GroupState::default()),
-            row("B", entry("BBB", "Bravo", "1.1.1.2"), follower_of("AAA")),
+            row("A", "AAA", "Alpha", "1.1.1.1", group::GroupState::default()),
+            row("B", "BBB", "Bravo", "1.1.1.2", follower_of("AAA")),
         ]);
         assert_eq!(shape(&out), vec![
             ("Alpha".into(), "standalone"),
@@ -1062,9 +1133,9 @@ mod tests {
         // pins that end-to-end, not a re-normalization inside
         // `resolve_topology`.
         let out = resolve_topology(vec![
-            row("L", entry("FF98F7F4075B", "Lead", "1.1.1.1"),
+            row("L", "FF98F7F4075B", "Lead", "1.1.1.1",
                 leader_of(vec![member("uuid:ff98-0002", "Follower", "1.1.1.2")])),
-            row("F", entry("uuid:FF98-0002", "Follower", "1.1.1.2"),
+            row("F", "uuid:FF98-0002", "Follower", "1.1.1.2",
                 follower_of("uuid:ff98f7f4-075b")),
         ]);
         assert_eq!(shape(&out), vec![
@@ -1072,7 +1143,7 @@ mod tests {
             ("Lead".into(),     "member"),
             ("Follower".into(), "member"),
         ]);
-        assert!(matches!(out[2].group_role, EntryGroupRole::Member { tracked: true, .. }));
+        assert!(matches!(out[2].role, EntryGroupRole::Member { tracked: true, .. }));
     }
 
     #[test]
@@ -1080,11 +1151,11 @@ mod tests {
         // A group sorts under its *group* name, not the leader's device
         // name, so the list reads in the order it appears.
         let out = resolve_topology(vec![
-            row("Z", entry("ZZZ", "Zulu", "1.1.1.3"), group::GroupState::default()),
-            row("L", entry("LEAD", "Mike", "1.1.1.1"),
+            row("Z", "ZZZ", "Zulu", "1.1.1.3", group::GroupState::default()),
+            row("L", "LEAD", "Mike", "1.1.1.1",
                 leader_of(vec![member("F1", "Foxtrot", "1.1.1.2")])),
-            row("A", entry("AAA", "Alpha", "1.1.1.4"), group::GroupState::default()),
-            row("F", entry("F1", "Foxtrot", "1.1.1.2"), follower_of("LEAD")),
+            row("A", "AAA", "Alpha", "1.1.1.4", group::GroupState::default()),
+            row("F", "F1", "Foxtrot", "1.1.1.2", follower_of("LEAD")),
         ]);
         assert_eq!(shape(&out), vec![
             ("Alpha".into(),    "standalone"),
