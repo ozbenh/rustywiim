@@ -134,7 +134,8 @@ glib::wrapper! {
 /// The subset of a row's widgets `song-info-changed` needs to update in
 /// place — keyed by uuid, rebuilt (not incrementally
 /// patched) whenever `rebuild_list()` runs. Only present for rows built
-/// while `entry.song_info_enabled` was true (see `build_row()`).
+/// while `manager.device_state_for(&key)` was `Some` (see
+/// `build_device_content()`).
 /// A member line's volume controls. Kept apart from `RowWidgets` because a
 /// leader occupies two rows — a group header *and* a member line — so one
 /// map keyed by device cannot hold both, and because a member line has no
@@ -172,23 +173,27 @@ struct RowWidgets {
 
 /// "Title · Artist" (round-dot separator, same as the mini window's
 /// artist/album line) when now-playing content is available; falls back
-/// to the model name otherwise — including while idle, where `np.title` is
+/// to the model name otherwise — including while idle, where `title` is
 /// a real placeholder ("No music selected") rather than empty, so `is_idle`
 /// (not `title`'s content) is what gates the fallback here. Shared by
-/// `build_row()` (initial render) and the `song-info-changed` handler
-/// (in-place update).
-fn subtitle_text_for(entry: &ManagedEntry) -> String {
-    let base = match &entry.now_playing {
-        Some(np) if np.is_idle => entry.model.clone(),
-        Some(np) if !np.title.is_empty() && !np.artist.is_empty() => format!("{} \u{00b7} {}", np.title, np.artist),
-        Some(np) if !np.title.is_empty()  => np.title.clone(),
-        Some(np) if !np.artist.is_empty() => np.artist.clone(),
+/// `build_device_content()` (initial render) and the `song-info-changed`
+/// handler (in-place update).
+///
+/// `ds` is `None` for a row with no live `DeviceState`; content is also
+/// skipped for a device that isn't `Active`, which is what makes an
+/// offline row fall back to its model name rather than showing whatever
+/// was playing when it was last reachable.
+fn subtitle_text_for(entry: &ManagedEntry, ds: Option<&DeviceState>) -> String {
+    let ps = ds
+        .filter(|_| entry.presence == DevicePresence::Active)
+        .map(|d| d.playback_state());
+    let base = match &ps {
+        Some(p) if p.is_idle => entry.model.clone(),
+        Some(p) if !p.title.is_empty() && !p.artist.is_empty() => format!("{} \u{00b7} {}", p.title, p.artist),
+        Some(p) if !p.title.is_empty()  => p.title.to_string(),
+        Some(p) if !p.artist.is_empty() => p.artist.to_string(),
         _ => entry.model.clone(),
     };
-    // `now_playing` is only ever populated for an `Active` device (see
-    // `build_managed_entry()`), so `base` here is always `entry.model` in
-    // practice — but this stays a presence check, not an emptiness check,
-    // so it keeps meaning "offline" if that invariant ever changes.
     if entry.presence == DevicePresence::Offline {
         if base.is_empty() { "Offline".to_string() } else { format!("{base} (offline)") }
     } else {
@@ -196,32 +201,35 @@ fn subtitle_text_for(entry: &ManagedEntry) -> String {
     }
 }
 
-/// Applies `entry.now_playing` to an existing `FlipCover` — real art when
-/// available, the input/mode icon otherwise, cleared when there's no
-/// now-playing content at all. Shared by `build_row()` (initial render,
-/// where it never flips — a freshly constructed `FlipCover` has no
-/// "previous real art" to flip from) and the `song-info-changed` handler
-/// (in-place update on a persistent widget, where a real track-to-track
-/// change *does* flip — see `flip_cover.rs`'s own `set_content()`).
-fn apply_now_playing(flip: &FlipCover, icons: &IconSet, entry: &ManagedEntry) {
-    match &entry.now_playing {
-        Some(np) => {
-            let tex = np.artwork.as_ref().and_then(|bytes| {
-                let gbytes = glib::Bytes::from(bytes.as_ref().as_slice());
-                gtk::gdk::Texture::from_bytes(&gbytes).ok()
-            });
-            // Keys must vary with the actual content (matching
-            // `ui/playback.rs`'s `update_artwork()`), never a constant
-            // per-device value like `entry.uuid` — `FlipCover` treats a
-            // repeated key as "nothing changed" and no-ops, which on this
-            // persistent-per-row widget would silently drop every update
-            // after the first.
-            match &tex {
-                Some(t) => flip.set_art(Some(t), np.art_url.as_deref().unwrap_or("")),
-                None    => flip.set_icon(icons.source_paintable(&np.icon_key), 32.0, &format!("icon:{}", np.icon_key)),
-            }
+/// Applies the row's current artwork to an existing `FlipCover` — real
+/// art when available, the input/mode icon otherwise, cleared when there
+/// is no live content at all (no `DeviceState`, or not `Active`). Shared
+/// by `build_device_content()` (initial render, where it never flips — a
+/// freshly constructed `FlipCover` has no "previous real art" to flip
+/// from) and the `song-info-changed` handler (in-place update on a
+/// persistent widget, where a real track-to-track change *does* flip —
+/// see `flip_cover.rs`'s own `set_content()`).
+fn apply_artwork(flip: &FlipCover, icons: &IconSet, entry: &ManagedEntry, ds: Option<&DeviceState>) {
+    let Some(ds) = ds.filter(|_| entry.presence == DevicePresence::Active) else {
+        flip.clear();
+        return;
+    };
+    let ps = ds.playback_state();
+    let tex = ps.artwork.as_ref().and_then(|bytes| {
+        let gbytes = glib::Bytes::from(bytes.as_ref().as_slice());
+        gtk::gdk::Texture::from_bytes(&gbytes).ok()
+    });
+    // Keys must vary with the actual content (matching the full playback
+    // view's own `update_artwork()`), never a constant per-device
+    // value like `entry.uuid` — `FlipCover` treats a repeated key as
+    // "nothing changed" and no-ops, which on this persistent-per-row
+    // widget would silently drop every update after the first.
+    match &tex {
+        Some(t) => flip.set_art(Some(t), ps.art_url.as_deref().unwrap_or("")),
+        None => {
+            let icon_key = ds.input_icon_key();
+            flip.set_icon(icons.source_paintable(&icon_key), 32.0, &format!("icon:{icon_key}"));
         }
-        None => flip.clear(),
     }
 }
 
@@ -443,17 +451,18 @@ impl DeviceListView {
             self.apply_group_levels_for_member(mgr, key);
             self.refresh_relay_member_lines(mgr, key);
         }
+        let ds = mgr.device_state_for(key);
         let widgets = imp.row_widgets.borrow();
         let Some(rw) = widgets.get(key) else { return };
         if mask & (PC::TITLE | PC::ARTIST) != 0 {
-            rw.subtitle.set_text(&subtitle_text_for(&entry));
+            rw.subtitle.set_text(&subtitle_text_for(&entry, ds.as_ref()));
         }
         if mask & PC::ARTWORK != 0 {
-            apply_now_playing(&rw.flip, imp.icons.get().unwrap(), &entry);
+            apply_artwork(&rw.flip, imp.icons.get().unwrap(), &entry, ds.as_ref());
         }
         if mask & PC::VOLUME != 0 {
-            if let Some(ds) = mgr.device_state_for(key) {
-                sync_devlist_vol_display(rw, &ds);
+            if let Some(ds) = &ds {
+                sync_devlist_vol_display(rw, ds);
             }
         }
     }
@@ -589,8 +598,10 @@ impl DeviceListView {
         // Line the member names up with the group's own name rather than
         // with its artwork, so the block reads as one indented list. The
         // group content's name starts past its artwork slot, which is only
-        // present when song info is on: row margin + art width + spacing.
-        let indent = if header.song_info_enabled { 12 + 32 + 12 } else { 12 };
+        // present when this row has a live `DeviceState`: row margin + art
+        // width + spacing. Must stay in step with `build_device_content()`'s
+        // own `flip` gate below.
+        let indent = if manager.device_state_for(&header.uuid).is_some() { 12 + 32 + 12 } else { 12 };
 
         let vbox = gtk::Box::builder().orientation(Orientation::Vertical).build();
         vbox.append(&self.build_group_header_content(header, manager));
@@ -793,6 +804,11 @@ impl DeviceListView {
         let icons = imp.icons.get().unwrap();
         let key = entry.uuid.clone();
 
+        // One lookup for the whole function: it decides whether this row
+        // gets an artwork slot and a volume control at all, and it is the
+        // source of the row's title/artist/artwork.
+        let ds = manager.device_state_for(&key);
+
         let hbox = gtk::Box::builder()
             .orientation(Orientation::Horizontal)
             .spacing(12)
@@ -801,21 +817,21 @@ impl DeviceListView {
             .build();
 
         // Artwork/icon slot — reserved at a fixed size (`.devlist-art`'s
-        // CSS min-width/min-height) whenever song-info display is on
-        // globally, regardless of whether *this* device currently has
+        // CSS min-width/min-height) whenever this row has a live
+        // `DeviceState`, regardless of whether *this* device currently has
         // anything to show there, so the row's right-hand side (volume
         // control, trashcan button) never shifts as devices update. Same
         // FlipCover widget (flip/crossfade between real art and the
         // fallback icon) the main and mini windows use, not a separate
         // plain-image path.
-        let flip = entry.song_info_enabled.then(|| {
+        let flip = ds.is_some().then(|| {
             let flip = FlipCover::new();
             flip.set_hexpand(false);
             flip.set_vexpand(false);
             flip.set_valign(gtk::Align::Center);
             flip.add_css_class("devlist-art");
             flip.set_overflow(gtk::Overflow::Hidden);
-            apply_now_playing(&flip, icons, entry);
+            apply_artwork(&flip, icons, entry, ds.as_ref());
             hbox.append(&flip);
             flip
         });
@@ -842,7 +858,7 @@ impl DeviceListView {
         // markup (`subtitle` interprets markup, which broke on a literal
         // "&" in a device or track name — moot here since ScrollFadeLabel
         // never parses its text as markup at all).
-        let subtitle = ScrollFadeLabel::new(&subtitle_text_for(entry));
+        let subtitle = ScrollFadeLabel::new(&subtitle_text_for(entry, ds.as_ref()));
         subtitle.set_halign(gtk::Align::Start);
         subtitle.set_hexpand(true);
         subtitle.add_label_css_class("dim-label");
@@ -858,9 +874,9 @@ impl DeviceListView {
 
         // Volume button + popover slider + mute, same widget shape as the
         // mini window's own. Reserved alongside the artwork slot (same
-        // `song_info_enabled` gate — volume data is only kept fresh while
-        // Simple-mode's fuller poll is active, same as title/artist), and
-        // hidden outright rather than merely greyed out while the device
+        // "has a live `DeviceState`" gate — volume data is only kept fresh
+        // while Simple-mode's fuller poll is active, same as title/artist),
+        // and hidden outright rather than merely greyed out while the device
         // isn't `Active` — an offline device has no live level to show, so
         // a stale/zeroed reading is worse than no control at all; a
         // presence flip already rebuilds the whole row (see
@@ -870,7 +886,7 @@ impl DeviceListView {
         // click-to-activate gesture sees it, same as the trashcan button
         // already relies on (never special-cased, just how GTK widgets
         // nest).
-        let vol_widgets = (entry.song_info_enabled && entry.presence == DevicePresence::Active).then(|| {
+        let vol_widgets = (ds.is_some() && entry.presence == DevicePresence::Active).then(|| {
             let (vol_btn, vol_icon_img, vol_label, vol_scale, mute_btn, vol_popover) = build_devlist_vol_popover();
             vol_btn.connect_clicked(clone!(#[weak] vol_popover, move |_| {
                 if vol_popover.is_visible() { vol_popover.popdown(); } else { vol_popover.popup(); }
@@ -882,7 +898,7 @@ impl DeviceListView {
         if let (Some(flip), Some((vol_icon_img, vol_label, vol_scale, mute_btn, vol_popover))) = (flip, vol_widgets) {
             let vol_drag_timer: Rc<RefCell<Option<glib::SourceId>>> = Rc::new(RefCell::new(None));
 
-            if let Some(ds) = manager.device_state_for(&key) {
+            if let Some(ds) = &ds {
                 let rw_for_sync = RowWidgets {
                     flip: flip.clone(), subtitle: subtitle.clone(),
                     vol_icon_img: vol_icon_img.clone(), vol_label: vol_label.clone(),
@@ -890,7 +906,7 @@ impl DeviceListView {
                     vol_popover: vol_popover.clone(),
                     vol_drag_timer: vol_drag_timer.clone(),
                 };
-                sync_devlist_vol_display(&rw_for_sync, &ds);
+                sync_devlist_vol_display(&rw_for_sync, ds);
 
                 mute_btn.connect_clicked(clone!(#[strong] ds, move |_| {
                     // Group-aware: on a group's own row this mutes every

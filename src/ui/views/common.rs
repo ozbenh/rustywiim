@@ -1,7 +1,6 @@
-//! Formatting/update helpers shared by the view objects (and, until the
-//! Phase-2 view split completes, by `ui/playback.rs`'s window-driven
-//! update paths) — one home so the full and mini playback displays can't
-//! drift on how the same field is rendered.
+//! Formatting/update helpers shared by the view objects — one home so the
+//! full and mini playback displays can't drift on how the same field is
+//! rendered.
 
 use adw::prelude::*;
 

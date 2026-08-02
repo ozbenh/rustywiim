@@ -10,7 +10,7 @@
 ///   per-device via Settings' Advanced panel.
 /// - The `decode_*_http` functions: LinkPlay wire format -> canonical fields.
 ///   Presentation (turning canonical values into display strings/icons)
-///   stays in `ui/playback.rs`.
+///   stays in the `ui/views/` playback views, never here.
 
 use std::collections::HashSet;
 use std::rc::Rc;

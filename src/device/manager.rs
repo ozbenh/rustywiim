@@ -71,7 +71,6 @@ use glib::prelude::*;
 use glib::subclass::prelude::*;
 
 use crate::device::api::TlsMode;
-use crate::device::capabilities;
 use crate::device::discovery::{DEBUG_DISCOVERY, DiscoveryService};
 use crate::device::group;
 use crate::device::playback::AccessMethod;
@@ -132,22 +131,6 @@ pub struct ManagedEntry {
     pub ip:       String,
     pub tls_mode: TlsMode,
     pub presence: DevicePresence,
-    /// Mirrors song-info display's on/off state at the moment `entries()`
-    /// was called — separate from `now_playing` below so `ui/`'s row
-    /// rendering can reserve its artwork/icon slot (fixed size, so the
-    /// row's right-hand side never shifts as devices update) even when
-    /// this particular device has nothing to show there yet (not
-    /// `Active`, e.g.).
-    pub song_info_enabled: bool,
-    /// Live now-playing snapshot for row rendering — unlike the identity
-    /// fields above (cached on `DeviceRecord.entry`, refreshed only on
-    /// `device-changed`), this is computed fresh every `entries()` call
-    /// straight from the tracked `DeviceState::playback_state()`, since
-    /// title/artist change far more often than identity does. `None`
-    /// unless song-info display is on and the device is `Active` — *not*
-    /// further gated on actually having a track loaded, so an idle-but-
-    /// connected device still gets its input/mode icon rather than nothing.
-    pub now_playing: Option<NowPlaying>,
     /// Where this entry sits in the multiroom topology, and therefore how
     /// it should be rendered. Set by `entries()`, which is the only place
     /// with a view of every device at once — a single `DeviceState` knows
@@ -182,33 +165,6 @@ pub enum EntryGroupRole {
         /// reported address cannot be routed to from this host.
         tracked: bool,
     },
-}
-
-#[derive(Debug, Clone)]
-pub struct NowPlaying {
-    pub title:    String,
-    /// Mirrors `PlaybackState::is_idle` — `title` is a real placeholder
-    /// ("No music selected") rather than empty when idle, so row rendering
-    /// (`subtitle_text_for()`) needs this to still prefer the device's
-    /// model name over that placeholder, matching its own established
-    /// "idle-but-connected still gets something sensible" behavior.
-    pub is_idle:  bool,
-    pub artist:   String,
-    pub artwork:  Option<std::rc::Rc<Vec<u8>>>,
-    /// Doubles as `ui/`'s `FlipCover::set_art()` de-dupe key (same as the
-    /// main window's own `update_artwork()` uses) — never a constant-per-
-    /// device value (e.g. uuid), or every update after the first becomes a
-    /// silent no-op once a row's `FlipCover` is a persistent widget rather
-    /// than rebuilt fresh each time.
-    pub art_url:  Option<String>,
-    /// Icon key for the row's fallback icon when `artwork` is `None` — the
-    /// same `icons::IconSet::source_paintable()` lookup key the main
-    /// window's own no-art fallback uses, computed the same way
-    /// (`mode_to_input_source()` + `icon_canon_for_input()`) so a device's
-    /// picker row shows the same icon its own window would. `ui/` owns
-    /// actually resolving this into a paintable — this module just
-    /// supplies the key.
-    pub icon_key: String,
 }
 
 /// Config-derived seed for one uuid, handed in once via `load_seed()` —
@@ -711,9 +667,7 @@ impl DeviceManager {
     /// implicitly keyed by for row-widget lookup purposes.
     pub fn entry_for(&self, key: &str) -> Option<ManagedEntry> {
         let inner = self.imp().inner.borrow();
-        let r = inner.devices.get(key)?;
-        let ds = self.get_state(key)?;
-        Some(build_managed_entry(r, &ds))
+        Some(inner.devices.get(key)?.entry.clone())
     }
 
     /// The tracked `DeviceState` for `key` — cheap to clone (GObject
@@ -971,8 +925,6 @@ impl DeviceManager {
             uuid: uuid.to_string(), name, model, project, firmware,
             ip: ip.to_string(), tls_mode: tls,
             presence: DevicePresence::compute(ds.connection_state()),
-            song_info_enabled: true,
-            now_playing: None,
             // Resolved per-render by `entries()`, which is the only place
             // with a view of every device at once; the cached record never
             // carries a meaningful value.
@@ -1098,8 +1050,8 @@ impl DeviceManager {
 /// One tracked device, as topology resolution sees it — identity, address,
 /// display name and group role, and nothing else. Deliberately not
 /// `ManagedEntry` (a full render snapshot dragging model/project/firmware/
-/// tls_mode/presence/song_info_enabled/now_playing along for no reason the
-/// algorithm below needs) and not `DeviceState` (a GObject the unit tests
+/// tls_mode/presence along for no reason the algorithm below needs) and not
+/// `DeviceState` (a GObject the unit tests
 /// would have to construct one of just to exercise pure data-shuffling).
 /// `entries()` builds these from `Inner.devices`; the tests build them by
 /// hand via `row()`.
@@ -1232,14 +1184,11 @@ fn resolve_topology(rows: Vec<TopoInput>) -> Vec<TopoRow> {
 /// `ManagedEntry`. `devices` is `Inner.devices`; called once per row from
 /// `entries()`.
 ///
-/// A tracked row (`devices` has `row.key`) gets its real identity/presence/
-/// now-playing content from `build_managed_entry()`, with `name`/`group_role`
-/// overridden from the resolved row (a group header's name is the group's,
-/// not the leader's own device name). A **member** row additionally drops
-/// song info — member lines are compact by design (no artwork, no song),
-/// regardless of what the underlying device would otherwise show — which is
-/// why this is a plain function of `role`, not something `resolve_topology()`
-/// itself needs to carry.
+/// A tracked row (`devices` has `row.key`) gets its real identity/presence
+/// from the cached record, with `name`/`group_role` overridden from the
+/// resolved row (a group header's name is the group's, not the leader's own
+/// device name) — now-playing content itself is read directly off the
+/// `DeviceState` by `ui/` at render time, not carried on this struct at all.
 ///
 /// An **untracked** member row (`devices` has no entry for `row.key`, or —
 /// shouldn't happen, see `entries()`'s own comment — its `DeviceState` has
@@ -1251,54 +1200,20 @@ fn build_entry_for_row(
     manager: &DeviceManager,
     row: TopoRow,
 ) -> ManagedEntry {
-    let is_member = matches!(row.role, EntryGroupRole::Member { .. });
     let tracked = devices.get(&row.key).zip(manager.get_state(&row.key));
     match tracked {
-        Some((rec, ds)) => {
-            let mut entry = build_managed_entry(rec, &ds);
+        Some((rec, _ds)) => {
+            let mut entry = rec.entry.clone();
             entry.name = row.name;
             entry.group_role = row.role;
-            if is_member {
-                entry.song_info_enabled = false;
-                entry.now_playing = None;
-            }
             entry
         }
         None => ManagedEntry {
             uuid: row.uuid, name: row.name, model: String::new(),
             project: String::new(), firmware: String::new(), ip: row.ip,
             tls_mode: TlsMode::HttpsWiiM, presence: DevicePresence::Offline,
-            song_info_enabled: false, now_playing: None,
             group_role: row.role,
         },
-    }
-}
-
-/// Shared by `entries()`/`entry_for()` — one record's cached identity
-/// fields plus a freshly-computed `now_playing` snapshot, gated on
-/// the record's own presence.
-fn build_managed_entry(r: &DeviceRecord, ds: &DeviceState) -> ManagedEntry {
-    let mut entry = r.entry.clone();
-    entry.song_info_enabled = true;
-    entry.now_playing = (entry.presence == DevicePresence::Active)
-        .then(|| compute_now_playing(ds));
-    entry
-}
-
-fn compute_now_playing(ds: &DeviceState) -> NowPlaying {
-    let ps = ds.playback_state();
-    let source_id = capabilities::mode_to_input_source(ds.current_mode());
-    let icon_key = match ds.capabilities() {
-        Some(caps) => capabilities::icon_canon_for_input(source_id, caps.device_id).to_string(),
-        None       => source_id.to_string(),
-    };
-    NowPlaying {
-        title:   ps.title.to_string(),
-        is_idle: ps.is_idle,
-        artist:  ps.artist.to_string(),
-        artwork: ps.artwork.clone(),
-        art_url: ps.art_url.as_deref().map(|s| s.to_string()),
-        icon_key,
     }
 }
 
