@@ -97,7 +97,29 @@ impl DiscoveryWindow {
         // `DeviceListView`'s job now; this window just embeds it and
         // decides what "a row was selected" means (open a device window).
         let device_list = DeviceListView::new(manager, &icons);
-        device_list.connect_device_selected(clone!(#[strong] manager, #[strong] open_device, move |_, key| {
+
+        // When this window is behind another (typically a device window)
+        // and the user clicks a row, the window manager raises/focuses
+        // *this* window as a side effect of that very click before GTK
+        // delivers the row-activation — so without this guard, one click
+        // both brought the picker forward *and* raised the clicked row's
+        // device window on top of it again, defeating the click entirely.
+        // Track when this window last became active; a row-activation
+        // arriving within `REFOCUS_GRACE` of that is treated as "just
+        // regained focus from this click" and swallowed (bringing the
+        // picker forward is enough) — only a second, deliberate click once
+        // the picker is already the active window goes through.
+        const REFOCUS_GRACE: std::time::Duration = std::time::Duration::from_millis(300);
+        let last_activated: Rc<std::cell::Cell<Option<std::time::Instant>>> = Rc::new(std::cell::Cell::new(None));
+        window.connect_notify_local(Some("is-active"), clone!(#[strong] last_activated, move |win, _| {
+            if win.is_active() {
+                last_activated.set(Some(std::time::Instant::now()));
+            }
+        }));
+        device_list.connect_device_selected(clone!(#[strong] manager, #[strong] open_device, #[strong] last_activated, move |_, key| {
+            if last_activated.get().is_some_and(|t| t.elapsed() < REFOCUS_GRACE) {
+                return;
+            }
             if let Some(entry) = manager.entry_for(key) {
                 open_device(&entry);
             }
