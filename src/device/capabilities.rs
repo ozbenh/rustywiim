@@ -1381,8 +1381,8 @@ pub enum EqGeneration {
 pub enum EqTransport {
     Http(EqGeneration),
     /// Reached over the TCP-UART pass-through (`device::tcpuart`,
-    /// `UART-PROTOCOL.md`) — confirmed the only path to Audio Pro C5's
-    /// tone control. Not implemented — this variant exists so the
+    /// confirmed the only path to Audio Pro C5's tone control.
+    /// Not implemented — this variant exists so the
     /// capability model has a place to grow into. Vendor-specific wire
     /// encoding underneath (Arylic's documented scheme and Audio Pro's
     /// captured scheme are already known to differ) is a

@@ -1537,9 +1537,9 @@ mod tests {
         assert_eq!(parsed.peq.filters, vec!["OFF", "LS", "PK", "HS", "LP", "HP"]);
     }
 
-    /// `pywiim`'s own documented example (`WIIM_DISCOVERED_APIS.md`, a
-    /// different WiiM model — no capture file for this one exists, hence
-    /// hand-transcribed rather than loaded from a fixture): a top-level
+    /// `pywiim`'s own documented example, a different WiiM model —
+    /// no capture file for this one exists, hence hand-transcribed
+    /// rather than loaded from a fixture): a top-level
     /// `RC` sub-block is present, but `EQBlock.Blocks` contains **only**
     /// `{"id":1,"type":"EQ"}` — this is exactly the "top-level presence
     /// isn't the same signal as `Blocks`" case `resolve_eq_profile()`

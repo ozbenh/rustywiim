@@ -19,9 +19,12 @@
 //! or current-track highlight actually differs from last time; rows are
 //! only added/removed at the end when the entry count itself changes. A
 //! virtualized `gtk::ListView` would scale better still for a very long
-//! queue, but adds real complexity (and a documented CLAUDE.md GTK gotcha
-//! around `SignalListItemFactory`'s `setup`/`bind` split) that isn't worth
-//! it until a real queue is seen large enough to matter.
+//! queue, but adds real complexity that isn't worth it until a real queue
+//! is seen large enough to matter — including `SignalListItemFactory`'s
+//! `setup`/`bind` split, where `bind` fires repeatedly over a `ListItem`'s
+//! life, so child widgets must be built once in `setup` and only mutated
+//! in `bind` (constructing fresh ones per `bind` races GTK's own hover
+//! tracking on the discarded widget).
 //!
 //! Holds a `QueueWatchGuard` for as long as it's active — nothing polls
 //! `BrowseQueue` at all while no `PlayQueueView` anywhere is active (see

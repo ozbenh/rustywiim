@@ -1693,11 +1693,13 @@ impl KioskWindow {
     pub(crate) fn present(&self) {
         // fullscreen() before present(), not after: requesting it before
         // the window is first mapped lets it be negotiated as part of the
-        // initial surface configure, avoiding the same class of GTK/
-        // Wayland async-property-timing race already hit once before in
-        // this codebase (see CLAUDE.md's `begin_resize()`/`resizable(true)`
-        // gotcha) — calling it after present() risked the window briefly
-        // (or indefinitely) staying at its small unfullscreened default size.
+        // initial surface configure. Calling it after present() risked the
+        // window briefly (or indefinitely) staying at its small
+        // unfullscreened default size — the same class of race this
+        // codebase hit once before, where a window property set immediately
+        // before an action is applied to the compositor asynchronously (on
+        // the next surface commit) rather than synchronously, so the
+        // compositor acts on the stale value.
         self.window.fullscreen();
         self.window.present();
     }
