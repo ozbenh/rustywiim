@@ -581,9 +581,9 @@ impl Config {
     /// once the flag's probe resolves one) — every write for it goes to
     /// `scratch_device` instead, discarded before the next call, and
     /// `self.devices` is never touched on its behalf at all, whether or not
-    /// it already holds a real entry for that uuid.
-    ///
-    /// a new entry: `--connect` pointed at a simulator replaying a capture
+    /// it already holds a real entry for that uuid. Deliberately not scoped
+    /// to just suppressing *creation* of a new entry: `--connect` pointed at
+    /// a simulator replaying a capture
     /// of a device the user also owns for real resolves to that same real
     /// uuid, and letting *any* write through in that case (even just
     /// `last_ip`) would corrupt the real entry with the simulator's address

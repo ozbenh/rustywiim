@@ -1,6 +1,6 @@
 //! # DeviceListView
 //!
-//! Renders `device::discovery_manager::DiscoveryManager`'s tracked-device
+//! Renders `device::manager::DeviceManager`'s tracked-device
 //! list: artwork/icon, title/subtitle, a compact volume popover, and an
 //! offline-only "forget this device" trashcan per row — the exact same
 //! widget shapes `DiscoveryWindow` always built, just relocated here so more
@@ -29,13 +29,13 @@ pub mod imp {
     use gtk::glib;
     use glib::subclass::Signal;
 
-    use crate::device::discovery_manager::{DiscoveryManager, ManagedEntry};
+    use crate::device::manager::{DeviceManager, ManagedEntry};
     use crate::ui::icons::IconSet;
     use super::RowWidgets;
 
     #[derive(Default)]
     pub struct DeviceListView {
-        pub(super) manager:         OnceCell<DiscoveryManager>,
+        pub(super) manager:         OnceCell<DeviceManager>,
         pub(super) icons:           OnceCell<Rc<IconSet>>,
         pub(super) list_box:        OnceCell<gtk::ListBox>,
         pub(super) current_entries: RefCell<Vec<ManagedEntry>>,
@@ -63,7 +63,7 @@ pub mod imp {
                     // Host request: a row was clicked/activated. Carries the
                     // row's uuid rather than a pre-built DeviceSpec/
                     // ManagedEntry — GObject signal params must be
-                    // glib::Value-able, and this mirrors DiscoveryManager's
+                    // glib::Value-able, and this mirrors DeviceManager's
                     // own song-info-changed convention (host resolves the
                     // key back via manager.entry_for()).
                     Signal::builder("device-selected")
@@ -119,7 +119,7 @@ use adw::subclass::prelude::*;
 use glib::clone;
 use gtk::{glib, Orientation};
 
-use crate::device::discovery_manager::{DevicePresence, DiscoveryManager, EntryGroupRole, ManagedEntry};
+use crate::device::manager::{DeviceManager, DevicePresence, EntryGroupRole, ManagedEntry};
 use crate::device::state::DeviceState;
 use crate::ui::flip_cover::FlipCover;
 use crate::ui::icons::IconSet;
@@ -325,7 +325,7 @@ fn sync_devlist_vol_display(rw: &RowWidgets, ds: &DeviceState) {
 }
 
 impl DeviceListView {
-    pub(crate) fn new(manager: &DiscoveryManager, icons: &Rc<IconSet>) -> Self {
+    pub(crate) fn new(manager: &DeviceManager, icons: &Rc<IconSet>) -> Self {
         let obj: Self = glib::Object::new();
         obj.build(manager, icons);
         obj
@@ -358,7 +358,7 @@ impl DeviceListView {
         })
     }
 
-    fn build(&self, manager: &DiscoveryManager, icons: &Rc<IconSet>) {
+    fn build(&self, manager: &DeviceManager, icons: &Rc<IconSet>) {
         let imp = self.imp();
         imp.manager.set(manager.clone()).unwrap();
         let _ = imp.icons.set(Rc::clone(icons));
@@ -380,7 +380,7 @@ impl DeviceListView {
         self.rebuild_list();
 
         // List rebuild: structural changes only (device added/removed/
-        // renamed/moved, presence flips) — see DiscoveryManager's
+        // renamed/moved, presence flips) — see DeviceManager's
         // `signals()`.
         let h_list = manager.connect_list_changed({
             let weak = self.downgrade();
@@ -422,7 +422,7 @@ impl DeviceListView {
         });
     }
 
-    fn apply_song_info(&self, mgr: &DiscoveryManager, key: &str, mask: u32) {
+    fn apply_song_info(&self, mgr: &DeviceManager, key: &str, mask: u32) {
         use crate::device::state::playback_changed as PC;
         let imp = self.imp();
         let Some(entry) = mgr.entry_for(key) else { return };
@@ -448,7 +448,7 @@ impl DeviceListView {
 
     /// A device can occupy a member line as well as (or instead of) a
     /// device row, so its volume has to be synced in both places.
-    fn apply_member_volume(&self, mgr: &DiscoveryManager, key: &str) {
+    fn apply_member_volume(&self, mgr: &DeviceManager, key: &str) {
         let imp = self.imp();
         let widgets = imp.member_widgets.borrow();
         let Some(mw) = widgets.get(key) else { return };
@@ -463,7 +463,7 @@ impl DeviceListView {
     /// should read — but the change arrives keyed by the member, and the
     /// group row is keyed by its leader. Without this the group row only
     /// updates when the leader itself happens to change.
-    fn apply_group_levels_for_member(&self, mgr: &DiscoveryManager, key: &str) {
+    fn apply_group_levels_for_member(&self, mgr: &DeviceManager, key: &str) {
         let imp = self.imp();
         let leader_key = imp.current_entries.borrow().iter()
             .find(|e| e.uuid == key)
@@ -489,7 +489,7 @@ impl DeviceListView {
     /// this one. So unlike `apply_group_levels_for_member()` (member →
     /// header), this direction has to walk from the header back out to its
     /// member lines instead of relying on a per-member signal.
-    fn refresh_relay_member_lines(&self, mgr: &DiscoveryManager, leader_key: &str) {
+    fn refresh_relay_member_lines(&self, mgr: &DeviceManager, leader_key: &str) {
         let imp = self.imp();
         let Some(leader_ds) = mgr.device_state_for(leader_key) else { return };
         let member_uuids: Vec<String> = imp.current_entries.borrow().iter()
@@ -572,7 +572,7 @@ impl DeviceListView {
     /// one `ListBoxRow` is what makes the boxed list draw a single outline
     /// around the whole group rather than separating every line.
     fn build_group_card(
-        &self, header: &ManagedEntry, members: &[ManagedEntry], manager: &DiscoveryManager,
+        &self, header: &ManagedEntry, members: &[ManagedEntry], manager: &DeviceManager,
     ) -> gtk::ListBoxRow {
         // Line the member names up with the group's own name rather than
         // with its artwork, so the block reads as one indented list. The
@@ -606,7 +606,7 @@ impl DeviceListView {
     /// Returns the content box rather than a row: member lines are packed
     /// inside their group's single row, not appended as siblings.
     fn build_member_content(
-        &self, entry: &ManagedEntry, manager: &DiscoveryManager, indent: i32,
+        &self, entry: &ManagedEntry, manager: &DeviceManager, indent: i32,
     ) -> gtk::Box {
         let imp = self.imp();
         let key = entry.uuid.clone();
@@ -755,11 +755,11 @@ impl DeviceListView {
 
     /// A group's own content: the same treatment a device row gets, minus
     /// the pin button.
-    fn build_group_header_content(&self, entry: &ManagedEntry, manager: &DiscoveryManager) -> gtk::Box {
+    fn build_group_header_content(&self, entry: &ManagedEntry, manager: &DeviceManager) -> gtk::Box {
         self.build_device_content(entry, manager)
     }
 
-    fn build_device_row(&self, entry: &ManagedEntry, manager: &DiscoveryManager) -> gtk::ListBoxRow {
+    fn build_device_row(&self, entry: &ManagedEntry, manager: &DeviceManager) -> gtk::ListBoxRow {
         let hbox = self.build_device_content(entry, manager);
         let status_suffix = match entry.presence {
             DevicePresence::Active  => String::new(),
@@ -776,7 +776,7 @@ impl DeviceListView {
         row
     }
 
-    fn build_device_content(&self, entry: &ManagedEntry, manager: &DiscoveryManager) -> gtk::Box {
+    fn build_device_content(&self, entry: &ManagedEntry, manager: &DeviceManager) -> gtk::Box {
         let imp = self.imp();
         let icons = imp.icons.get().unwrap();
         let key = entry.uuid.clone();

@@ -1,7 +1,6 @@
 pub mod api;
 pub mod capabilities;
 pub mod discovery;
-pub mod discovery_manager;
 pub mod eq;
 pub mod gena;
 pub mod group;

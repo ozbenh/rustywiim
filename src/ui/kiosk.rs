@@ -37,7 +37,7 @@ use glib::clone;
 
 use crate::config;
 use crate::config::InhibitSystemScreensaver;
-use crate::device::discovery_manager::DiscoveryManager;
+use crate::device::manager::DeviceManager;
 use crate::device::playback::PlaybackStatus;
 use crate::device::state::{DeviceState, FullModeGuard};
 use crate::ui::art_background::ArtBackground;
@@ -115,7 +115,7 @@ struct BoundDevice {
 pub(crate) struct KioskWindow {
     window:        adw::ApplicationWindow,
     app:           adw::Application,
-    manager:       DiscoveryManager,
+    manager:       DeviceManager,
     icons:         Rc<IconSet>,
     art_bg:        ArtBackground,
     /// Holds the current `PlaybackView` (real or stub), swapped in place by
@@ -288,7 +288,7 @@ fn group_display_name(ds: &DeviceState, device_name: &str) -> String {
 impl KioskWindow {
     pub(crate) fn new(
         app:                  &adw::Application,
-        manager:              &DiscoveryManager,
+        manager:              &DeviceManager,
         icons:                &Rc<IconSet>,
         exit_kiosk:           Rc<dyn Fn()>,
         open_preferences:     Rc<dyn Fn()>,
@@ -816,7 +816,7 @@ impl KioskWindow {
         (device_btn, preferences_btn, device_settings_btn, sidebar_btn, exit_kiosk_btn)
     }
 
-    /// Resolves `key` (a device uuid — see `DiscoveryManager`)
+    /// Resolves `key` (a device uuid — see `DeviceManager`)
     /// through `manager.device_state_for()`, tears down whatever was
     /// previously shown (dropping its `PlaybackView` and `FullModeGuard`
     /// together — `views/*`'s `dispose()` handles the view's own handler
@@ -861,7 +861,7 @@ impl KioskWindow {
     }
 
     /// Binds directly to an already-constructed `DeviceState`, skipping
-    /// `manager.device_state_for()`'s `DiscoveryManager` lookup entirely —
+    /// `manager.device_state_for()`'s `DeviceManager` lookup entirely —
     /// for `--connect --kiosk` together, where the device comes from
     /// `--connect`'s own direct-connection path (see `DIRECT_CONNECT`'s
     /// doc comment: it deliberately bypasses discovery/SSDP, so there's no
@@ -1161,7 +1161,7 @@ impl KioskWindow {
     /// the next `bind_device()`/`bind_direct()` either way, since both
     /// read `self.layout` fresh). Reuses the same `key`/`ds` `finish_bind()`
     /// already has, rather than going through `bind_device()`'s
-    /// `DiscoveryManager` resolution again — this isn't a device switch.
+    /// `DeviceManager` resolution again — this isn't a device switch.
     pub(crate) fn toggle_layout(self: &Rc<Self>) {
         self.layout.set(match self.layout.get() {
             PlaybackLayout::Classic => PlaybackLayout::WideRight,

@@ -2,8 +2,8 @@
 /// lifecycle/geometry persistence) around one embedded
 /// `views::devlist::DeviceListView`, which owns the actual list rendering.
 /// Owns no tracking state of its own; see
-/// `device::discovery_manager::DiscoveryManager`'s doc comment for the full
-/// backend story (SSDP consumption, presence, config seed-in/report-out).
+/// `device::manager::DeviceManager`'s doc comment for the full backend story
+/// (SSDP consumption, presence, config seed-in/report-out).
 
 use std::rc::Rc;
 
@@ -13,7 +13,7 @@ use gtk::{glib, Orientation};
 
 use crate::config;
 use crate::device::discovery::{DiscoveredDevice, ProbeFailure};
-use crate::device::discovery_manager::{DiscoveryManager, ManagedEntry};
+use crate::device::manager::{DeviceManager, ManagedEntry};
 use crate::device::state::DeviceState;
 use crate::ui::icons::IconSet;
 use super::views::devlist::DeviceListView;
@@ -25,7 +25,7 @@ pub struct DiscoveryWindow {
 impl DiscoveryWindow {
     pub fn new(
         app:                  &adw::Application,
-        manager:              &DiscoveryManager,
+        manager:              &DeviceManager,
         open_device:          Rc<dyn Fn(&ManagedEntry)>,
         enter_kiosk:          Rc<dyn Fn()>,
         open_preferences:     Rc<dyn Fn()>,
@@ -220,7 +220,7 @@ impl DiscoveryWindow {
     /// for the same reason: it's the one path in this codebase that also
     /// gets the on-screen keyboard (`KeyboardType::Numeric` — an IP address
     /// is digits and dots).
-    fn show_add_dialog(manager: &DiscoveryManager, parent: &adw::ApplicationWindow) {
+    fn show_add_dialog(manager: &DeviceManager, parent: &adw::ApplicationWindow) {
         let entry = crate::ui::prompt_entry::PromptEntry::new();
         entry.set_prompt("Enter the IP address of a WiiM device:");
         entry.set_placeholder("192.168.1.x");

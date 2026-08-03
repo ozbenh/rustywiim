@@ -38,8 +38,7 @@ use gtk::gio;
 use crate::device::api::TlsMode;
 use crate::config;
 use crate::device::discovery::DiscoveryService;
-use crate::device::discovery_manager::{DevicePresence, DiscoveryManager, ManagedEntry, SeedEntry};
-use crate::device::manager::DeviceManager;
+use crate::device::manager::{DeviceManager, DevicePresence, ManagedEntry, SeedEntry};
 use crate::device::state::{ConnectionState, DeviceState, DEBUG_STATE};
 
 /// GApplication ID / icon name / GResource base path / `.desktop` basename —
@@ -228,10 +227,12 @@ pub(crate) fn confirm_forget_device(
 /// device that hasn't connected yet this session (or ever) has no
 /// `device_info()` at all, and would otherwise render with no name.
 ///
-/// Part of moving name resolution out of `device::discovery_manager`'s
-/// cached `ManagedEntry` and into `ui/` (NEWGROUP-ITEM9.md step 3) — `ui/` is
-/// the one place that can read both a live `DeviceState` *and* `config`, so
-/// it's the natural owner of "what do we call this device right now."
+/// `ui/` is the one place that can read both a live `DeviceState` *and*
+/// `config`, so it's the natural owner of "what do we call this device right
+/// now" — `device::manager::DeviceManager`'s own `ManagedEntry.name` is
+/// resolved through this rather than reading a cached field, so a device's
+/// display name always reflects what it currently reports, not a stale
+/// snapshot.
 ///
 /// No `display_model_for()` counterpart — unlike the name, `ManagedEntry`'s
 /// `model` field isn't touched by this resolver at all (`entries()` reads it
@@ -246,17 +247,20 @@ pub(crate) fn display_name_for(uuid: &str, ds: Option<&DeviceState>) -> String {
     config::with(|cfg| cfg.device(uuid).name.clone()).unwrap_or_default()
 }
 
-/// Builds the `DiscoveryManager::entries()` display-name resolver bound to
+/// Builds the `DeviceManager::entries()` display-name resolver bound to
 /// `mgr` — every call site below wants the same `display_name_for()`
-/// resolution, just bound to whichever `DiscoveryManager` reference is in
+/// resolution, just bound to whichever `DeviceManager` reference is in
 /// scope there.
-pub(crate) fn name_resolver_for(mgr: &DiscoveryManager) -> impl Fn(&str) -> String + '_ {
+pub(crate) fn name_resolver_for(mgr: &DeviceManager) -> impl Fn(&str) -> String + '_ {
     move |uuid: &str| display_name_for(uuid, mgr.device_state_for(uuid).as_ref())
 }
 
 pub(crate) struct AppState {
     app:            adw::Application,
-    disc_mgr:       DiscoveryManager,
+    /// The one device registry — live `DeviceState`s, the picker-list's
+    /// tracked set, SSDP consumption, presence, config seed-in/report-out —
+    /// see `device::manager::DeviceManager`'s own doc comment for the full
+    /// story.
     device_manager: DeviceManager,
     registry:       RefCell<Vec<DeviceWindow>>,
     /// Exactly one instance process-wide — see `PreferencesWindow`'s own
@@ -294,7 +298,7 @@ impl AppState {
         if DIRECT_CONNECT.get().is_none() {
             disc_svc.start();
         }
-        let device_manager = DeviceManager::new(rt.clone());
+        let device_manager = DeviceManager::new(rt, disc_svc.clone());
 
         // `device_manager` construction is inert (no side effects) —
         // connecting `configure-device` this early, before anything else
@@ -322,16 +326,8 @@ impl AppState {
             ds.set_gena_enabled(gena_enabled);
         });
 
-        // `disc_mgr` now owns the *entire* known-device registry (SSDP
-        // consumption, config-remembered devices, presence — see
-        // `device::discovery_manager`'s module doc comment) — it holds
-        // `device_manager` directly rather than through a hook/callback
-        // pair, since both live in `device/` now.
-        let disc_mgr = DiscoveryManager::new(rt, disc_svc.clone(), device_manager.clone());
-
         Rc::new(Self {
             app:            app.clone(),
-            disc_mgr,
             device_manager,
             registry:       RefCell::new(Vec::new()),
             preferences_win: RefCell::new(None),
@@ -412,7 +408,7 @@ impl AppState {
         }
         dbg_state("preferences: opening new");
         let notify_kiosk_changed = Self::kiosk_notify_fn(self_rc);
-        let pw = settings::PreferencesWindow::new(&self_rc.disc_mgr, notify_kiosk_changed);
+        let pw = settings::PreferencesWindow::new(&self_rc.device_manager, notify_kiosk_changed);
         Self::wire_settings_window_close(self_rc, pw.window_ref(), |state| {
             dbg_state("preferences: closed");
             *state.preferences_win.borrow_mut() = None;
@@ -475,7 +471,7 @@ impl AppState {
             };
             *dw = Some(devlist::DiscoveryWindow::new(
                 &self_rc.app,
-                &self_rc.disc_mgr,
+                &self_rc.device_manager,
                 open_device_fn,
                 enter_kiosk_fn,
                 open_preferences_fn,
@@ -543,7 +539,7 @@ impl AppState {
         if discovery_open || !has_pending_windows {
             Self::show_devices(self_rc);
         }
-        Self::open_windows_pending_in_config(self_rc, self_rc.disc_mgr.entries(&name_resolver_for(&self_rc.disc_mgr)));
+        Self::open_windows_pending_in_config(self_rc, self_rc.device_manager.entries(&name_resolver_for(&self_rc.device_manager)));
     }
 
     /// Create a device window for `spec`, register it, and present it.
@@ -654,10 +650,10 @@ impl AppState {
     /// currently shown there, rather than leaving it displaying a device
     /// that's no longer in the list.
     ///
-    /// `disc_mgr.forget()` alone would only be half the job — the config
+    /// `device_manager.forget()` alone would only be half the job — the config
     /// entry is what would otherwise re-seed this exact device the next
     /// time `load_seed()`/`start()` runs (known-by-default retention — see
-    /// `DiscoveryManager`'s own doc comment), so deleting it is what makes
+    /// `DeviceManager`'s own doc comment), so deleting it is what makes
     /// this removal actually stick.
     fn forget_device(self_rc: &Rc<Self>, uuid: &str) {
         if uuid.is_empty() { return; }
@@ -678,7 +674,7 @@ impl AppState {
             }
         }
 
-        self_rc.disc_mgr.forget(uuid);
+        self_rc.device_manager.forget(uuid);
         config::update(|cfg| { cfg.devices.remove(uuid); });
     }
 
@@ -782,7 +778,7 @@ impl AppState {
         // open last session) — but discovery itself still needs to run
         // (unlike `--connect`'s early return above), since Kiosk mode's own
         // device-list popover needs real tracked devices to show. Entering
-        // Kiosk mode itself happens after `disc_mgr.start()` further down.
+        // Kiosk mode itself happens after `device_manager.start()` further down.
         let start_in_kiosk = START_IN_KIOSK.load(Ordering::Relaxed);
 
         // Show the device list (if it should appear at all) *before*
@@ -793,7 +789,7 @@ impl AppState {
         // but a newly-presented window consistently lands above ones
         // already presented, so ordering these calls is the only lever
         // available. Reading `discovery_open`/`has_pending_windows`
-        // directly from config rather than via `disc_mgr` — neither
+        // directly from config rather than via `device_manager` — neither
         // depends on `start()` having run yet.
         let (discovery_open, has_pending_windows) = config::with(|cfg| (
             cfg.discovery_open,
@@ -810,7 +806,7 @@ impl AppState {
         // Skipped entirely under `--kiosk` — see above.
         if !start_in_kiosk {
             let s = Rc::downgrade(self_rc);
-            self_rc.disc_mgr.connect_initial_load(move |mgr| {
+            self_rc.device_manager.connect_initial_load(move |mgr| {
                 let Some(self_rc) = s.upgrade() else { return };
                 Self::open_windows_pending_in_config(&self_rc, mgr.entries(&name_resolver_for(mgr)));
             });
@@ -820,7 +816,7 @@ impl AppState {
         // rule `device::manager::DeviceManager` already follows). Must
         // happen before `start()`, which eagerly tracks every entry in it
         // that already has an address (known-by-default — see
-        // `DiscoveryManager`'s own doc comment).
+        // `DeviceManager`'s own doc comment).
         let seed: Vec<SeedEntry> = config::with(|cfg| {
             cfg.devices.iter().map(|(uuid, d)| SeedEntry {
                 uuid:        uuid.clone(),
@@ -833,9 +829,9 @@ impl AppState {
                 window_open: d.window_open,
             }).collect()
         });
-        self_rc.disc_mgr.load_seed(seed);
+        self_rc.device_manager.load_seed(seed);
 
-        // `disc_mgr` can't persist to config itself either — this is the
+        // `device_manager` can't persist to config itself either — this is the
         // "report out" half of the same rule. Fires unconditionally on
         // every `list-changed` (identity update, presence flip, ...)
         // rather than being selectively triggered — cheap and safe since
@@ -843,7 +839,7 @@ impl AppState {
         // deciding whether to actually write to disk. Deleting a config
         // entry outright is `forget_device()`'s job, not this — this loop
         // only ever updates fields for a still-tracked device.
-        self_rc.disc_mgr.connect_list_changed(|mgr| {
+        self_rc.device_manager.connect_list_changed(|mgr| {
             let entries = mgr.entries(&name_resolver_for(mgr));
             config::update(|cfg| {
                 for e in &entries {
@@ -875,7 +871,7 @@ impl AppState {
             });
         });
 
-        self_rc.disc_mgr.start();
+        self_rc.device_manager.start();
 
         if start_in_kiosk {
             dbg_state("activate: --kiosk, entering Kiosk mode unbound");
@@ -910,12 +906,12 @@ impl AppState {
         // otherwise fall back to whatever device Kiosk mode last showed
         // (Config::kiosk_last_uuid, if it's already a currently-tracked
         // device), and failing that, the first Active device found.
-        let bind_uuid = bind_uuid.or_else(|| Self::resolve_kiosk_default(&self_rc.disc_mgr));
+        let bind_uuid = bind_uuid.or_else(|| Self::resolve_kiosk_default(&self_rc.device_manager));
         kw.bind_device(bind_uuid.as_deref());
 
         // If nothing resolved *yet*, keep watching rather than settling for
         // "nothing selected": discovery is asynchronous (SSDP responses
-        // arrive well after `disc_mgr.start()` returns — confirmed live, a
+        // arrive well after `device_manager.start()` returns — confirmed live, a
         // fresh `--kiosk` launch reaches this point before any real device
         // has actually responded, so the immediate resolution above finds
         // nothing even for an already-known kiosk_last_uuid device seeded
@@ -925,7 +921,7 @@ impl AppState {
         // picked something else by then (checked via `current_key()`).
         if kw.current_key().is_empty() {
             let weak_kw = Rc::downgrade(&kw);
-            self_rc.disc_mgr.connect_list_changed(move |mgr| {
+            self_rc.device_manager.connect_list_changed(move |mgr| {
                 let Some(kw) = weak_kw.upgrade() else { return };
                 if !kw.current_key().is_empty() { return; }
                 if let Some(uuid) = Self::resolve_kiosk_default(mgr) {
@@ -938,7 +934,7 @@ impl AppState {
     /// Same as `enter_kiosk`, but for `--connect`'s already-constructed
     /// `DeviceState` — `--connect` deliberately bypasses discovery/SSDP
     /// entirely (see `DIRECT_CONNECT`'s doc comment), so there's no
-    /// `DiscoveryManager` entry/uuid for `KioskWindow::bind_device()` to
+    /// `DeviceManager` entry/uuid for `KioskWindow::bind_device()` to
     /// resolve; `bind_direct()` skips that lookup and uses `ds` as-is.
     /// No fallback-watching needed either, since the device is already
     /// known synchronously — unlike the uuid path, nothing here depends on
@@ -990,7 +986,7 @@ impl AppState {
             Some(KioskLayoutOverride::WideRight) | None => views::playback_full::PlaybackLayout::WideRight,
         };
         let kw = kiosk::KioskWindow::new(
-            &self_rc.app, &self_rc.disc_mgr, &icons, exit_fn,
+            &self_rc.app, &self_rc.device_manager, &icons, exit_fn,
             open_preferences_fn, open_device_settings_fn, forget_device_fn,
             initial_layout, kiosk_only(),
         );
@@ -1022,7 +1018,7 @@ impl AppState {
     /// See `enter_kiosk()`'s fallback-selection comment. Among Active
     /// devices, prefers one that's actually playing right now over just
     /// any responding device.
-    fn resolve_kiosk_default(mgr: &DiscoveryManager) -> Option<String> {
+    fn resolve_kiosk_default(mgr: &DeviceManager) -> Option<String> {
         let last = config::with(|cfg| cfg.kiosk_last_uuid.clone());
         if let Some(uuid) = last {
             if mgr.entry_for(&uuid).is_some() {

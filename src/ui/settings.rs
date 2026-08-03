@@ -24,7 +24,7 @@ use crate::device::capabilities::DeviceCapabilities;
 use crate::device::group::GroupRole;
 use crate::device::playback::AccessMethod;
 use crate::device::state::{DeviceState, FullModeGuard};
-use crate::device::discovery_manager::DiscoveryManager;
+use crate::device::manager::DeviceManager;
 use crate::ui::icons::IconSet;
 use crate::ui::kiosk::kiosk_settings_changed;
 use crate::ui::views;
@@ -144,7 +144,7 @@ pub(crate) struct PreferencesWindow {
 }
 
 impl PreferencesWindow {
-    pub(crate) fn new(disc_mgr: &DiscoveryManager, notify_kiosk_changed: Rc<dyn Fn(u32)>) -> Self {
+    pub(crate) fn new(disc_mgr: &DeviceManager, notify_kiosk_changed: Rc<dyn Fn(u32)>) -> Self {
         let window = build_settings_window("Preferences", vec![
             ("Appearance", "appearance", build_appearance_page().upcast()),
             ("Kiosk",      "kiosk",      build_kiosk_page(notify_kiosk_changed).upcast()),
@@ -864,7 +864,7 @@ fn build_kiosk_page(notify_kiosk_changed: Rc<dyn Fn(u32)>) -> adw::PreferencesPa
     page
 }
 
-fn build_general_page(disc_mgr: &DiscoveryManager) -> adw::PreferencesPage {
+fn build_general_page(disc_mgr: &DeviceManager) -> adw::PreferencesPage {
     // App-wide GENA (UPnP eventing) switch. GENA only ever starts a session
     // for a given device when this **and** that device's own per-device
     // switch (Settings' "Device -> Advanced" panel) are both on — see
@@ -884,7 +884,7 @@ fn build_general_page(disc_mgr: &DiscoveryManager) -> adw::PreferencesPage {
     gena_row.connect_active_notify(glib::clone!(#[weak] disc_mgr, move |row| {
         let want = row.is_active();
         config::update(|cfg| cfg.gena_enabled = want);
-        disc_mgr.device_manager().for_each_live(|ds| {
+        disc_mgr.for_each_live(|ds| {
             ds.set_gena_enabled(config::resolved_gena_enabled(&ds.uuid()));
         });
     }));
