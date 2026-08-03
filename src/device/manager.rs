@@ -638,25 +638,44 @@ impl DeviceManager {
     /// group header (via `group::auto_group_name()`), or a tracked member's own
     /// line — is resolved through this, never read from a cached field.
     pub fn entries(&self, display_name: &dyn Fn(&str) -> String) -> Vec<ManagedEntry> {
-        let inner = self.imp().inner.borrow();
+        // Snapshot everything this needs out of `inner` and **drop the
+        // borrow before calling out**. `display_name` is a `ui/`-supplied
+        // closure that re-enters this registry (`ui::name_resolver_for()`
+        // calls `device_state_for()`, which borrows this same `RefCell`),
+        // and so does `build_entry_for_row()` below. Both take shared
+        // borrows today, so holding one across them would not actually
+        // panic — but it violates this module's own "no borrow held across
+        // a call that can re-enter" rule, and the day any of those paths
+        // needs a `borrow_mut()` it becomes a runtime panic with no
+        // compile-time warning and no test to catch it. Not worth leaving
+        // armed for the sake of one avoided clone.
+        //
         // `filter_map`, not `map`: a tracked record with no matching
         // `states` entry shouldn't happen (this module always creates
         // through `create_and_configure()` and always `forget()`s both
         // together), but skipping it rather than unwrapping keeps a
         // violated invariant from becoming a panic — the row just silently
         // doesn't render that tick.
-        let inputs: Vec<TopoInput> = inner.devices.iter()
-            .filter_map(|(key, r)| {
+        let entries: HashMap<String, ManagedEntry> = {
+            let inner = self.imp().inner.borrow();
+            inner.devices.iter()
+                .map(|(key, r)| (key.clone(), r.entry.clone()))
+                .collect()
+        };
+        let inputs: Vec<TopoInput> = entries.iter()
+            .filter_map(|(key, e)| {
                 let ds = self.get_state(key)?;
                 Some(TopoInput {
-                    key: key.clone(), uuid: r.entry.uuid.clone(),
-                    name: display_name(&r.entry.uuid), ip: r.entry.ip.clone(),
+                    key:   key.clone(),
+                    uuid:  e.uuid.clone(),
+                    name:  display_name(&e.uuid),
+                    ip:    e.ip.clone(),
                     group: ds.group_state(),
                 })
             })
             .collect();
         resolve_topology(inputs).into_iter()
-            .map(|row| build_entry_for_row(&inner.devices, self, row))
+            .map(|row| build_entry_for_row(&entries, self, row))
             .collect()
     }
 
@@ -1181,8 +1200,9 @@ fn resolve_topology(rows: Vec<TopoInput>) -> Vec<TopoRow> {
 
 /// Resolves one `TopoRow` back into a full `ManagedEntry` — the counterpart
 /// to `resolve_topology()` taking a `TopoInput` seam instead of a full
-/// `ManagedEntry`. `devices` is `Inner.devices`; called once per row from
-/// `entries()`.
+/// `ManagedEntry`. `devices` is `entries()`'s snapshot of `Inner.devices`'
+/// cached entries, taken before that method drops its borrow; called once
+/// per row from there.
 ///
 /// A tracked row (`devices` has `row.key`) gets its real identity/presence
 /// from the cached record, with `name`/`group_role` overridden from the
@@ -1196,14 +1216,14 @@ fn resolve_topology(rows: Vec<TopoInput>) -> Vec<TopoRow> {
 /// from what the leader reported: `Offline` presence, because nothing has
 /// ever actually reached it — the leader's word is not a connection.
 fn build_entry_for_row(
-    devices: &HashMap<String, DeviceRecord>,
+    devices: &HashMap<String, ManagedEntry>,
     manager: &DeviceManager,
     row: TopoRow,
 ) -> ManagedEntry {
     let tracked = devices.get(&row.key).zip(manager.get_state(&row.key));
     match tracked {
-        Some((rec, _ds)) => {
-            let mut entry = rec.entry.clone();
+        Some((cached, _ds)) => {
+            let mut entry = cached.clone();
             entry.name = row.name;
             entry.group_role = row.role;
             entry
