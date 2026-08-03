@@ -394,7 +394,7 @@ impl MiniPlaybackView {
         imp.title.get().unwrap().set_text(title);
         imp.artist.get().unwrap().set_text("");
         imp.status.get().unwrap().set_visible(false);
-        imp.service.get().unwrap().set(None, imp.icons.get().unwrap());
+        imp.service.get().unwrap().set(None, None, imp.icons.get().unwrap());
         imp.quality.get().unwrap().widget.set_visible(false);
         imp.artwork.get().unwrap().clear();
         if let Some(Some(bg)) = imp.art_bg.get() { bg.clear(); }
@@ -439,7 +439,8 @@ impl MiniPlaybackView {
             // there's no app/stream behind it, and its name goes in the
             // title instead (below).
             let service_name = if ps.is_physical_input { None } else { ps.source_name.as_deref() };
-            imp.service.get().unwrap().set(service_name, imp.icons.get().unwrap());
+            imp.service.get().unwrap().set(
+                service_name, ds.input_source_icon_key().as_deref(), imp.icons.get().unwrap());
             imp.quality.get().unwrap().set(ps.codec_label.as_deref(), imp.icons.get().unwrap());
             // Hidden while already pairing (nothing to "restart") as well
             // as while connected.

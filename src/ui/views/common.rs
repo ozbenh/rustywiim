@@ -244,6 +244,14 @@ pub(crate) fn build_bt_pair_button(css_class: &str, icon_px: i32) -> gtk::Button
 pub(crate) struct ServiceLabel {
     pub widget: gtk::Box,
     icon:  BrandIcon,
+    /// The hardware-input badge, for a source that has no brand mark
+    /// because it isn't a brand — Bluetooth, USB, line-in. A separate
+    /// widget from `icon` because the two icon families are different
+    /// types: brand marks are raw SVG bytes rendered by `BrandIcon` (wide
+    /// wordmarks `gtk::IconTheme` can't represent), input icons are
+    /// ordinary themed `gdk::Paintable`s. Exactly one of the three
+    /// children is ever visible.
+    input: gtk::Image,
     label: gtk::Label,
 }
 
@@ -268,13 +276,20 @@ impl ServiceLabel {
             .css_classes([css_class, "service-name-pill"])
             .valign(gtk::Align::Center)
             .build();
+        let input = gtk::Image::builder()
+            .pixel_size(24)
+            .valign(gtk::Align::Center)
+            .visible(false)
+            .build();
+        input.add_css_class("service-icon");
         let widget = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal).spacing(6)
             .halign(gtk::Align::Start)
             .build();
         widget.append(&icon);
+        widget.append(&input);
         widget.append(&label);
-        Self { widget, icon, label }
+        Self { widget, icon, input, label }
     }
 
     /// WideRight/Kiosk-only: `apply_wide_right_scale()` sets this directly
@@ -285,29 +300,43 @@ impl ServiceLabel {
     /// set separately.
     pub(crate) fn set_icon_pixel_size(&self, px: i32) {
         self.icon.set_height(px);
+        // The input badge is a square themed icon rather than a wide
+        // wordmark, so it scales by pixel size directly.
+        self.input.set_pixel_size(px);
     }
 
     /// `name` is `PlaybackState::source_name` as-is (already the decoded
     /// display string, e.g. "Spotify"/"TIDAL Connect") — `None`/empty
     /// hides the whole element rather than showing a blank row.
-    pub(crate) fn set(&self, name: Option<&str>, icons: &IconSet) {
+    ///
+    /// `input_key` is `DeviceState::input_source_icon_key()`: `Some` only
+    /// when the active source is a hardware input, in which case there is
+    /// no brand mark to find and the *input* icon table is the right place
+    /// to look instead. Resolution order is brand → input → text, so a
+    /// streaming service is unaffected and an unbranded one still falls
+    /// back to its own name rather than to a generic glyph.
+    pub(crate) fn set(&self, name: Option<&str>, input_key: Option<&str>, icons: &IconSet) {
         let name = name.unwrap_or("");
         if name.is_empty() {
             self.widget.set_visible(false);
             return;
         }
         self.widget.set_visible(true);
-        match icons.service_svg(name) {
-            Some(svg) => {
-                self.icon.set_svg(Some(svg));
-                self.icon.set_visible(true);
-                self.label.set_visible(false);
-            }
-            None => {
-                self.icon.set_visible(false);
-                self.label.set_visible(true);
-                self.label.set_label(name);
-            }
+        if let Some(svg) = icons.service_svg(name) {
+            self.icon.set_svg(Some(svg));
+            self.icon.set_visible(true);
+            self.input.set_visible(false);
+            self.label.set_visible(false);
+        } else if let Some(key) = input_key {
+            self.input.set_paintable(Some(icons.source_paintable(key)));
+            self.input.set_visible(true);
+            self.icon.set_visible(false);
+            self.label.set_visible(false);
+        } else {
+            self.icon.set_visible(false);
+            self.input.set_visible(false);
+            self.label.set_visible(true);
+            self.label.set_label(name);
         }
     }
 }

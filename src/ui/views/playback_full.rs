@@ -2011,7 +2011,7 @@ impl PlaybackView {
         imp.artist.get().unwrap().set_text("");
         imp.album.get().unwrap().set_text("");
         imp.status.get().unwrap().set_label("");
-        imp.service.get().unwrap().set(None, imp.icons.get().unwrap());
+        imp.service.get().unwrap().set(None, None, imp.icons.get().unwrap());
         imp.quality_badge.get().unwrap().widget.set_visible(false);
         imp.quality.get().unwrap().set_text("");
         imp.artwork.get().unwrap().clear();
@@ -2098,7 +2098,8 @@ impl PlaybackView {
                 // name already goes in the title (see the TITLE block
                 // below) instead.
                 let service_name = if ps.is_physical_input { None } else { ps.source_name.as_deref() };
-                imp.service.get().unwrap().set(service_name, imp.icons.get().unwrap());
+                imp.service.get().unwrap().set(
+                    service_name, ds.input_source_icon_key().as_deref(), imp.icons.get().unwrap());
                 let quality_badge = imp.quality_badge.get().unwrap();
                 quality_badge.set(ps.codec_label.as_deref(), imp.icons.get().unwrap());
                 // Hidden while already pairing (nothing to "restart") as

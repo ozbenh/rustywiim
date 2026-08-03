@@ -438,9 +438,23 @@ fn decode_next_prev_http(mode: i32, vendor: &str) -> (bool, bool) {
 /// adding them would blank the song title, make Kiosk's screensaver treat
 /// live playback as stopped, and force `loop_tier_http()` to `None` in
 /// direct contradiction of its own next branch, which lists 41 as
-/// `TrackOnly`.
+/// `TrackOnly`. Use `is_hardware_input_mode()` for the "hardware input vs
+/// streaming service" question instead.
 pub(crate) fn is_physical_input_mode(mode: i32) -> bool {
     matches!(mode, 40 | 60 | 43 | 44 | 47 | 49 | 54)
+}
+
+/// `mode` values backed by a hardware input rather than a network/streaming
+/// source — the passthrough set above **plus** Bluetooth and udisk, which
+/// are hardware inputs that nonetheless carry real track metadata.
+///
+/// Deliberately derived from `mode_to_input_source()` rather than written
+/// as a second literal list, so a mode added there can't silently miss
+/// this. Drives `DeviceState::input_source_icon_key()`, which is how `ui/`
+/// decides that a source badge should resolve through the *input* icon
+/// table rather than the streaming-service one.
+pub(crate) fn is_hardware_input_mode(mode: i32) -> bool {
+    capabilities::mode_to_input_source(mode) != "wifi"
 }
 
 /// Fabricates a substitute `mode`/`play_type` value from a `PlayMedium`-
@@ -1480,6 +1494,25 @@ mod tests {
         }
         for m in [41, 11, 42, 51, 1, 2, 5, 10, 20, 31, 99] {
             assert!(!is_physical_input_mode(m), "mode {m} must not be a passthrough");
+        }
+    }
+
+    /// The hardware-input set is a strict superset of the passthrough set:
+    /// it adds Bluetooth and udisk, which have real metadata but still want
+    /// an input icon rather than a streaming brand mark on the badge.
+    #[test]
+    fn hardware_input_modes_add_bluetooth_and_udisk_to_the_passthroughs() {
+        for m in [40, 60, 43, 44, 47, 49, 54, 41, 11, 42, 51] {
+            assert!(is_hardware_input_mode(m), "mode {m} should be a hardware input");
+        }
+        for m in [0, 1, 2, 5, 10, 20, 31, 32, 36, 99] {
+            assert!(!is_hardware_input_mode(m), "mode {m} is a network source, not an input");
+        }
+        // Superset invariant, so the two can't drift apart.
+        for m in 0..=120 {
+            if is_physical_input_mode(m) {
+                assert!(is_hardware_input_mode(m), "mode {m} passthrough but not hardware input");
+            }
         }
     }
 

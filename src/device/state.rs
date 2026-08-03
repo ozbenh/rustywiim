@@ -5199,6 +5199,22 @@ impl DeviceState {
         }
     }
 
+    /// `input_icon_key()`, but **only when the active source is a hardware
+    /// input** (line-in, optical, HDMI, phono, RCA, Bluetooth, udisk, …);
+    /// `None` for a network/streaming source.
+    ///
+    /// This is what lets a source badge show the right mark: a streaming
+    /// service resolves through the brand-icon table, while a hardware
+    /// input has no brand at all and should resolve through the input-icon
+    /// table instead. Returning `None` rather than the `"wifi"` key for a
+    /// network source is the point — a badge must still fall back to the
+    /// service's *name* when there's no brand icon for it (Radio Paradise,
+    /// vTuner, …), not to a generic network glyph.
+    pub fn input_source_icon_key(&self) -> Option<String> {
+        playback::is_hardware_input_mode(self.current_mode())
+            .then(|| self.input_icon_key())
+    }
+
     // ── Typed signal connectors ───────────────────────────────────────────────
 
     pub fn connect_device_changed<F: Fn(&Self) + 'static>(&self, f: F) -> glib::SignalHandlerId {
