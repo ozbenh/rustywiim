@@ -271,6 +271,7 @@ fn mode_source(mode: i32, device_id: Option<DeviceId>) -> &'static str {
     let physical_id = match mode {
         40 | 60 => Some("line-in"),
         44      => Some("RCA"),
+        47      => Some("line-in-2"),
         43      => Some("optical"),
         49      => Some("HDMI"),
         54      => Some("phono"),
@@ -430,8 +431,16 @@ fn decode_next_prev_http(mode: i32, vendor: &str) -> (bool, bool) {
 /// no song info, only whatever's physically plugged in. `state.rs` uses
 /// this to drive `PlaybackState::is_physical_input`, the canonical signal
 /// `ui/` reads instead of a raw mode number (see that field's doc comment).
+///
+/// **This is "passthrough with no metadata", *not* "is a hardware input".**
+/// Bluetooth (41) and udisk (11/42/51) are hardware inputs that nonetheless
+/// carry real track metadata, so they deliberately do **not** belong here —
+/// adding them would blank the song title, make Kiosk's screensaver treat
+/// live playback as stopped, and force `loop_tier_http()` to `None` in
+/// direct contradiction of its own next branch, which lists 41 as
+/// `TrackOnly`.
 pub(crate) fn is_physical_input_mode(mode: i32) -> bool {
-    matches!(mode, 40 | 60 | 43 | 44 | 49 | 54)
+    matches!(mode, 40 | 60 | 43 | 44 | 47 | 49 | 54)
 }
 
 /// Fabricates a substitute `mode`/`play_type` value from a `PlayMedium`-
@@ -1447,6 +1456,31 @@ mod tests {
     #[test]
     fn source_name_unrecognized_medium_falls_back_to_wifi_not_raw_string() {
         assert_eq!(decode_source_name_upnp("SOME-FUTURE-MEDIUM", "", None).as_deref(), Some("Wifi"));
+    }
+
+    /// Mode 47 ("line-in-2" per `mode_to_input_source()`) was missing from
+    /// both `mode_source()`'s physical-input table and
+    /// `is_physical_input_mode()`, so selecting a device's second line
+    /// input produced no source name at all *and* left the view treating a
+    /// passthrough as if it were a streaming session — meaningless title,
+    /// live shuffle/repeat controls.
+    #[test]
+    fn mode_47_is_line_in_2_with_a_real_display_name() {
+        assert_eq!(decode_source_name_http(47, "", None).as_deref(), Some("Line-In 2"));
+    }
+
+    /// The passthrough set is "no metadata behind it", which is why
+    /// Bluetooth (41) and udisk (11/42/51) must stay out of it however
+    /// input-like they look — see `is_physical_input_mode()`'s doc comment
+    /// for the three regressions including them would cause.
+    #[test]
+    fn physical_input_modes_are_passthroughs_only() {
+        for m in [40, 60, 43, 44, 47, 49, 54] {
+            assert!(is_physical_input_mode(m), "mode {m} should be a passthrough");
+        }
+        for m in [41, 11, 42, 51, 1, 2, 5, 10, 20, 31, 99] {
+            assert!(!is_physical_input_mode(m), "mode {m} must not be a passthrough");
+        }
     }
 
     /// Regression test for a real bug: an idle device reporting
