@@ -106,9 +106,13 @@ list.devlist-rows > row {
     color: @card_fg_color;
     border-radius: 10px;
     margin: 3px 4px;
+    /* The hover outline must only ever change this border's *color*: a
+       border that appears on hover adds to the row's height and shifts
+       every row below it by a pixel. */
+    border: 1px solid transparent;
 }
 list.devlist-rows > row:hover {
-    border: 1px solid alpha(@window_fg_color, 0.25);
+    border-color: alpha(@window_fg_color, 0.25);
 }
 
 /* A multiroom group's own row, and the compact member lines beneath it.

@@ -183,9 +183,13 @@ list.devlist-rows > row {
     background-color: #141414;
     border-radius: 10px;
     margin: 3px 4px;
+    /* The hover outline must only ever change this border's *color*: a
+       border that appears on hover adds to the row's height and shifts
+       every row below it by a pixel. */
+    border: 1px solid transparent;
 }
 list.devlist-rows > row:hover {
-    border: 1px solid rgba(255, 255, 255, 0.25);
+    border-color: rgba(255, 255, 255, 0.25);
 }
 
 /* A multiroom group's own row, and the compact member lines beneath it.
