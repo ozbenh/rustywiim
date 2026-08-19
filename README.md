@@ -10,6 +10,8 @@ Licensed under the [MIT License](LICENSE).
 
 **[Screenshots](#screenshots)**
 
+*Note*: Note all screenshot show the latest version, there might be small cosmetic differences
+
 ### Normal mode (Windowed application)
 
 <a href="pics/main-dark.png"><img src="pics/thumbs/main-dark.png" width="150" alt="Main window, dark theme"></a>
@@ -18,9 +20,11 @@ Licensed under the [MIT License](LICENSE).
 <a href="pics/main-modern-queue.png"><img src="pics/thumbs/main-modern-queue.png" width="150" alt="Main window, modern theme with playqueue"></a>
 <a href="pics/mini-modern.png"><img src="pics/thumbs/mini-modern.png" width="150" alt="Mini window, modern theme"></a>
 <a href="pics/devlist.png"><img src="pics/thumbs/devlist.png" width="150" alt="Device list window"></a>
+<a href="pics/devlist-groups.png"><img src="pics/thumbs/devlist-groups.png" width="150" alt="Device list window with group"></a>
 <a href="pics/peq.png"><img src="pics/thumbs/peq.png" width="150" alt="Parametric Equalizer"></a>
-<a href="pics/settings.png"><img src="pics/thumbs/settings.png" width="150" alt="Settings dialog"></a>
-<a href="pics/settings-kiosk.png"><img src="pics/thumbs/settings-kiosk.png" width="150" alt="Settings dialog - Kiosk"></a>
+<a href="pics/settings.png"><img src="pics/thumbs/settings.png" width="150" alt="Device Settings dialog"></a>
+<a href="pics/preferences.png"><img src="pics/thumbs/preferences.png" width="150" alt="Application Preferences dialog"></a>
+<a href="pics/preferences-kiosk.png"><img src="pics/thumbs/preferences-kiosk.png" width="150" alt="Application Preferences dialog - Kiosk"></a>
 
 ### Kiosk mode (fullscreen) [Experimental]
 
@@ -161,6 +165,36 @@ You can pretty-print this file using `target/debug/wiim-capdump`. I would apprec
 * Kiosk mode doesn't have a way to manually add a device by IP address yet
 
 ## Changelog ##
+  * 0.13.0 - 2026-08-19
+    * Add support for groups. We can't (yet) group/ungroup devices but we can
+      deal properly with groups created via the WiiM App. Grouped devices are
+      shown as one entity in the device list with direct access to all children
+      volumes/mute and settings. The playback window targets the group. Currently
+      the volume/mute in the playback window is the overall group volume/mute,
+      individual volumes can only be set via the device-list (for now). We use
+      what seems to be the same algorithm as the WiiM app, ie the group volume
+      is the "max" of all member volumes.
+      The group support works similarly to what the WiiM app seems to be doing,
+      ie devices are targeted directly for volume/mute, except when they use
+      the old grouping mechanism (and disappear from the network as they wifi
+      direct to the group lead). In that case, we fallback to indirect setting
+      via the lead.
+    * Split the application "Preferences" window which contains application
+      global preferences from the "Device settings" window which contains
+      device-specific settings.
+    * Cosmetic tweaks to the device-list to make it a bit clearer
+    * Device "pinning" in the device list is gone, it was never quite clear what
+      it was meant to do (it forced us to remember devices that don't show on
+      the network). Now we always remember all devices ever seen, but if a
+      device is offline, a little trashcan button can be used to "forget" it.
+    * Various cosmetic fixes here or there
+    * A bunch of internal refactoring, removing more AI slop in favor of
+      simpler/better design, especially get rid of some duplication in how
+      the device-list maintained cached song info separately from the main
+      device windows. Everything use the normal state caching mechanism now.
+    * Add some group support to the simulator for testing
+    * EQ editor defaults to editing the current input
+      
   * 0.12.0 - 2026-07-28
     * Add MacOS builds ! Standalone signed and notarized apps (fingers
 	  crossed, will only know if the whole process work once I've pushed
@@ -471,9 +505,13 @@ You can pretty-print this file using `target/debug/wiim-capdump`. I would apprec
 ![Screenshot](pics/kiosk-modern-devlist.png)
 **Device list window**
 ![Screenshot](pics/devlist.png)
+**Device list window with a group**
+![Screenshot](pics/devlist-groups.png)
 **Parametric Equalizer dialog**
 ![Screenshot](pics/peq.png)
-**Settings dialog**
+**Device Settings dialog**
 ![Screenshot](pics/settings.png)
-**Settings dialog for kiosk mode**
-![Screenshot](pics/settings-kiosk.png)
+**Application Preferences dialog**
+![Screenshot](pics/preferences.png)
+**Application Preferences for kiosk mode dialog**
+![Screenshot](pics/preferences-kiosk.png)
