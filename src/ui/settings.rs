@@ -14,7 +14,7 @@
 use adw::prelude::*;
 use gtk::glib;
 use gtk::Orientation;
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use crate::config::{self, ThemeMode};
@@ -139,6 +139,7 @@ fn build_settings_window(title: &str, pages: Vec<(&str, &str, gtk::Widget)>) -> 
     // means the app-wide Ctrl-W/Cmd-W accelerator doesn't reach them on its
     // own.
     crate::ui::wire_close_shortcut(&window);
+    crate::ui::wire_theme_shortcut(&window);
     window
 }
 
@@ -402,6 +403,35 @@ fn build_theme_list_factory() -> gtk::SignalListItemFactory {
     factory
 }
 
+thread_local! {
+    /// The open Appearance page's Theme dropdown, plus the flag its own
+    /// handler reads to tell a selection it caused from one pushed in by
+    /// `sync_theme_selection()`. Weak, so a closed Preferences window leaves
+    /// nothing to unregister; `None` until the page is first built.
+    static THEME_SELECTOR: RefCell<Option<(glib::WeakRef<adw::ComboRow>, Rc<Cell<bool>>)>> =
+        const { RefCell::new(None) };
+}
+
+/// Move the Theme dropdown to `config.theme` after a theme change that came
+/// from outside this page — the app-wide "T" shortcut, which can be pressed
+/// while Preferences itself is the focused window. Silently does nothing when
+/// no Preferences window is open.
+pub(crate) fn sync_theme_selection() {
+    THEME_SELECTOR.with(|sel| {
+        let sel = sel.borrow();
+        let Some((row, external)) = sel.as_ref() else { return };
+        let Some(row) = row.upgrade() else { return };
+        let want = theme_index(config::with(|cfg| cfg.theme));
+        if row.selected() == want { return; }
+        // The dependent rows (mini-modern, accent) still want their own
+        // handlers to run off this — only the config write and the theme
+        // re-apply have already happened, and are what the flag suppresses.
+        external.set(true);
+        row.set_selected(want);
+        external.set(false);
+    });
+}
+
 fn build_appearance_page() -> adw::PreferencesPage {
     let theme = config::with(|cfg| cfg.theme);
 
@@ -415,6 +445,11 @@ fn build_appearance_page() -> adw::PreferencesPage {
         .build();
     theme_row.set_selected(theme_index(theme));
 
+    let external_theme_change = Rc::new(Cell::new(false));
+    THEME_SELECTOR.with(|sel| {
+        *sel.borrow_mut() = Some((theme_row.downgrade(), Rc::clone(&external_theme_change)));
+    });
+
     let mini_modern = config::with(|cfg| cfg.mini_modern);
     let mini_modern_row = adw::SwitchRow::builder()
         .title("Modern Theme for Mini Player")
@@ -427,15 +462,21 @@ fn build_appearance_page() -> adw::PreferencesPage {
         crate::ui::update_art_background_visibility();
     });
 
-    theme_row.connect_selected_notify(glib::clone!(#[weak] mini_modern_row, move |row| {
+    theme_row.connect_selected_notify(glib::clone!(
+        #[weak] mini_modern_row, #[strong] external_theme_change,
+        move |row| {
             // The separator's THEMES entry is None; it's non-selectable so this
             // shouldn't fire for it, but bail rather than guess if it somehow does.
             let Some(theme) = THEMES.get(row.selected() as usize).and_then(|(_, m)| *m) else { return };
-            // Persist before apply_theme(): it calls update_art_background_visibility()
-            // internally, which reads config.theme back — updating config first avoids
-            // computing visibility off the theme that's about to be replaced.
-            config::update(|cfg| cfg.theme = theme);
-            crate::ui::apply_theme(theme);
+            // Already both done by whoever changed the theme when the flag is
+            // set — this selection is only catching the widget up to it.
+            if !external_theme_change.get() {
+                // Persist before apply_theme(): it calls update_art_background_visibility()
+                // internally, which reads config.theme back — updating config first avoids
+                // computing visibility off the theme that's about to be replaced.
+                config::update(|cfg| cfg.theme = theme);
+                crate::ui::apply_theme(theme);
+            }
             mini_modern_row.set_sensitive(theme == ThemeMode::RustyWiiMModern);
         }
     ));

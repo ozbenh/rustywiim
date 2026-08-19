@@ -47,6 +47,7 @@ impl DiscoveryWindow {
             .default_width(init_w)
             .default_height(init_h)
             .build();
+        crate::ui::wire_theme_shortcut(&window);
 
         let header = adw::HeaderBar::new();
 

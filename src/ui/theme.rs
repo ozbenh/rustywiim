@@ -416,6 +416,11 @@ pub(crate) mod appearance_changed {
 }
 
 pub(crate) fn broadcast_appearance_changed(mask: u32) {
+    if mask & appearance_changed::THEME != 0 {
+        // The theme can change from anywhere (the app-wide "T" shortcut),
+        // and an open Preferences window has to show the one in force.
+        crate::ui::settings::sync_theme_selection();
+    }
     if mask & appearance_changed::SCROLL_SPEED != 0 {
         // Every ScrollFadeLabel gets the same base speed here — each
         // instance applies its own fixed `speed_multiplier` on top (see

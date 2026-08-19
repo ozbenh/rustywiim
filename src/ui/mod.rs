@@ -156,6 +156,31 @@ pub(crate) fn wire_close_shortcut(window: &impl glib::object::IsA<gtk::Window>) 
     window.upcast_ref::<gtk::Widget>().add_controller(key_ctrl);
 }
 
+/// "T" (theme cycle) for the windows that have no keyboard handling of their
+/// own — the device picker, Preferences/Device Settings, the EQ panel. It is
+/// an app-wide shortcut, so it must work from whichever window happens to be
+/// focused; `DeviceWindow` and `KioskWindow` reach `cycle_theme()` from
+/// inside their own controllers instead, since theirs also carry that
+/// window's private keys.
+///
+/// Bubble phase, unlike `wire_close_shortcut()`'s capture-phase controller:
+/// an unmodified letter belongs to a focused text entry as text, and a
+/// bubble-phase controller only ever sees the keys nothing else consumed.
+pub(crate) fn wire_theme_shortcut(window: &impl glib::object::IsA<gtk::Window>) {
+    let key_ctrl = gtk::EventControllerKey::new();
+    key_ctrl.connect_key_pressed(|_, keyval, _keycode, state| {
+        if views::common::is_accel_modifier(state) {
+            return glib::Propagation::Proceed;
+        }
+        if matches!(keyval, gtk::gdk::Key::t | gtk::gdk::Key::T) {
+            cycle_theme();
+            return glib::Propagation::Stop;
+        }
+        glib::Propagation::Proceed
+    });
+    window.as_ref().upcast_ref::<gtk::Widget>().add_controller(key_ctrl);
+}
+
 // ── DeviceSpec ────────────────────────────────────────────────────────────────
 
 /// Describes a specific device to connect to when creating a new device window.

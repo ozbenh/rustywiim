@@ -394,6 +394,7 @@ impl EqPanel {
         // means the app-wide Ctrl-W/Cmd-W accelerator doesn't reach it on
         // its own.
         crate::ui::wire_close_shortcut(&window);
+        crate::ui::wire_theme_shortcut(&window);
 
         let inner = Rc::new(Inner {
             ds: ds.clone(),
