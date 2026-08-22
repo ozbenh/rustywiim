@@ -1,0 +1,33 @@
+# Maintainer: Benjamin Herrenschmidt <benh@kernel.crashing.org>
+
+pkgname=rustywiim
+pkgver=0.13.0
+pkgrel=1
+pkgdesc='Control WiiM and LinkPlay network audio players over LAN'
+arch=('x86_64' 'aarch64')
+license=('MIT')
+depends=('gtk4' 'libadwaita' 'glib2' 'pango' 'openssl' 'glibc' 'libgcc')
+makedepends=('rust' 'gcc' 'pkgconf' 'glib2')
+url="https://github.com/ozbenh/$pkgname/archive/refs/tags/v$pkgver.tar.gz"
+source=("$pkgname-$pkgver.tar.gz::$url")
+sha256sums=('0247bb3f1c4f2f295376093dd16f8fa9f2b0961b1a7f62b11d5b5dea3ea0482c')
+
+build() {
+    cargo build --release --manifest-path "$srcdir/$pkgname-$pkgver/Cargo.toml"
+}
+
+package() {
+    cd "$srcdir/$pkgname-$pkgver"
+
+    install -Dm755 -t "$pkgdir/usr/bin" target/release/rustywiim
+    local exe
+    for exe in wiim-capture wiim-capdump; do
+        install -Dm755 -t "$pkgdir/usr/lib/$pkgname" target/release/$exe
+    done
+
+    install -Dm644 -t "$pkgdir/usr/share/applications" data/io.github.ozbenh.rustywiim.desktop
+    install -Dm644 src/ui/icons/rustywiim-icon.svg \
+        "$pkgdir/usr/share/icons/hicolor/scalable/apps/io.github.ozbenh.rustywiim.svg"
+
+    install -Dm644 -t "$pkgdir/usr/share/licenses/$pkgname" LICENSE
+}
