@@ -916,6 +916,11 @@ impl DeviceManager {
             dbg(&format!("track_device: {} moved {} → {ip}", rec.entry.name, rec.entry.ip));
             rec.entry.ip = ip.to_string();
             rec.entry.tls_mode = tls;
+            // The borrow must be gone before `update_ip()`: it reaches
+            // `DeviceState::set_device()`, which emits `device-changed`
+            // synchronously, and this registry's own handler for that
+            // (`on_tracked_device_changed()`) takes `inner` mutably.
+            drop(inner);
             // Covers any live DeviceState for this uuid, not just this
             // entry — e.g. an already-open device window reconnects to
             // the corrected IP too.
