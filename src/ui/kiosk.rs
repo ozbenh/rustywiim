@@ -831,7 +831,12 @@ impl KioskWindow {
         // Release whichever device was shown before, regardless of what
         // (if anything) replaces it. No-ops for the empty key the "no
         // device" branch below uses.
-        if let Some(old) = self.bound.borrow_mut().take() {
+        //
+        // Taken out in its own statement, not in the `if let` scrutinee:
+        // that would keep `bound` mutably borrowed for the whole body, and
+        // nothing may hold a borrow across `release_bound()`.
+        let old = self.bound.borrow_mut().take();
+        if let Some(old) = old {
             self.release_bound(old);
         }
         // Clear generically rather than removing old.view/old.status_bar
@@ -1781,7 +1786,10 @@ impl KioskWindow {
     }
 
     pub(crate) fn close(&self) {
-        if let Some(old) = self.bound.borrow_mut().take() {
+        // Own statement, so `bound` isn't still borrowed inside
+        // `release_bound()` — see `bind_device()`.
+        let old = self.bound.borrow_mut().take();
+        if let Some(old) = old {
             self.release_bound(old);
         }
         // Whatever's left at this point is the `Always`-mode cookie
