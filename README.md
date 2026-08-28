@@ -165,6 +165,9 @@ You can pretty-print this file using `target/debug/wiim-capdump`. I would apprec
 * Kiosk mode doesn't have a way to manually add a device by IP address yet
 
 ## Changelog ##
+  * 0.13.1 - 2026-08-28
+    * Fix crash at startup when device changed IP address
+
   * 0.13.0 - 2026-08-19
     * Add support for groups. We can't (yet) group/ungroup devices but we can
       deal properly with groups created via the WiiM App. Grouped devices are
