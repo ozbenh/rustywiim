@@ -1,0 +1,6 @@
+.SRCINFO
+*.pkg.tar.zst
+*.tar.gz
+src/
+pkg/
+dist/
